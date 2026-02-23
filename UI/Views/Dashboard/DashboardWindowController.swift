@@ -50,8 +50,11 @@ public class DashboardWindowController: NSObject {
 
     /// Show the dashboard window
     public func show() {
+        Log.info("[DashboardWindowController] show requested state=\(windowStateSnapshot())", category: .ui)
+
         // If window already exists and is visible, just bring it to front
         if let window = window, window.isVisible {
+            Log.info("[DashboardWindowController] show routed to bringToFront (window already visible)", category: .ui)
             bringToFront()
             return
         }
@@ -63,6 +66,7 @@ public class DashboardWindowController: NSObject {
 
         // Create window if needed
         if window == nil {
+            Log.info("[DashboardWindowController] creating dashboard window", category: .ui)
             window = createWindow(coordinator: coordinator)
         }
 
@@ -73,6 +77,7 @@ public class DashboardWindowController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
 
         isVisible = true
+        Log.info("[DashboardWindowController] show completed state=\(windowStateSnapshot())", category: .ui)
 
         // Post notification
         NotificationCenter.default.post(name: .dashboardDidOpen, object: nil)
@@ -80,12 +85,16 @@ public class DashboardWindowController: NSObject {
 
     /// Hide the dashboard window
     public func hide() {
+        Log.info("[DashboardWindowController] hide requested state=\(windowStateSnapshot())", category: .ui)
         guard let window = window, isVisible else {
+            Log.info("[DashboardWindowController] hide skipped (no visible dashboard)", category: .ui)
             return
         }
 
         window.orderOut(nil)
         isVisible = false
+        Log.info("[DashboardWindowController] hide completed state=\(windowStateSnapshot())", category: .ui)
+        hideAppIfNoForegroundWindows(ignoring: window)
 
         // Post notification
         NotificationCenter.default.post(name: .dashboardDidClose, object: nil)
@@ -111,11 +120,13 @@ public class DashboardWindowController: NSObject {
 
     /// Bring dashboard window to front if visible
     public func bringToFront() {
+        Log.info("[DashboardWindowController] bringToFront requested state=\(windowStateSnapshot())", category: .ui)
         guard let window = window else { return }
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        Log.info("[DashboardWindowController] bringToFront completed state=\(windowStateSnapshot())", category: .ui)
     }
 
     /// Update the dashboard window title used for metadata/window-list consumers.
@@ -177,13 +188,43 @@ public class DashboardWindowController: NSObject {
 
 extension DashboardWindowController: NSWindowDelegate {
     public func windowWillClose(_ notification: Notification) {
+        Log.info("[DashboardWindowController] windowWillClose state(before)=\(windowStateSnapshot())", category: .ui)
         isVisible = false
+        Log.info("[DashboardWindowController] windowWillClose state(after)=\(windowStateSnapshot())", category: .ui)
+        hideAppIfNoForegroundWindows(ignoring: window)
         NotificationCenter.default.post(name: .dashboardDidClose, object: nil)
     }
 
     public func windowDidBecomeKey(_ notification: Notification) {
         // Post notification so dashboard can refresh its stats
         NotificationCenter.default.post(name: .dashboardDidBecomeKey, object: nil)
+    }
+}
+
+private extension DashboardWindowController {
+    func hideAppIfNoForegroundWindows(ignoring dashboardWindow: NSWindow?) {
+        let hasOtherForegroundWindows = NSApp.windows.contains { candidate in
+            guard candidate !== dashboardWindow else { return false }
+            return candidate.level.rawValue == 0 && candidate.isVisible
+        }
+
+        guard !hasOtherForegroundWindows else {
+            Log.info("[DashboardWindowController] keeping app active after dashboard hide (other foreground windows visible)", category: .ui)
+            return
+        }
+
+        Log.info("[DashboardWindowController] hiding app after dashboard hide (no foreground windows visible)", category: .ui)
+        NSApp.hide(nil)
+    }
+
+    func windowStateSnapshot() -> String {
+        let windowExists = window != nil
+        let windowVisible = window?.isVisible ?? false
+        let windowKey = window?.isKeyWindow ?? false
+        let windowMain = window?.isMainWindow ?? false
+        let windowMini = window?.isMiniaturized ?? false
+
+        return "controllerVisible=\(isVisible) windowExists=\(windowExists) windowVisible=\(windowVisible) windowKey=\(windowKey) windowMain=\(windowMain) windowMini=\(windowMini) appHidden=\(NSApp.isHidden) appActive=\(NSApp.isActive)"
     }
 }
 

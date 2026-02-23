@@ -21,6 +21,7 @@ private enum WindowConfig {
     static let maxFrames = 500           // Maximum frames in memory
     static let loadThreshold = 100       // Start loading when within N frames of edge
     static let loadBatchSize = 200       // Frames to load per batch
+    static let loadWindowSpanSeconds: TimeInterval = 24 * 60 * 60 // Bounded window for load-more queries
 }
 
 /// Memory tracking for debugging frame accumulation issues
@@ -251,6 +252,18 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Currently selected date in calendar
     @Published public var selectedCalendarDate: Date? = nil
+
+    /// Keyboard focus target inside calendar picker
+    public enum CalendarKeyboardFocus: Sendable {
+        case dateGrid
+        case timeGrid
+    }
+
+    /// Which calendar picker section currently owns arrow-key navigation
+    @Published public var calendarKeyboardFocus: CalendarKeyboardFocus = .dateGrid
+
+    /// Selected hour (0-23) when keyboard focus is on the time grid
+    @Published public var selectedCalendarHour: Int? = nil
 
     /// Zoom level (0.0 to 1.0, where 1.0 is max detail/zoomed in)
     @Published public var zoomLevel: CGFloat = TimelineConfig.defaultZoomLevel
@@ -1035,6 +1048,31 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Track frames currently being decoded to prevent duplicate decode operations
     private var inFlightDecodes: Set<FrameID> = []
 
+    /// Cmd+F quick-filter latency trace payload carried across async reload/boundary paths.
+    private struct CmdFQuickFilterLatencyTrace: Sendable {
+        let id: String
+        let startedAt: CFAbsoluteTime
+        let trigger: String
+        let action: String
+        let bundleID: String
+        let source: FrameSource
+    }
+
+    /// Pending Cmd+F trace, consumed by the next filter-triggered reload call.
+    private var pendingCmdFQuickFilterLatencyTrace: CmdFQuickFilterLatencyTrace?
+
+    /// Monotonic ID for loading state transitions in logs.
+    private var loadingTransitionID: UInt64 = 0
+    /// Start time of the currently active loading state.
+    private var loadingStateStartedAt: CFAbsoluteTime?
+    /// Reason associated with the currently active loading state.
+    private var activeLoadingReason: String = "idle"
+
+    /// Monotonic ID for timeline fetch traces.
+    private var fetchTraceID: UInt64 = 0
+    /// Monotonic ID for Cmd+G/date-jump traces.
+    private var dateJumpTraceID: UInt64 = 0
+
     // MARK: - Infinite Scroll Window State
 
     /// Timestamp of the oldest loaded frame (for loading older frames)
@@ -1048,6 +1086,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Flag to prevent concurrent loads in the "newer" direction
     private var isLoadingNewer = false
+
+    /// In-flight boundary load tasks. Cancel these when a jump/reload replaces the frame window.
+    private var olderBoundaryLoadTask: Task<Void, Never>?
+    private var newerBoundaryLoadTask: Task<Void, Never>?
 
     /// Flag to prevent duplicate initial frame loading (set synchronously to avoid race conditions)
     private var isInitialLoadInProgress = false
@@ -1178,6 +1220,207 @@ public class SimpleTimelineViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
+    private func summarizeFiltersForLog(_ filters: FilterCriteria) -> String {
+        let appCount = filters.selectedApps?.count ?? 0
+        let tagCount = filters.selectedTags?.count ?? 0
+        let hasWindowFilter = !(filters.windowNameFilter?.isEmpty ?? true)
+        let hasURLFilter = !(filters.browserUrlFilter?.isEmpty ?? true)
+        let hasDateRange = filters.startDate != nil || filters.endDate != nil
+
+        return "active=\(filters.hasActiveFilters) count=\(filters.activeFilterCount) apps=\(appCount) tags=\(tagCount) appMode=\(filters.appFilterMode.rawValue) hidden=\(filters.hiddenFilter.rawValue) window=\(hasWindowFilter) url=\(hasURLFilter) date=\(hasDateRange)"
+    }
+
+    private func setLoadingState(_ loading: Bool, reason: String) {
+        if loading {
+            if isLoading {
+                let activeElapsedMs = loadingStateStartedAt.map { (CFAbsoluteTimeGetCurrent() - $0) * 1000 } ?? 0
+                Log.warning(
+                    "[TIMELINE-LOADING] START ignored reason='\(reason)' because already loading reason='\(activeLoadingReason)' elapsed=\(String(format: "%.1f", activeElapsedMs))ms",
+                    category: .ui
+                )
+                return
+            }
+
+            loadingTransitionID &+= 1
+            activeLoadingReason = reason
+            loadingStateStartedAt = CFAbsoluteTimeGetCurrent()
+            isLoading = true
+            Log.info(
+                "[TIMELINE-LOADING][\(loadingTransitionID)] START reason='\(reason)' frames=\(frames.count) index=\(currentIndex) filters={\(summarizeFiltersForLog(filterCriteria))}",
+                category: .ui
+            )
+            return
+        }
+
+        guard isLoading else {
+            Log.debug("[TIMELINE-LOADING] END ignored reason='\(reason)' (already idle)", category: .ui)
+            return
+        }
+
+        let traceID = loadingTransitionID
+        let startedReason = activeLoadingReason
+        let elapsedMs = loadingStateStartedAt.map { (CFAbsoluteTimeGetCurrent() - $0) * 1000 } ?? 0
+
+        isLoading = false
+        loadingStateStartedAt = nil
+        activeLoadingReason = "idle"
+
+        Log.recordLatency(
+            "timeline.loading.overlay_visible_ms",
+            valueMs: elapsedMs,
+            category: .ui,
+            summaryEvery: 10,
+            warningThresholdMs: 500,
+            criticalThresholdMs: 2000
+        )
+
+        let message = "[TIMELINE-LOADING][\(traceID)] END reason='\(reason)' startedBy='\(startedReason)' elapsed=\(String(format: "%.1f", elapsedMs))ms frames=\(frames.count) index=\(currentIndex)"
+        if elapsedMs >= 1500 {
+            Log.warning(message, category: .ui)
+        } else {
+            Log.info(message, category: .ui)
+        }
+    }
+
+    private func nextFetchTraceID(prefix: String) -> String {
+        fetchTraceID &+= 1
+        return "\(prefix)-\(fetchTraceID)"
+    }
+
+    private func fetchFramesWithVideoInfoLogged(
+        from startDate: Date,
+        to endDate: Date,
+        limit: Int,
+        filters: FilterCriteria,
+        reason: String
+    ) async throws -> [FrameWithVideoInfo] {
+        let traceID = nextFetchTraceID(prefix: "window")
+        let fetchStart = CFAbsoluteTimeGetCurrent()
+        Log.info(
+            "[TIMELINE-FETCH][\(traceID)] START reason='\(reason)' range=[\(Log.timestamp(from: startDate)) → \(Log.timestamp(from: endDate))] limit=\(limit) filters={\(summarizeFiltersForLog(filters))}",
+            category: .ui
+        )
+
+        do {
+            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(
+                from: startDate,
+                to: endDate,
+                limit: limit,
+                filters: filters
+            )
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+            Log.recordLatency(
+                "timeline.fetch.window_frames_ms",
+                valueMs: elapsedMs,
+                category: .ui,
+                summaryEvery: 10,
+                warningThresholdMs: 250,
+                criticalThresholdMs: 750
+            )
+            let message = "[TIMELINE-FETCH][\(traceID)] END reason='\(reason)' count=\(framesWithVideoInfo.count) elapsed=\(String(format: "%.1f", elapsedMs))ms"
+            if elapsedMs >= 750 {
+                Log.warning(message, category: .ui)
+            } else {
+                Log.info(message, category: .ui)
+            }
+            return framesWithVideoInfo
+        } catch {
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+            Log.error(
+                "[TIMELINE-FETCH][\(traceID)] FAIL reason='\(reason)' after \(String(format: "%.1f", elapsedMs))ms: \(error)",
+                category: .ui
+            )
+            throw error
+        }
+    }
+
+    private func fetchFramesWithVideoInfoBeforeLogged(
+        timestamp: Date,
+        limit: Int,
+        filters: FilterCriteria,
+        reason: String
+    ) async throws -> [FrameWithVideoInfo] {
+        let traceID = nextFetchTraceID(prefix: "before")
+        let fetchStart = CFAbsoluteTimeGetCurrent()
+        let boundedStart = filters.startDate.map { Log.timestamp(from: $0) } ?? "nil"
+        let boundedEnd = filters.endDate.map { Log.timestamp(from: $0) } ?? "nil"
+        Log.info(
+            "[TIMELINE-FETCH][\(traceID)] START reason='\(reason)' before=\(Log.timestamp(from: timestamp)) limit=\(limit) boundedRange=[\(boundedStart) → \(boundedEnd)] filters={\(summarizeFiltersForLog(filters))}",
+            category: .ui
+        )
+
+        do {
+            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
+                timestamp: timestamp,
+                limit: limit,
+                filters: filters
+            )
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+            Log.recordLatency(
+                "timeline.fetch.before_frames_ms",
+                valueMs: elapsedMs,
+                category: .ui,
+                summaryEvery: 10,
+                warningThresholdMs: 250,
+                criticalThresholdMs: 750
+            )
+            let message = "[TIMELINE-FETCH][\(traceID)] END reason='\(reason)' count=\(framesWithVideoInfo.count) elapsed=\(String(format: "%.1f", elapsedMs))ms"
+            if elapsedMs >= 750 {
+                Log.warning(message, category: .ui)
+            } else {
+                Log.info(message, category: .ui)
+            }
+            return framesWithVideoInfo
+        } catch {
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+            Log.error(
+                "[TIMELINE-FETCH][\(traceID)] FAIL reason='\(reason)' after \(String(format: "%.1f", elapsedMs))ms: \(error)",
+                category: .ui
+            )
+            throw error
+        }
+    }
+
+    private func fetchMostRecentFramesWithVideoInfoLogged(
+        limit: Int,
+        filters: FilterCriteria,
+        reason: String
+    ) async throws -> [FrameWithVideoInfo] {
+        let traceID = nextFetchTraceID(prefix: "most-recent")
+        let fetchStart = CFAbsoluteTimeGetCurrent()
+        Log.info(
+            "[TIMELINE-FETCH][\(traceID)] START reason='\(reason)' mostRecent limit=\(limit) filters={\(summarizeFiltersForLog(filters))}",
+            category: .ui
+        )
+
+        do {
+            let framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+            Log.recordLatency(
+                "timeline.fetch.most_recent_frames_ms",
+                valueMs: elapsedMs,
+                category: .ui,
+                summaryEvery: 10,
+                warningThresholdMs: 220,
+                criticalThresholdMs: 600
+            )
+            let message = "[TIMELINE-FETCH][\(traceID)] END reason='\(reason)' count=\(framesWithVideoInfo.count) elapsed=\(String(format: "%.1f", elapsedMs))ms"
+            if elapsedMs >= 600 {
+                Log.warning(message, category: .ui)
+            } else {
+                Log.info(message, category: .ui)
+            }
+            return framesWithVideoInfo
+        } catch {
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
+            Log.error(
+                "[TIMELINE-FETCH][\(traceID)] FAIL reason='\(reason)' after \(String(format: "%.1f", elapsedMs))ms: \(error)",
+                category: .ui
+            )
+            throw error
+        }
+    }
+
     /// Invalidate all caches and reload frames from the current position
     /// Called when data sources change (e.g., Rewind toggled on/off)
     @MainActor
@@ -1224,11 +1467,19 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.debug("[DataSourceChange] invalidateCachesAndReload() completed", category: .ui)
     }
 
-    /// Reload frames around a specific timestamp (used after data source changes)
-    private func reloadFramesAroundTimestamp(_ timestamp: Date) async {
+    /// Reload frames around a specific timestamp (used after data source changes and Cmd+F quick filter)
+    private func reloadFramesAroundTimestamp(_ timestamp: Date, cmdFTrace: CmdFQuickFilterLatencyTrace? = nil) async {
+        let reloadStart = CFAbsoluteTimeGetCurrent()
         Log.debug("[DataSourceChange] reloadFramesAroundTimestamp() starting for timestamp: \(timestamp)", category: .ui)
-        isLoading = true
+        if let cmdFTrace {
+            Log.debug(
+                "[CmdFPerf][\(cmdFTrace.id)] Reload around timestamp started action=\(cmdFTrace.action) app=\(cmdFTrace.bundleID) source=\(cmdFTrace.source.rawValue)",
+                category: .ui
+            )
+        }
+        setLoadingState(true, reason: "reloadFramesAroundTimestamp")
         clearError()
+        cancelBoundaryLoadTasks(reason: "reloadFramesAroundTimestamp")
 
         do {
             let calendar = Calendar.current
@@ -1236,8 +1487,16 @@ public class SimpleTimelineViewModel: ObservableObject {
             let endDate = calendar.date(byAdding: .minute, value: 10, to: timestamp) ?? timestamp
 
             Log.debug("[DataSourceChange] Fetching frames from \(startDate) to \(endDate)", category: .ui)
+            let queryStart = CFAbsoluteTimeGetCurrent()
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(from: startDate, to: endDate, limit: 1000, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: startDate,
+                to: endDate,
+                limit: 1000,
+                filters: filterCriteria,
+                reason: "reloadFramesAroundTimestamp"
+            )
+            let queryElapsedMs = (CFAbsoluteTimeGetCurrent() - queryStart) * 1000
             Log.debug("[DataSourceChange] Fetched \(framesWithVideoInfo.count) frames from data adapter", category: .ui)
 
             if !framesWithVideoInfo.isEmpty {
@@ -1248,27 +1507,75 @@ public class SimpleTimelineViewModel: ObservableObject {
                 currentIndex = closestIndex
 
                 updateWindowBoundaries()
-                hasMoreOlder = true
-                hasMoreNewer = true
+                resetBoundaryStateForReloadWindow()
 
                 loadImageIfNeeded()
 
                 // Check if we need to pre-load more frames (near edge of loaded window)
-                checkAndLoadMoreFrames()
+                let boundaryLoad = checkAndLoadMoreFrames(reason: "reloadFramesAroundTimestamp", cmdFTrace: cmdFTrace)
 
                 Log.info("[DataSourceChange] Reloaded \(frames.count) frames around \(timestamp)", category: .ui)
+                if let cmdFTrace {
+                    let reloadElapsedMs = (CFAbsoluteTimeGetCurrent() - reloadStart) * 1000
+                    let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.recordLatency(
+                        "timeline.cmdf.quick_filter.reload_window_ms",
+                        valueMs: totalElapsedMs,
+                        category: .ui,
+                        summaryEvery: 5,
+                        warningThresholdMs: 220,
+                        criticalThresholdMs: 500
+                    )
+                    Log.info(
+                        "[CmdFPerf][\(cmdFTrace.id)] Reload complete trigger=\(cmdFTrace.trigger) action=\(cmdFTrace.action) query=\(String(format: "%.1f", queryElapsedMs))ms reload=\(String(format: "%.1f", reloadElapsedMs))ms total=\(String(format: "%.1f", totalElapsedMs))ms frames=\(frames.count) index=\(currentIndex) boundaryOlder=\(boundaryLoad.older) boundaryNewer=\(boundaryLoad.newer)",
+                        category: .ui
+                    )
+                }
             } else {
                 // No frames found, try loading most recent
                 Log.info("[DataSourceChange] No frames found around timestamp, loading most recent", category: .ui)
+                if let cmdFTrace {
+                    let elapsedBeforeFallbackMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.warning(
+                        "[CmdFPerf][\(cmdFTrace.id)] Empty reload window after \(String(format: "%.1f", elapsedBeforeFallbackMs))ms (query \(String(format: "%.1f", queryElapsedMs))ms), falling back to loadMostRecentFrame()",
+                        category: .ui
+                    )
+                }
+                let fallbackStart = CFAbsoluteTimeGetCurrent()
+                // Hand off loading ownership so fallback can run loadMostRecentFrame instead of being skipped.
+                setLoadingState(false, reason: "reloadFramesAroundTimestamp.fallbackHandoff")
                 await loadMostRecentFrame()
+                if let cmdFTrace {
+                    let fallbackElapsedMs = (CFAbsoluteTimeGetCurrent() - fallbackStart) * 1000
+                    let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.recordLatency(
+                        "timeline.cmdf.quick_filter.fallback_total_ms",
+                        valueMs: totalElapsedMs,
+                        category: .ui,
+                        summaryEvery: 5,
+                        warningThresholdMs: 320,
+                        criticalThresholdMs: 750
+                    )
+                    Log.info(
+                        "[CmdFPerf][\(cmdFTrace.id)] Fallback loadMostRecentFrame() complete fallback=\(String(format: "%.1f", fallbackElapsedMs))ms total=\(String(format: "%.1f", totalElapsedMs))ms",
+                        category: .ui
+                    )
+                }
                 return
             }
         } catch {
             Log.error("[DataSourceChange] Failed to reload frames: \(error)", category: .ui)
+            if let cmdFTrace {
+                let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                Log.error(
+                    "[CmdFPerf][\(cmdFTrace.id)] Reload failed after \(String(format: "%.1f", totalElapsedMs))ms action=\(cmdFTrace.action) app=\(cmdFTrace.bundleID): \(error)",
+                    category: .ui
+                )
+            }
             self.error = error.localizedDescription
         }
 
-        isLoading = false
+        setLoadingState(false, reason: "reloadFramesAroundTimestamp.complete")
     }
 
     // MARK: - Frame Selection & Deletion
@@ -2184,6 +2491,34 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.debug("[Filter] Set date range to \(String(describing: start)) - \(String(describing: end)) (pending)", category: .ui)
     }
 
+    /// Starts a latency trace for Cmd+F quick-filter execution.
+    /// The trace is consumed by the next filter reload path.
+    public func beginCmdFQuickFilterLatencyTrace(
+        bundleID: String,
+        action: String,
+        trigger: String,
+        source: FrameSource
+    ) {
+        if let existing = pendingCmdFQuickFilterLatencyTrace {
+            Log.warning("[CmdFPerf][\(existing.id)] Replaced by a newer Cmd+F request before execution", category: .ui)
+        }
+
+        let trace = CmdFQuickFilterLatencyTrace(
+            id: String(UUID().uuidString.prefix(8)),
+            startedAt: CFAbsoluteTimeGetCurrent(),
+            trigger: trigger,
+            action: action,
+            bundleID: bundleID,
+            source: source
+        )
+        pendingCmdFQuickFilterLatencyTrace = trace
+
+        Log.info(
+            "[CmdFPerf][\(trace.id)] Start action=\(action) trigger=\(trigger) app=\(bundleID) source=\(source.rawValue) index=\(currentIndex) frameCount=\(frames.count)",
+            category: .ui
+        )
+    }
+
     /// Apply pending filters
     public func applyFilters() {
         Log.debug("[Filter] applyFilters() called - pending.selectedApps=\(String(describing: pendingFilterCriteria.selectedApps)), current.selectedApps=\(String(describing: filterCriteria.selectedApps))", category: .ui)
@@ -2193,6 +2528,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Capture current timestamp before applying filters to preserve position
         let timestampToPreserve = currentTimestamp
+        let cmdFTrace = pendingCmdFQuickFilterLatencyTrace
+        pendingCmdFQuickFilterLatencyTrace = nil
 
         filterCriteria = pendingFilterCriteria
         Log.debug("[Filter] Applied filters - filterCriteria.selectedApps=\(String(describing: filterCriteria.selectedApps))", category: .ui)
@@ -2211,10 +2548,25 @@ public class SimpleTimelineViewModel: ObservableObject {
             if let timestamp = timestampToPreserve {
                 // Try to reload frames around the same timestamp (with new filters)
                 // If no frames match, reloadFramesAroundTimestamp will fall back to loadMostRecentFrame
-                await reloadFramesAroundTimestamp(timestamp)
+                await reloadFramesAroundTimestamp(timestamp, cmdFTrace: cmdFTrace)
             } else {
                 // No current position, fall back to most recent
+                if let cmdFTrace {
+                    Log.warning("[CmdFPerf][\(cmdFTrace.id)] No current timestamp available after action=\(cmdFTrace.action), falling back to loadMostRecentFrame()", category: .ui)
+                }
                 await loadMostRecentFrame()
+                if let cmdFTrace {
+                    let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.recordLatency(
+                        "timeline.cmdf.quick_filter.fallback_total_ms",
+                        valueMs: totalElapsedMs,
+                        category: .ui,
+                        summaryEvery: 5,
+                        warningThresholdMs: 300,
+                        criticalThresholdMs: 700
+                    )
+                    Log.info("[CmdFPerf][\(cmdFTrace.id)] Fallback loadMostRecentFrame() complete total=\(String(format: "%.1f", totalElapsedMs))ms", category: .ui)
+                }
             }
         }
     }
@@ -2232,6 +2584,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Capture current timestamp before clearing filters to preserve position
         let timestampToPreserve = currentTimestamp
+        let cmdFTrace = pendingCmdFQuickFilterLatencyTrace
+        pendingCmdFQuickFilterLatencyTrace = nil
 
         clearFilterState()
 
@@ -2239,10 +2593,25 @@ public class SimpleTimelineViewModel: ObservableObject {
         Task {
             if let timestamp = timestampToPreserve {
                 // Reload frames around the same timestamp (without filters)
-                await reloadFramesAroundTimestamp(timestamp)
+                await reloadFramesAroundTimestamp(timestamp, cmdFTrace: cmdFTrace)
             } else {
                 // No current position, fall back to most recent
+                if let cmdFTrace {
+                    Log.warning("[CmdFPerf][\(cmdFTrace.id)] No current timestamp available after action=\(cmdFTrace.action), falling back to loadMostRecentFrame()", category: .ui)
+                }
                 await loadMostRecentFrame()
+                if let cmdFTrace {
+                    let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.recordLatency(
+                        "timeline.cmdf.quick_filter.fallback_total_ms",
+                        valueMs: totalElapsedMs,
+                        category: .ui,
+                        summaryEvery: 5,
+                        warningThresholdMs: 300,
+                        criticalThresholdMs: 700
+                    )
+                    Log.info("[CmdFPerf][\(cmdFTrace.id)] Fallback loadMostRecentFrame() complete total=\(String(format: "%.1f", totalElapsedMs))ms", category: .ui)
+                }
             }
         }
     }
@@ -2256,6 +2625,13 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Save (clear) filter criteria cache immediately
         saveFilterCriteria()
+    }
+
+    /// Clear active filters before a date/frame jump so the jump operates on full timeline data.
+    private func clearActiveFiltersBeforeJumpIfNeeded(trigger: String) {
+        guard activeFilterCount > 0 else { return }
+        Log.info("[DateJump] Clearing \(activeFilterCount) active filters before \(trigger)", category: .ui)
+        clearFilterState()
     }
 
 
@@ -2392,6 +2768,59 @@ public class SimpleTimelineViewModel: ObservableObject {
         showErrorWithAutoDismiss("No frames found matching the current filters. Clear filters to see all frames.")
     }
 
+    private func cancelBoundaryLoadTasks(reason: String) {
+        let hadOlder = olderBoundaryLoadTask != nil
+        let hadNewer = newerBoundaryLoadTask != nil
+
+        olderBoundaryLoadTask?.cancel()
+        newerBoundaryLoadTask?.cancel()
+        olderBoundaryLoadTask = nil
+        newerBoundaryLoadTask = nil
+
+        isLoadingOlder = false
+        isLoadingNewer = false
+
+        if hadOlder || hadNewer {
+            Log.debug("[InfiniteScroll] Cancelled boundary tasks (\(reason)) older=\(hadOlder) newer=\(hadNewer)", category: .ui)
+        }
+    }
+
+    private func resetBoundaryStateForReloadWindow() {
+        hasMoreOlder = true
+        hasMoreNewer = true
+        hasReachedAbsoluteStart = false
+        hasReachedAbsoluteEnd = false
+    }
+
+    private func logFrameWindowSummary(context: String, traceID: UInt64? = nil) {
+        let trace = traceID.map { "[DateJump:\($0)] " } ?? ""
+
+        let firstFrame = frames.first
+        let lastFrame = frames.last
+        let currentFrame = (currentIndex >= 0 && currentIndex < frames.count) ? frames[currentIndex] : nil
+        let prevFrame = (currentIndex > 0 && currentIndex - 1 < frames.count) ? frames[currentIndex - 1] : nil
+        let nextFrame = (currentIndex + 1 >= 0 && currentIndex + 1 < frames.count) ? frames[currentIndex + 1] : nil
+
+        let firstTS = firstFrame.map { Log.timestamp(from: $0.frame.timestamp) } ?? "nil"
+        let lastTS = lastFrame.map { Log.timestamp(from: $0.frame.timestamp) } ?? "nil"
+        let currentTS = currentFrame.map { Log.timestamp(from: $0.frame.timestamp) } ?? "nil"
+
+        let gapToPrev = prevFrame.flatMap { prev in
+            currentFrame.map { max(0, $0.frame.timestamp.timeIntervalSince(prev.frame.timestamp)) }
+        }
+        let gapToNext = nextFrame.flatMap { next in
+            currentFrame.map { max(0, next.frame.timestamp.timeIntervalSince($0.frame.timestamp)) }
+        }
+
+        let gapPrevText = gapToPrev.map { String(format: "%.1fs", $0) } ?? "nil"
+        let gapNextText = gapToNext.map { String(format: "%.1fs", $0) } ?? "nil"
+
+        Log.info(
+            "\(trace)\(context) window count=\(frames.count) index=\(currentIndex) first=\(firstTS) last=\(lastTS) current=\(currentTS) gapPrev=\(gapPrevText) gapNext=\(gapNextText)",
+            category: .ui
+        )
+    }
+
     /// Show an error message that auto-dismisses after a delay
     /// - Parameters:
     ///   - message: The error message to display
@@ -2409,6 +2838,14 @@ public class SimpleTimelineViewModel: ObservableObject {
                 error = nil
             }
         }
+    }
+
+    private func formatLocalDateForError(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "MMM d, yyyy h:mm:ss a z"
+        return formatter.string(from: date)
     }
 
     /// Dismiss all dialogs except the specified one
@@ -2770,7 +3207,11 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // If some other non-initial load is in progress, preserve existing behavior and skip.
         guard !isLoading else {
-            Log.debug("[SimpleTimelineViewModel] loadMostRecentFrame skipped - another load is already in progress", category: .ui)
+            let activeElapsedMs = loadingStateStartedAt.map { (CFAbsoluteTimeGetCurrent() - $0) * 1000 } ?? 0
+            Log.warning(
+                "[SimpleTimelineViewModel] loadMostRecentFrame skipped - already loading reason='\(activeLoadingReason)' elapsed=\(String(format: "%.1f", activeElapsedMs))ms",
+                category: .ui
+            )
             return
         }
 
@@ -2781,7 +3222,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
         _ = clickStartTime
 
-        isLoading = true
+        setLoadingState(true, reason: "loadMostRecentFrame")
         clearError()
 
         do {
@@ -2789,7 +3230,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Uses optimized query that JOINs on video table - no N+1 queries!
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
             Log.debug("[SimpleTimelineViewModel] Loading frames with filters - hasActiveFilters: \(filterCriteria.hasActiveFilters), apps: \(String(describing: filterCriteria.selectedApps)), mode: \(filterCriteria.appFilterMode.rawValue)", category: .ui)
-            let framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: 500, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchMostRecentFramesWithVideoInfoLogged(
+                limit: 500,
+                filters: filterCriteria,
+                reason: "loadMostRecentFrame"
+            )
 
             guard !framesWithVideoInfo.isEmpty else {
                 // No frames found - check if filters are active
@@ -2798,7 +3243,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 } else {
                     showErrorWithAutoDismiss("No frames found in any database")
                 }
-                isLoading = false
+                setLoadingState(false, reason: "loadMostRecentFrame.noFrames")
                 return
             }
 
@@ -2854,11 +3299,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Load image if needed for current frame
             loadImageIfNeeded()
 
-            isLoading = false
+            setLoadingState(false, reason: "loadMostRecentFrame.success")
 
         } catch {
             self.error = "Failed to load frames: \(error.localizedDescription)"
-            isLoading = false
+            setLoadingState(false, reason: "loadMostRecentFrame.error")
         }
     }
 
@@ -2876,7 +3321,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         defer { isInitialLoadInProgress = false }
         _ = clickStartTime
 
-        isLoading = true
+        setLoadingState(true, reason: "loadFramesDirectly")
         clearError()
 
         guard !framesWithVideoInfo.isEmpty else {
@@ -2885,7 +3330,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             } else {
                 showErrorWithAutoDismiss("No frames found in any database")
             }
-            isLoading = false
+            setLoadingState(false, reason: "loadFramesDirectly.noFrames")
             return
         }
 
@@ -2912,7 +3357,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Load image if needed for current frame
         loadImageIfNeeded()
 
-        isLoading = false
+        setLoadingState(false, reason: "loadFramesDirectly.success")
     }
 
     /// Refresh frame data when showing the pre-rendered timeline
@@ -2959,7 +3404,11 @@ public class SimpleTimelineViewModel: ObservableObject {
                 do {
                     // Query for frames newer than our newest cached frame
                     let refreshLimit = 50
-                    let newerFrames = try await coordinator.getMostRecentFramesWithVideoInfo(limit: refreshLimit, filters: filterCriteria)
+                    let newerFrames = try await fetchMostRecentFramesWithVideoInfoLogged(
+                        limit: refreshLimit,
+                        filters: filterCriteria,
+                        reason: "refreshFrameData.navigateToNewest=\(shouldNavigateToNewest)"
+                    )
 
                     // Filter to only truly new frames
                     let newFrames = newerFrames.filter { $0.frame.timestamp > newestCachedTimestamp }
@@ -3291,7 +3740,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         do {
-            isLoading = true
+            setLoadingState(true, reason: "navigateToUndoPosition")
 
             // Calculate ±10 minute window around target timestamp
             let calendar = Calendar.current
@@ -3301,11 +3750,17 @@ public class SimpleTimelineViewModel: ObservableObject {
             Log.debug("[PlayheadUndo] Loading frames from \(startDate) to \(endDate)", category: .ui)
 
             // Fetch frames in the window with current filters applied
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(from: startDate, to: endDate, limit: 1000, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: startDate,
+                to: endDate,
+                limit: 1000,
+                filters: filterCriteria,
+                reason: "navigateToUndoPosition"
+            )
 
             guard !framesWithVideoInfo.isEmpty else {
                 Log.warning("[PlayheadUndo] No frames found in time range", category: .ui)
-                isLoading = false
+                setLoadingState(false, reason: "navigateToUndoPosition.noFrames")
                 return
             }
 
@@ -3339,13 +3794,13 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             loadImageIfNeeded()
             checkAndLoadMoreFrames()
-            isLoading = false
+            setLoadingState(false, reason: "navigateToUndoPosition.success")
 
             Log.info("[PlayheadUndo] Navigation complete, now at index \(currentIndex)", category: .ui)
 
         } catch {
             Log.error("[PlayheadUndo] Failed to navigate: \(error)", category: .ui)
-            isLoading = false
+            setLoadingState(false, reason: "navigateToUndoPosition.error")
         }
     }
 
@@ -3389,7 +3844,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // If not found, load frames in a ±10 minute window around the target timestamp
         // This approach (same as Cmd+G date search) guarantees the target frame is included
         do {
-            isLoading = true
+            setLoadingState(true, reason: "navigateToSearchResult")
 
             // Calculate ±10 minute window around target timestamp
             let calendar = Calendar.current
@@ -3400,12 +3855,18 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Fetch all frames in the 20-minute window with video info (single optimized query)
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(from: startDate, to: endDate, limit: 1000, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: startDate,
+                to: endDate,
+                limit: 1000,
+                filters: filterCriteria,
+                reason: "navigateToSearchResult"
+            )
             Log.debug("[SearchNavigation] Loaded \(framesWithVideoInfo.count) frames in time range", category: .ui)
 
             guard !framesWithVideoInfo.isEmpty else {
                 Log.warning("[SearchNavigation] No frames found in time range", category: .ui)
-                isLoading = false
+                setLoadingState(false, reason: "navigateToSearchResult.noFrames")
                 return
             }
 
@@ -3456,12 +3917,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             // (loadImageIfNeeded calls loadOCRNodes but doesn't await it)
             await loadOCRNodesAsync()
             showSearchHighlight(query: highlightQuery)
-            isLoading = false
+            setLoadingState(false, reason: "navigateToSearchResult.success")
             Log.info("[SearchNavigation] Navigation complete, now at index \(currentIndex)", category: .ui)
 
         } catch {
             Log.error("[SearchNavigation] Failed to navigate to search result: \(error)", category: .ui)
-            isLoading = false
+            setLoadingState(false, reason: "navigateToSearchResult.error")
         }
     }
 
@@ -5457,6 +5918,14 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to the most recent frame — jumps to end of tape if already loaded, otherwise reloads from DB
     public func goToNow() {
+        // Cmd+J should snap to an exact frame center, not preserve partial scrub offset.
+        cancelTapeDragMomentum()
+        scrollDebounceTask?.cancel()
+        scrollDebounceTask = nil
+        isActivelyScrolling = false
+        subFrameOffset = 0
+        cancelBoundaryLoadTasks(reason: "goToNow")
+
         // Clear filters without triggering reload (we'll handle that ourselves)
         if activeFilterCount > 0 {
             clearFilterState()
@@ -5478,6 +5947,78 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     // MARK: - Calendar Picker
+
+    /// Set keyboard navigation focus to the date grid.
+    public func focusCalendarDateGrid() {
+        calendarKeyboardFocus = .dateGrid
+        selectedCalendarHour = nil
+    }
+
+    /// Handle arrow keys while the calendar picker is visible.
+    /// - Parameter keyCode: Arrow key code (123 left, 124 right, 125 down, 126 up)
+    /// - Returns: `true` when the event is consumed.
+    public func handleCalendarPickerArrowKey(_ keyCode: UInt16) -> Bool {
+        switch calendarKeyboardFocus {
+        case .dateGrid:
+            let dayOffset: Int
+            switch keyCode {
+            case 123: dayOffset = -1
+            case 124: dayOffset = 1
+            case 125: dayOffset = 7
+            case 126: dayOffset = -7
+            default: return false
+            }
+
+            moveCalendarDateSelection(byDayOffset: dayOffset)
+            return true
+
+        case .timeGrid:
+            let hourStep: Int
+            switch keyCode {
+            case 123: hourStep = -1
+            case 124: hourStep = 1
+            case 125: hourStep = 3
+            case 126: hourStep = -3
+            default: return false
+            }
+
+            moveCalendarHourSelection(byHourOffset: hourStep)
+            return true
+        }
+    }
+
+    /// Handle Enter/Return while the calendar picker is visible.
+    /// - Returns: `true` when the event is consumed.
+    public func handleCalendarPickerEnterKey() -> Bool {
+        switch calendarKeyboardFocus {
+        case .dateGrid:
+            guard let selectedDay = selectedCalendarDate else { return true }
+            let normalizedDay = Calendar.current.startOfDay(for: selectedDay)
+
+            if hoursWithFrames.isEmpty {
+                Task {
+                    await loadHoursForDate(normalizedDay)
+                    await MainActor.run {
+                        focusFirstAvailableCalendarHour()
+                    }
+                }
+            } else {
+                focusFirstAvailableCalendarHour()
+            }
+            return true
+
+        case .timeGrid:
+            guard let selectedHour = selectedCalendarHour,
+                  let timestamp = firstFrameTimestamp(forHour: selectedHour) else {
+                return true
+            }
+
+            Task {
+                await navigateToHour(timestamp)
+            }
+            return true
+        }
+    }
 
     /// Load dates that have frames for calendar display
     /// Also auto-loads hours for today if today has frames
@@ -5509,6 +6050,16 @@ public class SimpleTimelineViewModel: ObservableObject {
             await MainActor.run {
                 self.selectedCalendarDate = date
                 self.hoursWithFrames = hours
+                if self.calendarKeyboardFocus == .timeGrid {
+                    let validHours = self.availableCalendarHoursSorted()
+                    if let selected = self.selectedCalendarHour, validHours.contains(selected) {
+                        // Keep existing keyboard hour selection when still valid.
+                    } else {
+                        self.selectedCalendarHour = validHours.first
+                    }
+                } else {
+                    self.selectedCalendarHour = nil
+                }
             }
         } catch {
             Log.error("Failed to load hours for date: \(error)", category: .ui)
@@ -5517,17 +6068,96 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to a specific hour from the calendar picker
     public func navigateToHour(_ hour: Date) async {
+        clearActiveFiltersBeforeJumpIfNeeded(trigger: "calendar jump")
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
             isCalendarPickerVisible = false
             isDateSearchActive = false
         }
+        calendarKeyboardFocus = .dateGrid
+        selectedCalendarHour = nil
         await navigateToDate(hour)
+    }
+
+    private func moveCalendarDateSelection(byDayOffset offset: Int) {
+        guard let targetDate = nextCalendarDate(byDayOffset: offset) else { return }
+
+        calendarKeyboardFocus = .dateGrid
+        selectedCalendarHour = nil
+        selectedCalendarDate = targetDate
+        hoursWithFrames = []
+
+        Task {
+            await loadHoursForDate(targetDate)
+        }
+    }
+
+    private func moveCalendarHourSelection(byHourOffset offset: Int) {
+        let validHours = Set(availableCalendarHoursSorted())
+        guard !validHours.isEmpty else { return }
+
+        if selectedCalendarHour == nil {
+            selectedCalendarHour = availableCalendarHoursSorted().first
+            return
+        }
+
+        guard let currentHour = selectedCalendarHour else { return }
+
+        var candidate = currentHour + offset
+        while (0...23).contains(candidate) {
+            if validHours.contains(candidate) {
+                selectedCalendarHour = candidate
+                return
+            }
+            candidate += offset
+        }
+    }
+
+    private func nextCalendarDate(byDayOffset offset: Int) -> Date? {
+        let sortedDates = availableCalendarDatesSorted()
+        guard !sortedDates.isEmpty else { return nil }
+
+        let calendar = Calendar.current
+        let baseDate = calendar.startOfDay(for: selectedCalendarDate ?? sortedDates.last!)
+        guard let rawTarget = calendar.date(byAdding: .day, value: offset, to: baseDate) else {
+            return baseDate
+        }
+        let targetDate = calendar.startOfDay(for: rawTarget)
+
+        if offset > 0 {
+            return sortedDates.first(where: { $0 >= targetDate }) ?? sortedDates.last
+        } else {
+            return sortedDates.last(where: { $0 <= targetDate }) ?? sortedDates.first
+        }
+    }
+
+    private func focusFirstAvailableCalendarHour() {
+        guard let firstHour = availableCalendarHoursSorted().first else { return }
+        calendarKeyboardFocus = .timeGrid
+        selectedCalendarHour = firstHour
+    }
+
+    private func firstFrameTimestamp(forHour hour: Int) -> Date? {
+        let calendar = Calendar.current
+        return hoursWithFrames.sorted().first { date in
+            calendar.component(.hour, from: date) == hour
+        }
+    }
+
+    private func availableCalendarDatesSorted() -> [Date] {
+        datesWithFrames.sorted()
+    }
+
+    private func availableCalendarHoursSorted() -> [Int] {
+        let calendar = Calendar.current
+        let uniqueHours = Set(hoursWithFrames.map { calendar.component(.hour, from: $0) })
+        return uniqueHours.sorted()
     }
 
     /// Navigate to a specific date (start of day or specific time)
     private func navigateToDate(_ targetDate: Date) async {
-        isLoading = true
+        setLoadingState(true, reason: "navigateToDate")
         clearError()
+        cancelBoundaryLoadTasks(reason: "navigateToDate")
 
         // Exit live mode if active (we're navigating to a specific time, not "now")
         if isInLiveMode {
@@ -5542,11 +6172,17 @@ public class SimpleTimelineViewModel: ObservableObject {
             let endDate = calendar.date(byAdding: .minute, value: 10, to: targetDate) ?? targetDate
 
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(from: startDate, to: endDate, limit: 1000, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: startDate,
+                to: endDate,
+                limit: 1000,
+                filters: filterCriteria,
+                reason: "navigateToDate"
+            )
 
             guard !framesWithVideoInfo.isEmpty else {
-                showErrorWithAutoDismiss("No frames found around \(targetDate)")
-                isLoading = false
+                showErrorWithAutoDismiss("No frames found around \(formatLocalDateForError(targetDate))")
+                setLoadingState(false, reason: "navigateToDate.noFrames")
                 return
             }
 
@@ -5560,17 +6196,17 @@ public class SimpleTimelineViewModel: ObservableObject {
             frames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
 
             updateWindowBoundaries()
-            hasMoreOlder = true
-            hasMoreNewer = true
+            resetBoundaryStateForReloadWindow()
 
             let closestIndex = findClosestFrameIndex(to: targetDate)
             currentIndex = closestIndex
 
             loadImageIfNeeded()
-            isLoading = false
+            _ = checkAndLoadMoreFrames(reason: "navigateToDate")
+            setLoadingState(false, reason: "navigateToDate.success")
         } catch {
             self.error = "Failed to navigate: \(error.localizedDescription)"
-            isLoading = false
+            setLoadingState(false, reason: "navigateToDate.error")
         }
     }
 
@@ -5578,8 +6214,12 @@ public class SimpleTimelineViewModel: ObservableObject {
     public func searchForDate(_ searchText: String) async {
         guard !searchText.isEmpty else { return }
 
-        isLoading = true
+        setLoadingState(true, reason: "searchForDate")
         clearError()
+        cancelBoundaryLoadTasks(reason: "searchForDate")
+        dateJumpTraceID += 1
+        let jumpTraceID = dateJumpTraceID
+        Log.info("[DateJump:\(jumpTraceID)] START input='\(searchText)' current=\(currentTimestamp.map { Log.timestamp(from: $0) } ?? "nil")", category: .ui)
 
         // Exit live mode if active (we're navigating away from "now")
         if isInLiveMode {
@@ -5597,17 +6237,39 @@ public class SimpleTimelineViewModel: ObservableObject {
                 // If frame ID search fails, fall through to date search
             }
 
-            // Parse natural language date
-            guard let targetDate = parseNaturalLanguageDate(searchText) else {
-                showErrorWithAutoDismiss("Could not understand: \(searchText)")
-                isLoading = false
-                return
+            // Parse natural language date.
+            // "X minutes/hours earlier|later" is interpreted relative to the current playhead timestamp.
+            let targetDate: Date
+            if let playheadRelativeDate = parsePlayheadRelativeDateIfNeeded(searchText) {
+                targetDate = playheadRelativeDate
+            } else {
+                guard let parsedDate = parseNaturalLanguageDate(searchText) else {
+                    showErrorWithAutoDismiss("Could not understand: \(searchText)")
+                    setLoadingState(false, reason: "searchForDate.parseFailed")
+                    return
+                }
+                targetDate = parsedDate
             }
+
+            clearActiveFiltersBeforeJumpIfNeeded(trigger: "date input jump")
+
+            let anchoredTargetDate = try await resolveDateSearchAnchorDate(
+                parsedDate: targetDate,
+                input: searchText
+            )
+            Log.info(
+                "[DateJump:\(jumpTraceID)] target parsed=\(Log.timestamp(from: targetDate)) anchored=\(Log.timestamp(from: anchoredTargetDate))",
+                category: .ui
+            )
 
             // Load frames around the target date (±10 minutes window)
             let calendar = Calendar.current
-            let startDate = calendar.date(byAdding: .minute, value: -10, to: targetDate) ?? targetDate
-            let endDate = calendar.date(byAdding: .minute, value: 10, to: targetDate) ?? targetDate
+            let startDate = calendar.date(byAdding: .minute, value: -10, to: anchoredTargetDate) ?? anchoredTargetDate
+            let endDate = calendar.date(byAdding: .minute, value: 10, to: anchoredTargetDate) ?? anchoredTargetDate
+            Log.info(
+                "[DateJump:\(jumpTraceID)] query range=\(Log.timestamp(from: startDate)) -> \(Log.timestamp(from: endDate))",
+                category: .ui
+            )
 
             // Debug logging
             let df = DateFormatter()
@@ -5615,20 +6277,36 @@ public class SimpleTimelineViewModel: ObservableObject {
             df.timeZone = .current
             Log.debug("[DateSearch] Input: '\(searchText)'", category: .ui)
             Log.debug("[DateSearch] Parsed targetDate (local): \(df.string(from: targetDate))", category: .ui)
+            Log.debug("[DateSearch] Anchored targetDate (local): \(df.string(from: anchoredTargetDate))", category: .ui)
             df.timeZone = TimeZone(identifier: "UTC")
             Log.debug("[DateSearch] Parsed targetDate (UTC): \(df.string(from: targetDate))", category: .ui)
+            Log.debug("[DateSearch] Anchored targetDate (UTC): \(df.string(from: anchoredTargetDate))", category: .ui)
             df.timeZone = .current
             Log.debug("[DateSearch] Query range: \(df.string(from: startDate)) to \(df.string(from: endDate))", category: .ui)
 
             // Fetch all frames in the 20-minute window
             // Uses optimized query that JOINs on video table - no N+1 queries!
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(from: startDate, to: endDate, limit: 1000, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: startDate,
+                to: endDate,
+                limit: 1000,
+                filters: filterCriteria,
+                reason: "searchForDate"
+            )
             Log.debug("[DateSearch] Got \(framesWithVideoInfo.count) frames", category: .ui)
+            if let first = framesWithVideoInfo.first, let last = framesWithVideoInfo.last {
+                Log.info(
+                    "[DateJump:\(jumpTraceID)] result count=\(framesWithVideoInfo.count) first=\(Log.timestamp(from: first.frame.timestamp)) last=\(Log.timestamp(from: last.frame.timestamp))",
+                    category: .ui
+                )
+            } else {
+                Log.info("[DateJump:\(jumpTraceID)] result count=0", category: .ui)
+            }
 
             guard !framesWithVideoInfo.isEmpty else {
-                showErrorWithAutoDismiss("No frames found around \(targetDate)")
-                isLoading = false
+                showErrorWithAutoDismiss("No frames found around \(formatLocalDateForError(targetDate))")
+                setLoadingState(false, reason: "searchForDate.noFrames")
                 return
             }
 
@@ -5644,18 +6322,16 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Reset infinite scroll state for new window
             updateWindowBoundaries()
-            hasMoreOlder = true
-            hasMoreNewer = true
+            resetBoundaryStateForReloadWindow()
 
             // Find the frame closest to the target date in our centered set
-            let closestIndex = findClosestFrameIndex(to: targetDate)
+            let closestIndex = findClosestFrameIndex(to: anchoredTargetDate)
             currentIndex = closestIndex
+            logFrameWindowSummary(context: "POST searchForDate", traceID: jumpTraceID)
 
             // Load image if needed
             loadImageIfNeeded()
-
-            // Check if we need to pre-load more frames (near edge of loaded window)
-            checkAndLoadMoreFrames()
+            _ = checkAndLoadMoreFrames(reason: "searchForDate")
 
             // Log memory state after date search
             MemoryTracker.logMemoryState(
@@ -5666,12 +6342,13 @@ public class SimpleTimelineViewModel: ObservableObject {
                 newestTimestamp: newestLoadedTimestamp
             )
 
-            isLoading = false
+            setLoadingState(false, reason: "searchForDate.success")
             closeDateSearch()
 
         } catch {
             self.error = "Failed to search for date: \(error.localizedDescription)"
-            isLoading = false
+            Log.error("[DateJump:\(jumpTraceID)] FAILED: \(error)", category: .ui)
+            setLoadingState(false, reason: "searchForDate.error")
         }
     }
 
@@ -5679,19 +6356,22 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Returns true if frame was found and navigation succeeded
     private func searchForFrameID(_ frameID: Int64) async -> Bool {
         Log.debug("[FrameIDSearch] Looking for frame ID: \(frameID)", category: .ui)
+        cancelBoundaryLoadTasks(reason: "searchForFrameID")
 
         do {
             // Try to get the frame by ID
             guard let frameWithVideo = try await coordinator.getFrameWithVideoInfoByID(id: FrameID(value: frameID)) else {
                 Log.debug("[FrameIDSearch] Frame not found: \(frameID)", category: .ui)
                 error = "Frame #\(frameID) not found"
-                isLoading = false
+                setLoadingState(false, reason: "searchForFrameID.notFound")
                 return false
             }
 
             let targetFrame = frameWithVideo.frame
             let targetDate = targetFrame.timestamp
             Log.debug("[FrameIDSearch] Found frame \(frameID) at \(targetDate)", category: .ui)
+
+            clearActiveFiltersBeforeJumpIfNeeded(trigger: "frame ID jump")
 
             // Load frames around the target frame's timestamp (±10 minutes window)
             let calendar = Calendar.current
@@ -5700,12 +6380,18 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Fetch all frames in the window
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(from: startDate, to: endDate, limit: 1000, filters: filterCriteria)
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: startDate,
+                to: endDate,
+                limit: 1000,
+                filters: filterCriteria,
+                reason: "searchForFrameID"
+            )
             Log.debug("[FrameIDSearch] Got \(framesWithVideoInfo.count) frames in window", category: .ui)
 
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around frame #\(frameID)")
-                isLoading = false
+                setLoadingState(false, reason: "searchForFrameID.noFramesInWindow")
                 return false
             }
 
@@ -5721,8 +6407,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Reset infinite scroll state for new window
             updateWindowBoundaries()
-            hasMoreOlder = true
-            hasMoreNewer = true
+            resetBoundaryStateForReloadWindow()
 
             // Find the exact frame by ID in our loaded frames
             if let exactIndex = frames.firstIndex(where: { $0.frame.id.value == frameID }) {
@@ -5737,9 +6422,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Load image if needed
             loadImageIfNeeded()
-
-            // Check if we need to pre-load more frames (near edge of loaded window)
-            checkAndLoadMoreFrames()
+            _ = checkAndLoadMoreFrames(reason: "searchForFrameID")
 
             // Log memory state after frame ID search
             MemoryTracker.logMemoryState(
@@ -5750,7 +6433,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 newestTimestamp: newestLoadedTimestamp
             )
 
-            isLoading = false
+            setLoadingState(false, reason: "searchForFrameID.success")
             closeDateSearch()
 
             return true
@@ -5762,32 +6445,90 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
+    /// Parse relative offsets like "3 hours later" / "10 minutes earlier" using the current playhead timestamp.
+    private func parsePlayheadRelativeDateIfNeeded(_ text: String) -> Date? {
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        guard let regex = try? NSRegularExpression(
+            pattern: #"^\s*(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h)\s*(earlier|later)\s*$"#,
+            options: [.caseInsensitive]
+        ) else {
+            return nil
+        }
+
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        guard let match = regex.firstMatch(in: normalized, options: [], range: range),
+              let amountRange = Range(match.range(at: 1), in: normalized),
+              let unitRange = Range(match.range(at: 2), in: normalized),
+              let directionRange = Range(match.range(at: 3), in: normalized),
+              let amount = Int(normalized[amountRange]),
+              amount > 0 else {
+            return nil
+        }
+
+        let unitToken = String(normalized[unitRange])
+        let directionToken = String(normalized[directionRange])
+        let component: Calendar.Component = unitToken.hasPrefix("h") ? .hour : .minute
+        let signedAmount = directionToken == "later" ? amount : -amount
+
+        let baseTimestamp: Date
+        if let currentTimestamp {
+            baseTimestamp = currentTimestamp
+        } else {
+            baseTimestamp = Date()
+            Log.warning("[DateSearch] Relative '\(normalized)' had no playhead timestamp; falling back to now", category: .ui)
+        }
+
+        guard let resolvedDate = Calendar.current.date(byAdding: component, value: signedAmount, to: baseTimestamp) else {
+            return nil
+        }
+
+        Log.debug(
+            "[DateSearch] Relative '\(normalized)' resolved from base=\(baseTimestamp) to target=\(resolvedDate)",
+            category: .ui
+        )
+        return resolvedDate
+    }
+
     /// Parse natural language date strings
     private func parseNaturalLanguageDate(_ text: String) -> Date? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let calendar = Calendar.current
         let now = Date()
+        let normalizedInput = trimmed.lowercased()
+
+        func normalizeParsedDate(_ parsedDate: Date) -> Date {
+            adjustYearlessAbsoluteFutureDateToRecentPastIfNeeded(
+                parsedDate,
+                input: normalizedInput,
+                now: now,
+                calendar: calendar
+            )
+        }
 
         // === PRIMARY: SwiftyChrono NLP Parser ===
         // Try SwiftyChrono first for comprehensive natural language parsing
         // Handles: "next Friday", "3 days from now", "last Monday", "in 2 weeks", etc.
         let chrono = Chrono()
-        if let result = chrono.parseDate(text: trimmed, refDate: now) {
-            Log.debug("[DateSearch] SwiftyChrono parsed '\(trimmed)' as \(result)", category: .ui)
-            return result
+        if let result = chrono.parse(text: trimmed, refDate: now, opt: [:]).first?.start.date {
+            let normalized = normalizeParsedDate(result)
+            Log.debug("[DateSearch] SwiftyChrono parsed '\(trimmed)' as \(normalized)", category: .ui)
+            return normalized
         }
 
         // === FALLBACK: Time-only and absolute date parsing ===
         // SwiftyChrono handles all relative dates (X days/weeks/months/years ago, yesterday, etc.)
         // We only need fallback for compact time formats and explicit date strings
-        let trimmedLower = trimmed.lowercased()
+        let trimmedLower = normalizedInput
 
         // === TIME-ONLY INPUT ===
 
         // Try parsing time-only input (assumes "today" if just time is given)
         // Handles: "938pm", "9:38pm", "938 pm", "9:38 pm", "938", "9:38", "21:38"
         if let timeOnlyDate = parseTimeOnly(trimmedLower, relativeTo: now) {
-            return timeOnlyDate
+            return normalizeParsedDate(timeOnlyDate)
         }
 
         // Normalize compact time formats (e.g., "827am" -> "8:27am") before passing to NSDataDetector
@@ -5800,7 +6541,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let range = NSRange(normalizedText.startIndex..., in: normalizedText)
             if let match = detector.firstMatch(in: normalizedText, options: [], range: range),
                let date = match.date {
-                return date
+                return normalizeParsedDate(date)
             }
         }
 
@@ -5829,20 +6570,168 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Try original text first
             if let date = df.date(from: text) {
-                return date
+                return normalizeParsedDate(date)
             }
             // Try lowercased
             if let date = df.date(from: trimmedLower) {
-                return date
+                return normalizeParsedDate(date)
             }
             // Try with first letter capitalized (for month names)
             let capitalized = trimmedLower.prefix(1).uppercased() + trimmedLower.dropFirst()
             if let date = df.date(from: capitalized) {
-                return date
+                return normalizeParsedDate(date)
             }
         }
 
         return nil
+    }
+
+    private enum DateSearchAnchorMode: String {
+        case exact
+        case firstFrameInMinute
+        case firstFrameInHour
+        case firstFrameInDay
+    }
+
+    /// Resolve a parsed date into an anchor timestamp that is better suited for timeline data.
+    /// For coarse inputs (e.g. "8 hours ago", "10 minutes ago", "Feb 12"), use the first frame
+    /// in that bucket instead of targeting an exact parsed timestamp.
+    private func resolveDateSearchAnchorDate(parsedDate: Date, input: String) async throws -> Date {
+        let mode = inferDateSearchAnchorMode(for: input)
+        guard mode != .exact else { return parsedDate }
+        guard let bucket = bucketRange(for: parsedDate, mode: mode) else { return parsedDate }
+        Log.info(
+            "[DateSearchAnchor] mode=\(mode.rawValue) parsed=\(Log.timestamp(from: parsedDate)) bucket=\(Log.timestamp(from: bucket.start))->\(Log.timestamp(from: bucket.end))",
+            category: .ui
+        )
+
+        let firstFrame = try await fetchFramesWithVideoInfoLogged(
+            from: bucket.start,
+            to: bucket.end,
+            limit: 1,
+            filters: filterCriteria,
+            reason: "searchForDate.anchor.\(mode.rawValue)"
+        ).first
+
+        guard let anchoredTimestamp = firstFrame?.frame.timestamp else {
+            Log.debug("[DateSearch] Anchor mode=\(mode.rawValue) found no frames in bucket; falling back to parsed date", category: .ui)
+            return parsedDate
+        }
+
+        Log.debug(
+            "[DateSearch] Anchor mode=\(mode.rawValue) resolved first frame at \(anchoredTimestamp)",
+            category: .ui
+        )
+        return anchoredTimestamp
+    }
+
+    private func inferDateSearchAnchorMode(for input: String) -> DateSearchAnchorMode {
+        let normalized = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if normalized.range(
+            of: #"\b\d+\s*(minute|minutes|min|mins)\s+(ago|earlier|later)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .firstFrameInMinute
+        }
+
+        if normalized.range(
+            of: #"\b\d+\s*(hour|hours|hr|hrs|h)\s+(ago|earlier|later)\b"#,
+            options: .regularExpression
+        ) != nil {
+            return .firstFrameInHour
+        }
+
+        let hasDateLikeToken = normalized.range(
+            of: #"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b"#,
+            options: .regularExpression
+        ) != nil
+        let hasExplicitTime = normalized.range(
+            of: #"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(am|pm)\b|\b\d{3,4}\s*(am|pm)\b|\bnoon\b|\bmidnight\b"#,
+            options: .regularExpression
+        ) != nil
+
+        if hasDateLikeToken && !hasExplicitTime {
+            return .firstFrameInDay
+        }
+
+        return .exact
+    }
+
+    private func bucketRange(for date: Date, mode: DateSearchAnchorMode) -> (start: Date, end: Date)? {
+        let calendar = Calendar.current
+        let interval: DateInterval?
+
+        switch mode {
+        case .exact:
+            return nil
+        case .firstFrameInMinute:
+            interval = calendar.dateInterval(of: .minute, for: date)
+        case .firstFrameInHour:
+            interval = calendar.dateInterval(of: .hour, for: date)
+        case .firstFrameInDay:
+            interval = calendar.dateInterval(of: .day, for: date)
+        }
+
+        guard let interval else { return nil }
+        let inclusiveEnd = interval.end.addingTimeInterval(-Self.boundedLoadBoundaryEpsilonSeconds)
+        guard inclusiveEnd >= interval.start else { return nil }
+        return (start: interval.start, end: inclusiveEnd)
+    }
+
+    /// Yearless absolute inputs (e.g. "dec 18 2pm") should prefer recent history for timeline jumps.
+    /// If such input parses to a future date, shift it back one year so it lands in the last ~365 days.
+    private func adjustYearlessAbsoluteFutureDateToRecentPastIfNeeded(
+        _ parsedDate: Date,
+        input: String,
+        now: Date,
+        calendar: Calendar
+    ) -> Date {
+        guard parsedDate > now else { return parsedDate }
+        guard shouldCoerceYearlessAbsoluteDateToPast(input) else { return parsedDate }
+        guard let priorYearDate = calendar.date(byAdding: .year, value: -1, to: parsedDate) else {
+            return parsedDate
+        }
+        guard priorYearDate <= now else { return parsedDate }
+
+        let maxRecentWindow: TimeInterval = 366 * 24 * 60 * 60
+        guard now.timeIntervalSince(priorYearDate) <= maxRecentWindow else { return parsedDate }
+
+        Log.debug(
+            "[DateSearch] Adjusted yearless future date '\(input)' from \(parsedDate) to \(priorYearDate)",
+            category: .ui
+        )
+        return priorYearDate
+    }
+
+    private func shouldCoerceYearlessAbsoluteDateToPast(_ input: String) -> Bool {
+        // Keep relative expressions as-is (tomorrow/next/last/etc).
+        if input.range(
+            of: #"\b(today|tomorrow|yesterday|next|last|ago|this|now|tonight)\b|from now"#,
+            options: .regularExpression
+        ) != nil {
+            return false
+        }
+
+        // Only coerce yearless month/day style inputs.
+        let hasMonthDay = input.range(
+            of: #"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}[/-]\d{1,2}\b"#,
+            options: .regularExpression
+        ) != nil
+
+        guard hasMonthDay else { return false }
+
+        // If user explicitly gave a year, respect it.
+        if input.range(
+            of: #"\b\d{4}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{2,4}[/-]\d{1,2}[/-]\d{1,2}\b"#,
+            options: .regularExpression
+        ) != nil {
+            return false
+        }
+
+        return true
     }
 
     /// Extract first number from a string
@@ -6002,6 +6891,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Minimum gap in seconds to show a gap indicator (2 minutes)
     private static let minimumGapThreshold: TimeInterval = 120
+    /// Small epsilon to avoid re-fetching the boundary frame in bounded load-more queries.
+    private static let boundedLoadBoundaryEpsilonSeconds: TimeInterval = 0.001
 
     /// Group consecutive frames into blocks, splitting on app change OR time gaps ≥2 min
     private func groupFramesIntoBlocks() -> [AppBlock] {
@@ -6020,60 +6911,167 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
-    /// Check if we need to load more frames based on current position
-    private func checkAndLoadMoreFrames() {
-        // Check if approaching the older end (left side of timeline)
-        if currentIndex < WindowConfig.loadThreshold && hasMoreOlder && !isLoadingOlder {
-            Task {
-                await loadOlderFrames()
-            }
-        }
+    private struct BoundaryLoadTrigger: Sendable {
+        let older: Bool
+        let newer: Bool
 
-        // Check if approaching the newer end (right side of timeline)
-        if currentIndex > frames.count - WindowConfig.loadThreshold && hasMoreNewer && !isLoadingNewer {
-            Task {
-                await loadNewerFrames()
-            }
+        var any: Bool {
+            older || newer
         }
     }
 
-    /// Load older frames (before the oldest loaded timestamp)
-    private func loadOlderFrames() async {
+    private func makeBoundedBoundaryFilters(rangeStart: Date, rangeEnd: Date) -> FilterCriteria? {
+        var boundedFilters = filterCriteria
+        let effectiveStart = max(rangeStart, boundedFilters.startDate ?? rangeStart)
+        let effectiveEnd = min(rangeEnd, boundedFilters.endDate ?? rangeEnd)
+
+        guard effectiveStart <= effectiveEnd else {
+            return nil
+        }
+
+        boundedFilters.startDate = effectiveStart
+        boundedFilters.endDate = effectiveEnd
+        return boundedFilters
+    }
+
+    /// Check if we need to load more frames based on current position.
+    /// Returns which boundary loads were triggered.
+    @discardableResult
+    private func checkAndLoadMoreFrames(
+        reason: String = "unspecified",
+        cmdFTrace: CmdFQuickFilterLatencyTrace? = nil
+    ) -> BoundaryLoadTrigger {
+        let shouldLoadOlder = currentIndex < WindowConfig.loadThreshold && hasMoreOlder && !isLoadingOlder
+        let shouldLoadNewer = currentIndex > frames.count - WindowConfig.loadThreshold && hasMoreNewer && !isLoadingNewer
+
+        if let cmdFTrace {
+            let maxIndex = max(frames.count - 1, 0)
+            Log.info(
+                "[CmdFPerf][\(cmdFTrace.id)] Boundary check reason=\(reason) index=\(currentIndex)/\(maxIndex) threshold=\(WindowConfig.loadThreshold) loadOlder=\(shouldLoadOlder) loadNewer=\(shouldLoadNewer)",
+                category: .ui
+            )
+        }
+
+        if shouldLoadOlder {
+            olderBoundaryLoadTask?.cancel()
+            olderBoundaryLoadTask = Task { [weak self] in
+                guard let self else { return }
+                await self.loadOlderFrames(reason: reason, cmdFTrace: cmdFTrace)
+            }
+        }
+
+        if shouldLoadNewer {
+            newerBoundaryLoadTask?.cancel()
+            newerBoundaryLoadTask = Task { [weak self] in
+                guard let self else { return }
+                await self.loadNewerFrames(reason: reason, cmdFTrace: cmdFTrace)
+            }
+        }
+
+        return BoundaryLoadTrigger(older: shouldLoadOlder, newer: shouldLoadNewer)
+    }
+
+    /// Load older frames (before the oldest loaded timestamp).
+    private func loadOlderFrames(
+        reason: String = "unspecified",
+        cmdFTrace: CmdFQuickFilterLatencyTrace? = nil
+    ) async {
         guard let oldestTimestamp = oldestLoadedTimestamp else { return }
         guard !isLoadingOlder else { return }
+        guard !Task.isCancelled else { return }
 
+        let loadStart = CFAbsoluteTimeGetCurrent()
         isLoadingOlder = true
+        defer { olderBoundaryLoadTask = nil }
         Log.debug("[InfiniteScroll] Loading older frames before \(oldestTimestamp)...", category: .ui)
+        if let cmdFTrace {
+            Log.info("[CmdFPerf][\(cmdFTrace.id)] Boundary older load started reason=\(reason) oldest=\(oldestTimestamp)", category: .ui)
+        }
 
         do {
             // Query frames before the oldest timestamp
-            // Uses optimized query that JOINs on video table - no N+1 queries!
+            // Use a bounded window to avoid expensive full-history scans.
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
+            let rangeEnd = oldestTimestamp.addingTimeInterval(-Self.boundedLoadBoundaryEpsilonSeconds)
+            let rangeStart = rangeEnd.addingTimeInterval(-WindowConfig.loadWindowSpanSeconds)
+            guard let boundedFilters = makeBoundedBoundaryFilters(rangeStart: rangeStart, rangeEnd: rangeEnd) else {
+                Log.info(
+                    "[BoundaryOlder] SKIP reason=\(reason) window=\(Log.timestamp(from: rangeStart))->\(Log.timestamp(from: rangeEnd)) no-overlap-with-filters",
+                    category: .ui
+                )
+                hasMoreOlder = false
+                hasReachedAbsoluteStart = true
+                isLoadingOlder = false
+                return
+            }
+            Log.info(
+                "[BoundaryOlder] START reason=\(reason) window=\(Log.timestamp(from: rangeStart))->\(Log.timestamp(from: rangeEnd)) effectiveWindow=\(Log.timestamp(from: boundedFilters.startDate ?? rangeStart))->\(Log.timestamp(from: boundedFilters.endDate ?? rangeEnd)) currentOldest=\(Log.timestamp(from: oldestTimestamp))",
+                category: .ui
+            )
+            let queryStart = CFAbsoluteTimeGetCurrent()
+            let framesWithVideoInfoDescending = try await fetchFramesWithVideoInfoBeforeLogged(
                 timestamp: oldestTimestamp,
                 limit: WindowConfig.loadBatchSize,
-                filters: filterCriteria
+                filters: boundedFilters,
+                reason: "loadOlderFrames.reason=\(reason)"
             )
+            let queryElapsedMs = (CFAbsoluteTimeGetCurrent() - queryStart) * 1000
 
-            guard !framesWithVideoInfo.isEmpty else {
-                Log.debug("[InfiniteScroll] No more older frames available - reached absolute start", category: .ui)
-                hasMoreOlder = false
-                hasReachedAbsoluteStart = true  // Mark that we've hit the absolute start
+            if Task.isCancelled {
                 isLoadingOlder = false
                 return
             }
 
-            Log.debug("[InfiniteScroll] Got \(framesWithVideoInfo.count) older frames", category: .ui)
+            if let nearest = framesWithVideoInfoDescending.first, let farthest = framesWithVideoInfoDescending.last {
+                Log.info(
+                    "[BoundaryOlder] RESULT reason=\(reason) count=\(framesWithVideoInfoDescending.count) nearest=\(Log.timestamp(from: nearest.frame.timestamp)) farthest=\(Log.timestamp(from: farthest.frame.timestamp)) query=\(String(format: "%.1f", queryElapsedMs))ms",
+                    category: .ui
+                )
+            } else {
+                Log.info(
+                    "[BoundaryOlder] RESULT reason=\(reason) count=0 query=\(String(format: "%.1f", queryElapsedMs))ms",
+                    category: .ui
+                )
+            }
 
-            // Convert to TimelineFrame - video info is already included from the JOIN
-            // framesWithVideoInfo are returned DESC (newest first), reverse to get ASC (oldest first)
-            let newTimelineFrames = framesWithVideoInfo.reversed().map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+            guard !framesWithVideoInfoDescending.isEmpty else {
+                Log.debug("[InfiniteScroll] No more older frames available - reached absolute start", category: .ui)
+                hasMoreOlder = false
+                hasReachedAbsoluteStart = true  // Mark that we've hit the absolute start
+                isLoadingOlder = false
+
+                if let cmdFTrace {
+                    let loadElapsedMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
+                    let totalFromShortcutMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.recordLatency(
+                        "timeline.cmdf.quick_filter.boundary.older_ms",
+                        valueMs: loadElapsedMs,
+                        category: .ui,
+                        summaryEvery: 5,
+                        warningThresholdMs: 220,
+                        criticalThresholdMs: 500
+                    )
+                    Log.info(
+                        "[CmdFPerf][\(cmdFTrace.id)] Boundary older load complete (empty) reason=\(reason) query=\(String(format: "%.1f", queryElapsedMs))ms load=\(String(format: "%.1f", loadElapsedMs))ms total=\(String(format: "%.1f", totalFromShortcutMs))ms",
+                        category: .ui
+                    )
+                }
+                return
+            }
+
+            Log.debug("[InfiniteScroll] Got \(framesWithVideoInfoDescending.count) older frames", category: .ui)
+
+            // getFramesWithVideoInfoBefore returns DESC (nearest older first). Reverse to ASC before prepending.
+            let newTimelineFrames = framesWithVideoInfoDescending.reversed().map {
+                TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus)
+            }
 
             // Prepend to existing frames
             // Use insert(contentsOf:) to avoid unnecessary @Published triggers
             let beforeCount = frames.count
             let oldCurrentIndex = currentIndex
             let oldTimestamp = frames[currentIndex].frame.timestamp
+            let oldFirstTimestamp = frames.first?.frame.timestamp
 
             frames.insert(contentsOf: newTimelineFrames, at: 0)
 
@@ -6082,6 +7080,13 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             Log.info("[Memory] LOADED OLDER: +\(newTimelineFrames.count) frames (\(beforeCount)→\(frames.count)), index adjusted from \(oldCurrentIndex) to \(currentIndex), maintaining timestamp=\(oldTimestamp)", category: .ui)
             Log.info("[INFINITE-SCROLL] After load older: new first frame=\(frames.first?.frame.timestamp.description ?? "nil"), new last frame=\(frames.last?.frame.timestamp.description ?? "nil")", category: .ui)
+            if let oldFirstTimestamp, let bridge = newTimelineFrames.last?.frame.timestamp {
+                let bridgeGap = max(0, oldFirstTimestamp.timeIntervalSince(bridge))
+                Log.info(
+                    "[BoundaryOlder] MERGE reason=\(reason) bridgeGap=\(String(format: "%.1fs", bridgeGap)) oldFirst=\(Log.timestamp(from: oldFirstTimestamp)) insertedLast=\(Log.timestamp(from: bridge))",
+                    category: .ui
+                )
+            }
             MemoryTracker.logMemoryState(
                 context: "AFTER LOAD OLDER",
                 frameCount: frames.count,
@@ -6098,35 +7103,112 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             isLoadingOlder = false
 
+            if let cmdFTrace {
+                let loadElapsedMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
+                let totalFromShortcutMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                Log.recordLatency(
+                    "timeline.cmdf.quick_filter.boundary.older_ms",
+                    valueMs: loadElapsedMs,
+                    category: .ui,
+                    summaryEvery: 5,
+                    warningThresholdMs: 220,
+                    criticalThresholdMs: 500
+                )
+                Log.info(
+                    "[CmdFPerf][\(cmdFTrace.id)] Boundary older load complete reason=\(reason) query=\(String(format: "%.1f", queryElapsedMs))ms load=\(String(format: "%.1f", loadElapsedMs))ms added=\(newTimelineFrames.count) total=\(String(format: "%.1f", totalFromShortcutMs))ms",
+                    category: .ui
+                )
+            }
+
         } catch {
             Log.error("[InfiniteScroll] Error loading older frames: \(error)", category: .ui)
+            if let cmdFTrace {
+                let loadElapsedMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
+                Log.error(
+                    "[CmdFPerf][\(cmdFTrace.id)] Boundary older load failed reason=\(reason) after \(String(format: "%.1f", loadElapsedMs))ms: \(error)",
+                    category: .ui
+                )
+            }
             isLoadingOlder = false
         }
     }
 
-    /// Load newer frames (after the newest loaded timestamp)
-    private func loadNewerFrames() async {
+    /// Load newer frames (after the newest loaded timestamp).
+    private func loadNewerFrames(
+        reason: String = "unspecified",
+        cmdFTrace: CmdFQuickFilterLatencyTrace? = nil
+    ) async {
         guard let newestTimestamp = newestLoadedTimestamp else { return }
         guard !isLoadingNewer else { return }
+        guard !Task.isCancelled else { return }
 
+        let loadStart = CFAbsoluteTimeGetCurrent()
         isLoadingNewer = true
+        defer { newerBoundaryLoadTask = nil }
         Log.debug("[InfiniteScroll] Loading newer frames after \(newestTimestamp)...", category: .ui)
+        if let cmdFTrace {
+            Log.info("[CmdFPerf][\(cmdFTrace.id)] Boundary newer load started reason=\(reason) newest=\(newestTimestamp)", category: .ui)
+        }
 
         do {
             // Query frames after the newest timestamp
-            // Uses optimized query that JOINs on video table - no N+1 queries!
+            // Use a bounded window to avoid expensive full-future scans.
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoAfter(
-                timestamp: newestTimestamp,
-                limit: WindowConfig.loadBatchSize,
-                filters: filterCriteria
+            let rangeStart = newestTimestamp.addingTimeInterval(Self.boundedLoadBoundaryEpsilonSeconds)
+            let rangeEnd = rangeStart.addingTimeInterval(WindowConfig.loadWindowSpanSeconds)
+            Log.info(
+                "[BoundaryNewer] START reason=\(reason) window=\(Log.timestamp(from: rangeStart))->\(Log.timestamp(from: rangeEnd)) currentNewest=\(Log.timestamp(from: newestTimestamp))",
+                category: .ui
             )
+            let queryStart = CFAbsoluteTimeGetCurrent()
+            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
+                from: rangeStart,
+                to: rangeEnd,
+                limit: WindowConfig.loadBatchSize,
+                filters: filterCriteria,
+                reason: "loadNewerFrames.reason=\(reason)"
+            )
+            let queryElapsedMs = (CFAbsoluteTimeGetCurrent() - queryStart) * 1000
+
+            if Task.isCancelled {
+                isLoadingNewer = false
+                return
+            }
+
+            if let first = framesWithVideoInfo.first, let last = framesWithVideoInfo.last {
+                Log.info(
+                    "[BoundaryNewer] RESULT reason=\(reason) count=\(framesWithVideoInfo.count) first=\(Log.timestamp(from: first.frame.timestamp)) last=\(Log.timestamp(from: last.frame.timestamp)) query=\(String(format: "%.1f", queryElapsedMs))ms",
+                    category: .ui
+                )
+            } else {
+                Log.info(
+                    "[BoundaryNewer] RESULT reason=\(reason) count=0 query=\(String(format: "%.1f", queryElapsedMs))ms",
+                    category: .ui
+                )
+            }
 
             guard !framesWithVideoInfo.isEmpty else {
                 Log.debug("[InfiniteScroll] No more newer frames available - reached absolute end", category: .ui)
                 hasMoreNewer = false
                 hasReachedAbsoluteEnd = true  // Mark that we've hit the absolute end
                 isLoadingNewer = false
+
+                if let cmdFTrace {
+                    let loadElapsedMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
+                    let totalFromShortcutMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                    Log.recordLatency(
+                        "timeline.cmdf.quick_filter.boundary.newer_ms",
+                        valueMs: loadElapsedMs,
+                        category: .ui,
+                        summaryEvery: 5,
+                        warningThresholdMs: 220,
+                        criticalThresholdMs: 500
+                    )
+                    Log.info(
+                        "[CmdFPerf][\(cmdFTrace.id)] Boundary newer load complete (empty) reason=\(reason) query=\(String(format: "%.1f", queryElapsedMs))ms load=\(String(format: "%.1f", loadElapsedMs))ms total=\(String(format: "%.1f", totalFromShortcutMs))ms",
+                        category: .ui
+                    )
+                }
                 return
             }
 
@@ -6139,9 +7221,24 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Append to existing frames
             // Use append(contentsOf:) to avoid unnecessary @Published triggers
             let beforeCount = frames.count
+            let wasAtNewestBeforeAppend = currentIndex >= beforeCount - 1
+            let oldLastTimestamp = frames.last?.frame.timestamp
             frames.append(contentsOf: newTimelineFrames)
 
+            // Keep playhead pinned to "now" when the user was already at the live edge.
+            if wasAtNewestBeforeAppend {
+                currentIndex = frames.count - 1
+                subFrameOffset = 0
+            }
+
             Log.info("[Memory] LOADED NEWER: +\(newTimelineFrames.count) frames (\(beforeCount)→\(frames.count))", category: .ui)
+            if let oldLastTimestamp, let bridge = newTimelineFrames.first?.frame.timestamp {
+                let bridgeGap = max(0, bridge.timeIntervalSince(oldLastTimestamp))
+                Log.info(
+                    "[BoundaryNewer] MERGE reason=\(reason) bridgeGap=\(String(format: "%.1fs", bridgeGap)) oldLast=\(Log.timestamp(from: oldLastTimestamp)) insertedFirst=\(Log.timestamp(from: bridge))",
+                    category: .ui
+                )
+            }
             MemoryTracker.logMemoryState(
                 context: "AFTER LOAD NEWER",
                 frameCount: frames.count,
@@ -6158,8 +7255,32 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             isLoadingNewer = false
 
+            if let cmdFTrace {
+                let loadElapsedMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
+                let totalFromShortcutMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
+                Log.recordLatency(
+                    "timeline.cmdf.quick_filter.boundary.newer_ms",
+                    valueMs: loadElapsedMs,
+                    category: .ui,
+                    summaryEvery: 5,
+                    warningThresholdMs: 220,
+                    criticalThresholdMs: 500
+                )
+                Log.info(
+                    "[CmdFPerf][\(cmdFTrace.id)] Boundary newer load complete reason=\(reason) query=\(String(format: "%.1f", queryElapsedMs))ms load=\(String(format: "%.1f", loadElapsedMs))ms added=\(newTimelineFrames.count) total=\(String(format: "%.1f", totalFromShortcutMs))ms",
+                    category: .ui
+                )
+            }
+
         } catch {
             Log.error("[InfiniteScroll] Error loading newer frames: \(error)", category: .ui)
+            if let cmdFTrace {
+                let loadElapsedMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
+                Log.error(
+                    "[CmdFPerf][\(cmdFTrace.id)] Boundary newer load failed reason=\(reason) after \(String(format: "%.1f", loadElapsedMs))ms: \(error)",
+                    category: .ui
+                )
+            }
             isLoadingNewer = false
         }
     }

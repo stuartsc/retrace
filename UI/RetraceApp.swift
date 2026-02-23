@@ -93,15 +93,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var menuBarManager: MenuBarManager?
     private var coordinatorWrapper: AppCoordinatorWrapper?
     private var sleepWakeObservers: [NSObjectProtocol] = []
+    private var powerSourceRunLoopSource: CFRunLoopSource?
+    private var powerSettingsApplyTask: Task<Void, Never>?
     private var wasRecordingBeforeSleep = false
+    private var lastKnownPowerSource: PowerStateMonitor.PowerSource?
+    private var isHandlingSystemSleep = false
+    private var isHandlingSystemWake = false
     private var pendingDeeplinkURLs: [URL] = []
+    private var shouldShowDashboardAfterInitialization = false
+    private var isActivationRevealInFlight = false
     private var isInitialized = false
     private var isTerminationFlushInProgress = false
     private static let devDeeplinkEnvKey = "RETRACE_DEV_DEEPLINK_URL"
+    private static let externalDashboardRevealNotification = Notification.Name("io.retrace.app.externalDashboardReveal")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Prompt user to move app to Applications folder if not already there
         AppMover.moveToApplicationsFolderIfNecessary()
+        setupExternalDashboardRevealObserver()
 
         // CRITICAL FIX: Ensure bundle identifier is set
         // When running from Xcode/SPM, the bundle ID might not be set correctly
@@ -208,7 +217,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 didHandleInitialDeeplink = true
             }
 
-            if !didHandleInitialDeeplink {
+            if shouldShowDashboardAfterInitialization {
+                requestDashboardReveal(source: "pendingExternalDashboardReveal")
+                shouldShowDashboardAfterInitialization = false
+            } else if !didHandleInitialDeeplink {
                 // Show dashboard on first launch (only if no deeplinks)
                 DashboardWindowController.shared.show()
             }
@@ -240,6 +252,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Keep app running in menu bar even when window is closed
         return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Task { @MainActor in
+            Log.info("[LaunchSurface] applicationShouldHandleReopen hasVisibleWindows=\(flag) state=\(launchSurfaceStateSnapshot())", category: .app)
+            requestDashboardReveal(source: "applicationShouldHandleReopen")
+        }
+        return true
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { @MainActor in
+            let shouldReveal = shouldRevealDashboardForActivation()
+            Log.info("[LaunchSurface] applicationDidBecomeActive shouldReveal=\(shouldReveal) state=\(launchSurfaceStateSnapshot())", category: .app)
+
+            guard shouldReveal, !isActivationRevealInFlight else { return }
+
+            isActivationRevealInFlight = true
+            requestDashboardReveal(source: "applicationDidBecomeActive")
+            isActivationRevealInFlight = false
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -490,6 +523,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Sleep/Wake Handling
 
     private func setupSleepWakeObservers() {
+        guard sleepWakeObservers.isEmpty else {
+            return
+        }
+
         let workspaceCenter = NSWorkspace.shared.notificationCenter
 
         let sleepObserver = workspaceCenter.addObserver(
@@ -525,6 +562,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Setup IOKit-based power source monitoring for AC/battery changes
     private func setupPowerSourceMonitoring() {
+        guard powerSourceRunLoopSource == nil else {
+            return
+        }
+
         // Create a run loop source for power source notifications
         let context = Unmanaged.passUnretained(self).toOpaque()
 
@@ -535,20 +576,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 await delegate.handlePowerSourceChange()
             }
         }, context)?.takeRetainedValue() {
+            powerSourceRunLoopSource = runLoopSource
             CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .defaultMode)
-            Log.info("[AppDelegate] Power source monitoring registered", category: .app)
+            let initialSource = PowerStateMonitor.shared.getCurrentPowerSource()
+            lastKnownPowerSource = initialSource
+            Log.info("[AppDelegate] Power source monitoring registered (initial: \(initialSource))", category: .app)
         }
     }
 
     @MainActor
     private func handlePowerSourceChange() async {
-        guard let wrapper = coordinatorWrapper else { return }
+        guard coordinatorWrapper != nil else { return }
+
         let newSource = PowerStateMonitor.shared.getCurrentPowerSource()
+        if let lastKnownPowerSource, lastKnownPowerSource == newSource {
+            return
+        }
+        lastKnownPowerSource = newSource
+
         Log.info("[AppDelegate] Power source changed to: \(newSource)", category: .app)
-        await wrapper.coordinator.applyPowerSettings()
+        schedulePowerSettingsApply()
 
         // Notify UI to update power status display
         NotificationCenter.default.post(name: NSNotification.Name("PowerSourceDidChange"), object: newSource)
+    }
+
+    @MainActor
+    private func schedulePowerSettingsApply() {
+        powerSettingsApplyTask?.cancel()
+        powerSettingsApplyTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                return
+            }
+
+            guard let self, let wrapper = self.coordinatorWrapper else { return }
+            await wrapper.coordinator.applyPowerSettings()
+            self.powerSettingsApplyTask = nil
+        }
     }
 
     /// Setup observer for power settings changes from Settings UI
@@ -569,6 +635,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func handleSystemSleep() async {
         guard let wrapper = coordinatorWrapper else { return }
+        guard !isHandlingSystemSleep else { return }
+        isHandlingSystemSleep = true
+        defer { isHandlingSystemSleep = false }
 
         wasRecordingBeforeSleep = await wrapper.coordinator.isCapturing()
 
@@ -585,15 +654,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func handleSystemWake() async {
         guard let wrapper = coordinatorWrapper else { return }
+        guard !isHandlingSystemWake else { return }
+        guard wasRecordingBeforeSleep else { return }
+        isHandlingSystemWake = true
+        wasRecordingBeforeSleep = false
+        defer { isHandlingSystemWake = false }
 
-        if wasRecordingBeforeSleep {
-            Log.info("[AppDelegate] System woke from sleep - resuming pipeline", category: .app)
-            do {
-                try await wrapper.coordinator.startPipeline()
-                await wrapper.refreshStatus()
-            } catch {
-                Log.error("[AppDelegate] Failed to resume pipeline on wake: \(error)", category: .app)
-            }
+        if await wrapper.coordinator.isCapturing() {
+            await wrapper.refreshStatus()
+            return
+        }
+
+        Log.info("[AppDelegate] System woke from sleep - resuming pipeline", category: .app)
+        do {
+            try await wrapper.coordinator.startPipeline()
+            await wrapper.refreshStatus()
+        } catch {
+            Log.error("[AppDelegate] Failed to resume pipeline on wake: \(error)", category: .app)
         }
     }
 
@@ -631,8 +708,84 @@ class AppDelegate: NSObject, NSApplicationDelegate {
              app.localizedName?.contains("Retrace") == true) &&
             app.processIdentifier != ProcessInfo.processInfo.processIdentifier
         }) {
+            Log.info("[LaunchSurface] Forwarding duplicate launch to existing instance pid=\(existingApp.processIdentifier) hidden=\(existingApp.isHidden) active=\(existingApp.isActive)", category: .app)
             existingApp.activate(options: .activateIgnoringOtherApps)
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.externalDashboardRevealNotification,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+            Log.info("[LaunchSurface] Posted external dashboard reveal notification", category: .app)
+        } else {
+            Log.warning("[LaunchSurface] Duplicate launch detected but no existing instance was found", category: .app)
         }
+    }
+
+    @MainActor
+    private func requestDashboardReveal(source: String) {
+        if isInitialized {
+            Log.info("[LaunchSurface] requestDashboardReveal source=\(source) before state=\(launchSurfaceStateSnapshot())", category: .app)
+
+            let wasHidden = NSApp.isHidden
+            if wasHidden {
+                Log.info("[LaunchSurface] Unhiding app before reveal source=\(source)", category: .app)
+                NSApp.unhide(nil)
+            }
+
+            let dashboard = DashboardWindowController.shared
+            if dashboard.isVisible {
+                dashboard.bringToFront()
+                Log.info("[LaunchSurface] Brought dashboard to front source=\(source) appWasHidden=\(wasHidden) after state=\(launchSurfaceStateSnapshot())", category: .app)
+            } else {
+                dashboard.show()
+                Log.info("[LaunchSurface] Called dashboard.show source=\(source) appWasHidden=\(wasHidden) after state=\(launchSurfaceStateSnapshot())", category: .app)
+            }
+        } else {
+            shouldShowDashboardAfterInitialization = true
+            Log.info("[LaunchSurface] Queued dashboard reveal until initialization source=\(source) state=\(launchSurfaceStateSnapshot())", category: .app)
+        }
+    }
+
+    private func setupExternalDashboardRevealObserver() {
+        Log.info("[LaunchSurface] Registering external dashboard reveal observer", category: .app)
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleExternalDashboardRevealNotification(_:)),
+            name: Self.externalDashboardRevealNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleExternalDashboardRevealNotification(_ notification: Notification) {
+        Task { @MainActor in
+            Log.info("[LaunchSurface] Received external dashboard reveal notification state=\(launchSurfaceStateSnapshot())", category: .app)
+            requestDashboardReveal(source: "externalDashboardRevealNotification")
+        }
+    }
+
+    @MainActor
+    private func launchSurfaceStateSnapshot() -> String {
+        let dashboard = DashboardWindowController.shared
+        let window = dashboard.window
+        let windowVisible = window?.isVisible ?? false
+        let windowKey = window?.isKeyWindow ?? false
+        let windowMini = window?.isMiniaturized ?? false
+        let windowMain = window?.isMainWindow ?? false
+
+        return "initialized=\(isInitialized) appHidden=\(NSApp.isHidden) appActive=\(NSApp.isActive) dashboardVisible=\(dashboard.isVisible) windowVisible=\(windowVisible) windowKey=\(windowKey) windowMain=\(windowMain) windowMini=\(windowMini)"
+    }
+
+    @MainActor
+    private func shouldRevealDashboardForActivation() -> Bool {
+        guard isInitialized else { return false }
+        guard !TimelineWindowController.shared.isVisible else { return false }
+        guard !DashboardWindowController.shared.isVisible else { return false }
+
+        let hasVisibleForegroundWindow = NSApp.windows.contains { window in
+            window.level.rawValue == 0 && window.isVisible
+        }
+        return !hasVisibleForegroundWindow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -641,6 +794,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             workspaceCenter.removeObserver(observer)
         }
         sleepWakeObservers.removeAll()
+        powerSettingsApplyTask?.cancel()
+        powerSettingsApplyTask = nil
+        if let powerSourceRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
+            self.powerSourceRunLoopSource = nil
+        }
+        DistributedNotificationCenter.default().removeObserver(self)
 
         Log.info("[AppDelegate] Application terminating", category: .app)
     }

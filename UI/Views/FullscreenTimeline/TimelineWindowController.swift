@@ -544,6 +544,14 @@ public class TimelineWindowController: NSObject {
         }
 
         Log.info("[TIMELINE-SHOW] 🚀 WINDOW BECOMING VISIBLE NOW (makeKeyAndOrderFront)", category: .ui)
+        // Re-assert Space behavior before each open so cached windows always
+        // materialize on the currently active Desktop.
+        window.collectionBehavior.remove(.canJoinAllSpaces)
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        // Mark visible before activation to avoid activation-time dashboard reveal
+        // races that can switch Spaces on some machines.
+        isVisible = true
+        Self.isTimelineVisible = true  // For emergency escape tap
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         let openElapsedMs = (CFAbsoluteTimeGetCurrent() - showStartTime) * 1000
@@ -563,9 +571,6 @@ public class TimelineWindowController: NSObject {
             warningThresholdMs: 250,
             criticalThresholdMs: 600
         )
-
-        isVisible = true
-        Self.isTimelineVisible = true  // For emergency escape tap
 
         // Fade in only for non-live opens (prevents the live screenshot "zoom" feel)
         if !isLive {
@@ -651,6 +656,8 @@ public class TimelineWindowController: NSObject {
                 viewModel.isCalendarPickerVisible = false
                 viewModel.hoursWithFrames = []
                 viewModel.selectedCalendarDate = nil
+                viewModel.calendarKeyboardFocus = .dateGrid
+                viewModel.selectedCalendarHour = nil
             }
             if viewModel.isDateSearchActive {
                 viewModel.closeDateSearch()
@@ -746,6 +753,8 @@ public class TimelineWindowController: NSObject {
     }
 
     /// Capture a live screenshot off the main actor to avoid blocking timeline-open path.
+    /// When the timeline window is visible, capture only content below it so we don't
+    /// bake partially hidden timeline controls into the live screenshot.
     private func captureLiveScreenshotAsync() async -> NSImage? {
         let mouseLocation = NSEvent.mouseLocation
         guard let targetScreen = NSScreen.screens.first(where: {
@@ -759,10 +768,30 @@ public class TimelineWindowController: NSObject {
         }
 
         let screenSize = targetScreen.frame.size
+        let screenBounds = CGDisplayBounds(screenNumber)
+        let timelineWindowID: CGWindowID?
+        if let candidate = window, candidate.isVisible {
+            timelineWindowID = CGWindowID(candidate.windowNumber)
+        } else {
+            timelineWindowID = nil
+        }
         let captureStartTime = CFAbsoluteTimeGetCurrent()
-        let cgImage = await Task.detached(priority: .userInitiated) {
-            CGDisplayCreateImage(screenNumber)
-        }.value
+        let captureTask = Task.detached(priority: .userInitiated) { [screenBounds, screenNumber, timelineWindowID] () -> CGImage? in
+            // Prefer a below-window capture to avoid including the timeline overlay itself.
+            if let timelineWindowID,
+               let image = CGWindowListCreateImage(
+                   screenBounds,
+                   .optionOnScreenBelowWindow,
+                   timelineWindowID,
+                   [.boundsIgnoreFraming]
+               ) {
+                return image
+            }
+
+            // Fallback to full display capture when below-window capture is unavailable.
+            return CGDisplayCreateImage(screenNumber)
+        }
+        let cgImage = await captureTask.value
         let captureElapsedMs = (CFAbsoluteTimeGetCurrent() - captureStartTime) * 1000
         Log.recordLatency(
             "timeline.live_screenshot.capture_ms",
@@ -1009,7 +1038,7 @@ public class TimelineWindowController: NSObject {
 
     /// Toggle quick app filter for the app at the current playhead.
     /// First press applies a single-app include filter, second press clears it.
-    private func togglePlayheadAppFilter(trigger _: String) {
+    private func togglePlayheadAppFilter(trigger: String) {
         guard let viewModel = timelineViewModel else {
             return
         }
@@ -1025,9 +1054,22 @@ public class TimelineWindowController: NSObject {
         }
 
         if isSingleAppOnlyIncludeFilter(viewModel.filterCriteria, matching: bundleID) {
+            viewModel.beginCmdFQuickFilterLatencyTrace(
+                bundleID: bundleID,
+                action: "clear_app_filter",
+                trigger: trigger,
+                source: currentFrame.frame.source
+            )
             viewModel.clearAllFilters()
             return
         }
+
+        viewModel.beginCmdFQuickFilterLatencyTrace(
+            bundleID: bundleID,
+            action: "apply_app_filter",
+            trigger: trigger,
+            source: currentFrame.frame.source
+        )
 
         var criteria = FilterCriteria()
         criteria.selectedApps = Set([bundleID])
@@ -1256,10 +1298,14 @@ public class TimelineWindowController: NSObject {
         window.alphaValue = 0
         // Re-enable mouse events before showing (was disabled while hidden to prevent blocking clicks)
         window.ignoresMouseEvents = false
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        window.collectionBehavior.remove(.canJoinAllSpaces)
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        // Mark visible before activation to avoid activation-time dashboard reveal
+        // races that can switch Spaces on some machines.
         isVisible = true
         Self.isTimelineVisible = true
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.35
@@ -1310,7 +1356,10 @@ public class TimelineWindowController: NSObject {
         window.hasShadow = false
         window.ignoresMouseEvents = false
         window.acceptsMouseMovedEvents = true
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Keep timeline opens deterministic across machines/Spaces:
+        // move the overlay to the active Desktop at open time instead of
+        // relying on "join all Spaces" behavior, which can vary with user settings.
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .stationary]
 
         // Make it cover the entire screen including menu bar
         window.setFrame(screen.frame, display: true)
@@ -1741,6 +1790,8 @@ public class TimelineWindowController: NSObject {
                         viewModel.isCalendarPickerVisible = false
                         viewModel.hoursWithFrames = []
                         viewModel.selectedCalendarDate = nil
+                        viewModel.calendarKeyboardFocus = .dateGrid
+                        viewModel.selectedCalendarHour = nil
                     }
                     return true
                 }
@@ -2056,6 +2107,19 @@ public class TimelineWindowController: NSObject {
             }
         }
 
+        // Calendar picker keyboard navigation should consume arrow/enter keys
+        // while the picker is visible so timeline scrubbing does not trigger.
+        if let viewModel = timelineViewModel,
+           viewModel.isCalendarPickerVisible,
+           modifiers.isEmpty {
+            if event.keyCode == 123 || event.keyCode == 124 || event.keyCode == 125 || event.keyCode == 126 {
+                return viewModel.handleCalendarPickerArrowKey(event.keyCode)
+            }
+            if event.keyCode == 36 || event.keyCode == 76 { // Return or Enter
+                return viewModel.handleCalendarPickerEnterKey()
+            }
+        }
+
         // Left arrow key or J - navigate to previous frame (Option = 3x speed)
         // Skip when search UI is open so overlay controls can own arrow keys.
         if let viewModel = timelineViewModel,
@@ -2222,8 +2286,8 @@ public class TimelineWindowController: NSObject {
         return pointInWindow.y >= hitBottom && pointInWindow.y <= hitTop
     }
 
-    /// Approximate hit region near playback controls for click diagnostics.
-    /// This is intentionally broad and centered around the right side of the center control group.
+    /// Hit region near playback controls.
+    /// Derived from the same layout metrics as TimelineTapeView to avoid tap-vs-drag conflicts.
     private func isPointNearPlaybackControls(_ pointInWindow: CGPoint) -> Bool {
         guard let viewModel = timelineViewModel,
               viewModel.showVideoControls,
@@ -2234,19 +2298,55 @@ public class TimelineWindowController: NSObject {
         }
 
         let scale = TimelineScaleFactor.current
+        let controlButtonSize = TimelineScaleFactor.controlButtonSize
+        let controlSpacing = TimelineScaleFactor.controlSpacing
         let centerX = window.contentView?.bounds.midX ?? window.frame.width / 2
-
-        // Playback control sits on the center-right controls row near the datetime cluster.
-        let minX = centerX + (45 * scale)
-        let maxX = centerX + (300 * scale)
         let controlsCenterY = TimelineScaleFactor.tapeBottomPadding + TimelineScaleFactor.tapeHeight + TimelineScaleFactor.controlsYOffset
-        let minY = controlsCenterY - (30 * scale)
-        let maxY = controlsCenterY + (30 * scale)
+
+        // Keep this in sync with TimelineTapeView.playhead:
+        // middleSideControlsWidth = controlButtonSize * 2 + 6 + 8 + (controlButtonSize + controlSpacing)
+        let middleSideControlsWidth = (controlButtonSize * 3) + controlSpacing + 14
+        let datetimeWidth = estimatedDatetimeControlWidth(for: viewModel, scale: scale)
+        let rightControlsLeadingX = centerX + (datetimeWidth / 2) + controlSpacing
+
+        // Cover both "Go to now/refresh" and play button targets.
+        let horizontalPadding = 16 * scale
+        let minX = rightControlsLeadingX - horizontalPadding
+        let maxX = rightControlsLeadingX + middleSideControlsWidth + horizontalPadding
+
+        // Include slight overlap with tape hit area to catch low-edge play clicks.
+        let verticalPadding = 18 * scale
+        let minY = controlsCenterY - (controlButtonSize / 2) - verticalPadding
+        let maxY = controlsCenterY + (controlButtonSize / 2) + verticalPadding
 
         return pointInWindow.x >= minX &&
             pointInWindow.x <= maxX &&
             pointInWindow.y >= minY &&
             pointInWindow.y <= maxY
+    }
+
+    /// Estimate the runtime width of the datetime control so click hit-testing matches localized labels.
+    private func estimatedDatetimeControlWidth(for viewModel: SimpleTimelineViewModel, scale: CGFloat) -> CGFloat {
+        let dateFont = NSFont.systemFont(ofSize: TimelineScaleFactor.fontCaption, weight: .medium)
+        let timeFont = NSFont.monospacedSystemFont(ofSize: TimelineScaleFactor.fontMono, weight: .regular)
+        let chevronFont = NSFont.systemFont(ofSize: TimelineScaleFactor.fontTiny, weight: .bold)
+
+        let dateWidth = (viewModel.currentDateString as NSString).size(withAttributes: [.font: dateFont]).width
+        let timeWidth = (viewModel.currentTimeString as NSString).size(withAttributes: [.font: timeFont]).width
+        let chevronWidth = ("▾" as NSString).size(withAttributes: [.font: chevronFont]).width
+
+        // Match DatetimeButton horizontal spacing/padding.
+        let contentWidth = dateWidth +
+            TimelineScaleFactor.iconSpacing +
+            timeWidth +
+            TimelineScaleFactor.iconSpacing +
+            chevronWidth
+        let paddedWidth = contentWidth + (TimelineScaleFactor.paddingH * 2)
+
+        // Clamp to avoid pathological under/over-estimation.
+        let minWidth = 120 * scale
+        let maxWidth = 480 * scale
+        return min(maxWidth, max(minWidth, ceil(paddedWidth)))
     }
 
     /// Force-end any in-progress tape drag (e.g., on window focus loss)

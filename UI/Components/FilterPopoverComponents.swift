@@ -1976,21 +1976,14 @@ public struct DateRangeFilterPopover: View {
         let startDay = calendar.startOfDay(for: start)
         let endDay = calendar.startOfDay(for: end)
 
-        let startFormatter = DateFormatter()
-        startFormatter.dateFormat = "MMM d"
+        let fullDateFormatter = DateFormatter()
+        fullDateFormatter.dateFormat = "MMM d, yyyy"
 
-        let dayOnlyFormatter = DateFormatter()
-        dayOnlyFormatter.dateFormat = "d"
-
-        if calendar.isDate(startDay, equalTo: endDay, toGranularity: .month) &&
-            calendar.isDate(startDay, equalTo: endDay, toGranularity: .year) {
-            if calendar.isDate(startDay, inSameDayAs: endDay) {
-                return startFormatter.string(from: startDay)
-            }
-            return "\(startFormatter.string(from: startDay)) to \(dayOnlyFormatter.string(from: endDay))"
+        if calendar.isDate(startDay, inSameDayAs: endDay) {
+            return fullDateFormatter.string(from: startDay)
         }
 
-        return "\(startFormatter.string(from: startDay)) to \(startFormatter.string(from: endDay))"
+        return "\(fullDateFormatter.string(from: startDay)) to \(fullDateFormatter.string(from: endDay))"
     }
 
     private func parseDateRangeInput(_ text: String) -> (start: Date, end: Date)? {

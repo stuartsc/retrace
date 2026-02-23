@@ -94,6 +94,8 @@ public struct SimpleTimelineView: View {
                                 viewModel.isCalendarPickerVisible = false
                                 viewModel.hoursWithFrames = []
                                 viewModel.selectedCalendarDate = nil
+                                viewModel.calendarKeyboardFocus = .dateGrid
+                                viewModel.selectedCalendarHour = nil
                             }
                         }
                 }

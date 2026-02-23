@@ -156,7 +156,8 @@ public actor DataAdapter {
         return Array(allFrames.prefix(limit))
     }
 
-    /// Optimized filtered query for date range - tries Retrace first, then Rewind
+    /// Optimized filtered query for date range.
+    /// If the range starts before cutoff, prefer Rewind first to avoid expensive empty Retrace probes.
     private func getFramesInRangeWithFilters(from startDate: Date, to endDate: Date, limit: Int, filters: FilterCriteria) async throws -> [FrameWithVideoInfo] {
         var allFrames: [FrameWithVideoInfo] = []
         var remaining = limit
@@ -166,39 +167,70 @@ public actor DataAdapter {
                             filters.selectedSources?.contains(.native) == false
         let excludeRewind = filters.selectedSources?.contains(.native) == true &&
                            filters.selectedSources?.contains(.rewind) == false
+        // Rewind database doesn't have segment_tag table.
+        // For tag-driven filters, only query Retrace so semantics remain correct.
+        let hasTagFilters = (filters.selectedTags != nil && !filters.selectedTags!.isEmpty) ||
+                           filters.hiddenFilter == .onlyHidden
 
-        // Step 1: Try Retrace first (unless excluded)
-        if !excludeRetrace {
+        let shouldPreferRewindFirst: Bool = {
+            guard let cutoff = cutoffDate else { return false }
+            return startDate < cutoff
+        }()
+
+        func queryRetraceIfNeeded() throws {
+            guard remaining > 0, !excludeRetrace else { return }
             var retraceStart = startDate
             if let cutoff = cutoffDate {
                 retraceStart = max(startDate, cutoff)
             }
-            if retraceStart < endDate {
-                let retraceFrames = try queryFramesInRangeWithFiltersOptimized(
-                    from: retraceStart,
-                    to: endDate,
-                    limit: limit,
-                    connection: retraceConnection,
-                    config: retraceConfig,
-                    filters: filters
-                )
-                allFrames.append(contentsOf: retraceFrames)
-                remaining = limit - retraceFrames.count
-            }
+            guard retraceStart < endDate else { return }
+
+            let retraceFrames = try queryFramesInRangeWithFiltersOptimized(
+                from: retraceStart,
+                to: endDate,
+                limit: remaining,
+                connection: retraceConnection,
+                config: retraceConfig,
+                filters: filters,
+                isRewindDatabase: false
+            )
+            allFrames.append(contentsOf: retraceFrames)
+            remaining -= retraceFrames.count
         }
 
-        // Step 2: If we don't have enough frames, query Rewind (unless excluded)
-        if remaining > 0, !excludeRewind, let cutoff = cutoffDate, let rewind = rewindConnection, let config = rewindConfig, startDate < cutoff {
+        func queryRewindIfNeeded() throws {
+            guard remaining > 0,
+                  !excludeRewind,
+                  !hasTagFilters,
+                  let cutoff = cutoffDate,
+                  let rewind = rewindConnection,
+                  let config = rewindConfig,
+                  startDate < cutoff else {
+                return
+            }
+
             let effectiveEnd = min(endDate, cutoff)
+            guard startDate < effectiveEnd else { return }
+
             let rewindFrames = try queryFramesInRangeWithFiltersOptimized(
                 from: startDate,
                 to: effectiveEnd,
                 limit: remaining,
                 connection: rewind,
                 config: config,
-                filters: filters
+                filters: filters,
+                isRewindDatabase: true
             )
             allFrames.append(contentsOf: rewindFrames)
+            remaining -= rewindFrames.count
+        }
+
+        if shouldPreferRewindFirst {
+            try queryRewindIfNeeded()
+            try queryRetraceIfNeeded()
+        } else {
+            try queryRetraceIfNeeded()
+            try queryRewindIfNeeded()
         }
 
         // Sort by timestamp ascending (oldest first)
@@ -327,7 +359,8 @@ public actor DataAdapter {
         return Array(allFrames.prefix(limit))
     }
 
-    /// Optimized filtered query for frames before timestamp - tries Retrace first, then Rewind
+    /// Optimized filtered query for frames before timestamp.
+    /// If timestamp is before cutoff, prefer Rewind first to avoid expensive empty Retrace probes.
     private func getFramesBeforeWithFilters(timestamp: Date, limit: Int, filters: FilterCriteria) async throws -> [FrameWithVideoInfo] {
         var allFrames: [FrameWithVideoInfo] = []
         var remaining = limit
@@ -338,25 +371,36 @@ public actor DataAdapter {
         let excludeRewind = filters.selectedSources?.contains(.native) == true &&
                            filters.selectedSources?.contains(.rewind) == false
 
-        // Step 1: Try Retrace first (unless excluded)
-        if !excludeRetrace {
+        // Note: Skip Rewind if tag filters are active (Rewind doesn't have segment_tag table)
+        let hasTagFilters = (filters.selectedTags != nil && !filters.selectedTags!.isEmpty) ||
+                           filters.hiddenFilter == .onlyHidden
+        let shouldPreferRewindFirst: Bool = {
+            guard let cutoff = cutoffDate else { return false }
+            return timestamp < cutoff
+        }()
+
+        func queryRetraceIfNeeded() throws {
+            guard remaining > 0, !excludeRetrace else { return }
             let retraceFrames = try queryFramesBeforeWithFiltersOptimized(
                 timestamp: timestamp,
-                limit: limit,
+                limit: remaining,
                 connection: retraceConnection,
                 config: retraceConfig,
                 filters: filters,
                 isRewindDatabase: false
             )
             allFrames.append(contentsOf: retraceFrames)
-            remaining = limit - retraceFrames.count
+            remaining -= retraceFrames.count
         }
 
-        // Step 2: If we don't have enough frames, query Rewind (unless excluded)
-        // Note: Skip Rewind if tag filters are active (Rewind doesn't have segment_tag table)
-        let hasTagFilters = (filters.selectedTags != nil && !filters.selectedTags!.isEmpty) ||
-                           filters.hiddenFilter == .onlyHidden
-        if remaining > 0, !excludeRewind, !hasTagFilters, let rewind = rewindConnection, let config = rewindConfig {
+        func queryRewindIfNeeded() throws {
+            guard remaining > 0,
+                  !excludeRewind,
+                  !hasTagFilters,
+                  let rewind = rewindConnection,
+                  let config = rewindConfig else {
+                return
+            }
             let effectiveTimestamp = cutoffDate != nil ? min(timestamp, cutoffDate!) : timestamp
             let rewindFrames = try queryFramesBeforeWithFiltersOptimized(
                 timestamp: effectiveTimestamp,
@@ -367,6 +411,15 @@ public actor DataAdapter {
                 isRewindDatabase: true
             )
             allFrames.append(contentsOf: rewindFrames)
+            remaining -= rewindFrames.count
+        }
+
+        if shouldPreferRewindFirst {
+            try queryRewindIfNeeded()
+            try queryRetraceIfNeeded()
+        } else {
+            try queryRetraceIfNeeded()
+            try queryRewindIfNeeded()
         }
 
         // Sort by timestamp descending (newest first)
@@ -409,7 +462,8 @@ public actor DataAdapter {
         return Array(allFrames.prefix(limit))
     }
 
-    /// Optimized filtered query for frames after timestamp - tries Retrace first, then Rewind
+    /// Optimized filtered query for frames after timestamp.
+    /// If timestamp is before cutoff, prefer Rewind first to avoid expensive empty Retrace probes.
     private func getFramesAfterWithFilters(timestamp: Date, limit: Int, filters: FilterCriteria) async throws -> [FrameWithVideoInfo] {
         var allFrames: [FrameWithVideoInfo] = []
         var remaining = limit
@@ -420,25 +474,39 @@ public actor DataAdapter {
         let excludeRewind = filters.selectedSources?.contains(.native) == true &&
                            filters.selectedSources?.contains(.rewind) == false
 
-        // Step 1: Try Retrace first (unless excluded)
-        if !excludeRetrace {
+        // Note: Skip Rewind if tag filters are active (Rewind doesn't have segment_tag table)
+        let hasTagFilters = (filters.selectedTags != nil && !filters.selectedTags!.isEmpty) ||
+                           filters.hiddenFilter == .onlyHidden
+        let shouldPreferRewindFirst: Bool = {
+            guard let cutoff = cutoffDate else { return false }
+            return timestamp < cutoff
+        }()
+
+        func queryRetraceIfNeeded() throws {
+            guard remaining > 0, !excludeRetrace else { return }
             let retraceFrames = try queryFramesAfterWithFiltersOptimized(
                 timestamp: timestamp,
-                limit: limit,
+                limit: remaining,
                 connection: retraceConnection,
                 config: retraceConfig,
                 filters: filters,
                 isRewindDatabase: false
             )
             allFrames.append(contentsOf: retraceFrames)
-            remaining = limit - retraceFrames.count
+            remaining -= retraceFrames.count
         }
 
-        // Step 2: If we don't have enough frames, query Rewind (unless excluded)
-        // Note: Skip Rewind if tag filters are active (Rewind doesn't have segment_tag table)
-        let hasTagFilters = (filters.selectedTags != nil && !filters.selectedTags!.isEmpty) ||
-                           filters.hiddenFilter == .onlyHidden
-        if remaining > 0, !excludeRewind, !hasTagFilters, let cutoff = cutoffDate, let rewind = rewindConnection, let config = rewindConfig, timestamp < cutoff {
+        func queryRewindIfNeeded() throws {
+            guard remaining > 0,
+                  !excludeRewind,
+                  !hasTagFilters,
+                  let cutoff = cutoffDate,
+                  let rewind = rewindConnection,
+                  let config = rewindConfig,
+                  timestamp < cutoff else {
+                return
+            }
+
             let rewindFrames = try queryFramesAfterWithFiltersOptimized(
                 timestamp: timestamp,
                 limit: remaining,
@@ -448,6 +516,15 @@ public actor DataAdapter {
                 isRewindDatabase: true
             )
             allFrames.append(contentsOf: rewindFrames)
+            remaining -= rewindFrames.count
+        }
+
+        if shouldPreferRewindFirst {
+            try queryRewindIfNeeded()
+            try queryRetraceIfNeeded()
+        } else {
+            try queryRetraceIfNeeded()
+            try queryRewindIfNeeded()
         }
 
         // Sort by timestamp ascending (oldest first)
@@ -1696,7 +1773,8 @@ public actor DataAdapter {
         limit: Int,
         connection: DatabaseConnection,
         config: DatabaseConfig,
-        filters: FilterCriteria
+        filters: FilterCriteria,
+        isRewindDatabase: Bool = false
     ) throws -> [FrameWithVideoInfo] {
         let effectiveEndDate = config.applyCutoff(to: endDate)
         guard startDate < effectiveEndDate else { return [] }
@@ -1705,17 +1783,21 @@ public actor DataAdapter {
         var bindIndex = 1
 
         // Build tag filter including hidden filter logic
-        var tagsToFilter = filters.selectedTags ?? Set<Int64>()
+        var tagsToFilter = Set<Int64>()
+        let shouldApplyTagFilters = !isRewindDatabase
+        if shouldApplyTagFilters {
+            tagsToFilter = filters.selectedTags ?? Set<Int64>()
 
-        // Apply hidden filter logic
-        if let hiddenTagId = cachedHiddenTagId {
-            switch filters.hiddenFilter {
-            case .hide:
-                break
-            case .onlyHidden:
-                tagsToFilter = [hiddenTagId]
-            case .showAll:
-                break
+            // Apply hidden filter logic
+            if let hiddenTagId = cachedHiddenTagId {
+                switch filters.hiddenFilter {
+                case .hide:
+                    break
+                case .onlyHidden:
+                    tagsToFilter = [hiddenTagId]
+                case .showAll:
+                    break
+                }
             }
         }
 
@@ -1787,7 +1869,7 @@ public actor DataAdapter {
 
         // Hidden filter: Exclude segments with hidden tag (when .hide mode)
         // Skip for Rewind database - it doesn't have segment_tag table
-        if filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId, config.source != .rewind {
+        if shouldApplyTagFilters && filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId {
             whereClauses.append("""
                 NOT EXISTS (
                     SELECT 1 FROM segment_tag st_hidden
@@ -1870,7 +1952,7 @@ public actor DataAdapter {
 
         // Bind hidden tag ID for NOT EXISTS clause (if applicable)
         // Skip for Rewind database - it doesn't have segment_tag table
-        if filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId, config.source != .rewind {
+        if shouldApplyTagFilters && filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId {
             sqlite3_bind_int64(statement, Int32(currentBindIndex), hiddenTagId)
             currentBindIndex += 1
         }

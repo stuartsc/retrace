@@ -1511,6 +1511,11 @@ struct ZoomSlider: View {
 
 /// Elegant floating panel for natural language date/time search
 struct FloatingDateSearchPanel: View {
+    private enum KeyboardSelection {
+        case input
+        case calendar
+    }
+
     @Binding var text: String
     let onSubmit: () -> Void
     let onCancel: () -> Void
@@ -1520,12 +1525,27 @@ struct FloatingDateSearchPanel: View {
     @State private var isHovering = false
     @State private var isCalendarButtonHovering = false
     @State private var isSubmitButtonHovering = false
+    @State private var keyboardSelection: KeyboardSelection = .input
     /// Accumulated position from completed drags
     @GestureState private var dragOffset: CGSize = .zero
     @State private var panelPosition: CGSize = .zero
 
     private var placeholderText: String {
         "e.g. 8 min ago, next Friday, or yesterday 2pm"
+    }
+
+    private var isCalendarKeyboardSelected: Bool {
+        keyboardSelection == .calendar
+    }
+
+    private func openCalendarPicker() {
+        viewModel.focusCalendarDateGrid()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            viewModel.isCalendarPickerVisible = true
+        }
+        Task {
+            await viewModel.loadDatesWithFrames()
+        }
     }
 
     var body: some View {
@@ -1582,6 +1602,23 @@ struct FloatingDateSearchPanel: View {
                     text: $text,
                     onSubmit: onSubmit,
                     onCancel: onCancel,
+                    isCalendarSelected: { isCalendarKeyboardSelected },
+                    onMoveToCalendar: {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            keyboardSelection = .calendar
+                        }
+                    },
+                    onMoveToInput: {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            keyboardSelection = .input
+                        }
+                    },
+                    onCalendarSubmit: {
+                        openCalendarPicker()
+                    },
+                    onInputClicked: {
+                        keyboardSelection = .input
+                    },
                     placeholder: placeholderText
                 )
                 .frame(height: 28)
@@ -1646,12 +1683,10 @@ struct FloatingDateSearchPanel: View {
 
             // Calendar button
             Button(action: {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    viewModel.isCalendarPickerVisible = true
+                withAnimation(.easeOut(duration: 0.12)) {
+                    keyboardSelection = .calendar
                 }
-                Task {
-                    await viewModel.loadDatesWithFrames()
-                }
+                openCalendarPicker()
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: "calendar")
@@ -1666,6 +1701,10 @@ struct FloatingDateSearchPanel: View {
                 .background(
                     RoundedRectangle(cornerRadius: 10)
                         .fill(isCalendarButtonHovering ? RetraceMenuStyle.actionBlue : RetraceMenuStyle.actionBlue.opacity(0.8))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(isCalendarKeyboardSelected ? 0.95 : 0), lineWidth: 1.5)
                 )
             }
             .buttonStyle(.plain)
@@ -1705,6 +1744,9 @@ struct FloatingDateSearchPanel: View {
             x: panelPosition.width + dragOffset.width,
             y: panelPosition.height + dragOffset.height
         )
+        .onAppear {
+            keyboardSelection = .input
+        }
     }
 }
 
@@ -1808,6 +1850,12 @@ struct CalendarPickerView: View {
             x: panelPosition.width + dragOffset.width,
             y: panelPosition.height + dragOffset.height
         )
+        .onAppear {
+            syncDisplayedMonthToSelection()
+        }
+        .onChange(of: viewModel.selectedCalendarDate) { _ in
+            syncDisplayedMonthToSelection()
+        }
     }
 
     // MARK: - Calendar View
@@ -1919,13 +1967,19 @@ struct CalendarPickerView: View {
             ) {
                 ForEach(0..<24, id: \.self) { hour in
                     let hasFrames = hourHasFrames(hour)
+                    let isKeyboardSelected =
+                        viewModel.calendarKeyboardFocus == .timeGrid &&
+                        viewModel.selectedCalendarHour == hour
                     TimeSlotButton(
                         hourValue: hour,
                         hasFrames: hasFrames,
+                        isKeyboardSelected: isKeyboardSelected,
                         selectedDate: viewModel.selectedCalendarDate
                     ) {
                         // Use actual timestamp from hoursWithFrames (contains first frame time)
                         if let actualTimestamp = getFirstFrameTimestamp(forHour: hour) {
+                            viewModel.calendarKeyboardFocus = .timeGrid
+                            viewModel.selectedCalendarHour = hour
                             Task {
                                 await viewModel.navigateToHour(actualTimestamp)
                             }
@@ -1971,6 +2025,7 @@ struct CalendarPickerView: View {
 
                 Button(action: {
                     if hasFrames {
+                        viewModel.focusCalendarDateGrid()
                         Task {
                             await viewModel.loadHoursForDate(day)
                         }
@@ -1989,6 +2044,10 @@ struct CalendarPickerView: View {
                                 if isSelected {
                                     Circle()
                                         .fill(RetraceMenuStyle.actionBlue)
+                                    if viewModel.calendarKeyboardFocus == .dateGrid {
+                                        Circle()
+                                            .stroke(Color.white.opacity(0.95), lineWidth: 1.5)
+                                    }
                                 } else if isToday {
                                     Circle()
                                         .stroke(RetraceMenuStyle.actionBlue, lineWidth: 1.5)
@@ -2062,6 +2121,17 @@ struct CalendarPickerView: View {
         let startOfDay = calendar.startOfDay(for: date)
         return viewModel.datesWithFrames.contains(startOfDay)
     }
+
+    private func syncDisplayedMonthToSelection() {
+        guard let selectedDate = viewModel.selectedCalendarDate else { return }
+        let targetMonth = calendar.date(
+            from: calendar.dateComponents([.year, .month], from: selectedDate)
+        ) ?? selectedDate
+
+        if !calendar.isDate(displayedMonth, equalTo: targetMonth, toGranularity: .month) {
+            displayedMonth = targetMonth
+        }
+    }
 }
 
 // MARK: - Time Slot Button
@@ -2069,6 +2139,7 @@ struct CalendarPickerView: View {
 struct TimeSlotButton: View {
     let hourValue: Int
     let hasFrames: Bool
+    let isKeyboardSelected: Bool
     let selectedDate: Date?
     let action: () -> Void
 
@@ -2084,7 +2155,7 @@ struct TimeSlotButton: View {
                 .font(.retraceMono)
                 .foregroundColor(
                     hasFrames
-                        ? (isHovering ? .white : .white.opacity(0.9))
+                        ? ((isHovering || isKeyboardSelected) ? .white : .white.opacity(0.9))
                         : .white.opacity(0.25)
                 )
                 .frame(maxWidth: .infinity)
@@ -2093,9 +2164,13 @@ struct TimeSlotButton: View {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(
                             hasFrames
-                                ? (isHovering ? RetraceMenuStyle.actionBlue : Color.white.opacity(0.1))
+                                ? ((isHovering || isKeyboardSelected) ? RetraceMenuStyle.actionBlue : Color.white.opacity(0.1))
                                 : Color.clear
                         )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.white.opacity(isKeyboardSelected ? 0.95 : 0), lineWidth: 1.5)
                 )
         }
         .buttonStyle(.plain)
@@ -2119,6 +2194,11 @@ struct DateSearchField: NSViewRepresentable {
     @Binding var text: String
     let onSubmit: () -> Void
     let onCancel: () -> Void
+    let isCalendarSelected: () -> Bool
+    let onMoveToCalendar: () -> Void
+    let onMoveToInput: () -> Void
+    let onCalendarSubmit: () -> Void
+    let onInputClicked: () -> Void
     var placeholder: String = "Enter a date or time..."
 
     func makeNSView(context: Context) -> FocusableTextField {
@@ -2147,6 +2227,7 @@ struct DateSearchField: NSViewRepresentable {
 
         // Wire up Cmd+G to close the panel
         textField.onCancelCallback = onCancel
+        textField.onClickCallback = onInputClicked
 
         // Focus the text field immediately when created
         // Use multiple dispatch levels to ensure focus happens after SwiftUI layout
@@ -2157,6 +2238,10 @@ struct DateSearchField: NSViewRepresentable {
 
     func updateNSView(_ textField: FocusableTextField, context: Context) {
         textField.stringValue = text
+        context.coordinator.updateCaretVisibility(
+            for: textField,
+            isCalendarSelected: isCalendarSelected()
+        )
         // No focus logic needed here - makeNSView handles initial focus
     }
 
@@ -2217,18 +2302,42 @@ struct DateSearchField: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSubmit: onSubmit, onCancel: onCancel)
+        Coordinator(
+            text: $text,
+            onSubmit: onSubmit,
+            onCancel: onCancel,
+            isCalendarSelected: isCalendarSelected,
+            onMoveToCalendar: onMoveToCalendar,
+            onMoveToInput: onMoveToInput,
+            onCalendarSubmit: onCalendarSubmit
+        )
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
         @Binding var text: String
         let onSubmit: () -> Void
         let onCancel: () -> Void
+        let isCalendarSelected: () -> Bool
+        let onMoveToCalendar: () -> Void
+        let onMoveToInput: () -> Void
+        let onCalendarSubmit: () -> Void
 
-        init(text: Binding<String>, onSubmit: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        init(
+            text: Binding<String>,
+            onSubmit: @escaping () -> Void,
+            onCancel: @escaping () -> Void,
+            isCalendarSelected: @escaping () -> Bool,
+            onMoveToCalendar: @escaping () -> Void,
+            onMoveToInput: @escaping () -> Void,
+            onCalendarSubmit: @escaping () -> Void
+        ) {
             self._text = text
             self.onSubmit = onSubmit
             self.onCancel = onCancel
+            self.isCalendarSelected = isCalendarSelected
+            self.onMoveToCalendar = onMoveToCalendar
+            self.onMoveToInput = onMoveToInput
+            self.onCalendarSubmit = onCalendarSubmit
         }
 
         func controlTextDidChange(_ notification: Notification) {
@@ -2237,9 +2346,31 @@ struct DateSearchField: NSViewRepresentable {
             }
         }
 
+        func updateCaretVisibility(for textField: FocusableTextField, isCalendarSelected: Bool) {
+            guard let window = textField.window,
+                  let fieldEditor = window.fieldEditor(false, for: textField) as? NSTextView else {
+                return
+            }
+
+            // Hide insertion caret while keyboard selection is on the calendar button.
+            fieldEditor.insertionPointColor = isCalendarSelected ? .clear : .white
+        }
+
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                onSubmit()
+                if isCalendarSelected() {
+                    onCalendarSubmit()
+                } else {
+                    onSubmit()
+                }
+                return true
+            } else if commandSelector == #selector(NSResponder.moveDown(_:)) ||
+                        commandSelector == #selector(NSResponder.insertTab(_:)) {
+                onMoveToCalendar()
+                return true
+            } else if commandSelector == #selector(NSResponder.moveUp(_:)) ||
+                        commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                onMoveToInput()
                 return true
             } else if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 onCancel()
