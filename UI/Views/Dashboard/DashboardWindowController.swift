@@ -118,6 +118,11 @@ public class DashboardWindowController: NSObject {
         window.orderFrontRegardless()
     }
 
+    /// Update the dashboard window title used for metadata/window-list consumers.
+    func updateWindowTitle(_ title: String) {
+        window?.title = title
+    }
+
     // MARK: - Window Creation
 
     private func createWindow(coordinator: AppCoordinator) -> NSWindow {
@@ -131,7 +136,7 @@ public class DashboardWindowController: NSObject {
         let window = NSWindow(contentViewController: hostingController)
 
         // Configure window properties
-        window.title = "Retrace"
+        window.title = "Dashboard"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.setContentSize(NSSize(width: 1000, height: 700))
         window.minSize = NSSize(width: 1000, height: 700)
@@ -202,6 +207,7 @@ struct DashboardContentView: View {
     @StateObject private var dashboardViewModel: DashboardViewModel
 
     @State private var selectedView: DashboardSelectedView = .dashboard
+    @State private var currentSettingsTabTitle = SettingsTab.general.rawValue
     @State private var showFeedbackSheet = false
     @State private var showOnboarding: Bool? = nil
     @State private var initialSettingsTab: SettingsTab? = nil
@@ -277,15 +283,20 @@ struct DashboardContentView: View {
         .task {
             await checkOnboarding()
         }
+        .onAppear {
+            updateDashboardWindowTitle()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openDashboard)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedView = .dashboard
             }
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardShowSettings)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedView = .settings
             }
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .colorThemeDidChange)) { _ in
             appearanceRefreshTick &+= 1
@@ -298,6 +309,7 @@ struct DashboardContentView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedView = selectedView == .settings ? .dashboard : .settings
             }
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
             initialSettingsTab = nil
@@ -306,6 +318,7 @@ struct DashboardContentView: View {
                 selectedView = .settings
             }
             DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsAppearance)) { _ in
             initialSettingsTab = nil
@@ -315,30 +328,46 @@ struct DashboardContentView: View {
             }
             DashboardWindowController.shared.show()
             // General tab contains Appearance settings - it's the default tab
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPower)) { _ in
             initialSettingsTab = .power
             initialSettingsScrollTargetID = nil
+            currentSettingsTabTitle = SettingsTab.power.rawValue
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedView = .settings
             }
             DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPauseReminderInterval)) { _ in
             initialSettingsTab = .capture
             initialSettingsScrollTargetID = SettingsView.pauseReminderIntervalTargetID
+            currentSettingsTabTitle = SettingsTab.capture.rawValue
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedView = .settings
             }
             DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRCard)) { _ in
             initialSettingsTab = .power
             initialSettingsScrollTargetID = SettingsView.powerOCRCardTargetID
+            currentSettingsTabTitle = SettingsTab.power.rawValue
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedView = .settings
             }
             DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsSelectedTabDidChange)) { notification in
+            guard let tab = notification.userInfo?["tab"] as? String, !tab.isEmpty else {
+                return
+            }
+            currentSettingsTabTitle = tab
+            if selectedView == .settings {
+                updateDashboardWindowTitle()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFeedback)) { _ in
             showFeedbackSheet = true
@@ -349,6 +378,7 @@ struct DashboardContentView: View {
                 selectedView = .monitor
             }
             DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleSystemMonitor)) { _ in
             if selectedView == .monitor,
@@ -363,6 +393,7 @@ struct DashboardContentView: View {
                     selectedView = .monitor
                 }
                 DashboardWindowController.shared.show()
+                updateDashboardWindowTitle()
             }
         }
         .sheet(isPresented: $showFeedbackSheet) {
@@ -376,6 +407,20 @@ struct DashboardContentView: View {
         await MainActor.run {
             showOnboarding = shouldShow
         }
+    }
+
+    private func updateDashboardWindowTitle() {
+        let title: String
+        switch selectedView {
+        case .dashboard:
+            title = "Dashboard"
+        case .settings:
+            title = "Settings - \(currentSettingsTabTitle)"
+        case .monitor:
+            title = "System Monitor"
+        }
+
+        DashboardWindowController.shared.updateWindowTitle(title)
     }
 }
 
@@ -395,4 +440,5 @@ extension Notification.Name {
     static let dashboardShowSettings = Notification.Name("dashboardShowSettings")
     static let dashboardDidBecomeKey = Notification.Name("dashboardDidBecomeKey")
     static let toggleSettings = Notification.Name("toggleSettings")
+    static let settingsSelectedTabDidChange = Notification.Name("settingsSelectedTabDidChange")
 }

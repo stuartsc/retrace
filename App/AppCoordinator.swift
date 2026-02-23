@@ -121,6 +121,16 @@ public actor AppCoordinator {
     // Segment tracking (app focus sessions - Rewind compatible)
     private var currentSegmentID: Int64?
 
+    private struct RecentClosedNilBrowserURLSegment: Sendable {
+        let segmentID: Int64
+        let bundleID: String
+        let normalizedWindowName: String
+        let closedAt: Date
+    }
+
+    private var recentClosedNilBrowserURLSegments: [RecentClosedNilBrowserURLSegment] = []
+    private let recentClosedSegmentBackfillWindowSeconds: TimeInterval = 3.0
+
     // Idle detection - track last frame timestamp to detect gaps
     private var lastFrameTimestamp: Date?
 
@@ -1087,6 +1097,14 @@ public actor AppCoordinator {
     private func trackSessionChange(frame: CapturedFrame) async throws {
         let metadata = frame.metadata
         let captureConfig = await services.capture.getConfig()
+        let normalizedBrowserURL: String?
+        if let rawBrowserURL = metadata.browserURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawBrowserURL.isEmpty {
+            normalizedBrowserURL = rawBrowserURL
+        } else {
+            normalizedBrowserURL = nil
+        }
+        pruneRecentClosedNilBrowserURLSegments(referenceTime: frame.timestamp)
 
         // Get current segment if exists
         var currentSegment: Segment? = nil
@@ -1123,6 +1141,20 @@ public actor AppCoordinator {
                 }
                 try await services.database.updateSegmentEndDate(id: segID, endDate: segmentEndDate)
                 Log.debug("Closed segment: \(currentSegment?.bundleID ?? "unknown") - \(currentSegment?.windowName ?? "nil")", category: .app)
+
+                if let closedSegment = currentSegment,
+                   closedSegment.browserUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+                   let normalizedWindowName = normalizedWindowNameForStrictBackfill(closedSegment.windowName) {
+                    recentClosedNilBrowserURLSegments.append(
+                        RecentClosedNilBrowserURLSegment(
+                            segmentID: segID,
+                            bundleID: closedSegment.bundleID,
+                            normalizedWindowName: normalizedWindowName,
+                            closedAt: segmentEndDate
+                        )
+                    )
+                    pruneRecentClosedNilBrowserURLSegments(referenceTime: frame.timestamp)
+                }
             }
 
             // Create new segment
@@ -1131,16 +1163,90 @@ public actor AppCoordinator {
                 startDate: frame.timestamp,
                 endDate: frame.timestamp,  // Will be updated as frames are captured
                 windowName: metadata.windowName,
-                browserUrl: metadata.browserURL,
+                browserUrl: normalizedBrowserURL,
                 type: 0  // 0 = screen capture
             )
 
             currentSegmentID = newSegmentID
-            Log.debug("Started segment: \(metadata.appBundleID ?? "unknown") - \(metadata.windowName ?? "nil")", category: .app)
+            Log.debug(
+                "Started segment: \(metadata.appBundleID ?? "unknown") - \(metadata.windowName ?? "nil") [segmentID=\(newSegmentID), browserURL=\(normalizedBrowserURL == nil ? "nil" : "present")]",
+                category: .app
+            )
+            if let browserURL = normalizedBrowserURL {
+                try await backfillRecentClosedNilBrowserURLSegments(
+                    bundleID: metadata.appBundleID,
+                    windowName: metadata.windowName,
+                    browserURL: browserURL,
+                    referenceTime: frame.timestamp
+                )
+            }
+        } else if let segID = currentSegmentID,
+                  currentSegment?.browserUrl == nil,
+                  let browserURL = normalizedBrowserURL {
+            try await services.database.updateSegmentBrowserURL(id: segID, browserURL: browserURL)
+            let host = URL(string: browserURL)?.host ?? browserURL
+            Log.info(
+                "[SegmentURL] Backfilled browserUrl for segmentID=\(segID), bundle=\(metadata.appBundleID ?? "unknown"), host=\(host)",
+                category: .app
+            )
+            try await backfillRecentClosedNilBrowserURLSegments(
+                bundleID: metadata.appBundleID,
+                windowName: metadata.windowName,
+                browserURL: browserURL,
+                referenceTime: frame.timestamp
+            )
         }
 
         // Update last frame timestamp for idle detection
         lastFrameTimestamp = frame.timestamp
+    }
+
+    private func normalizedWindowNameForStrictBackfill(_ windowName: String?) -> String? {
+        guard let windowName else { return nil }
+        let normalized = windowName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .joined(separator: " ")
+            .lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private func pruneRecentClosedNilBrowserURLSegments(referenceTime: Date) {
+        recentClosedNilBrowserURLSegments.removeAll { entry in
+            referenceTime.timeIntervalSince(entry.closedAt) > recentClosedSegmentBackfillWindowSeconds
+        }
+    }
+
+    private func backfillRecentClosedNilBrowserURLSegments(
+        bundleID: String?,
+        windowName: String?,
+        browserURL: String,
+        referenceTime: Date
+    ) async throws {
+        guard let bundleID,
+              let normalizedWindowName = normalizedWindowNameForStrictBackfill(windowName) else {
+            return
+        }
+
+        pruneRecentClosedNilBrowserURLSegments(referenceTime: referenceTime)
+
+        let matchingEntries = recentClosedNilBrowserURLSegments.filter { entry in
+            entry.bundleID == bundleID && entry.normalizedWindowName == normalizedWindowName
+        }
+        guard !matchingEntries.isEmpty else { return }
+
+        let matchingSegmentIDs = Set(matchingEntries.map(\.segmentID))
+        for segmentID in matchingSegmentIDs {
+            try await services.database.updateSegmentBrowserURL(id: segmentID, browserURL: browserURL)
+        }
+
+        recentClosedNilBrowserURLSegments.removeAll { matchingSegmentIDs.contains($0.segmentID) }
+        let host = URL(string: browserURL)?.host ?? browserURL
+        Log.info(
+            "[SegmentURL] Backfilled browserUrl for \(matchingSegmentIDs.count) recently-closed segment(s), bundle=\(bundleID), windowName=\(windowName ?? "nil"), host=\(host)",
+            category: .app
+        )
     }
 
     /// Audio pipeline: AudioCapture → AudioProcessing (whisper.cpp) → Database

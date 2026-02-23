@@ -137,6 +137,17 @@ public class SimpleTimelineViewModel: ObservableObject {
     private static let isTimelineStateTraceEnabled: Bool =
         UserDefaults.standard.bool(forKey: "retrace.debug.timelineStateTrace")
 
+    /// Enables filtered-timeline scrub diagnostics (tracks requested frame identities during fast scroll).
+    /// In release builds, opt in with:
+    /// `defaults write io.retrace.app retrace.debug.filteredScrubDiagnostics -bool YES`
+    private static let isFilteredScrubDiagnosticsEnabled: Bool = {
+        #if DEBUG
+        return true
+        #else
+        return UserDefaults.standard.bool(forKey: "retrace.debug.filteredScrubDiagnostics")
+        #endif
+    }()
+
     // MARK: - Published State
 
     /// All loaded frames with their preloaded video info
@@ -3127,6 +3138,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Clamp to valid range
         let clampedIndex = max(0, min(frames.count - 1, index))
         guard clampedIndex != currentIndex else { return }
+        let previousIndex = currentIndex
 
         // Clear search highlight when manually navigating
         if isShowingSearchHighlight {
@@ -3142,6 +3154,18 @@ public class SimpleTimelineViewModel: ObservableObject {
         TimelineWindowController.shared.accumulateScrubDistance(Double(distance))
 
         currentIndex = clampedIndex
+
+        if Self.isFilteredScrubDiagnosticsEnabled,
+           filterCriteria.hasActiveFilters,
+           let timelineFrame = currentTimelineFrame {
+            let selectedApps = (filterCriteria.selectedApps ?? []).sorted().joined(separator: ",")
+            let videoFrameIndex = timelineFrame.videoInfo?.frameIndex ?? -1
+            let videoSuffix = timelineFrame.videoInfo.map { String($0.videoPath.suffix(32)) } ?? "nil"
+            Log.debug(
+                "[FILTER-SCRUB] fromScroll=\(fromScroll) index=\(previousIndex)->\(clampedIndex) frameID=\(timelineFrame.frame.id.value) ts=\(timelineFrame.frame.timestamp) bundle=\(timelineFrame.frame.metadata.appBundleID ?? "nil") selectedApps=[\(selectedApps)] videoFrameIndex=\(videoFrameIndex) videoPathSuffix=\(videoSuffix)",
+                category: .ui
+            )
+        }
 
         // Clear selection when scrolling - highlight follows the playhead
         selectedFrameIndex = nil

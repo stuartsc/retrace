@@ -11,6 +11,9 @@ struct BrowserURLAppleScriptResult: Sendable {
     let completedWithoutTimeout: Bool
     let skippedByCooldown: Bool
     let returnedFromCache: Bool
+    let scriptSyntaxError: Bool
+    let failureCode: Int?
+    let elapsedMs: Double?
 
     init(
         output: String? = nil,
@@ -18,7 +21,10 @@ struct BrowserURLAppleScriptResult: Sendable {
         permissionDenied: Bool = false,
         completedWithoutTimeout: Bool = false,
         skippedByCooldown: Bool = false,
-        returnedFromCache: Bool = false
+        returnedFromCache: Bool = false,
+        scriptSyntaxError: Bool = false,
+        failureCode: Int? = nil,
+        elapsedMs: Double? = nil
     ) {
         self.output = output
         self.didTimeOut = didTimeOut
@@ -26,12 +32,34 @@ struct BrowserURLAppleScriptResult: Sendable {
         self.completedWithoutTimeout = completedWithoutTimeout
         self.skippedByCooldown = skippedByCooldown
         self.returnedFromCache = returnedFromCache
+        self.scriptSyntaxError = scriptSyntaxError
+        self.failureCode = failureCode
+        self.elapsedMs = elapsedMs
     }
 }
 
 struct BrowserURLAppleScriptKey: Hashable, Sendable {
     let bundleID: String
     let pid: pid_t
+    let windowIdentity: String
+}
+
+struct BrowserURLAppleScriptBenchmarkSnapshot: Sendable {
+    let periodStart: Date
+    let periodEnd: Date
+    let periodDurationSeconds: TimeInterval
+    let attempts: Int
+    let subprocessLaunches: Int
+    let cacheHits: Int
+    let inFlightJoins: Int
+    let cooldownSkips: Int
+    let successes: Int
+    let failures: Int
+    let timeouts: Int
+    let permissionDenied: Int
+    let syntaxErrors: Int
+    let emptyOutputs: Int
+    let launchesByBundle: [String: Int]
 }
 
 actor BrowserURLAppleScriptCoordinator {
@@ -40,7 +68,8 @@ actor BrowserURLAppleScriptCoordinator {
         _ browserBundleID: String,
         _ pid: pid_t,
         _ timeoutSeconds: TimeInterval,
-        _ isBootstrapTimeout: Bool
+        _ isBootstrapTimeout: Bool,
+        _ scriptLabel: String
     ) async -> BrowserURLAppleScriptResult
 
     private enum PermissionState: Sendable {
@@ -56,7 +85,24 @@ actor BrowserURLAppleScriptCoordinator {
     private struct BackoffState: Sendable {
         var timeoutFailures: Int = 0
         var deniedFailures: Int = 0
+        var syntaxFailures: Int = 0
         var nextAllowedAt: Date?
+    }
+
+    private struct BenchmarkCounters: Sendable {
+        var periodStart: Date = Date()
+        var attempts: Int = 0
+        var subprocessLaunches: Int = 0
+        var cacheHits: Int = 0
+        var inFlightJoins: Int = 0
+        var cooldownSkips: Int = 0
+        var successes: Int = 0
+        var failures: Int = 0
+        var timeouts: Int = 0
+        var permissionDenied: Int = 0
+        var syntaxErrors: Int = 0
+        var emptyOutputs: Int = 0
+        var launchesByBundle: [String: Int] = [:]
     }
 
     private let runner: Runner
@@ -65,13 +111,17 @@ actor BrowserURLAppleScriptCoordinator {
     private let cacheTTLSeconds: TimeInterval
     private let timeoutBaseBackoffSeconds: TimeInterval
     private let deniedBaseBackoffSeconds: TimeInterval
+    private let syntaxBaseBackoffSeconds: TimeInterval
     private let maxTimeoutBackoffSeconds: TimeInterval
     private let maxDeniedBackoffSeconds: TimeInterval
+    private let maxSyntaxBackoffSeconds: TimeInterval
+    private let benchmarkLogIntervalSeconds: TimeInterval
 
     private var permissionStateByBrowser: [String: PermissionState] = [:]
     private var inFlight: [BrowserURLAppleScriptKey: Task<BrowserURLAppleScriptResult, Never>] = [:]
     private var cache: [BrowserURLAppleScriptKey: CacheEntry] = [:]
     private var backoffByKey: [BrowserURLAppleScriptKey: BackoffState] = [:]
+    private var benchmark = BenchmarkCounters()
 
     init(
         bootstrapTimeoutSeconds: TimeInterval = 45.0,
@@ -79,8 +129,11 @@ actor BrowserURLAppleScriptCoordinator {
         cacheTTLSeconds: TimeInterval = 3.0,
         timeoutBaseBackoffSeconds: TimeInterval = 2.0,
         deniedBaseBackoffSeconds: TimeInterval = 15.0,
+        syntaxBaseBackoffSeconds: TimeInterval = 15.0,
         maxTimeoutBackoffSeconds: TimeInterval = 30.0,
         maxDeniedBackoffSeconds: TimeInterval = 120.0,
+        maxSyntaxBackoffSeconds: TimeInterval = 300.0,
+        benchmarkLogIntervalSeconds: TimeInterval = 30.0,
         runner: @escaping Runner
     ) {
         self.bootstrapTimeoutSeconds = bootstrapTimeoutSeconds
@@ -88,37 +141,79 @@ actor BrowserURLAppleScriptCoordinator {
         self.cacheTTLSeconds = cacheTTLSeconds
         self.timeoutBaseBackoffSeconds = timeoutBaseBackoffSeconds
         self.deniedBaseBackoffSeconds = deniedBaseBackoffSeconds
+        self.syntaxBaseBackoffSeconds = syntaxBaseBackoffSeconds
         self.maxTimeoutBackoffSeconds = maxTimeoutBackoffSeconds
         self.maxDeniedBackoffSeconds = maxDeniedBackoffSeconds
+        self.maxSyntaxBackoffSeconds = maxSyntaxBackoffSeconds
+        self.benchmarkLogIntervalSeconds = benchmarkLogIntervalSeconds
         self.runner = runner
     }
 
-    func execute(source: String, browserBundleID: String, pid: pid_t) async -> BrowserURLAppleScriptResult {
-        let key = BrowserURLAppleScriptKey(bundleID: browserBundleID, pid: pid)
+    func execute(
+        source: String,
+        browserBundleID: String,
+        pid: pid_t,
+        windowCacheKey: String? = nil,
+        scriptLabel: String = "unspecified",
+        cacheTTLOverrideSeconds: TimeInterval? = nil,
+        outputValidator: @Sendable (String) -> Bool = { _ in true }
+    ) async -> BrowserURLAppleScriptResult {
+        let normalizedWindowIdentity = windowCacheKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let key = BrowserURLAppleScriptKey(
+            bundleID: browserBundleID,
+            pid: pid,
+            windowIdentity: normalizedWindowIdentity
+        )
         let now = Date()
+        maybeEmitBenchmarkLogIfNeeded(now: now)
+        benchmark.attempts += 1
+        let effectiveCacheTTL = max(0, cacheTTLOverrideSeconds ?? cacheTTLSeconds)
 
         if let task = inFlight[key] {
+            benchmark.inFlightJoins += 1
             return await task.value
         }
 
-        if let cached = cache[key], now.timeIntervalSince(cached.timestamp) <= cacheTTLSeconds {
-            return BrowserURLAppleScriptResult(
-                output: cached.url,
-                completedWithoutTimeout: true,
-                returnedFromCache: true
-            )
+        if let cached = cache[key] {
+            let ageSeconds = now.timeIntervalSince(cached.timestamp)
+            if ageSeconds <= effectiveCacheTTL {
+                if cacheTTLOverrideSeconds != nil {
+                    Log.debug(
+                        "[AppleScript] [\(browserBundleID):\(pid)] [\(scriptLabel)] cache hit age=\(String(format: "%.2f", ageSeconds))s ttl=\(String(format: "%.2f", effectiveCacheTTL))s windowKey=\(normalizedWindowIdentity.isEmpty ? "<empty>" : normalizedWindowIdentity)",
+                        category: .capture
+                    )
+                }
+                benchmark.cacheHits += 1
+                return BrowserURLAppleScriptResult(
+                    output: cached.url,
+                    completedWithoutTimeout: true,
+                    returnedFromCache: true
+                )
+            }
         }
 
         if let nextAllowedAt = backoffByKey[key]?.nextAllowedAt, nextAllowedAt > now {
+            benchmark.cooldownSkips += 1
             return BrowserURLAppleScriptResult(skippedByCooldown: true)
         }
 
         let permissionState = permissionStateByBrowser[browserBundleID] ?? .unknown
         let isBootstrapTimeout = permissionState == .unknown
         let timeoutSeconds = isBootstrapTimeout ? bootstrapTimeoutSeconds : normalTimeoutSeconds
+        benchmark.subprocessLaunches += 1
+        benchmark.launchesByBundle[browserBundleID, default: 0] += 1
 
         let task = Task<BrowserURLAppleScriptResult, Never> {
-            await runner(source, browserBundleID, pid, timeoutSeconds, isBootstrapTimeout)
+            await runner(
+                source,
+                browserBundleID,
+                pid,
+                timeoutSeconds,
+                isBootstrapTimeout,
+                scriptLabel
+            )
         }
         inFlight[key] = task
         defer {
@@ -131,18 +226,46 @@ actor BrowserURLAppleScriptCoordinator {
             permissionStateByBrowser[browserBundleID] = .settled
         }
 
-        if let output = result.output, !output.isEmpty {
-            cache[key] = CacheEntry(url: output, timestamp: Date())
+        if let rawOutput = result.output?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawOutput.isEmpty,
+           outputValidator(rawOutput) {
+            benchmark.successes += 1
+            cache[key] = CacheEntry(url: rawOutput, timestamp: Date())
             backoffByKey.removeValue(forKey: key)
-            return result
+            return BrowserURLAppleScriptResult(
+                output: rawOutput,
+                didTimeOut: result.didTimeOut,
+                permissionDenied: result.permissionDenied,
+                completedWithoutTimeout: result.completedWithoutTimeout,
+                skippedByCooldown: result.skippedByCooldown,
+                returnedFromCache: result.returnedFromCache,
+                scriptSyntaxError: result.scriptSyntaxError,
+                failureCode: result.failureCode,
+                elapsedMs: result.elapsedMs
+            )
         }
 
-        if result.didTimeOut || result.permissionDenied {
+        benchmark.failures += 1
+        if result.didTimeOut {
+            benchmark.timeouts += 1
+        }
+        if result.permissionDenied {
+            benchmark.permissionDenied += 1
+        }
+        if result.scriptSyntaxError {
+            benchmark.syntaxErrors += 1
+        }
+        if !result.didTimeOut && !result.permissionDenied && !result.scriptSyntaxError {
+            benchmark.emptyOutputs += 1
+        }
+
+        if result.didTimeOut || result.permissionDenied || result.scriptSyntaxError {
             var backoff = backoffByKey[key] ?? BackoffState()
 
             if result.didTimeOut {
                 backoff.timeoutFailures += 1
                 backoff.deniedFailures = 0
+                backoff.syntaxFailures = 0
                 let delay = min(
                     maxTimeoutBackoffSeconds,
                     timeoutBaseBackoffSeconds * pow(2.0, Double(max(0, backoff.timeoutFailures - 1)))
@@ -150,9 +273,20 @@ actor BrowserURLAppleScriptCoordinator {
                 backoff.nextAllowedAt = now.addingTimeInterval(delay)
             } else if result.permissionDenied {
                 backoff.deniedFailures += 1
+                backoff.timeoutFailures = 0
+                backoff.syntaxFailures = 0
                 let delay = min(
                     maxDeniedBackoffSeconds,
                     deniedBaseBackoffSeconds * pow(2.0, Double(max(0, backoff.deniedFailures - 1)))
+                )
+                backoff.nextAllowedAt = now.addingTimeInterval(delay)
+            } else if result.scriptSyntaxError {
+                backoff.syntaxFailures += 1
+                backoff.timeoutFailures = 0
+                backoff.deniedFailures = 0
+                let delay = min(
+                    maxSyntaxBackoffSeconds,
+                    syntaxBaseBackoffSeconds * pow(2.0, Double(max(0, backoff.syntaxFailures - 1)))
                 )
                 backoff.nextAllowedAt = now.addingTimeInterval(delay)
             }
@@ -161,6 +295,57 @@ actor BrowserURLAppleScriptCoordinator {
         }
 
         return result
+    }
+
+    func benchmarkSnapshot(reset: Bool = false) -> BrowserURLAppleScriptBenchmarkSnapshot {
+        let now = Date()
+        let snapshot = BrowserURLAppleScriptBenchmarkSnapshot(
+            periodStart: benchmark.periodStart,
+            periodEnd: now,
+            periodDurationSeconds: max(0, now.timeIntervalSince(benchmark.periodStart)),
+            attempts: benchmark.attempts,
+            subprocessLaunches: benchmark.subprocessLaunches,
+            cacheHits: benchmark.cacheHits,
+            inFlightJoins: benchmark.inFlightJoins,
+            cooldownSkips: benchmark.cooldownSkips,
+            successes: benchmark.successes,
+            failures: benchmark.failures,
+            timeouts: benchmark.timeouts,
+            permissionDenied: benchmark.permissionDenied,
+            syntaxErrors: benchmark.syntaxErrors,
+            emptyOutputs: benchmark.emptyOutputs,
+            launchesByBundle: benchmark.launchesByBundle
+        )
+        if reset {
+            benchmark = BenchmarkCounters(periodStart: now)
+        }
+        return snapshot
+    }
+
+    private func maybeEmitBenchmarkLogIfNeeded(now: Date) {
+        guard benchmarkLogIntervalSeconds > 0 else { return }
+        let elapsed = now.timeIntervalSince(benchmark.periodStart)
+        guard elapsed >= benchmarkLogIntervalSeconds else { return }
+
+        if benchmark.attempts > 0 || benchmark.subprocessLaunches > 0 {
+            let launchRate = benchmark.subprocessLaunches > 0 ? Double(benchmark.subprocessLaunches) / max(elapsed, 0.001) : 0
+            let cacheHitRate = benchmark.attempts > 0 ? (Double(benchmark.cacheHits) / Double(benchmark.attempts)) * 100.0 : 0
+            let topBundles = benchmark.launchesByBundle
+                .sorted { lhs, rhs in
+                    if lhs.value == rhs.value { return lhs.key < rhs.key }
+                    return lhs.value > rhs.value
+                }
+                .prefix(3)
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ", ")
+
+            Log.info(
+                "[AppleScriptBench] window=\(String(format: "%.1f", elapsed))s attempts=\(benchmark.attempts) launches=\(benchmark.subprocessLaunches) cacheHits=\(benchmark.cacheHits) inFlightJoins=\(benchmark.inFlightJoins) cooldownSkips=\(benchmark.cooldownSkips) success=\(benchmark.successes) failures=\(benchmark.failures) timeouts=\(benchmark.timeouts) denied=\(benchmark.permissionDenied) syntax=\(benchmark.syntaxErrors) empty=\(benchmark.emptyOutputs) launchRate=\(String(format: "%.2f", launchRate))/s cacheHitRate=\(String(format: "%.1f", cacheHitRate))% topBundles=[\(topBundles)]",
+                category: .capture
+            )
+        }
+
+        benchmark = BenchmarkCounters(periodStart: now)
     }
 }
 
@@ -171,7 +356,7 @@ actor BrowserURLAppleScriptCoordinator {
 /// - Safari: AXToolbar → AXTextField (address bar value)
 /// - Chrome/Edge/Brave: AXDocument attribute on window, with AXManualAccessibility fallback
 /// - Arc: AppleScript (Chromium-based but AX tree often incomplete)
-/// - Firefox: AppleScript (Gecko doesn't expose URL via AX)
+/// - Firefox: Disabled (URL extraction intentionally skipped)
 /// - Generic fallback: Find AXWebArea element and read AXURL attribute
 struct BrowserURLExtractor: Sendable {
 
@@ -243,16 +428,34 @@ struct BrowserURLExtractor: Sendable {
     ]
 
     private static let appleScriptCoordinator = BrowserURLAppleScriptCoordinator(
-        runner: { source, browserBundleID, pid, timeoutSeconds, isBootstrapTimeout in
+        runner: { source, browserBundleID, pid, timeoutSeconds, isBootstrapTimeout, scriptLabel in
             await runAppleScriptViaProcess(
                 source,
                 browserBundleID: browserBundleID,
                 pid: pid,
                 timeoutSeconds: timeoutSeconds,
-                isBootstrapTimeout: isBootstrapTimeout
+                isBootstrapTimeout: isBootstrapTimeout,
+                scriptLabel: scriptLabel
             )
         }
     )
+    private static let webAppAppleScriptCacheTTLSeconds: TimeInterval = 8.0
+    private static let webAppTitleMatchRetryDelayMilliseconds: Int = 120
+    private static let hostMatchNoWindowTitleToken = "__NO_WINDOW_TITLE__"
+    private static let hostMatchNoHostWindowsToken = "__NO_HOST_WINDOWS__"
+    private static let hostMatchStrictMismatchToken = "__STRICT_TITLE_MISMATCH__"
+    private static let lowSignalWebAppTitles: Set<String> = [
+        "chatgpt web - chatgpt",
+        "chatgpt"
+    ]
+
+    private enum HostBrowserTitleMatchMissReason: String, Sendable {
+        case noWindowTitle = "no_window_title"
+        case noHostWindows = "no_host_windows"
+        case strictTitleMismatch = "strict_title_mismatch"
+        case emptyOutput = "empty_output"
+        case unknown = "unknown"
+    }
 
     /// Check if a bundle ID is a known browser
     static func isBrowser(_ bundleID: String) -> Bool {
@@ -272,6 +475,20 @@ struct BrowserURLExtractor: Sendable {
         return chromiumAppShimPrefixes.contains(where: { bundleID.hasPrefix($0) })
     }
 
+    private static func isChromiumAppShim(_ bundleID: String) -> Bool {
+        chromiumAppShimPrefixes.contains(where: { bundleID.hasPrefix($0) })
+    }
+
+    /// Map a Chromium app-shim bundle id (com.vendor.Browser.app.<id>)
+    /// to its host browser bundle id (com.vendor.Browser).
+    private static func hostBrowserBundleID(forChromiumAppShim bundleID: String) -> String? {
+        for prefix in chromiumAppShimPrefixes where bundleID.hasPrefix(prefix) {
+            guard prefix.hasSuffix(".app.") else { continue }
+            return String(prefix.dropLast(5))
+        }
+        return nil
+    }
+
     // MARK: - URL Extraction
 
     /// Get the current URL from a browser
@@ -284,17 +501,32 @@ struct BrowserURLExtractor: Sendable {
     /// 1. Browser-specific method (AX attributes or AppleScript)
     /// 2. Generic AXWebArea → AXURL traversal
     /// 3. Address bar text field search
-    static func getURL(bundleID: String, pid: pid_t) async -> String? {
+    static func getURL(bundleID: String, pid: pid_t, windowCacheKey: String? = nil) async -> String? {
+        if bundleID == "com.apple.finder" {
+            return await getFinderTargetURL(pid: pid, windowCacheKey: windowCacheKey)
+        }
+
+        // Firefox URL extraction is intentionally disabled.
+        if bundleID == "org.mozilla.firefox" {
+            return nil
+        }
+
+        guard isBrowser(bundleID) else {
+            return nil
+        }
+
         // Try browser-specific method first
         let url: String?
         if bundleID == "com.apple.Safari" {
             url = getSafariURL(pid: pid)
         } else if isChromiumBrowser(bundleID) {
-            url = getChromiumURL(pid: pid)
+            url = await getChromiumURL(
+                bundleID: bundleID,
+                pid: pid,
+                windowCacheKey: windowCacheKey
+            )
         } else if bundleID == "company.thebrowser.Browser" { // Arc
-            url = await getArcURL(pid: pid)
-        } else if bundleID == "org.mozilla.firefox" {
-            url = await getFirefoxURL(pid: pid)
+            url = await getArcURL(pid: pid, windowCacheKey: windowCacheKey)
         } else {
             url = nil
         }
@@ -303,8 +535,8 @@ struct BrowserURLExtractor: Sendable {
             return url
         }
 
-        // Fallback: Try generic AX-based URL extraction for any app
-        return getURLViaWebArea(pid: pid)
+        // Fallback: Try generic AX-based URL extraction for any browser.
+        return getURLViaWebArea(bundleID: bundleID, pid: pid)
     }
 
     // MARK: - Safari
@@ -350,7 +582,30 @@ struct BrowserURLExtractor: Sendable {
     /// This can be forced via:
     /// - Command line: --force-renderer-accessibility
     /// - Programmatically: Set AXManualAccessibility = true on the app element
-    private static func getChromiumURL(pid: pid_t) -> String? {
+    private static func getChromiumURL(
+        bundleID: String,
+        pid: pid_t,
+        windowCacheKey: String?
+    ) async -> String? {
+        if let url = getChromiumURLViaAX(pid: pid) {
+            return url
+        }
+
+        // Chromium app shims (PWAs) often hide URL attributes in AX.
+        if isChromiumAppShim(bundleID) {
+            if let url = await getWebAppURLViaAppleScript(
+                bundleID: bundleID,
+                pid: pid,
+                windowCacheKey: windowCacheKey
+            ) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    private static func getChromiumURLViaAX(pid: pid_t) -> String? {
         let appRef = AXUIElementCreateApplication(pid)
 
         // Try to enable accessibility on Chromium/Electron apps
@@ -386,12 +641,249 @@ struct BrowserURLExtractor: Sendable {
         return findURLInElement(window, depth: 0, maxDepth: 8)
     }
 
+    private static func getWebAppURLViaAppleScript(
+        bundleID: String,
+        pid: pid_t,
+        windowCacheKey: String?
+    ) async -> String? {
+        guard let hostBrowserBundleID = hostBrowserBundleID(forChromiumAppShim: bundleID) else {
+            return nil
+        }
+
+        // Chrome-style app shims do not reliably expose tab URL terms directly.
+        // Use host-browser tab matching as the only AppleScript path.
+        return await getChromiumAppShimURLViaHostBrowserAppleScript(
+            appShimBundleID: bundleID,
+            hostBrowserBundleID: hostBrowserBundleID,
+            pid: pid,
+            windowCacheKey: windowCacheKey
+        )
+    }
+
+    /// Chromium app-shim windows often do not expose `active tab` in their own
+    /// AppleScript dictionary. Query the host browser instead, then match by title.
+    private static func getChromiumAppShimURLViaHostBrowserAppleScript(
+        appShimBundleID: String,
+        hostBrowserBundleID: String,
+        pid: pid_t,
+        windowCacheKey: String?
+    ) async -> String? {
+        let firstAttempt = await runChromiumAppShimHostBrowserTitleMatch(
+            appShimBundleID: appShimBundleID,
+            hostBrowserBundleID: hostBrowserBundleID,
+            pid: pid,
+            windowCacheKey: windowCacheKey,
+            scriptLabel: "app-shim-host-browser-title-match"
+        )
+
+        if let url = extractValidatedURL(from: firstAttempt) {
+            let source = firstAttempt.returnedFromCache ? "host browser cache" : "host browser"
+            if firstAttempt.returnedFromCache {
+                Log.debug("[BrowserURL] [\(appShimBundleID)] URL extracted via \(source) (\(hostBrowserBundleID) strict title match)", category: .capture)
+            } else {
+                Log.info("[BrowserURL] [\(appShimBundleID)] ✅ URL extracted via \(source) \(hostBrowserBundleID) strict title match", category: .capture)
+            }
+            return url
+        }
+
+        if firstAttempt.skippedByCooldown {
+            Log.debug("[BrowserURL] [\(appShimBundleID)] host-browser AppleScript in cooldown; skipping for this capture cycle", category: .capture)
+            return nil
+        }
+        if firstAttempt.didTimeOut {
+            Log.warning("[BrowserURL] [\(appShimBundleID)] host-browser AppleScript timed out for \(hostBrowserBundleID)", category: .capture)
+            return nil
+        }
+
+        let firstReason = hostBrowserMissReason(from: firstAttempt.output)
+        Log.debug(
+            "[BrowserURL] [\(appShimBundleID)] host-browser strict title miss reason=\(firstReason.rawValue)",
+            category: .capture
+        )
+
+        guard shouldRetryHostBrowserMatch(windowCacheKey: windowCacheKey, missReason: firstReason) else {
+            return nil
+        }
+
+        try? await Task.sleep(for: .milliseconds(webAppTitleMatchRetryDelayMilliseconds), clock: .continuous)
+
+        let retryAttempt = await runChromiumAppShimHostBrowserTitleMatch(
+            appShimBundleID: appShimBundleID,
+            hostBrowserBundleID: hostBrowserBundleID,
+            pid: pid,
+            windowCacheKey: windowCacheKey,
+            scriptLabel: "app-shim-host-browser-title-match-retry"
+        )
+
+        if let url = extractValidatedURL(from: retryAttempt) {
+            let source = retryAttempt.returnedFromCache ? "host browser cache" : "host browser retry"
+            Log.info(
+                "[BrowserURL] [\(appShimBundleID)] ✅ URL extracted via \(source) \(hostBrowserBundleID) strict title match (reason=retry_success, delayMs=\(webAppTitleMatchRetryDelayMilliseconds))",
+                category: .capture
+            )
+            return url
+        }
+
+        let retryReason = hostBrowserMissReason(from: retryAttempt.output)
+        Log.debug(
+            "[BrowserURL] [\(appShimBundleID)] host-browser strict title miss reason=retry_empty initial=\(firstReason.rawValue) final=\(retryReason.rawValue)",
+            category: .capture
+        )
+        return nil
+    }
+
+    private static func runChromiumAppShimHostBrowserTitleMatch(
+        appShimBundleID: String,
+        hostBrowserBundleID: String,
+        pid: pid_t,
+        windowCacheKey: String?,
+        scriptLabel: String
+    ) async -> BrowserURLAppleScriptResult {
+        guard let matchWindowTitle = normalizedWindowTitleForHostMatch(windowCacheKey) else {
+            return BrowserURLAppleScriptResult(
+                output: hostMatchNoWindowTitleToken,
+                completedWithoutTimeout: true
+            )
+        }
+
+        return await appleScriptCoordinator.execute(
+            source: chromiumAppShimHostBrowserTitleMatchScript(
+                hostBrowserBundleID: hostBrowserBundleID,
+                matchWindowTitle: matchWindowTitle
+            ),
+            browserBundleID: appShimBundleID,
+            pid: pid,
+            windowCacheKey: windowCacheKey,
+            scriptLabel: scriptLabel,
+            cacheTTLOverrideSeconds: webAppAppleScriptCacheTTLSeconds,
+            outputValidator: { output in
+                looksLikeURL(output) && !isHostBrowserDiagnosticToken(output)
+            }
+        )
+    }
+
+    private static func chromiumAppShimHostBrowserTitleMatchScript(
+        hostBrowserBundleID: String,
+        matchWindowTitle: String
+    ) -> String {
+        let escapedMatchTitle = appleScriptEscaped(matchWindowTitle)
+        return """
+        set matchTitle to "\(escapedMatchTitle)"
+        if matchTitle is missing value then set matchTitle to ""
+        if matchTitle is "" then return "\(hostMatchNoWindowTitleToken)"
+
+        tell application id "\(hostBrowserBundleID)"
+            if (count of windows) = 0 then return "\(hostMatchNoHostWindowsToken)"
+
+            repeat with w in windows
+                set tabTitle to ""
+                set tabURL to ""
+                try
+                    set tabTitle to title of active tab of w
+                    set tabURL to URL of active tab of w
+                end try
+
+                if tabURL is not "" and tabTitle is not "" then
+                    if matchTitle is equal to tabTitle then
+                        return tabURL
+                    end if
+                    if matchTitle ends with (" - " & tabTitle) then
+                        return tabURL
+                    end if
+                end if
+            end repeat
+        end tell
+
+        return "\(hostMatchStrictMismatchToken)"
+        """
+    }
+
+    private static func extractValidatedURL(from result: BrowserURLAppleScriptResult) -> String? {
+        guard let output = result.output?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty,
+              looksLikeURL(output),
+              !isHostBrowserDiagnosticToken(output) else {
+            return nil
+        }
+        return output
+    }
+
+    private static func hostBrowserMissReason(from output: String?) -> HostBrowserTitleMatchMissReason {
+        let token = output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch token {
+        case hostMatchNoWindowTitleToken:
+            return .noWindowTitle
+        case hostMatchNoHostWindowsToken:
+            return .noHostWindows
+        case hostMatchStrictMismatchToken:
+            return .strictTitleMismatch
+        case "":
+            return .emptyOutput
+        default:
+            return .unknown
+        }
+    }
+
+    private static func shouldRetryHostBrowserMatch(
+        windowCacheKey: String?,
+        missReason: HostBrowserTitleMatchMissReason
+    ) -> Bool {
+        let normalizedTitle = normalizedTitleForStrictMatch(windowCacheKey)
+        guard !normalizedTitle.isEmpty, lowSignalWebAppTitles.contains(normalizedTitle) else {
+            return false
+        }
+
+        switch missReason {
+        case .noWindowTitle, .strictTitleMismatch, .emptyOutput, .unknown:
+            return true
+        case .noHostWindows:
+            return false
+        }
+    }
+
+    private static func normalizedWindowTitleForHostMatch(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        let collapsed = trimmed
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .joined(separator: " ")
+        return collapsed.isEmpty ? nil : collapsed
+    }
+
+    private static func normalizedTitleForStrictMatch(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "" }
+        return trimmed
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    private static func isHostBrowserDiagnosticToken(_ output: String) -> Bool {
+        switch output {
+        case hostMatchNoWindowTitleToken, hostMatchNoHostWindowsToken, hostMatchStrictMismatchToken:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func appleScriptEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+
     // MARK: - Arc Browser
 
     /// Extract URL from Arc browser
     /// Arc is Chromium-based but often has an incomplete AX tree.
     /// AppleScript is the most reliable method.
-    private static func getArcURL(pid: pid_t) async -> String? {
+    private static func getArcURL(pid: pid_t, windowCacheKey: String?) async -> String? {
         Log.debug("[BrowserURL] Attempting Arc URL extraction via AppleScript", category: .capture)
 
         // Method 1: AppleScript (most reliable)
@@ -406,7 +898,9 @@ struct BrowserURLExtractor: Sendable {
             end tell
             """,
             browserBundleID: arcBundleID,
-            pid: pid
+            pid: pid,
+            windowCacheKey: windowCacheKey,
+            scriptLabel: "arc-method-1"
         )
         if let url = method1Result.output {
             let source = method1Result.returnedFromCache ? "cache" : "AppleScript method 1"
@@ -432,7 +926,9 @@ struct BrowserURLExtractor: Sendable {
                 end tell
                 """,
                 browserBundleID: arcBundleID,
-                pid: pid
+                pid: pid,
+                windowCacheKey: windowCacheKey,
+                scriptLabel: "arc-method-2"
             )
             if let url = method2Result.output {
                 let source = method2Result.returnedFromCache ? "cache" : "AppleScript method 2"
@@ -444,7 +940,7 @@ struct BrowserURLExtractor: Sendable {
         Log.debug("[BrowserURL] Arc AppleScript methods failed, falling back to Chromium AX approach", category: .capture)
 
         // Method 3: Fall back to Chromium AX approach
-        let chromiumResult = getChromiumURL(pid: pid)
+        let chromiumResult = getChromiumURLViaAX(pid: pid)
         if chromiumResult != nil {
             Log.info("[BrowserURL] ✅ Arc URL extracted via Chromium AX fallback", category: .capture)
         } else {
@@ -453,53 +949,44 @@ struct BrowserURLExtractor: Sendable {
         return chromiumResult
     }
 
-    // MARK: - Firefox
-
-    /// Extract URL from Firefox using AppleScript
-    /// Firefox (Gecko) doesn't expose the URL via standard AX attributes.
-    ///
-    /// Note: Firefox's AppleScript support is limited. If this doesn't work,
-    /// we fall back to AX text field search in the focused window.
-    private static func getFirefoxURL(pid: pid_t) async -> String? {
-        let firefoxBundleID = "org.mozilla.firefox"
-        let appleScriptResult = await appleScriptCoordinator.execute(
+    private static func getFinderTargetURL(pid: pid_t, windowCacheKey: String?) async -> String? {
+        let finderBundleID = "com.apple.finder"
+        let finderResult = await appleScriptCoordinator.execute(
             source:
             """
-            tell application "Firefox"
-                if (count of windows) > 0 then
-                    get URL of active tab of front window
+            tell application id "com.apple.finder"
+                if (count of Finder windows) > 0 then
+                    set u to URL of target of front Finder window
+                    if u is not missing value and u is not "" then
+                        return u
+                    end if
                 end if
+                return URL of desktop
             end tell
             """,
-            browserBundleID: firefoxBundleID,
-            pid: pid
+            browserBundleID: finderBundleID,
+            pid: pid,
+            windowCacheKey: windowCacheKey,
+            scriptLabel: "finder-target-url"
         )
-        if let url = appleScriptResult.output {
-            return url
-        }
 
-        if appleScriptResult.skippedByCooldown {
-            Log.debug("[BrowserURL] Firefox AppleScript in cooldown; skipping launch in this capture cycle", category: .capture)
-        } else if appleScriptResult.didTimeOut {
-            Log.warning("[BrowserURL] Firefox AppleScript timed out; retry will use bootstrap timeout until permission settles", category: .capture)
-        }
-
-        Log.debug("[BrowserURL] Firefox AppleScript failed, trying AX text field fallback", category: .capture)
-
-        let appRef = AXUIElementCreateApplication(pid)
-        guard let window: AXUIElement = getAXAttribute(appRef, kAXFocusedWindowAttribute) else {
+        guard let rawURL = finderResult.output?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawURL.isEmpty else {
             return nil
         }
 
-        return findURLInElement(window, depth: 0, maxDepth: 12)
+        return rawURL
     }
 
     // MARK: - Generic AXWebArea Approach
 
-    /// Find URL using generic AX traversal.
-    /// This path is intentionally app-agnostic and can return URL context from
-    /// non-browser apps that embed webviews (e.g. Electron apps).
-    private static func getURLViaWebArea(pid: pid_t) -> String? {
+    /// Find URL using generic AX traversal for browsers.
+    /// This fallback is intentionally browser-scoped.
+    private static func getURLViaWebArea(bundleID: String, pid: pid_t) -> String? {
+        guard isBrowser(bundleID) else {
+            return nil
+        }
         let appRef = AXUIElementCreateApplication(pid)
         enableAccessibilityIfNeeded(appRef)
 
@@ -648,8 +1135,14 @@ struct BrowserURLExtractor: Sendable {
         browserBundleID: String,
         pid: pid_t,
         timeoutSeconds: TimeInterval,
-        isBootstrapTimeout: Bool
+        isBootstrapTimeout: Bool,
+        scriptLabel: String
     ) async -> BrowserURLAppleScriptResult {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let elapsedMs: () -> Double = {
+            (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", source]
@@ -662,8 +1155,8 @@ struct BrowserURLExtractor: Sendable {
         do {
             try process.run()
         } catch {
-            Log.error("[AppleScript] [\(browserBundleID)] Failed to launch osascript subprocess", category: .capture, error: error)
-            return BrowserURLAppleScriptResult()
+            Log.error("[AppleScript] [\(browserBundleID)] [\(scriptLabel)] Failed to launch osascript subprocess", category: .capture, error: error)
+            return BrowserURLAppleScriptResult(elapsedMs: elapsedMs())
         }
 
         let didTimeout = await waitForProcessExitOrTimeout(
@@ -672,10 +1165,11 @@ struct BrowserURLExtractor: Sendable {
         )
         if didTimeout {
             let mode = isBootstrapTimeout ? "bootstrap timeout" : "normal timeout"
-            Log.warning("[AppleScript] [\(browserBundleID):\(pid)] osascript timed out after \(timeoutSeconds)s (\(mode)) - terminating subprocess", category: .capture)
+            let elapsed = elapsedMs()
+            Log.warning("[AppleScript] [\(browserBundleID):\(pid)] [\(scriptLabel)] osascript timed out after \(timeoutSeconds)s (\(mode), elapsed=\(String(format: "%.1f", elapsed))ms) - terminating subprocess", category: .capture)
             process.terminate()
             await waitForProcessExit(process)
-            return BrowserURLAppleScriptResult(didTimeOut: true)
+            return BrowserURLAppleScriptResult(didTimeOut: true, elapsedMs: elapsed)
         }
 
         let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
@@ -686,35 +1180,86 @@ struct BrowserURLExtractor: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         if process.terminationReason == .uncaughtSignal {
-            Log.error("[AppleScript] [\(browserBundleID)] osascript crashed with signal \(process.terminationStatus)", category: .capture)
+            Log.error("[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript crashed with signal \(process.terminationStatus)", category: .capture)
             if !stderr.isEmpty {
-                Log.error("[AppleScript] [\(browserBundleID)] osascript stderr: \(stderr)", category: .capture)
+                Log.error("[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript stderr: \(stderr)", category: .capture)
             }
-            return BrowserURLAppleScriptResult(completedWithoutTimeout: true)
+            return BrowserURLAppleScriptResult(completedWithoutTimeout: true, elapsedMs: elapsedMs())
         }
 
         guard process.terminationStatus == 0 else {
-            Log.error("[AppleScript] [\(browserBundleID)] osascript failed: \(stderr.isEmpty ? "Unknown error" : stderr) (code: \(process.terminationStatus))", category: .capture)
+            let normalizedStderr = stderr.isEmpty ? "Unknown error" : stderr.replacingOccurrences(of: "\n", with: " ")
+            let failureCode = parseAppleScriptFailureCode(from: normalizedStderr)
+            let scriptSyntaxError = failureCode == -2741
+            let codeSuffix = failureCode.map { ", applescriptCode=\($0)" } ?? ""
+
+            Log.error(
+                "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript failed (exitCode=\(process.terminationStatus)\(codeSuffix), elapsed=\(String(format: "%.1f", elapsedMs()))ms): \(normalizedStderr)",
+                category: .capture
+            )
+
             let permissionDenied = stderr.contains("-1743") || stderr.localizedCaseInsensitiveContains("not authorized")
             if permissionDenied {
                 Log.error("[AppleScript] ⚠️ Automation permission denied - user needs to grant permission in System Settings → Privacy & Security → Automation", category: .capture)
             }
+
+            if scriptSyntaxError {
+                Log.warning(
+                    "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] syntax error detected (code -2741); applying syntax-error cooldown to reduce subprocess churn",
+                    category: .capture
+                )
+            }
+
             return BrowserURLAppleScriptResult(
                 permissionDenied: permissionDenied,
-                completedWithoutTimeout: true
+                completedWithoutTimeout: true,
+                scriptSyntaxError: scriptSyntaxError,
+                failureCode: failureCode,
+                elapsedMs: elapsedMs()
             )
         }
 
         guard !output.isEmpty else {
-            Log.warning("[AppleScript] [\(browserBundleID)] Script executed but returned empty output", category: .capture)
-            return BrowserURLAppleScriptResult(completedWithoutTimeout: true)
+            Log.warning(
+                "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] Script executed but returned empty output (elapsed=\(String(format: "%.1f", elapsedMs()))ms)",
+                category: .capture
+            )
+            return BrowserURLAppleScriptResult(completedWithoutTimeout: true, elapsedMs: elapsedMs())
         }
 
-        Log.debug("[AppleScript] [\(browserBundleID)] Successfully got URL: \(output.prefix(50))...", category: .capture)
+        if isHostBrowserDiagnosticToken(output) {
+            Log.debug(
+                "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] Completed with diagnostic token \(output) in \(String(format: "%.1f", elapsedMs()))ms",
+                category: .capture
+            )
+            return BrowserURLAppleScriptResult(
+                output: output,
+                completedWithoutTimeout: true,
+                elapsedMs: elapsedMs()
+            )
+        }
+
+        Log.debug(
+            "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] Successfully got URL in \(String(format: "%.1f", elapsedMs()))ms: \(output.prefix(50))...",
+            category: .capture
+        )
         return BrowserURLAppleScriptResult(
             output: output,
-            completedWithoutTimeout: true
+            completedWithoutTimeout: true,
+            elapsedMs: elapsedMs()
         )
+    }
+
+    private static func parseAppleScriptFailureCode(from stderr: String) -> Int? {
+        guard let openParen = stderr.lastIndex(of: "("),
+              let closeParen = stderr[openParen...].firstIndex(of: ")"),
+              openParen < closeParen else {
+            return nil
+        }
+
+        let codeText = stderr[stderr.index(after: openParen)..<closeParen]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int(codeText)
     }
 
     private static func waitForProcessExit(_ process: Process) async {

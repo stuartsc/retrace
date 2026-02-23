@@ -521,6 +521,25 @@ public struct SimpleTimelineView: View {
 	    private func videoFrameContent(videoInfo: FrameVideoInfo) -> some View {
 	        let path = videoInfo.videoPath
 	        let pathWithExt = path + ".mp4"
+            let hasActiveFilters = viewModel.filterCriteria.hasActiveFilters
+            let selectedApps = (viewModel.filterCriteria.selectedApps ?? []).sorted()
+            let filteredFrameIndicesForVideo: Set<Int> = hasActiveFilters
+                ? Set(viewModel.frames.compactMap { entry in
+                    guard let info = entry.videoInfo, info.videoPath == videoInfo.videoPath else { return nil }
+                    return info.frameIndex
+                })
+                : []
+            let debugContext = viewModel.currentTimelineFrame.map {
+                VideoSeekDebugContext(
+                    frameID: $0.frame.id.value,
+                    timestamp: $0.frame.timestamp,
+                    currentIndex: viewModel.currentIndex,
+                    frameBundleID: $0.frame.metadata.appBundleID,
+                    hasActiveFilters: hasActiveFilters,
+                    selectedApps: selectedApps,
+                    filteredFrameIndicesForVideo: filteredFrameIndicesForVideo
+                )
+            }
 
 	        // Check if file exists FIRST - before trying to load it
 	        let fileExists = FileManager.default.fileExists(atPath: path) || FileManager.default.fileExists(atPath: pathWithExt)
@@ -554,7 +573,7 @@ public struct SimpleTimelineView: View {
 	            // Don't render video if we already know it will fail to load
 	            if fileReady && !viewModel.frameLoadError {
 	                FrameWithURLOverlay(viewModel: viewModel, onURLClicked: onClose) {
-	                    SimpleVideoFrameView(videoInfo: videoInfo, forceReload: .init(
+	                    SimpleVideoFrameView(videoInfo: videoInfo, debugContext: debugContext, forceReload: .init(
 	                        get: { viewModel.forceVideoReload },
 	                        set: { viewModel.forceVideoReload = $0 }
 	                    ), onLoadFailed: {
@@ -852,6 +871,36 @@ struct PeekModeBanner: View {
     }
 }
 
+struct VideoSeekDebugContext {
+    let frameID: Int64
+    let timestamp: Date
+    let currentIndex: Int
+    let frameBundleID: String?
+    let hasActiveFilters: Bool
+    let selectedApps: [String]
+    let filteredFrameIndicesForVideo: Set<Int>
+
+    var selectedAppsLabel: String {
+        selectedApps.isEmpty ? "none" : selectedApps.joined(separator: ",")
+    }
+
+    func containsFilteredFrameIndex(_ frameIndex: Int) -> Bool {
+        guard frameIndex >= 0 else { return false }
+        return filteredFrameIndicesForVideo.contains(frameIndex)
+    }
+
+    func nearestFilteredFrameIndices(around frameIndex: Int, limit: Int = 6) -> String {
+        guard !filteredFrameIndicesForVideo.isEmpty else { return "none" }
+        let nearest = filteredFrameIndicesForVideo
+            .sorted { lhs, rhs in
+                abs(lhs - frameIndex) < abs(rhs - frameIndex)
+            }
+            .prefix(limit)
+            .sorted()
+        return nearest.map(String.init).joined(separator: ",")
+    }
+}
+
 // MARK: - Simple Video Frame View
 
 /// Double-buffered video frame view using two AVPlayers
@@ -859,6 +908,7 @@ struct PeekModeBanner: View {
 /// in a hidden player and swapping visibility once ready
 struct SimpleVideoFrameView: NSViewRepresentable {
     let videoInfo: FrameVideoInfo
+    let debugContext: VideoSeekDebugContext?
     @Binding var forceReload: Bool
     var onLoadFailed: (() -> Void)?
     var onLoadSuccess: (() -> Void)?
@@ -874,6 +924,13 @@ struct SimpleVideoFrameView: NSViewRepresentable {
         // Update callbacks in case they changed
         containerView.onLoadFailed = onLoadFailed
         containerView.onLoadSuccess = onLoadSuccess
+
+        if let debugContext, debugContext.hasActiveFilters {
+            Log.debug(
+                "[FILTER-VIDEO] renderRequest frameID=\(debugContext.frameID) idx=\(debugContext.currentIndex) ts=\(debugContext.timestamp) bundle=\(debugContext.frameBundleID ?? "nil") selectedApps=[\(debugContext.selectedAppsLabel)] targetVideoFrame=\(videoInfo.frameIndex) videoPathSuffix=\(videoInfo.videoPath.suffix(40))",
+                category: .ui
+            )
+        }
 
         let isWindowVisible = containerView.window?.isVisible ?? false
         let needsForceReload = forceReload
@@ -903,7 +960,12 @@ struct SimpleVideoFrameView: NSViewRepresentable {
         // If same video, just seek on the active player (fast path)
         if effectivePath == videoInfo.videoPath {
             let time = videoInfo.frameTimeCMTime
-            containerView.seekActivePlayer(to: time)
+            containerView.seekActivePlayer(
+                to: time,
+                expectedFrameIndex: videoInfo.frameIndex,
+                frameRate: videoInfo.frameRate,
+                debugContext: debugContext
+            )
             return
         }
 
@@ -944,7 +1006,13 @@ struct SimpleVideoFrameView: NSViewRepresentable {
         // Load video into buffer player and swap when ready
         let targetTime = videoInfo.frameTimeCMTime
         let targetFrameIndex = videoInfo.frameIndex
-        containerView.loadVideoIntoBuffer(url: url, seekTime: targetTime, frameIndex: targetFrameIndex)
+        containerView.loadVideoIntoBuffer(
+            url: url,
+            seekTime: targetTime,
+            frameIndex: targetFrameIndex,
+            frameRate: videoInfo.frameRate,
+            debugContext: debugContext
+        )
     }
 
     func makeCoordinator() -> Coordinator {
@@ -978,6 +1046,20 @@ class DoubleBufferedVideoView: NSView {
     /// Generation counter to invalidate stale async callbacks
     /// Incremented each time a new load is initiated
     private var loadGeneration: UInt64 = 0
+
+    /// Generation counter for same-video seeks (used to detect stale completion callbacks).
+    private var seekGeneration: UInt64 = 0
+
+    /// Enable detailed seek diagnostics in release builds with:
+    /// `defaults write io.retrace.app retrace.debug.filteredSeekDiagnostics -bool YES`
+    private static let isFilteredSeekDiagnosticsEnabled: Bool = {
+        #if DEBUG
+        return true
+        #else
+        return (UserDefaults(suiteName: "io.retrace.app") ?? .standard)
+            .bool(forKey: "retrace.debug.filteredSeekDiagnostics")
+        #endif
+    }()
 
     /// Callback when video loading fails (e.g., frame not yet in video file)
     var onLoadFailed: (() -> Void)?
@@ -1050,14 +1132,63 @@ class DoubleBufferedVideoView: NSView {
         ])
     }
 
-    /// Seek the currently active player to a specific time
-    func seekActivePlayer(to time: CMTime) {
+    /// Seek the currently active player to a specific time.
+    func seekActivePlayer(
+        to time: CMTime,
+        expectedFrameIndex: Int,
+        frameRate: Double,
+        debugContext: VideoSeekDebugContext?
+    ) {
+        seekGeneration &+= 1
+        let currentSeekGeneration = seekGeneration
+        let tolerance = seekTolerance(for: frameRate)
+        let toleranceFrames = configuredSeekToleranceFrames()
         let activePlayer = isPlayerAActive ? playerA : playerB
-        activePlayer?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+
+        activePlayer?.seek(to: time, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self, weak activePlayer] finished in
+            guard let self = self else { return }
+
+            guard finished else {
+                if self.shouldLogSeekDiagnostics(for: debugContext) {
+                    Log.debug(
+                        "[FILTER-VIDEO] seekCancelled path=same-video expectedFrame=\(expectedFrameIndex) toleranceFrames=\(toleranceFrames)",
+                        category: .ui
+                    )
+                }
+                return
+            }
+
+            guard currentSeekGeneration == self.seekGeneration else {
+                if self.shouldLogSeekDiagnostics(for: debugContext) {
+                    Log.debug(
+                        "[FILTER-VIDEO] seekStale path=same-video expectedFrame=\(expectedFrameIndex) finishedGeneration=\(currentSeekGeneration) currentGeneration=\(self.seekGeneration)",
+                        category: .ui
+                    )
+                }
+                return
+            }
+
+            let actualTime = activePlayer?.currentTime() ?? .zero
+            let actualFrameIndex = Self.frameIndex(for: actualTime, frameRate: frameRate)
+            self.logSeekResult(
+                phase: "same-video",
+                expectedFrameIndex: expectedFrameIndex,
+                actualFrameIndex: actualFrameIndex,
+                frameRate: frameRate,
+                toleranceFrames: toleranceFrames,
+                debugContext: debugContext
+            )
+        }
     }
 
     /// Load a video into the buffer player and swap when ready
-    func loadVideoIntoBuffer(url: URL, seekTime: CMTime, frameIndex: Int) {
+    func loadVideoIntoBuffer(
+        url: URL,
+        seekTime: CMTime,
+        frameIndex: Int,
+        frameRate: Double,
+        debugContext: VideoSeekDebugContext?
+    ) {
         // Increment generation to invalidate any pending async callbacks
         loadGeneration &+= 1
         let currentGeneration = loadGeneration
@@ -1078,6 +1209,8 @@ class DoubleBufferedVideoView: NSView {
         let playerItem = AVPlayerItem(asset: asset)
 
         bufferPlayer?.replaceCurrentItem(with: playerItem)
+        let tolerance = seekTolerance(for: frameRate)
+        let toleranceFrames = configuredSeekToleranceFrames()
 
         // Observe when buffer player is ready
         let observer = playerItem.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
@@ -1090,6 +1223,12 @@ class DoubleBufferedVideoView: NSView {
             }
 
             if item.status == .failed {
+                if self.shouldLogSeekDiagnostics(for: debugContext) {
+                    Log.warning(
+                        "[FILTER-VIDEO] bufferLoadFailed expectedFrame=\(frameIndex) toleranceFrames=\(toleranceFrames)",
+                        category: .ui
+                    )
+                }
                 DispatchQueue.main.async {
                     self.onLoadFailed?()
                 }
@@ -1099,11 +1238,32 @@ class DoubleBufferedVideoView: NSView {
             guard item.status == .readyToPlay else { return }
 
             // Seek to target frame
-            bufferPlayer?.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
-                guard let self = self, finished else { return }
+            bufferPlayer?.seek(to: seekTime, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] finished in
+                guard let self = self else { return }
+
+                guard finished else {
+                    if self.shouldLogSeekDiagnostics(for: debugContext) {
+                        Log.debug(
+                            "[FILTER-VIDEO] seekCancelled path=buffer expectedFrame=\(frameIndex) toleranceFrames=\(toleranceFrames)",
+                            category: .ui
+                        )
+                    }
+                    return
+                }
 
                 // Re-check generation after async seek completes
                 guard currentGeneration == self.loadGeneration else { return }
+
+                let actualTime = bufferPlayer?.currentTime() ?? .zero
+                let actualFrameIndex = Self.frameIndex(for: actualTime, frameRate: frameRate)
+                self.logSeekResult(
+                    phase: "buffer",
+                    expectedFrameIndex: frameIndex,
+                    actualFrameIndex: actualFrameIndex,
+                    frameRate: frameRate,
+                    toleranceFrames: toleranceFrames,
+                    debugContext: debugContext
+                )
 
                 DispatchQueue.main.async {
                     // Final generation check on main thread before swap
@@ -1125,6 +1285,60 @@ class DoubleBufferedVideoView: NSView {
             observerB = observer
         } else {
             observerA = observer
+        }
+    }
+
+    private func configuredSeekToleranceFrames() -> Int {
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        let value = defaults.integer(forKey: "retrace.debug.timelineSeekToleranceFrames")
+        return max(0, value)
+    }
+
+    private func seekTolerance(for frameRate: Double) -> CMTime {
+        let toleranceFrames = configuredSeekToleranceFrames()
+        guard toleranceFrames > 0 else { return .zero }
+        let fps = frameRate > 0 ? frameRate : 30.0
+        return CMTime(seconds: Double(toleranceFrames) / fps, preferredTimescale: 600)
+    }
+
+    private static func frameIndex(for time: CMTime, frameRate: Double) -> Int {
+        let seconds = CMTimeGetSeconds(time)
+        guard seconds.isFinite else { return -1 }
+        let fps = frameRate > 0 ? frameRate : 30.0
+        return Int((seconds * fps).rounded())
+    }
+
+    private func shouldLogSeekDiagnostics(for debugContext: VideoSeekDebugContext?) -> Bool {
+        Self.isFilteredSeekDiagnosticsEnabled && (debugContext?.hasActiveFilters ?? false)
+    }
+
+    private func logSeekResult(
+        phase: String,
+        expectedFrameIndex: Int,
+        actualFrameIndex: Int,
+        frameRate: Double,
+        toleranceFrames: Int,
+        debugContext: VideoSeekDebugContext?
+    ) {
+        guard shouldLogSeekDiagnostics(for: debugContext), let debugContext else { return }
+
+        let expectedInFilteredSet = debugContext.containsFilteredFrameIndex(expectedFrameIndex)
+        let actualInFilteredSet = debugContext.containsFilteredFrameIndex(actualFrameIndex)
+        let mismatch = actualFrameIndex != expectedFrameIndex
+        let unexpectedFilteredFrame = !actualInFilteredSet
+        let nearestFiltered = debugContext.nearestFilteredFrameIndices(around: actualFrameIndex)
+        let level = (mismatch || unexpectedFilteredFrame) ? "warning" : "debug"
+
+        let message =
+            "[FILTER-VIDEO] seekResult phase=\(phase) level=\(level) frameID=\(debugContext.frameID) idx=\(debugContext.currentIndex) ts=\(debugContext.timestamp) " +
+            "bundle=\(debugContext.frameBundleID ?? "nil") selectedApps=[\(debugContext.selectedAppsLabel)] " +
+            "expectedFrame=\(expectedFrameIndex) actualFrame=\(actualFrameIndex) expectedInFilteredSet=\(expectedInFilteredSet) actualInFilteredSet=\(actualInFilteredSet) " +
+            "nearestFiltered=[\(nearestFiltered)] frameRate=\(String(format: "%.3f", frameRate)) toleranceFrames=\(toleranceFrames)"
+
+        if mismatch || unexpectedFilteredFrame {
+            Log.warning(message, category: .ui)
+        } else {
+            Log.debug(message, category: .ui)
         }
     }
 
@@ -3620,45 +3834,39 @@ struct DeveloperActionsMenu: View {
                 // Close the timeline before opening the video
                 onClose()
 
-                // Small delay to allow the timeline to fully close before opening QuickTime
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                Task.detached(priority: .userInitiated) {
+                    // Give the timeline a moment to close before starting QuickTime.
+                    try? await Task.sleep(for: .milliseconds(200), clock: .continuous)
+
                     // Create a hard link with .mp4 extension so QuickTime recognizes the format
-                    // (files are stored without extension but are valid MP4 containers)
-                    // Hard links work better than symlinks with QuickTime
+                    // (files are stored without extension but are valid MP4 containers).
                     let tempDir = FileManager.default.temporaryDirectory
                     let filename = (originalPath as NSString).lastPathComponent
                     let tempURL = tempDir.appendingPathComponent("\(filename).mp4")
 
                     do {
-                        // Remove existing file if present
                         if FileManager.default.fileExists(atPath: tempURL.path) {
                             try FileManager.default.removeItem(at: tempURL)
                         }
-                        // Create hard link with .mp4 extension (no data duplication)
                         try FileManager.default.linkItem(atPath: originalPath, toPath: tempURL.path)
                     } catch {
                         Log.error("[Dev] Failed to create hard link for video: \(error)", category: .ui)
                         return
                     }
 
-                    // Use AppleScript to open QuickTime and seek to the specific time
-                    let script = """
-                        tell application "QuickTime Player"
-                            activate
-                            open POSIX file "\(tempURL.path)"
-                            delay 0.5
-                            tell front document
-                                set current time to \(timeInSeconds)
-                            end tell
-                        end tell
-                        """
+                    do {
+                        let process = Process()
+                        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                        process.arguments = DeveloperActionsMenu.quickTimeOpenScriptLines(path: tempURL.path, timeInSeconds: timeInSeconds)
+                            .flatMap { ["-e", $0] }
+                        try process.run()
+                        process.waitUntilExit()
 
-                    if let appleScript = NSAppleScript(source: script) {
-                        var error: NSDictionary?
-                        appleScript.executeAndReturnError(&error)
-                        if let error = error {
-                            Log.error("[Dev] AppleScript error: \(error)", category: .ui)
+                        if process.terminationStatus != 0 {
+                            Log.error("[Dev] osascript exited with status \(process.terminationStatus) while opening video", category: .ui)
                         }
+                    } catch {
+                        Log.error("[Dev] Failed to run osascript for video open: \(error)", category: .ui)
                     }
                 }
             }) {
@@ -3696,6 +3904,27 @@ struct DeveloperActionsMenu: View {
                 NSCursor.pop()
             }
         }
+    }
+
+    nonisolated private static func quickTimeOpenScriptLines(path: String, timeInSeconds: Double) -> [String] {
+        let escapedPath = escapeAppleScriptString(path)
+        let safeTime = max(0, timeInSeconds)
+        return [
+            "tell application \"QuickTime Player\"",
+            "activate",
+            "open POSIX file \"\(escapedPath)\"",
+            "delay 0.5",
+            "tell front document",
+            "set current time to \(safeTime)",
+            "end tell",
+            "end tell"
+        ]
+    }
+
+    nonisolated private static func escapeAppleScriptString(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }
 #endif

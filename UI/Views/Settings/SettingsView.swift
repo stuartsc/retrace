@@ -456,6 +456,11 @@ public struct SettingsView: View {
             if launchAtLogin != systemLaunchAtLoginEnabled {
                 launchAtLogin = systemLaunchAtLoginEnabled
             }
+
+            postSelectedTabNotification(selectedTab)
+        }
+        .onChange(of: selectedTab) { newTab in
+            postSelectedTabNotification(newTab)
         }
         .onChange(of: timelineShortcut) { _ in
             Task { await saveShortcuts() }
@@ -771,6 +776,14 @@ public struct SettingsView: View {
             break
         }
         pendingScrollTargetID = targetID
+    }
+
+    private func postSelectedTabNotification(_ tab: SettingsTab) {
+        NotificationCenter.default.post(
+            name: .settingsSelectedTabDidChange,
+            object: nil,
+            userInfo: ["tab": tab.rawValue]
+        )
     }
 
     private func scrollToPendingTarget(using proxy: ScrollViewProxy) {

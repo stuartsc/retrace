@@ -67,6 +67,59 @@ private struct ScrollAffordance: View {
     }
 }
 
+// MARK: - Window Title Formatting
+
+/// Cleans noisy Chrome PWA prefixes from dashboard window titles.
+enum DashboardWindowTitleFormatter {
+    private static let chromePWABundlePrefixes = [
+        "com.google.Chrome.app.",
+        "com.google.Chrome.canary.app."
+    ]
+
+    private static let chromeBrowserBundleIDs: Set<String> = [
+        "com.google.Chrome",
+        "com.google.Chrome.canary"
+    ]
+
+    static func displayTitle(for rawTitle: String, appBundleID: String) -> String {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return rawTitle }
+
+        if isChromePWABundleID(appBundleID) {
+            return stripChromePWAPrefix(from: title)
+        }
+
+        if chromeBrowserBundleIDs.contains(appBundleID),
+           title.localizedCaseInsensitiveContains(" web - ") {
+            return stripChromePWAPrefix(from: title)
+        }
+
+        return title
+    }
+
+    private static func isChromePWABundleID(_ bundleID: String) -> Bool {
+        chromePWABundlePrefixes.contains { bundleID.hasPrefix($0) }
+    }
+
+    private static func stripChromePWAPrefix(from title: String) -> String {
+        guard let separatorRange = title.range(of: " - ") else {
+            return title
+        }
+
+        var stripped = String(title[separatorRange.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Drop leading unread-count badges (for example "(4) ").
+        stripped = stripped.replacingOccurrences(
+            of: #"^\(\d+\)\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+
+        return stripped.isEmpty ? title : stripped
+    }
+}
+
 
 /// List-style view for app usage data with expandable window details
 struct AppUsageListView: View {
@@ -265,6 +318,10 @@ struct AppUsageListView: View {
     private func windowRow(window: WindowUsageData, app: AppUsageData, appColor: Color, layoutSize: AppUsageLayoutSize, rowIndex: Int, isBrowser: Bool = false, showAsTab: Bool = false) -> some View {
         let windowKey = "\(app.appBundleID)_\(window.id)"
         let isHovered = hoveredWindowKey == windowKey
+        let displayTitle = DashboardWindowTitleFormatter.displayTitle(
+            for: window.displayName,
+            appBundleID: app.appBundleID
+        )
 
         // For tabs view, extract domain from browserUrl for favicon
         let faviconDomain: String = {
@@ -293,11 +350,11 @@ struct AppUsageListView: View {
 
             // Window/tab name with optional URL subtitle for tabs
             VStack(alignment: .leading, spacing: 2) {
-                Text(window.displayName)
+                Text(displayTitle)
                     .font(layoutSize.windowNameFont)
                     .foregroundColor(.retracePrimary.opacity(0.85))
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
 
                 // Show URL as subtitle in tabs view
                 if showAsTab, let url = window.browserUrl, !url.isEmpty {
@@ -369,6 +426,10 @@ struct AppUsageListView: View {
         let domainKey = "\(app.appBundleID)_\(window.displayName)"
         let isExpanded = window.isWebsite && expandedDomainKey == domainKey
         let isHovered = hoveredWindowKey == domainKey
+        let displayTitle = DashboardWindowTitleFormatter.displayTitle(
+            for: window.displayName,
+            appBundleID: app.appBundleID
+        )
 
         return HStack(spacing: layoutSize.rowSpacing) {
             // Expand/collapse chevron - only show for websites (not window fallbacks)
@@ -399,11 +460,11 @@ struct AppUsageListView: View {
             }
 
             // Domain name or window name
-            Text(window.displayName)
+            Text(displayTitle)
                 .font(layoutSize.windowNameFont)
                 .foregroundColor(.retracePrimary.opacity(0.85))
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(.tail)
 
             Spacer()
 
@@ -526,6 +587,10 @@ struct AppUsageListView: View {
     private func domainTabRow(tab: WindowUsageData, app: AppUsageData, appColor: Color, layoutSize: AppUsageLayoutSize) -> some View {
         let tabKey = "\(app.appBundleID)_domain_\(tab.id)"
         let isHovered = hoveredWindowKey == tabKey
+        let displayTitle = DashboardWindowTitleFormatter.displayTitle(
+            for: tab.displayName,
+            appBundleID: app.appBundleID
+        )
 
         return HStack(spacing: 6) {
             // Extra indent + dot indicator
@@ -540,11 +605,11 @@ struct AppUsageListView: View {
 
             // Tab title with URL subtitle
             VStack(alignment: .leading, spacing: 2) {
-                Text(tab.displayName)
+                Text(displayTitle)
                     .font(layoutSize.windowNameFont)
                     .foregroundColor(.retracePrimary.opacity(0.85))
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
 
                 if let url = tab.browserUrl, !url.isEmpty {
                     Text(url)

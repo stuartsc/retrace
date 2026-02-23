@@ -508,10 +508,27 @@ public final class MainThreadWatchdog: @unchecked Sendable {
     /// Threshold for critical alert (in seconds)
     private let criticalThreshold: TimeInterval = 2.0
 
+    /// Threshold where the app is considered frozen long enough to auto-quit.
+    private let autoQuitThreshold: TimeInterval = 10.0
+
     /// Number of times we've detected blocking
     private var blockingCount = 0
 
+    /// Ensures auto-quit is only triggered once per freeze event.
+    private var autoQuitTriggered = false
+
+    /// Callback invoked when the auto-quit threshold is reached.
+    private var autoQuitHandler: (@Sendable (_ blockedSeconds: TimeInterval) -> Void)?
+
     private init() {}
+
+    /// Configure behavior when the watchdog detects an unrecoverable UI freeze.
+    /// The callback is executed on the watchdog background thread.
+    public func setAutoQuitHandler(_ handler: @escaping @Sendable (_ blockedSeconds: TimeInterval) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        autoQuitHandler = handler
+    }
 
     /// Start the watchdog - call this once at app startup
     public func start() {
@@ -560,6 +577,7 @@ public final class MainThreadWatchdog: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         lastHeartbeat = Date()
+        autoQuitTriggered = false
     }
 
     private func checkHeartbeat() {
@@ -588,6 +606,20 @@ public final class MainThreadWatchdog: @unchecked Sendable {
         } else if elapsed > warningThreshold {
             Log.warning("[Watchdog] Main thread delayed \(String(format: "%.1f", elapsed * 1000))ms (count=\(currentCount))", category: .ui)
         }
+
+        guard elapsed >= autoQuitThreshold else { return }
+
+        let handler: (@Sendable (_ blockedSeconds: TimeInterval) -> Void)?
+        lock.lock()
+        if autoQuitTriggered {
+            handler = nil
+        } else {
+            autoQuitTriggered = true
+            handler = autoQuitHandler
+        }
+        lock.unlock()
+
+        handler?(elapsed)
     }
 
     /// Get current blocking statistics

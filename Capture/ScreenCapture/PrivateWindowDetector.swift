@@ -31,7 +31,7 @@ struct PrivateWindowDetector {
         // Check if this is a browser that could have private windows
         let browserOwnerNames = [
             "Safari", "Google Chrome", "Chrome", "Brave Browser", "Microsoft Edge",
-            "Firefox", "Arc", "Vivaldi", "Chromium", "Opera"
+            "Firefox", "Arc", "Vivaldi", "Chromium", "Opera", "Dia", "Dia Browser"
         ]
 
         let isBrowser = browserOwnerNames.contains { ownerName.contains($0) }
@@ -116,6 +116,8 @@ struct PrivateWindowDetector {
             return "org.chromium.Chromium"
         case "Opera":
             return "com.operasoftware.Opera"
+        case "Dia", "Dia Browser":
+            return "com.aspect.browser"
         default:
             return ownerName
         }
@@ -240,7 +242,8 @@ struct PrivateWindowDetector {
         // Check browser-specific attributes
         switch bundleID {
         case "com.google.Chrome", "com.google.Chrome.canary", "com.microsoft.edgemac",
-             "com.brave.Browser", "org.chromium.Chromium", "com.vivaldi.Vivaldi":
+             "com.brave.Browser", "org.chromium.Chromium", "com.vivaldi.Vivaldi",
+             "com.aspect.browser":
             return checkChromiumPrivate(element)
 
         case "com.apple.Safari", "com.apple.SafariTechnologyPreview":

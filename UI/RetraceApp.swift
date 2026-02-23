@@ -158,6 +158,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try await wrapper.initialize()
             Log.info("[AppDelegate] Coordinator initialized successfully", category: .app)
 
+            configureWatchdogAutoQuit()
+
             // Start the main thread watchdog to detect UI freezes
             MainThreadWatchdog.shared.start()
 
@@ -213,6 +215,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         } catch {
             Log.error("[AppDelegate] Failed to initialize: \(error)", category: .app)
+        }
+    }
+
+    private func configureWatchdogAutoQuit() {
+        MainThreadWatchdog.shared.setAutoQuitHandler { blockedSeconds in
+            let blockedFor = String(format: "%.1f", blockedSeconds)
+            Log.critical("[Watchdog] Auto-quit threshold reached (\(blockedFor)s). Capturing diagnostics and attempting graceful termination.", category: .ui)
+            EmergencyDiagnostics.capture(trigger: "watchdog_auto_quit")
+
+            // If main is still responsive enough, request normal app termination first.
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+
+            // Fallback: if graceful termination cannot run (main frozen), force-exit.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2.0) {
+                Log.critical("[Watchdog] Graceful termination did not complete after auto-quit trigger. Force exiting.", category: .ui)
+                Darwin.exit(0)
+            }
         }
     }
 

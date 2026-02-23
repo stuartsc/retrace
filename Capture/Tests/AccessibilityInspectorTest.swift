@@ -10,7 +10,7 @@ import Shared
 /// 1. Safari: AXToolbar → AXTextField (address bar)
 /// 2. Chrome/Edge/Brave/Vivaldi: AXDocument on window + AXManualAccessibility toggle
 /// 3. Arc: AppleScript (Chromium but AX tree often incomplete)
-/// 4. Firefox: AppleScript (Gecko doesn't expose URL via AX)
+/// 4. Firefox: Disabled (URL extraction intentionally skipped)
 /// 5. Generic fallback: Find AXWebArea and read AXURL attribute
 final class AccessibilityInspectorTest: XCTestCase {
 
@@ -73,7 +73,7 @@ final class AccessibilityInspectorTest: XCTestCase {
         log("║    - Window Title (FTS c2)                                                  ║")
         log("║    - Browser URL (if applicable)                                            ║")
         log("║                                                                              ║")
-        log("║  Supported browsers: Safari, Chrome, Edge, Brave, Arc, Firefox, Vivaldi     ║")
+        log("║  Supported browsers: Safari, Chrome, Edge, Brave, Arc, Dia, Vivaldi         ║")
         log("║                                                                              ║")
         log("║  Output file: \(outputPath)                                 ║")
         log("║  Run: tail -f \(outputPath)                                 ║")
@@ -106,6 +106,7 @@ final class AccessibilityInspectorTest: XCTestCase {
         var lastAppBundleID = ""
         var lastWindowTitle = ""
         var lastBrowserURL = ""
+        var lastAXDocument = ""
 
         // Monitor indefinitely until Ctrl+C
         let startTime = Date()
@@ -113,12 +114,14 @@ final class AccessibilityInspectorTest: XCTestCase {
             if let data = await captureActiveWindowData() {
                 // Only print when something changes
                 let currentURL = data.browserURL ?? ""
-                if data.appBundleID != lastAppBundleID || data.windowTitle != lastWindowTitle || currentURL != lastBrowserURL {
+                let currentAXDocument = data.focusedWindowAXDocument ?? ""
+                if data.appBundleID != lastAppBundleID || data.windowTitle != lastWindowTitle || currentURL != lastBrowserURL || currentAXDocument != lastAXDocument {
                     log("\n⏱  \(String(format: "%.1f", Date().timeIntervalSince(startTime)))s")
                     log("📱 App Bundle ID:  \(data.appBundleID)")
                     log("📝 App Name:       \(data.appName)")
                     log("🪟 Window Title:   \(data.windowTitle ?? "(none)")")
                     log("🌐 URL:            \(data.browserURL ?? "(URL not found)")")
+                    log("🧪 AXDocument:     \(data.focusedWindowAXDocument ?? "(none)")")
                     if let method = data.urlExtractionMethod {
                         log("   └─ Method:      \(method)")
                     }
@@ -132,6 +135,7 @@ final class AccessibilityInspectorTest: XCTestCase {
                     lastAppBundleID = data.appBundleID
                     lastWindowTitle = data.windowTitle ?? ""
                     lastBrowserURL = currentURL
+                    lastAXDocument = currentAXDocument
                 }
             }
 
@@ -162,11 +166,21 @@ final class AccessibilityInspectorTest: XCTestCase {
         var browserURL: String?
         var urlMethod: String?
         var chromeText: String?
+        var focusedWindowAXDocument: String?
 
         // Get focused window
         if let focusedWindow: AXUIElement = getAttributeValue(appElement, attribute: kAXFocusedWindowAttribute as CFString) {
+            // Direct probe requested for Finder/debugging: raw AXDocument on focused window.
+            focusedWindowAXDocument = getAttributeValue(focusedWindow, attribute: kAXDocumentAttribute as CFString)
+            if focusedWindowAXDocument?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                focusedWindowAXDocument = nil
+            }
+
             // Get window title
             windowTitle = getAttributeValue(focusedWindow, attribute: kAXTitleAttribute as CFString)
+            if windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                windowTitle = getWindowTitleFromWindowList(for: frontApp.processIdentifier) ?? appName
+            }
 
             // Try to get URL context for any app (browser-specific + generic fallback)
             let result = getBrowserURL(appElement: appElement, window: focusedWindow, bundleID: appBundleID)
@@ -186,7 +200,8 @@ final class AccessibilityInspectorTest: XCTestCase {
             windowTitle: windowTitle,
             browserURL: browserURL,
             urlExtractionMethod: urlMethod,
-            chromeText: chromeText
+            chromeText: chromeText,
+            focusedWindowAXDocument: focusedWindowAXDocument
         )
     }
 
@@ -210,6 +225,7 @@ final class AccessibilityInspectorTest: XCTestCase {
             "com.brave.Browser",
             "com.vivaldi.Vivaldi",
             "com.operasoftware.Opera",
+            "com.aspect.browser",
             "company.thebrowser.Browser"  // Arc
         ]
         if browsers.contains(bundleID) {
@@ -227,10 +243,26 @@ final class AccessibilityInspectorTest: XCTestCase {
         return chromiumAppShimPrefixes.contains(where: { bundleID.hasPrefix($0) })
     }
 
+    private func isChromiumAppShim(_ bundleID: String) -> Bool {
+        chromiumAppShimPrefixes.contains(where: { bundleID.hasPrefix($0) })
+    }
+
+    private func hostBrowserBundleID(forChromiumAppShim bundleID: String) -> String? {
+        for prefix in chromiumAppShimPrefixes where bundleID.hasPrefix(prefix) {
+            guard prefix.hasSuffix(".app.") else { continue }
+            return String(prefix.dropLast(5))
+        }
+        return nil
+    }
+
     // MARK: - Browser URL Extraction
 
     private func getBrowserURL(appElement: AXUIElement, window: AXUIElement, bundleID: String) -> (url: String?, method: String?) {
         // Strategy varies by browser type
+
+        if bundleID == "com.apple.finder" {
+            return getFinderTargetURL()
+        }
 
         if bundleID == "com.apple.Safari" {
             return getSafariURL(appElement: appElement, window: window)
@@ -245,7 +277,7 @@ final class AccessibilityInspectorTest: XCTestCase {
         }
 
         if bundleID == "org.mozilla.firefox" {
-            return getFirefoxURL()
+            return (nil, nil)
         }
 
         // Generic fallback for unknown browsers
@@ -326,6 +358,13 @@ final class AccessibilityInspectorTest: XCTestCase {
             return (url, "\(browserName): Deep UI search")
         }
 
+        // Method 5: AppleScript fallback for Chromium PWA app-shims
+        if isChromiumAppShim(bundleID),
+           let url = getWebAppURLViaAppleScript(bundleID: bundleID) {
+            verboseLog("[\(browserName)] ✅ Got URL via AppleScript app-shim fallback")
+            return (url, "\(browserName): AppleScript app-shim")
+        }
+
         verboseLog("[\(browserName)] ❌ All methods failed")
         inspectAllAttributes(window)
         return (nil, nil)
@@ -373,17 +412,26 @@ final class AccessibilityInspectorTest: XCTestCase {
         return (nil, nil)
     }
 
-    // MARK: - Firefox
+    private func getFinderTargetURL() -> (url: String?, method: String?) {
+        verboseLog("[Finder] Attempting URL extraction via target URL...")
 
-    private func getFirefoxURL() -> (url: String?, method: String?) {
-        verboseLog("[Firefox] Attempting URL extraction via AppleScript...")
-
-        if let url = getFirefoxURLViaAppleScript() {
-            verboseLog("[Firefox] ✅ Got URL via AppleScript")
-            return (url, "Firefox: AppleScript")
+        if let url = runAppleScript("""
+            tell application id "com.apple.finder"
+                if (count of Finder windows) > 0 then
+                    set u to URL of target of front Finder window
+                    if u is not missing value and u is not "" then
+                        return u
+                    end if
+                end if
+                return URL of desktop
+            end tell
+            """),
+           !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            verboseLog("[Finder] ✅ Got URL via target URL")
+            return (url, "Finder: AppleScript target URL")
         }
 
-        verboseLog("[Firefox] ❌ AppleScript failed (check Automation permissions)")
+        verboseLog("[Finder] ❌ Target URL extraction failed")
         return (nil, nil)
     }
 
@@ -450,37 +498,6 @@ final class AccessibilityInspectorTest: XCTestCase {
 
     // MARK: - AppleScript Methods
 
-    private func getFirefoxURLViaAppleScript() -> String? {
-        // Method 1: Try direct AppleScript API
-        if let url = runAppleScript("""
-            tell application "Firefox"
-                if (count of windows) > 0 then
-                    get URL of active tab of front window
-                end if
-            end tell
-            """) {
-            return url
-        }
-
-        // Method 2: Clipboard hack via System Events (Cmd+L, Cmd+C)
-        return runAppleScript("""
-            set theClipboard to (the clipboard as record)
-            set the clipboard to ""
-
-            tell application "System Events"
-                set frontmost of application process "firefox" to true
-                keystroke "l" using {command down}
-                delay 0.05
-                keystroke "c" using {command down}
-            end tell
-
-            delay 0.1
-            set theURL to (the clipboard)
-            set the clipboard to theClipboard
-            return theURL
-            """)
-    }
-
     private func getArcURLViaAppleScript() -> String? {
         // Try method 1: Standard AppleScript
         if let url = runAppleScript("""
@@ -501,6 +518,77 @@ final class AccessibilityInspectorTest: XCTestCase {
                 end if
             end tell
             """)
+    }
+
+    private func getWebAppURLViaAppleScript(bundleID: String) -> String? {
+        if let hostBrowserBundleID = hostBrowserBundleID(forChromiumAppShim: bundleID) {
+            if let url = runAppleScript("""
+                set shimTitle to ""
+                tell application id "\(bundleID)"
+                    if (count of windows) > 0 then
+                        set shimTitle to name of front window
+                    end if
+                end tell
+
+                if shimTitle is missing value then set shimTitle to ""
+
+                tell application id "\(hostBrowserBundleID)"
+                    if (count of windows) = 0 then return ""
+
+                    repeat with w in windows
+                        set tabTitle to ""
+                        set tabURL to ""
+                        try
+                            set tabTitle to title of active tab of w
+                            set tabURL to URL of active tab of w
+                        end try
+
+                        if tabURL is not "" and shimTitle is not "" and tabTitle is not "" then
+                            if shimTitle contains tabTitle or tabTitle contains shimTitle then
+                                return tabURL
+                            end if
+                        end if
+                    end repeat
+                end tell
+                """), !url.isEmpty {
+                return url
+            }
+        }
+
+        if let url = runAppleScript("""
+            tell application id "\(bundleID)"
+                if (count of windows) > 0 then
+                    try
+                        get URL of active tab of front window
+                    on error
+                        get URL of current tab of front window
+                    end try
+                end if
+            end tell
+            """), !url.isEmpty {
+            return url
+        }
+
+        return runAppleScript("""
+            tell application id "\(bundleID)"
+                if (count of windows) > 0 then
+                    try
+                        get URL of active tab of window 1
+                    on error
+                        get URL of current tab of window 1
+                    end try
+                end if
+            end tell
+            """)
+    }
+
+    private func bundleIDForElement(_ appElement: AXUIElement) -> String? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(appElement, &pid) == .success,
+              let app = NSRunningApplication(processIdentifier: pid) else {
+            return nil
+        }
+        return app.bundleIdentifier
     }
 
     private func runAppleScript(_ source: String) -> String? {
@@ -623,6 +711,41 @@ final class AccessibilityInspectorTest: XCTestCase {
 
         return nil
     }
+
+    private func getWindowTitleFromWindowList(for pid: pid_t) -> String? {
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        for windowInfo in windowList {
+            guard let ownerPID = windowInfo[kCGWindowOwnerPID as String] as? pid_t,
+                  ownerPID == pid else {
+                continue
+            }
+
+            let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
+            if layer != 0 {
+                continue
+            }
+
+            let isOnScreen = windowInfo[kCGWindowIsOnscreen as String] as? Bool ?? false
+            if !isOnScreen {
+                continue
+            }
+
+            if let title = windowInfo[kCGWindowName as String] as? String {
+                let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+
+        return nil
+    }
 }
 
 // MARK: - Data Structure
@@ -634,4 +757,5 @@ private struct AccessibilityData {
     let browserURL: String?
     let urlExtractionMethod: String?
     let chromeText: String?
+    let focusedWindowAXDocument: String?
 }

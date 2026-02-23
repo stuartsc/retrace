@@ -166,22 +166,36 @@ public actor PermissionMonitor {
         // Get position
         var positionValue: CFTypeRef?
         let posResult = AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionValue)
-        guard posResult == .success, let posValue = positionValue else {
+        guard posResult == .success,
+              let posValue = positionValue,
+              CFGetTypeID(posValue) == AXValueGetTypeID() else {
+            return nil
+        }
+        let posAXValue = posValue as! AXValue
+        guard AXValueGetType(posAXValue) == .cgPoint else {
             return nil
         }
 
         // Get size
         var sizeValue: CFTypeRef?
         let sizeResult = AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeValue)
-        guard sizeResult == .success, let szValue = sizeValue else {
+        guard sizeResult == .success,
+              let sizeRawValue = sizeValue,
+              CFGetTypeID(sizeRawValue) == AXValueGetTypeID() else {
+            return nil
+        }
+        let sizeAXValue = sizeRawValue as! AXValue
+        guard AXValueGetType(sizeAXValue) == .cgSize else {
             return nil
         }
 
         var position = CGPoint.zero
         var size = CGSize.zero
 
-        AXValueGetValue(posValue as! AXValue, .cgPoint, &position)
-        AXValueGetValue(szValue as! AXValue, .cgSize, &size)
+        guard AXValueGetValue(posAXValue, .cgPoint, &position),
+              AXValueGetValue(sizeAXValue, .cgSize, &size) else {
+            return nil
+        }
 
         return CGRect(origin: position, size: size)
     }

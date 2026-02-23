@@ -4,21 +4,46 @@ import App
 import Database
 import Shared
 import ServiceManagement
+import Carbon
 
 /// Softer button color that blends with the dark blue onboarding background
 /// A muted blue that's visible but not as sharp as the primary accent
 private let onboardingButtonColor = Color(red: 35/255, green: 75/255, blue: 145/255)
 
-/// Main onboarding flow with 9 steps
+private struct AutomationPreflightTarget: Identifiable, Hashable, Sendable {
+    let bundleID: String
+    let displayName: String
+    let appURL: URL?
+
+    var id: String { bundleID }
+}
+
+private enum AutomationPreflightStatus: String, Sendable {
+    case granted
+    case skipped
+    case denied
+    case timedOut
+    case failed
+}
+
+private enum AutomationPermissionProbeResult: Sendable {
+    case granted
+    case denied
+    case requiresUserConsent
+    case unavailable(OSStatus)
+}
+
+/// Main onboarding flow with 10 steps
 /// Step 1: Welcome
 /// Step 2: Creator features
-/// Step 3: Permissions (starts recording on continue)
-/// Step 4: Menu Bar Icon info
-/// Step 5: Launch at Login option
-/// Step 6: Rewind data decision
-/// Step 7: Keyboard shortcuts
-/// Step 8: Early Alpha / Safety info
-/// Step 9: Completion (prompts to test timeline)
+/// Step 3: Core permissions (screen recording + accessibility)
+/// Step 4: App URL permissions
+/// Step 5: Menu Bar Icon info
+/// Step 6: Launch at Login option
+/// Step 7: Rewind data decision
+/// Step 8: Keyboard shortcuts
+/// Step 9: Early Alpha / Safety info
+/// Step 10: Completion (prompts to test timeline)
 public struct OnboardingView: View {
 
     // MARK: - Properties
@@ -27,6 +52,50 @@ public struct OnboardingView: View {
     private static let onboardingStepKey = "onboardingCurrentStep"
     private static let timelineShortcutKey = "timelineShortcutConfig"
     private static let dashboardShortcutKey = "dashboardShortcutConfig"
+    private static let automationPreflightStatusesKey = "onboardingAutomationPreflightStatuses.v1"
+    private static let automationPreflightUserAllowTimeoutSeconds: TimeInterval = 60.0
+    private static let automationPreflightBackgroundTimeoutSeconds: TimeInterval = 3.0
+    private static let automationPreflightRecheckIntervalSeconds: TimeInterval = 4.0
+    private static let automationForcedSweepIntervalSeconds: TimeInterval = 1.0
+    private static let automationPreflightUnknownProbeMaxPerPass = 2
+    private static let automationPermissionProbeRetryCooldownSeconds: TimeInterval = 30.0
+    private static let automationPermissionTargetNotRunningStatus = OSStatus(procNotFound)
+    private static let automationPermissionProbeTimeoutStatus = OSStatus(errAETimeout)
+    private static let automationPermissionProbeQueue = DispatchQueue(
+        label: "io.retrace.onboarding.automationPermissionProbe",
+        qos: .utility,
+        attributes: .concurrent
+    )
+    private static let systemSettingsReturnCheckIntervalSeconds: TimeInterval = 0.5
+    private static let systemSettingsBundleIDs: Set<String> = [
+        "com.apple.systempreferences",
+        "com.apple.systemsettings",
+    ]
+    private static let automationChromiumAppShimPrefixes: [String] = [
+        "com.google.Chrome.app.",
+        "com.google.Chrome.canary.app.",
+        "com.microsoft.edgemac.app.",
+        "com.brave.Browser.app.",
+        "com.vivaldi.Vivaldi.app.",
+        "com.operasoftware.Opera.app.",
+        "org.chromium.Chromium.app.",
+        "com.cometbrowser.Comet.app.",
+        "com.aspect.browser.app.",
+        "com.sigmaos.sigmaos.app.",
+        "com.openai.chat.app.",
+        "com.nicklockwood.Thorium.app.",
+    ]
+    private static let automationChromiumHostBundleIDs: Set<String> = Set(
+        automationChromiumAppShimPrefixes.compactMap { prefix in
+            guard prefix.hasSuffix(".app.") else { return nil }
+            return String(prefix.dropLast(5))
+        }
+    )
+    // Exact apps where Retrace uses AppleScript-based URL extraction.
+    private static let automationPreflightBaseTargets: [AutomationPreflightTarget] = [
+        AutomationPreflightTarget(bundleID: "com.apple.finder", displayName: "Finder", appURL: nil),
+        AutomationPreflightTarget(bundleID: "company.thebrowser.Browser", displayName: "Arc", appURL: nil),
+    ]
 
     // Load saved shortcuts or use defaults
     private static func loadTimelineShortcut() -> ShortcutConfig {
@@ -47,7 +116,7 @@ public struct OnboardingView: View {
         return config
     }
 
-    @State private var currentStep: Int = UserDefaults.standard.integer(forKey: OnboardingView.onboardingStepKey).clamped(to: 1...9) == 0 ? 1 : UserDefaults.standard.integer(forKey: OnboardingView.onboardingStepKey).clamped(to: 1...9)
+    @State private var currentStep: Int = UserDefaults.standard.integer(forKey: OnboardingView.onboardingStepKey).clamped(to: 1...10) == 0 ? 1 : UserDefaults.standard.integer(forKey: OnboardingView.onboardingStepKey).clamped(to: 1...10)
     @State private var hasScreenRecordingPermission = false
     @State private var hasAccessibilityPermission = false
     @State private var isCheckingPermissions = false
@@ -56,6 +125,31 @@ public struct OnboardingView: View {
     @State private var screenRecordingRequested = false  // User has clicked Enable once
     @State private var accessibilityRequested = false  // User has clicked Enable Accessibility once
     @State private var hasTriggeredCaptureDialog = false  // macOS 15+ "Allow to record" dialog triggered
+    @State private var automationPreflightTargets: [AutomationPreflightTarget] = []
+    @State private var automationPreflightStatusByBundleID: [String: AutomationPreflightStatus] = [:]
+    @State private var automationPreflightRunningBundleIDs: Set<String> = []
+    @State private var automationPreflightBusyBundleIDs: Set<String> = []
+    @State private var automationPreflightIconByBundleID: [String: NSImage] = [:]
+    @State private var automationPreflightLaunchedByOnboardingBundleIDs: Set<String> = []
+    @State private var hasLoadedAutomationPreflightTargets = false
+    @State private var lastAutomationPreflightRecheckAt = Date.distantPast
+    @State private var isRecheckingAutomationPreflightPermissions = false
+    @State private var automationPreflightUnknownProbeAttemptedBundleIDs: Set<String> = []
+    @State private var automationPermissionProbeCooldownUntilByBundleID: [String: Date] = [:]
+    @State private var automationPermissionProbeTimeoutCountByBundleID: [String: Int] = [:]
+    @State private var automationForcedSweepTimer: Timer? = nil
+    @State private var isBulkAllowingAutomationTargets = false
+    @State private var isBulkSkippingAutomationTargets = false
+    @State private var isClosingLaunchedAutomationApps = false
+    @State private var isRefreshingAutomationPreflightList = false
+    @State private var automationWorkspaceObserverTokens: [NSObjectProtocol] = []
+    @State private var showBulkAllowAllConfirmation = false
+    @State private var bulkAllowAllLaunchPreviewNames: [String] = []
+    @State private var systemSettingsReturnCheckTimer: Timer? = nil
+    @State private var waitingForSystemSettingsReturn = false
+    @State private var observedSystemSettingsForeground = false
+    @State private var isHoveringAppURLContinueButton = false
+    @State private var automationPermissionDecisionMonitorTasksByBundleID: [String: Task<Void, Never>] = [:]
 
     // Rewind data flow state
     @State private var hasRewindData: Bool? = nil
@@ -78,7 +172,7 @@ public struct OnboardingView: View {
     let coordinator: AppCoordinator
     let onComplete: () -> Void
 
-    private let totalSteps = 9
+    private let totalSteps = 10
 
     // MARK: - Body
 
@@ -110,6 +204,7 @@ public struct OnboardingView: View {
                     .frame(maxWidth: 900, alignment: .top)
                 }
                 .frame(maxWidth: 900)
+                .scrollDisabled(currentStep == 4)
 
                 // Fixed navigation buttons at bottom
                 navigationButtonsFixed
@@ -123,7 +218,7 @@ public struct OnboardingView: View {
             // Only auto-detect Rewind data on first load
             // Don't check permissions until user reaches permissions step
             await detectRewindData()
-            // Pre-fetch creator image so it's ready when user reaches step 4
+            // Pre-fetch creator image early so later slides render instantly
             await prefetchCreatorImage()
         }
         .onChange(of: currentStep) { newStep in
@@ -140,9 +235,9 @@ public struct OnboardingView: View {
             if currentStep > 1 {
                 Button(action: {
                     withAnimation {
-                        // Skip Rewind data step (6) when going back if no Rewind data exists
-                        if currentStep == 7 && hasRewindData != true {
-                            currentStep = 5
+                        // Skip Rewind data step (7) when going back if no Rewind data exists
+                        if currentStep == 8 && hasRewindData != true {
+                            currentStep = 6
                         } else {
                             currentStep -= 1
                         }
@@ -194,32 +289,56 @@ public struct OnboardingView: View {
             .buttonStyle(.plain)
 
         case 3:
-            // Permissions - requires both permissions, then shows menu bar icon step
-            Button(action: {
-                stopPermissionMonitoring()
-                // Start recording pipeline here
-                Task {
-                    try? await coordinator.startPipeline()
-                }
-                // Now that permissions are granted, setup global hotkeys
-                // This was deferred during MenuBarManager.setup() to avoid triggering AXIsProcessTrusted() too early
-                MenuBarManager.shared?.reloadShortcuts()
-                withAnimation { currentStep = 4 }  // Go to menu bar icon step
-            }) {
+            // Core permissions - requires screen recording + accessibility
+            Button(action: { withAnimation { currentStep = 4 } }) {
                 Text("Continue")
                     .font(.retraceHeadline)
                     .foregroundColor(.white)
                     .padding(.horizontal, .spacingL)
                     .padding(.vertical, .spacingM)
-                    .background(hasScreenRecordingPermission && hasAccessibilityPermission ? onboardingButtonColor : Color.retraceSecondaryColor)
+                    .background(
+                        hasScreenRecordingPermission && hasAccessibilityPermission
+                            ? onboardingButtonColor
+                            : Color.retraceSecondaryColor
+                    )
                     .cornerRadius(.cornerRadiusM)
             }
             .buttonStyle(.plain)
             .disabled(!hasScreenRecordingPermission || !hasAccessibilityPermission)
 
         case 4:
+            // App URL permissions - requires all eligible targets handled, then starts recording
+            ZStack {
+                Button(action: {
+                    stopPermissionMonitoring()
+                    Task {
+                        try? await coordinator.startPipeline()
+                    }
+                    MenuBarManager.shared?.reloadShortcuts()
+                    withAnimation { currentStep = 5 }
+                }) {
+                    Text("Continue")
+                        .font(.retraceHeadline)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, .spacingL)
+                        .padding(.vertical, .spacingM)
+                        .background(hasAutomationAccessEnabled ? onboardingButtonColor : Color.retraceSecondaryColor)
+                        .cornerRadius(.cornerRadiusM)
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasAutomationAccessEnabled)
+            }
+            .onHover { hovering in
+                isHoveringAppURLContinueButton = hovering
+            }
+            .instantTooltip(
+                "Handle each app to continue",
+                isVisible: .constant(isHoveringAppURLContinueButton && !hasAutomationAccessEnabled)
+            )
+
+        case 5:
             // Menu bar icon info
-            Button(action: { withAnimation { currentStep = 5 } }) {
+            Button(action: { withAnimation { currentStep = 6 } }) {
                 Text("Continue")
                     .font(.retraceHeadline)
                     .foregroundColor(.white)
@@ -230,14 +349,14 @@ public struct OnboardingView: View {
             }
             .buttonStyle(.plain)
 
-        case 5:
+        case 6:
             // Launch at login - save setting and continue
-            // Skip Rewind data step (6) if no Rewind data exists
+            // Skip Rewind data step (7) if no Rewind data exists
             Button(action: {
                 setLaunchAtLogin(enabled: launchAtLogin)
                 let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
                 defaults.set(launchAtLogin, forKey: "launchAtLogin")
-                withAnimation { currentStep = hasRewindData == true ? 6 : 7 }
+                withAnimation { currentStep = hasRewindData == true ? 7 : 8 }
             }) {
                 Text("Continue")
                     .font(.retraceHeadline)
@@ -252,12 +371,12 @@ public struct OnboardingView: View {
         // case 6: - COMMENTED OUT - Screen Recording Indicator step not needed for now
         // case 7: - COMMENTED OUT - Encryption step removed (no reliable encrypt/decrypt migration)
 
-        case 6:
+        case 7:
             // Rewind data - requires selection if data exists
             Button(action: {
                 let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
                 defaults.set(wantsRewindData == true, forKey: "useRewindData")
-                withAnimation { currentStep = 7 }
+                withAnimation { currentStep = 8 }
             }) {
                 Text("Continue")
                     .font(.retraceHeadline)
@@ -270,7 +389,7 @@ public struct OnboardingView: View {
             .buttonStyle(.plain)
             .disabled(hasRewindData == true && wantsRewindData == nil)
 
-        case 7:
+        case 8:
             // Keyboard shortcuts
             Button(action: {
                 Task {
@@ -278,7 +397,7 @@ public struct OnboardingView: View {
                     await coordinator.onboardingManager.setTimelineShortcut(timelineShortcut.toConfig)
                     await coordinator.onboardingManager.setDashboardShortcut(dashboardShortcut.toConfig)
                 }
-                withAnimation { currentStep = 8 }
+                withAnimation { currentStep = 9 }
             }) {
                 Text("Continue")
                     .font(.retraceHeadline)
@@ -290,9 +409,9 @@ public struct OnboardingView: View {
             }
             .buttonStyle(.plain)
 
-        case 8:
+        case 9:
             // Safety info
-            Button(action: { withAnimation { currentStep = 9 } }) {
+            Button(action: { withAnimation { currentStep = 10 } }) {
                 Text("Continue")
                     .font(.retraceHeadline)
                     .foregroundColor(.white)
@@ -303,8 +422,8 @@ public struct OnboardingView: View {
             }
             .buttonStyle(.plain)
 
-        case 9:
-            // Completion - Just finish onboarding (recording already started at step 3)
+        case 10:
+            // Completion - just finish onboarding (recording started on step 4)
             Button(action: {
                 // Clear saved step since onboarding is complete
                 UserDefaults.standard.removeObject(forKey: Self.onboardingStepKey)
@@ -360,22 +479,24 @@ public struct OnboardingView: View {
         case 2:
             creatorFeaturesStep
         case 3:
-            permissionsStep
+            corePermissionsStep
         case 4:
-            menuBarIconStep
+            appURLPermissionsStep
         case 5:
-            launchAtLoginStep
+            menuBarIconStep
         // case 6: - COMMENTED OUT - Screen Recording Indicator step not needed for now
         //     screenRecordingIndicatorStep
         // case 7: - COMMENTED OUT - Encryption step removed (no reliable encrypt/decrypt migration)
         //     encryptionStep
         case 6:
-            rewindDataStep
+            launchAtLoginStep
         case 7:
-            keyboardShortcutsStep
+            rewindDataStep
         case 8:
-            safetyInfoStep
+            keyboardShortcutsStep
         case 9:
+            safetyInfoStep
+        case 10:
             completionStep
         default:
             EmptyView()
@@ -418,15 +539,15 @@ public struct OnboardingView: View {
         .frame(maxWidth: .infinity) // Match width with other steps to prevent layout jumping
     }
 
-    // MARK: - Step 4: Permissions
+    // MARK: - Step 3: Core Permissions
 
-    private var permissionsStep: some View {
+    private var corePermissionsStep: some View {
         VStack(spacing: .spacingXL) {
             Text("Permission Required")
                 .font(.retraceTitle)
                 .foregroundColor(.retracePrimary)
 
-            Text("Retrace needs the following permissions to capture and analyze your screen.")
+            Text("Step 1 of 2: enable core permissions first.")
                 .font(.retraceBody)
                 .foregroundColor(.retraceSecondary)
                 .multilineTextAlignment(.center)
@@ -460,31 +581,94 @@ public struct OnboardingView: View {
                 HStack(spacing: .spacingS) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.retraceWarning)
-                    Text("Both permissions are required to continue")
+                    Text("Screen Recording and Accessibility are required to continue")
                         .font(.retraceCaption)
                         .foregroundColor(.retraceWarning)
                 }
             }
 
-            Text("You may need to restart the app if the checkmark doesn't show.")
+            Text("Next: App URL permissions on the following step.")
                 .font(.retraceCaption)
                 .foregroundColor(.retraceSecondary)
 
             Spacer()
         }
         .task {
-            // Only start checking permissions when user reaches this step
-            // This prevents triggering the permission prompt on app launch
             await checkPermissions()
         }
         .onAppear {
-            // Start continuous permission monitoring when on permissions step
             startPermissionMonitoring()
         }
         .onDisappear {
-            // Stop monitoring when leaving this step
             stopPermissionMonitoring()
         }
+    }
+
+    // MARK: - Step 4: App URL Permissions
+
+    private var appURLPermissionsStep: some View {
+        VStack(spacing: .spacingXL) {
+            Text("App URL Permissions")
+                .font(.retraceTitle)
+                .foregroundColor(.retracePrimary)
+
+            Text("Step 2 of 2: allow Retrace to Extract the URL out of the Following websites.")
+                .font(.retraceBody)
+                .foregroundColor(.retraceSecondary)
+                .multilineTextAlignment(.center)
+
+            appURLPermissionsPanel
+
+            Spacer(minLength: appURLPermissionsBottomMargin)
+        }
+        .padding(.bottom, appURLPermissionsBottomMargin)
+        .onAppear {
+            startPermissionMonitoring()
+            startAutomationWorkspaceObservation()
+            startAutomationForcedSweepMonitoring()
+            Task {
+                await refreshAutomationPreflightList(reason: "step4-onAppear")
+            }
+        }
+        .onDisappear {
+            stopPermissionMonitoring()
+            stopAutomationWorkspaceObservation()
+        }
+        .alert("Allow All Apps?", isPresented: $showBulkAllowAllConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Continue") {
+                Task {
+                    await bulkAllowAllAutomationTargetsConfirmed()
+                }
+            }
+        } message: {
+            if bulkAllowAllLaunchPreviewNames.isEmpty {
+                Text("All pending apps are already running. Retrace will request automation permission for each pending app.")
+            } else {
+                let appList = bulkAllowAllLaunchPreviewNames.map { "• \($0)" }.joined(separator: "\n")
+                Text(
+                    "This will launch these apps in order to request permissions:\n\n\(appList)\n\nContinue?"
+                )
+            }
+        }
+    }
+
+    private var onboardingWindowHeightForLayout: CGFloat {
+        NSApp.keyWindow?.contentView?.bounds.height
+            ?? NSApp.mainWindow?.contentView?.bounds.height
+            ?? NSScreen.main?.visibleFrame.height
+            ?? 900
+    }
+
+    private var appURLPermissionsListViewportHeight: CGFloat {
+        // Relative to the actual onboarding window, not full screen.
+        let relativeHeight = onboardingWindowHeightForLayout * 0.34
+        return max(270, min(relativeHeight, 430))
+    }
+
+    private var appURLPermissionsBottomMargin: CGFloat {
+        let relativeMargin = onboardingWindowHeightForLayout * 0.08
+        return max(44, min(relativeMargin, 80))
     }
 
     private func permissionRow(
@@ -494,7 +678,8 @@ public struct OnboardingView: View {
         isGranted: Bool,
         isDenied: Bool = false,
         action: @escaping () -> Void,
-        openSettingsAction: (() -> Void)? = nil
+        openSettingsAction: (() -> Void)? = nil,
+        isActionDisabled: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: .spacingS) {
             HStack(spacing: .spacingM) {
@@ -547,6 +732,7 @@ public struct OnboardingView: View {
                             .cornerRadius(.cornerRadiusM)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isActionDisabled)
                 }
             }
 
@@ -573,7 +759,390 @@ public struct OnboardingView: View {
         .padding(.spacingM)
     }
 
-    // MARK: - Step 5: Screen Recording Indicator
+    private var appURLPermissionsPanel: some View {
+        VStack(alignment: .leading, spacing: .spacingL) {
+            if !hasLoadedAutomationPreflightTargets {
+                HStack(spacing: .spacingS) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Scanning apps used for URL extraction...")
+                        .font(.retraceCaption)
+                        .foregroundColor(.retraceSecondary)
+                }
+            } else if automationPreflightTargets.isEmpty {
+                Text("No eligible apps found on this Mac.")
+                    .font(.retraceCaption)
+                    .foregroundColor(.retraceSecondary)
+            } else {
+                HStack(alignment: .top, spacing: .spacingM) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Apps")
+                            .font(.retraceTitle2)
+                            .foregroundColor(.retracePrimary)
+                        Text("Click 'Allow' to grant permission to Retrace. Click 'Skip' to skip this app.")
+                            .font(.retraceCaption)
+                            .foregroundColor(.retraceSecondary)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: .spacingS) {
+                        Button {
+                            presentBulkAllowAllConfirmation()
+                        } label: {
+                            if isBulkAllowingAutomationTargets {
+                                HStack(spacing: .spacingXS) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Allowing...")
+                                }
+                                .font(.retraceCaption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, .spacingM)
+                                .padding(.vertical, .spacingXS)
+                                .background(onboardingButtonColor)
+                                .cornerRadius(.cornerRadiusM)
+                                .frame(height: 28)
+                            } else {
+                                Text("Allow All")
+                                    .font(.retraceCaption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, .spacingM)
+                                    .padding(.vertical, .spacingXS)
+                                    .background(onboardingButtonColor)
+                                    .cornerRadius(.cornerRadiusM)
+                                    .frame(height: 28)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(
+                            isBulkAllowingAutomationTargets ||
+                            isBulkSkippingAutomationTargets ||
+                            actionableAutomationPreflightTargets.isEmpty
+                        )
+
+                        if skippedAutomationPreflightTargets.isEmpty {
+                            Button {
+                                bulkSkipAllAutomationTargets()
+                            } label: {
+                                if isBulkSkippingAutomationTargets {
+                                    HStack(spacing: .spacingXS) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text("Skipping...")
+                                    }
+                                    .font(.retraceCaption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, .spacingM)
+                                    .padding(.vertical, .spacingXS)
+                                    .background(Color.retraceSecondaryColor)
+                                    .cornerRadius(.cornerRadiusM)
+                                    .frame(height: 28)
+                                } else {
+                                    Text("Skip All")
+                                        .font(.retraceCaption)
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, .spacingM)
+                                        .padding(.vertical, .spacingXS)
+                                        .background(Color.retraceSecondaryColor)
+                                        .cornerRadius(.cornerRadiusM)
+                                        .frame(height: 28)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(
+                                isBulkAllowingAutomationTargets ||
+                                isBulkSkippingAutomationTargets ||
+                                actionableAutomationPreflightTargets.isEmpty
+                            )
+                        } else {
+                            Button {
+                                bulkUnskipAllAutomationTargets()
+                            } label: {
+                                Text("Undo All")
+                                    .font(.retraceCaption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, .spacingM)
+                                    .padding(.vertical, .spacingXS)
+                                    .background(Color.retraceSecondaryColor)
+                                    .cornerRadius(.cornerRadiusM)
+                                    .frame(height: 28)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(
+                                isBulkAllowingAutomationTargets ||
+                                isBulkSkippingAutomationTargets
+                            )
+                        }
+                    }
+                }
+
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(automationPreflightTargets.enumerated()), id: \.element.id) { index, target in
+                            automationPreflightTargetRow(target: target)
+                            if index < automationPreflightTargets.count - 1 {
+                                Divider()
+                                    .background(Color.white.opacity(0.08))
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: appURLPermissionsListViewportHeight)
+                .background(Color.retraceBackground.opacity(0.24))
+                .overlay(
+                    RoundedRectangle(cornerRadius: .cornerRadiusM)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: .cornerRadiusM))
+
+                if showCloseLaunchedAppsAction {
+                    HStack {
+                        Spacer()
+
+                        Button {
+                            Task {
+                                await closeLaunchedAutomationApps()
+                            }
+                        } label: {
+                            if isClosingLaunchedAutomationApps {
+                                HStack(spacing: .spacingXS) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Closing...")
+                                }
+                                .font(.retraceCaption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, .spacingM)
+                                .padding(.vertical, .spacingXS)
+                                .background(Color.retraceSecondaryColor)
+                                .cornerRadius(.cornerRadiusM)
+                            } else {
+                                Text("Close Launched Apps (\(launchedAutomationRunningCount))")
+                                    .font(.retraceCaption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, .spacingM)
+                                    .padding(.vertical, .spacingXS)
+                                    .background(onboardingButtonColor)
+                                    .cornerRadius(.cornerRadiusM)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isClosingLaunchedAutomationApps)
+                    }
+                }
+
+            }
+        }
+        .padding(36)
+        .background(Color.retraceSecondaryBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: .cornerRadiusL)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .cornerRadius(.cornerRadiusL)
+    }
+
+    private func automationPreflightTargetRow(target: AutomationPreflightTarget) -> some View {
+        let status = automationStatus(for: target)
+        let isRunning = automationPreflightRunningBundleIDs.contains(target.bundleID)
+
+        return HStack(spacing: .spacingL) {
+            Group {
+                if let icon = automationPreflightIconByBundleID[target.bundleID] {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 30, height: 30)
+                } else {
+                    Image(systemName: "app.fill")
+                        .font(.retraceBody)
+                        .foregroundColor(.retraceSecondary)
+                        .frame(width: 30, height: 30)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: .spacingS) {
+                Text(target.displayName)
+                    .font(.retraceBody)
+                    .foregroundColor(.retracePrimary)
+
+                if status != nil {
+                    automationInlineStatusBadge(for: target)
+                } else {
+                    Text(isRunning ? "Ready to allow" : "Not running")
+                        .font(.retraceCaption)
+                        .foregroundColor(.retraceSecondary)
+                }
+            }
+
+            Spacer()
+
+            if automationPreflightBusyBundleIDs.contains(target.bundleID) {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                HStack(spacing: .spacingS) {
+                    if status == .granted {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.retraceBody)
+                            .foregroundColor(.retraceSuccess)
+                    } else if status == .skipped {
+                        Button {
+                            unskipAutomationTarget(target)
+                        } label: {
+                            Text("Undo")
+                                .font(.retraceCaption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, .spacingM)
+                                .padding(.vertical, .spacingXS)
+                                .background(Color.retraceSecondaryColor)
+                                .cornerRadius(.cornerRadiusM)
+                        }
+                        .buttonStyle(.plain)
+                    } else if status == .denied {
+                        Button(action: openAutomationSettings) {
+                            Text("Open Settings")
+                                .font(.retraceCaption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, .spacingM)
+                                .padding(.vertical, .spacingXS)
+                                .background(Color.retraceWarning)
+                                .cornerRadius(.cornerRadiusM)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            skipAutomationTarget(target)
+                        } label: {
+                            Text("Skip")
+                                .font(.retraceCaption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, .spacingM)
+                                .padding(.vertical, .spacingXS)
+                                .background(Color.retraceSecondaryColor)
+                                .cornerRadius(.cornerRadiusM)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        if isRunning {
+                            Button {
+                                Task {
+                                    await enableAutomationPermission(for: target)
+                                }
+                            } label: {
+                                Text("Allow")
+                                    .font(.retraceCaption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, .spacingM)
+                                    .padding(.vertical, .spacingXS)
+                                    .background(onboardingButtonColor)
+                                    .cornerRadius(.cornerRadiusM)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Button {
+                                Task {
+                                    await launchAutomationTarget(target)
+                                }
+                            } label: {
+                                Text("Launch")
+                                    .font(.retraceCaption)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, .spacingM)
+                                    .padding(.vertical, .spacingXS)
+                                    .background(onboardingButtonColor)
+                                    .cornerRadius(.cornerRadiusM)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Button {
+                            skipAutomationTarget(target)
+                        } label: {
+                            Text("Skip")
+                                .font(.retraceCaption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, .spacingM)
+                                .padding(.vertical, .spacingXS)
+                                .background(Color.retraceSecondaryColor)
+                                .cornerRadius(.cornerRadiusM)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, .spacingL)
+        .padding(.vertical, .spacingM)
+    }
+
+    private func automationInlineStatusBadge(for target: AutomationPreflightTarget) -> some View {
+        Text(automationStatusDescription(for: target))
+            .font(.retraceCaption2)
+            .foregroundColor(automationStatusColor(for: target))
+            .padding(.horizontal, .spacingS)
+            .padding(.vertical, 4)
+            .background(automationStatusColor(for: target).opacity(0.16))
+            .clipShape(Capsule())
+    }
+
+    private var actionableAutomationPreflightTargets: [AutomationPreflightTarget] {
+        automationPreflightTargets.filter { target in
+            let status = automationPreflightStatusByBundleID[target.bundleID]
+            return status != .granted && status != .skipped
+        }
+    }
+
+    private var skippedAutomationPreflightTargets: [AutomationPreflightTarget] {
+        automationPreflightTargets.filter { target in
+            automationPreflightStatusByBundleID[target.bundleID] == .skipped
+        }
+    }
+
+    private var hasAutomationAccessEnabled: Bool {
+        guard hasLoadedAutomationPreflightTargets else {
+            return false
+        }
+
+        guard !automationPreflightTargets.isEmpty else {
+            return true
+        }
+
+        return automationPreflightTargets.allSatisfy { target in
+            guard let status = automationPreflightStatusByBundleID[target.bundleID] else {
+                return false
+            }
+            return status == .granted || status == .skipped
+        }
+    }
+
+    private var automationEnabledCount: Int {
+        automationPreflightTargets.filter { target in
+            automationPreflightStatusByBundleID[target.bundleID] == .granted
+        }.count
+    }
+
+    private var automationSkippedCount: Int {
+        automationPreflightTargets.filter { target in
+            automationPreflightStatusByBundleID[target.bundleID] == .skipped
+        }.count
+    }
+
+    private var automationRemainingCount: Int {
+        automationPreflightTargets.count - automationEnabledCount - automationSkippedCount
+    }
+
+    private var launchedAutomationRunningCount: Int {
+        automationPreflightLaunchedByOnboardingBundleIDs
+            .intersection(automationPreflightRunningBundleIDs)
+            .count
+    }
+
+    private var showCloseLaunchedAppsAction: Bool {
+        hasAutomationAccessEnabled && launchedAutomationRunningCount > 0
+    }
+
+    // MARK: - Optional Screen Recording Indicator Step
 
     private var screenRecordingIndicatorStep: some View {
         VStack(spacing: .spacingXL) {
@@ -666,7 +1235,7 @@ public struct OnboardingView: View {
                 //     .multilineTextAlignment(.center)
             }
             .padding(.horizontal, .spacingXL)
-            .frame(maxWidth: 500)
+            .frame(maxWidth: 680)
 
             Spacer()
         }
@@ -781,7 +1350,7 @@ public struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 5: Launch at Login
+    // MARK: - Step 6: Launch at Login
 
     private var launchAtLoginStep: some View {
         VStack(spacing: .spacingXL) {
@@ -1827,10 +2396,10 @@ public struct OnboardingView: View {
         // Check screen recording
         hasScreenRecordingPermission = await checkScreenRecordingPermission()
 
-        // Only check accessibility if user has already requested it
-        // This prevents AXIsProcessTrustedWithOptions from triggering an early system prompt
-        if accessibilityRequested {
-            hasAccessibilityPermission = checkAccessibilityPermission()
+        // Check accessibility without prompting so granted state is restored on app restart.
+        hasAccessibilityPermission = checkAccessibilityPermission()
+        if hasAccessibilityPermission {
+            accessibilityRequested = true
         }
     }
 
@@ -1884,7 +2453,23 @@ public struct OnboardingView: View {
     private func openScreenRecordingSettings() {
         // Open System Settings to Screen Recording privacy pane
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-        NSWorkspace.shared.open(url)
+        if NSWorkspace.shared.open(url) {
+            startWaitingForSystemSettingsReturn()
+        } else {
+            Log.warning("[OnboardingView] Failed to open Screen Recording settings URL", category: .ui)
+        }
+    }
+
+    private func openAutomationSettings() {
+        // Open System Settings to Automation privacy pane
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") else {
+            return
+        }
+        if NSWorkspace.shared.open(url) {
+            startWaitingForSystemSettingsReturn()
+        } else {
+            Log.warning("[OnboardingView] Failed to open Automation settings URL", category: .ui)
+        }
     }
 
     private func requestAccessibility() {
@@ -1920,24 +2505,31 @@ public struct OnboardingView: View {
 
     // MARK: - Permission Monitoring
 
+    @MainActor
     private func startPermissionMonitoring() {
+        Log.info("[OnboardingView] Permission monitoring started", category: .ui)
         // Start timer to continuously check permissions every 2 seconds
         // Note: Initial check is done in .task block, not here
         permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
             Task { @MainActor in
                 // Check screen recording
+                let previousScreenRecording = hasScreenRecordingPermission
                 hasScreenRecordingPermission = await checkScreenRecordingPermission()
+                if !previousScreenRecording && hasScreenRecordingPermission {
+                    bringOnboardingToFront(reason: "screen-recording-granted")
+                }
 
-                // Only check accessibility AFTER user has clicked Enable
-                // This prevents AXIsProcessTrustedWithOptions from triggering an early system prompt
-                if accessibilityRequested {
-                    let previousAccessibility = hasAccessibilityPermission
-                    hasAccessibilityPermission = checkAccessibilityPermission()
+                // Check accessibility without prompting so state stays in sync after relaunch.
+                let previousAccessibility = hasAccessibilityPermission
+                hasAccessibilityPermission = checkAccessibilityPermission()
+                if hasAccessibilityPermission {
+                    accessibilityRequested = true
+                }
 
-                    // If accessibility was just granted, retry setting up global hotkeys
-                    if !previousAccessibility && hasAccessibilityPermission {
-                        HotkeyManager.shared.retrySetupIfNeeded()
-                    }
+                // If accessibility was just granted, retry setting up global hotkeys
+                if !previousAccessibility && hasAccessibilityPermission {
+                    HotkeyManager.shared.retrySetupIfNeeded()
+                    bringOnboardingToFront(reason: "accessibility-granted")
                 }
 
                 // On macOS 15+, when both permissions are granted, trigger the capture dialog
@@ -1945,8 +2537,57 @@ public struct OnboardingView: View {
                 if hasScreenRecordingPermission && hasAccessibilityPermission && !hasTriggeredCaptureDialog {
                     triggerMacOS15CaptureDialog()
                 }
+
+                let previousRunningBundleIDs = automationPreflightRunningBundleIDs
+                await refreshAutomationRunningBundleIDs()
+                if previousRunningBundleIDs != automationPreflightRunningBundleIDs {
+                    await refreshAutomationPreflightPermissionStateIfNeeded(reason: "running-set-changed")
+                } else {
+                    Log.debug(
+                        "[OnboardingView] Skipping automation permission recheck on tick: running set unchanged",
+                        category: .ui
+                    )
+                }
+                checkForSystemSettingsReturn()
             }
         }
+    }
+
+    @MainActor
+    private func startAutomationForcedSweepMonitoring() {
+        guard automationForcedSweepTimer == nil else {
+            Log.debug("[OnboardingView] Forced automation sweep monitoring already active", category: .ui)
+            return
+        }
+
+        Log.info(
+            "[OnboardingView] Forced automation sweep monitoring started (interval=\(Self.automationForcedSweepIntervalSeconds)s)",
+            category: .ui
+        )
+        automationForcedSweepTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.automationForcedSweepIntervalSeconds,
+            repeats: true
+        ) { _ in
+            Task { @MainActor in
+                guard currentStep == 4 else { return }
+                await refreshAutomationPreflightPermissionStateIfNeeded(
+                    force: true,
+                    reason: "step4-forced-sweep-tick"
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func stopAutomationForcedSweepMonitoring() {
+        guard automationForcedSweepTimer != nil else {
+            Log.debug("[OnboardingView] Forced automation sweep monitoring already stopped", category: .ui)
+            return
+        }
+
+        automationForcedSweepTimer?.invalidate()
+        automationForcedSweepTimer = nil
+        Log.info("[OnboardingView] Forced automation sweep monitoring stopped", category: .ui)
     }
 
     /// Triggers a single screen capture to prompt the macOS 15+ "Allow to record screen & audio" dialog.
@@ -1959,9 +2600,1594 @@ public struct OnboardingView: View {
         _ = CGDisplayCreateImage(CGMainDisplayID())
     }
 
+    @MainActor
     private func stopPermissionMonitoring() {
+        Log.info("[OnboardingView] Permission monitoring stopped", category: .ui)
         permissionCheckTimer?.invalidate()
         permissionCheckTimer = nil
+        stopAutomationForcedSweepMonitoring()
+        stopSystemSettingsReturnCheckTimer()
+        for task in automationPermissionDecisionMonitorTasksByBundleID.values {
+            task.cancel()
+        }
+        automationPermissionDecisionMonitorTasksByBundleID.removeAll()
+    }
+
+    @MainActor
+    private func startAutomationWorkspaceObservation() {
+        guard automationWorkspaceObserverTokens.isEmpty else {
+            Log.debug("[OnboardingView] Workspace observation already active", category: .ui)
+            return
+        }
+
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+
+        let launchToken = notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let runningApp = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard let bundleID = runningApp?.bundleIdentifier else { return }
+            Task { @MainActor in
+                await handleAutomationWorkspaceEvent(bundleID: bundleID, event: "launch")
+            }
+        }
+
+        let terminateToken = notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let runningApp = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard let bundleID = runningApp?.bundleIdentifier else { return }
+            Task { @MainActor in
+                await handleAutomationWorkspaceEvent(bundleID: bundleID, event: "terminate")
+            }
+        }
+
+        automationWorkspaceObserverTokens = [launchToken, terminateToken]
+        Log.info("[OnboardingView] Workspace observation started (launch+terminate)", category: .ui)
+    }
+
+    @MainActor
+    private func stopAutomationWorkspaceObservation() {
+        guard !automationWorkspaceObserverTokens.isEmpty else {
+            Log.debug("[OnboardingView] Workspace observation already stopped", category: .ui)
+            return
+        }
+
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        let tokenCount = automationWorkspaceObserverTokens.count
+        for token in automationWorkspaceObserverTokens {
+            notificationCenter.removeObserver(token)
+        }
+        automationWorkspaceObserverTokens.removeAll()
+        Log.info("[OnboardingView] Workspace observation stopped (removed \(tokenCount) tokens)", category: .ui)
+    }
+
+    @MainActor
+    private func handleAutomationWorkspaceEvent(bundleID: String, event: String) async {
+        guard let relevanceReason = automationWorkspaceEventRelevanceReason(bundleID: bundleID) else {
+            Log.debug(
+                "[OnboardingView] Ignoring workspace event \(event) for non-automation bundle \(bundleID)",
+                category: .ui
+            )
+            return
+        }
+
+        Log.info(
+            "[OnboardingView] Automation workspace event \(event) for \(bundleID) (reason=\(relevanceReason)) - refreshing preflight list",
+            category: .ui
+        )
+        await refreshAutomationPreflightList(reason: "workspace-\(event):\(bundleID)")
+    }
+
+    @MainActor
+    private func automationWorkspaceEventRelevanceReason(bundleID: String) -> String? {
+        if automationPreflightTargets.contains(where: { $0.bundleID == bundleID }) {
+            return "direct-target"
+        }
+
+        if automationPreflightTargets.contains(where: {
+            Self.automationPermissionRequiredBundleIDs(forTargetBundleID: $0.bundleID).contains(bundleID)
+        }) {
+            return "required-probe-target"
+        }
+
+        if Self.automationPreflightBaseTargets.contains(where: { $0.bundleID == bundleID }) {
+            return "base-target"
+        }
+
+        if Self.automationChromiumHostBundleIDs.contains(bundleID) {
+            return "chromium-host"
+        }
+
+        if Self.automationChromiumAppShimPrefixes.contains(where: { bundleID.hasPrefix($0) }) {
+            return "chromium-shim"
+        }
+
+        return nil
+    }
+
+    @MainActor
+    private func refreshAutomationPreflightList(reason: String) async {
+        guard !isRefreshingAutomationPreflightList else {
+            Log.debug(
+                "[OnboardingView] Skipping preflight refresh; already in progress (reason=\(reason))",
+                category: .ui
+            )
+            return
+        }
+        let refreshStartedAt = Date()
+        isRefreshingAutomationPreflightList = true
+        defer {
+            isRefreshingAutomationPreflightList = false
+            let elapsedMS = Int(Date().timeIntervalSince(refreshStartedAt) * 1000)
+            Log.info(
+                "[OnboardingView] Automation preflight list refresh finished (reason=\(reason), elapsed=\(elapsedMS)ms, targets=\(automationPreflightTargets.count), running=\(automationPreflightRunningBundleIDs.count))",
+                category: .ui
+            )
+        }
+
+        Log.info("[OnboardingView] Automation preflight list refresh started (reason=\(reason))", category: .ui)
+        await refreshAutomationPreflightTargets()
+        Log.debug(
+            "[OnboardingView] Refresh stage complete: targets loaded count=\(automationPreflightTargets.count) (reason=\(reason))",
+            category: .ui
+        )
+        await refreshAutomationRunningBundleIDs()
+        Log.debug(
+            "[OnboardingView] Refresh stage complete: running bundle count=\(automationPreflightRunningBundleIDs.count) (reason=\(reason))",
+            category: .ui
+        )
+        await refreshAutomationPreflightPermissionStateIfNeeded(force: true, reason: reason)
+    }
+
+    @MainActor
+    private func refreshAutomationPreflightTargets() async {
+        let previousTargetCount = automationPreflightTargets.count
+        let previousStatusCount = automationPreflightStatusByBundleID.count
+        let targets = await buildAutomationPreflightTargets()
+        automationPreflightTargets = targets
+        hasLoadedAutomationPreflightTargets = true
+
+        let validBundleIDs = Set(targets.map(\.bundleID))
+        let validProbeBundleIDs = Set(
+            targets.flatMap { target in
+                Self.automationPermissionRequiredBundleIDs(forTargetBundleID: target.bundleID)
+            }
+        )
+        automationPreflightStatusByBundleID = automationPreflightStatusByBundleID.filter { validBundleIDs.contains($0.key) }
+        automationPreflightRunningBundleIDs = Set(automationPreflightRunningBundleIDs.filter { validBundleIDs.contains($0) })
+        automationPreflightBusyBundleIDs = Set(automationPreflightBusyBundleIDs.filter { validBundleIDs.contains($0) })
+        automationPreflightUnknownProbeAttemptedBundleIDs = Set(
+            automationPreflightUnknownProbeAttemptedBundleIDs.filter { validBundleIDs.contains($0) }
+        )
+        automationPermissionProbeCooldownUntilByBundleID = automationPermissionProbeCooldownUntilByBundleID.filter {
+            validProbeBundleIDs.contains($0.key)
+        }
+        automationPermissionProbeTimeoutCountByBundleID = automationPermissionProbeTimeoutCountByBundleID.filter {
+            validProbeBundleIDs.contains($0.key)
+        }
+        automationPreflightLaunchedByOnboardingBundleIDs = Set(
+            automationPreflightLaunchedByOnboardingBundleIDs.filter { validBundleIDs.contains($0) }
+        )
+        automationPreflightIconByBundleID = loadAutomationPreflightIcons(for: targets)
+        let persistedStatuses = loadPersistedAutomationPreflightStatuses()
+        for target in targets {
+            guard automationPreflightStatusByBundleID[target.bundleID] == nil,
+                  let persistedStatus = persistedStatuses[target.bundleID] else {
+                continue
+            }
+            automationPreflightStatusByBundleID[target.bundleID] = persistedStatus
+        }
+        persistAutomationPreflightStatuses()
+        lastAutomationPreflightRecheckAt = Date.distantPast
+        Log.info(
+            "[OnboardingView] Preflight targets refreshed (previousTargets=\(previousTargetCount), newTargets=\(targets.count), previousStatuses=\(previousStatusCount), newStatuses=\(automationPreflightStatusByBundleID.count))",
+            category: .ui
+        )
+    }
+
+    @MainActor
+    private func refreshAutomationRunningBundleIDs() async {
+        let targetBundleIDs = Set(automationPreflightTargets.map(\.bundleID))
+        guard !targetBundleIDs.isEmpty else {
+            if !automationPreflightRunningBundleIDs.isEmpty {
+                Log.info(
+                    "[OnboardingView] Running automation bundles cleared because target list is empty",
+                    category: .ui
+                )
+            }
+            automationPreflightRunningBundleIDs = []
+            return
+        }
+
+        let previousRunningBundleIDs = automationPreflightRunningBundleIDs
+        let runningBundleIDs = Set(
+            NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
+                .filter { targetBundleIDs.contains($0) }
+        )
+        automationPreflightRunningBundleIDs = runningBundleIDs
+
+        if previousRunningBundleIDs != runningBundleIDs {
+            let added = runningBundleIDs.subtracting(previousRunningBundleIDs)
+            let removed = previousRunningBundleIDs.subtracting(runningBundleIDs)
+            let addedText = added.isEmpty ? "-" : added.sorted().joined(separator: ",")
+            let removedText = removed.isEmpty ? "-" : removed.sorted().joined(separator: ",")
+            Log.info(
+                "[OnboardingView] Running automation bundles changed (count=\(runningBundleIDs.count), added=\(addedText), removed=\(removedText))",
+                category: .ui
+            )
+        }
+    }
+
+    @MainActor
+    private func startWaitingForSystemSettingsReturn() {
+        waitingForSystemSettingsReturn = true
+        observedSystemSettingsForeground = false
+        startSystemSettingsReturnCheckTimer()
+        Log.info("[OnboardingView] Waiting for return from System Settings", category: .ui)
+    }
+
+    @MainActor
+    private func checkForSystemSettingsReturn() {
+        guard waitingForSystemSettingsReturn else { return }
+
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let isSettingsFrontmost = frontmostBundleID.map { Self.systemSettingsBundleIDs.contains($0) } ?? false
+
+        if isSettingsFrontmost {
+            observedSystemSettingsForeground = true
+            return
+        }
+
+        guard observedSystemSettingsForeground else { return }
+
+        waitingForSystemSettingsReturn = false
+        observedSystemSettingsForeground = false
+        stopSystemSettingsReturnCheckTimer()
+        bringOnboardingToFront(reason: "returned-from-system-settings")
+        Task { @MainActor in
+            await refreshAutomationPreflightList(reason: "system-settings-return")
+        }
+    }
+
+    @MainActor
+    private func startSystemSettingsReturnCheckTimer() {
+        stopSystemSettingsReturnCheckTimer()
+        systemSettingsReturnCheckTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.systemSettingsReturnCheckIntervalSeconds,
+            repeats: true
+        ) { _ in
+            Task { @MainActor in
+                checkForSystemSettingsReturn()
+            }
+        }
+    }
+
+    @MainActor
+    private func stopSystemSettingsReturnCheckTimer() {
+        systemSettingsReturnCheckTimer?.invalidate()
+        systemSettingsReturnCheckTimer = nil
+    }
+
+    @MainActor
+    private func bringOnboardingToFront(reason: String) {
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let frontWindow = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) {
+            frontWindow.makeKeyAndOrderFront(nil)
+        } else {
+            for window in NSApp.windows where window.isVisible {
+                window.orderFrontRegardless()
+            }
+        }
+
+        Log.info("[OnboardingView] Brought onboarding to front reason=\(reason)", category: .ui)
+    }
+
+    @MainActor
+    private func bringOnboardingToFrontAfterLaunchWithRetries(reason: String) {
+        bringOnboardingToFront(reason: reason)
+
+        // Step-2-only launch retries to reclaim focus when the launched app steals it back.
+        guard currentStep == 4 else { return }
+
+        let retryDelays: [Duration] = [
+            .milliseconds(250),
+            .milliseconds(700),
+            .milliseconds(1200),
+        ]
+
+        for (index, delay) in retryDelays.enumerated() {
+            Task { @MainActor in
+                try? await Task.sleep(for: delay, clock: .continuous)
+                guard currentStep == 4 else { return }
+                bringOnboardingToFront(reason: "\(reason)-launch-retry-\(index + 1)")
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshAutomationPreflightPermissionStateIfNeeded(force: Bool = false, reason: String = "unspecified") async {
+        guard hasLoadedAutomationPreflightTargets else {
+            Log.debug(
+                "[OnboardingView] Skip automation permission recheck: targets not loaded yet (reason=\(reason), force=\(force))",
+                category: .ui
+            )
+            return
+        }
+        guard !isRecheckingAutomationPreflightPermissions else {
+            Log.debug(
+                "[OnboardingView] Skip automation permission recheck: already running (reason=\(reason), force=\(force))",
+                category: .ui
+            )
+            return
+        }
+
+        let now = Date()
+        if !force && now.timeIntervalSince(lastAutomationPreflightRecheckAt) < Self.automationPreflightRecheckIntervalSeconds {
+            let elapsedMS = Int(now.timeIntervalSince(lastAutomationPreflightRecheckAt) * 1000)
+            let throttleMS = Int(Self.automationPreflightRecheckIntervalSeconds * 1000)
+            Log.debug(
+                "[OnboardingView] Skip automation permission recheck: throttled (reason=\(reason), elapsed=\(elapsedMS)ms, throttle=\(throttleMS)ms)",
+                category: .ui
+            )
+            return
+        }
+        lastAutomationPreflightRecheckAt = now
+
+        let targetsToRecheck = automationPreflightTargets.filter { target in
+            guard !automationPreflightBusyBundleIDs.contains(target.bundleID) else {
+                return false
+            }
+
+            let status = automationPreflightStatusByBundleID[target.bundleID]
+            guard status != .skipped else {
+                return false
+            }
+
+            // Always recheck persisted granted/denied states, even if the target app is not running.
+            // This keeps stale rows in sync after tccutil reset.
+            if status == .granted || status == .denied {
+                return true
+            }
+
+            // Still allow lightweight auto-detection for running apps with unknown state.
+            return automationPreflightRunningBundleIDs.contains(target.bundleID)
+        }
+        guard !targetsToRecheck.isEmpty else {
+            Log.debug(
+                "[OnboardingView] Automation permission recheck found no eligible targets (reason=\(reason), totalTargets=\(automationPreflightTargets.count), running=\(automationPreflightRunningBundleIDs.count))",
+                category: .ui
+            )
+            return
+        }
+
+        Log.info(
+            "[OnboardingView] Automation permission recheck started (reason=\(reason), force=\(force), targetCount=\(targetsToRecheck.count))",
+            category: .ui
+        )
+        Log.debug(
+            "[OnboardingView] Recheck targets=\(targetsToRecheck.map(\.bundleID).joined(separator: ","))",
+            category: .ui
+        )
+
+        isRecheckingAutomationPreflightPermissions = true
+        defer {
+            isRecheckingAutomationPreflightPermissions = false
+            Log.info(
+                "[OnboardingView] Automation permission recheck finished (reason=\(reason))",
+                category: .ui
+            )
+        }
+
+        var requiredBundleIDsInOrder: [String] = []
+        var targetCountByRequiredBundleID: [String: Int] = [:]
+        for target in targetsToRecheck {
+            let requiredBundleIDs = Self.automationPermissionRequiredBundleIDs(forTargetBundleID: target.bundleID)
+            for requiredBundleID in requiredBundleIDs {
+                if targetCountByRequiredBundleID[requiredBundleID] == nil {
+                    requiredBundleIDsInOrder.append(requiredBundleID)
+                }
+                targetCountByRequiredBundleID[requiredBundleID, default: 0] += 1
+            }
+        }
+
+        Log.debug(
+            "[OnboardingView] Required probe groups=\(requiredBundleIDsInOrder.map { "\($0):\(targetCountByRequiredBundleID[$0] ?? 0)" }.joined(separator: ","))",
+            category: .ui
+        )
+
+        var probeResultByRequiredBundleID: [String: AutomationPermissionProbeResult] = [:]
+        for requiredBundleID in requiredBundleIDsInOrder {
+            let now = Date()
+            if !force, let cooldownUntil = automationPermissionProbeCooldownUntilByBundleID[requiredBundleID], cooldownUntil > now {
+                let remainingMS = Int(cooldownUntil.timeIntervalSince(now) * 1000)
+                Log.debug(
+                    "[OnboardingView] Skipping probe bundle \(requiredBundleID) due to timeout cooldown remaining=\(remainingMS)ms",
+                    category: .ui
+                )
+                continue
+            }
+
+            Log.debug(
+                "[OnboardingView] Probing automation bundle \(requiredBundleID) for \(targetCountByRequiredBundleID[requiredBundleID] ?? 0) target(s)",
+                category: .ui
+            )
+            let probeResult = await automationPermissionProbeResult(
+                for: requiredBundleID,
+                askUserIfNeeded: false
+            )
+            probeResultByRequiredBundleID[requiredBundleID] = probeResult
+        }
+
+        if probeResultByRequiredBundleID.isEmpty {
+            Log.debug(
+                "[OnboardingView] Automation permission recheck skipped all probes due to cooldown (reason=\(reason))",
+                category: .ui
+            )
+            return
+        }
+
+        var timeoutHandledRequiredBundleIDs: Set<String> = []
+        let clearStaleStatusesOnForce = force
+
+        for target in targetsToRecheck {
+            let previousStatus = automationPreflightStatusByBundleID[target.bundleID]
+            let requiredBundleIDs = Self.automationPermissionRequiredBundleIDs(forTargetBundleID: target.bundleID)
+            let requiredLabel = requiredBundleIDs.joined(separator: "+")
+
+            var requiredResults: [(bundleID: String, result: AutomationPermissionProbeResult)] = []
+            var missingRequiredBundleIDs: [String] = []
+            for requiredBundleID in requiredBundleIDs {
+                guard let probeResult = probeResultByRequiredBundleID[requiredBundleID] else {
+                    missingRequiredBundleIDs.append(requiredBundleID)
+                    continue
+                }
+                requiredResults.append((bundleID: requiredBundleID, result: probeResult))
+            }
+
+            if !missingRequiredBundleIDs.isEmpty {
+                Log.debug(
+                    "[OnboardingView] Rechecking automation permission target=\(target.bundleID), required=\(requiredLabel), skipping due to missing probe result(s)=\(missingRequiredBundleIDs.joined(separator: ","))",
+                    category: .ui
+                )
+                continue
+            }
+
+            Log.debug(
+                "[OnboardingView] Rechecking automation permission target=\(target.bundleID), required=\(requiredLabel), previousStatus=\(String(describing: previousStatus))",
+                category: .ui
+            )
+
+            let timeoutBundleIDs = requiredResults.compactMap { entry -> String? in
+                if case .unavailable(let statusCode) = entry.result,
+                   statusCode == Self.automationPermissionProbeTimeoutStatus {
+                    return entry.bundleID
+                }
+                return nil
+            }
+            if !timeoutBundleIDs.isEmpty {
+                for requiredBundleID in timeoutBundleIDs {
+                    let cooldownUntil = Date().addingTimeInterval(Self.automationPermissionProbeRetryCooldownSeconds)
+                    automationPermissionProbeCooldownUntilByBundleID[requiredBundleID] = cooldownUntil
+                    let timeoutCount = (automationPermissionProbeTimeoutCountByBundleID[requiredBundleID] ?? 0) + 1
+                    automationPermissionProbeTimeoutCountByBundleID[requiredBundleID] = timeoutCount
+
+                    if !timeoutHandledRequiredBundleIDs.contains(requiredBundleID) {
+                        timeoutHandledRequiredBundleIDs.insert(requiredBundleID)
+                        let cooldownMS = Int(Self.automationPermissionProbeRetryCooldownSeconds * 1000)
+                        Log.warning(
+                            "[OnboardingView] Automation preflight silent-check timed out for required bundle=\(requiredBundleID); timeoutCount=\(timeoutCount), force=\(force), setting cooldown=\(cooldownMS)ms and continuing recheck pass",
+                            category: .ui
+                        )
+                    }
+                }
+
+                if clearStaleStatusesOnForce,
+                   (previousStatus == .granted || previousStatus == .denied) {
+                    automationPreflightStatusByBundleID.removeValue(forKey: target.bundleID)
+                    persistAutomationPreflightStatuses()
+                    Log.warning(
+                        "[OnboardingView] Cleared cached automation status for \(target.bundleID) because required probe(s) \(timeoutBundleIDs.joined(separator: ",")) timed out during forced refresh",
+                        category: .ui
+                    )
+                }
+                continue
+            }
+
+            let deniedBundleIDs = requiredResults.compactMap { entry -> String? in
+                if case .denied = entry.result {
+                    return entry.bundleID
+                }
+                return nil
+            }
+            if !deniedBundleIDs.isEmpty {
+                for requiredBundleID in requiredBundleIDs {
+                    automationPermissionProbeCooldownUntilByBundleID.removeValue(forKey: requiredBundleID)
+                    automationPermissionProbeTimeoutCountByBundleID.removeValue(forKey: requiredBundleID)
+                }
+                if previousStatus != .denied {
+                    automationPreflightStatusByBundleID[target.bundleID] = .denied
+                    persistAutomationPreflightStatuses()
+                    Log.warning(
+                        "[OnboardingView] Automation preflight silent-check denied for \(target.bundleID) (required=\(requiredLabel), denied=\(deniedBundleIDs.joined(separator: ","))); status -> denied",
+                        category: .ui
+                    )
+                }
+                continue
+            }
+
+            let requiresConsentBundleIDs = requiredResults.compactMap { entry -> String? in
+                if case .requiresUserConsent = entry.result {
+                    return entry.bundleID
+                }
+                return nil
+            }
+            if !requiresConsentBundleIDs.isEmpty {
+                for requiredBundleID in requiredBundleIDs {
+                    automationPermissionProbeCooldownUntilByBundleID.removeValue(forKey: requiredBundleID)
+                    automationPermissionProbeTimeoutCountByBundleID.removeValue(forKey: requiredBundleID)
+                }
+                // No prompt on background checks. Keep this app in "Ready to allow" state.
+                if previousStatus != nil && previousStatus != .skipped {
+                    automationPreflightStatusByBundleID.removeValue(forKey: target.bundleID)
+                    persistAutomationPreflightStatuses()
+                    Log.info(
+                        "[OnboardingView] Automation preflight silent-check requires consent for \(target.bundleID) (required=\(requiredLabel), pending=\(requiresConsentBundleIDs.joined(separator: ","))); status -> ready-to-allow",
+                        category: .ui
+                    )
+                }
+                continue
+            }
+
+            let procNotFoundBundleIDs = requiredResults.compactMap { entry -> String? in
+                if case .unavailable(let statusCode) = entry.result,
+                   statusCode == Self.automationPermissionTargetNotRunningStatus {
+                    return entry.bundleID
+                }
+                return nil
+            }
+            if !procNotFoundBundleIDs.isEmpty {
+                for requiredBundleID in procNotFoundBundleIDs {
+                    automationPermissionProbeCooldownUntilByBundleID.removeValue(forKey: requiredBundleID)
+                    automationPermissionProbeTimeoutCountByBundleID.removeValue(forKey: requiredBundleID)
+                }
+                Log.info(
+                    "[OnboardingView] Automation preflight silent-check unavailable for \(target.bundleID) (required=\(requiredLabel)); preserving previous status=\(String(describing: previousStatus)), notRunning=\(procNotFoundBundleIDs.joined(separator: ","))",
+                    category: .ui
+                )
+                continue
+            }
+
+            if let unavailableEntry = requiredResults.first(where: { entry in
+                if case .unavailable(let statusCode) = entry.result {
+                    return statusCode != Self.automationPermissionProbeTimeoutStatus &&
+                        statusCode != Self.automationPermissionTargetNotRunningStatus
+                }
+                return false
+            }),
+               case .unavailable(let statusCode) = unavailableEntry.result {
+                automationPermissionProbeCooldownUntilByBundleID.removeValue(forKey: unavailableEntry.bundleID)
+                automationPermissionProbeTimeoutCountByBundleID.removeValue(forKey: unavailableEntry.bundleID)
+                if previousStatus == .granted {
+                    automationPreflightStatusByBundleID.removeValue(forKey: target.bundleID)
+                    persistAutomationPreflightStatuses()
+                    Log.info(
+                        "[OnboardingView] Automation preflight silent-check unavailable for \(target.bundleID) (required=\(requiredLabel)); cleared stale granted status to ready-to-allow, unavailableBundle=\(unavailableEntry.bundleID), osstatus=\(statusCode)",
+                        category: .ui
+                    )
+                } else {
+                    Log.info(
+                        "[OnboardingView] Automation preflight silent-check unavailable for \(target.bundleID) (required=\(requiredLabel)); unavailableBundle=\(unavailableEntry.bundleID), osstatus=\(statusCode)",
+                        category: .ui
+                    )
+                }
+                continue
+            }
+
+            for requiredBundleID in requiredBundleIDs {
+                automationPermissionProbeCooldownUntilByBundleID.removeValue(forKey: requiredBundleID)
+                automationPermissionProbeTimeoutCountByBundleID.removeValue(forKey: requiredBundleID)
+            }
+            if previousStatus != .granted {
+                automationPreflightStatusByBundleID[target.bundleID] = .granted
+                persistAutomationPreflightStatuses()
+                Log.info(
+                    "[OnboardingView] Automation preflight silent-check granted for \(target.bundleID) (required=\(requiredLabel)); status -> granted",
+                    category: .ui
+                )
+            }
+        }
+    }
+
+    private func automationPermissionProbeResult(
+        for bundleID: String,
+        askUserIfNeeded: Bool
+    ) async -> AutomationPermissionProbeResult {
+        let status = await automationPermissionStatusAsync(
+            for: bundleID,
+            askUserIfNeeded: askUserIfNeeded
+        )
+        switch status {
+        case noErr:
+            return .granted
+        case OSStatus(errAEEventNotPermitted):
+            return .denied
+        case OSStatus(errAEEventWouldRequireUserConsent):
+            return .requiresUserConsent
+        default:
+            return .unavailable(status)
+        }
+    }
+
+    private func automationPermissionProbeResult(
+        for target: AutomationPreflightTarget,
+        askUserIfNeeded: Bool
+    ) async -> AutomationPermissionProbeResult {
+        let requiredBundleIDs = Self.automationPermissionRequiredBundleIDs(forTargetBundleID: target.bundleID)
+        var requiredResults: [(bundleID: String, result: AutomationPermissionProbeResult)] = []
+        for requiredBundleID in requiredBundleIDs {
+            let result = await automationPermissionProbeResult(
+                for: requiredBundleID,
+                askUserIfNeeded: askUserIfNeeded
+            )
+            requiredResults.append((bundleID: requiredBundleID, result: result))
+        }
+
+        let aggregateResult = aggregateAutomationPermissionProbeResult(
+            requiredResults
+        )
+        if requiredBundleIDs.count > 1 {
+            Log.debug(
+                "[OnboardingView] Aggregated automation probe target=\(target.bundleID), required=\(requiredBundleIDs.joined(separator: "+")), askUserIfNeeded=\(askUserIfNeeded), result=\(aggregateResult)",
+                category: .ui
+            )
+        }
+        return aggregateResult
+    }
+
+    private func aggregateAutomationPermissionProbeResult(
+        _ requiredResults: [(bundleID: String, result: AutomationPermissionProbeResult)]
+    ) -> AutomationPermissionProbeResult {
+        guard !requiredResults.isEmpty else {
+            return .unavailable(Self.automationPermissionTargetNotRunningStatus)
+        }
+
+        if requiredResults.contains(where: { entry in
+            if case .unavailable(let statusCode) = entry.result {
+                return statusCode == Self.automationPermissionProbeTimeoutStatus
+            }
+            return false
+        }) {
+            return .unavailable(Self.automationPermissionProbeTimeoutStatus)
+        }
+
+        if requiredResults.contains(where: { entry in
+            if case .denied = entry.result { return true }
+            return false
+        }) {
+            return .denied
+        }
+
+        if requiredResults.contains(where: { entry in
+            if case .requiresUserConsent = entry.result { return true }
+            return false
+        }) {
+            return .requiresUserConsent
+        }
+
+        if requiredResults.contains(where: { entry in
+            if case .unavailable(let statusCode) = entry.result {
+                return statusCode == Self.automationPermissionTargetNotRunningStatus
+            }
+            return false
+        }) {
+            return .unavailable(Self.automationPermissionTargetNotRunningStatus)
+        }
+
+        if let unavailableEntry = requiredResults.first(where: { entry in
+            if case .unavailable = entry.result { return true }
+            return false
+        }),
+           case .unavailable(let statusCode) = unavailableEntry.result {
+            return .unavailable(statusCode)
+        }
+
+        return .granted
+    }
+
+    private func automationPermissionStatusAsync(
+        for bundleID: String,
+        askUserIfNeeded: Bool
+    ) async -> OSStatus {
+        let timeoutSeconds = askUserIfNeeded
+            ? Self.automationPreflightUserAllowTimeoutSeconds
+            : Self.automationPreflightBackgroundTimeoutSeconds
+        let probeStartedAt = Date()
+
+        Log.debug(
+            "[OnboardingView] Automation permission probe scheduled bundle=\(bundleID), askUserIfNeeded=\(askUserIfNeeded), timeoutSeconds=\(timeoutSeconds)",
+            category: .ui
+        )
+
+        return await withCheckedContinuation { continuation in
+            let lock = NSLock()
+            var hasResumed = false
+
+            @discardableResult
+            func finish(_ status: OSStatus, source: String) -> Bool {
+                lock.lock()
+                guard !hasResumed else {
+                    lock.unlock()
+                    return false
+                }
+                hasResumed = true
+                lock.unlock()
+
+                let elapsedMS = Int(Date().timeIntervalSince(probeStartedAt) * 1000)
+                Log.debug(
+                    "[OnboardingView] Automation permission probe completed bundle=\(bundleID), askUserIfNeeded=\(askUserIfNeeded), source=\(source), status=\(status), elapsed=\(elapsedMS)ms",
+                    category: .ui
+                )
+                continuation.resume(returning: status)
+                return true
+            }
+
+            Self.automationPermissionProbeQueue.async {
+                let status = Self.automationPermissionStatus(for: bundleID, askUserIfNeeded: askUserIfNeeded)
+                _ = finish(status, source: "probe")
+            }
+
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+                let didTimeOut = finish(Self.automationPermissionProbeTimeoutStatus, source: "timeout")
+                if didTimeOut {
+                    Log.warning(
+                        "[OnboardingView] Automation permission probe timeout bundle=\(bundleID), askUserIfNeeded=\(askUserIfNeeded), timeoutSeconds=\(timeoutSeconds)",
+                        category: .ui
+                    )
+                }
+            }
+        }
+    }
+
+    nonisolated private static func automationPermissionStatus(
+        for bundleID: String,
+        askUserIfNeeded: Bool
+    ) -> OSStatus {
+        var targetDesc = AEDesc()
+        let bundleIDCString = bundleID.utf8CString
+        let createStatus = bundleIDCString.withUnsafeBufferPointer { bufferPointer in
+            AECreateDesc(
+                DescType(typeApplicationBundleID),
+                bufferPointer.baseAddress,
+                max(0, bufferPointer.count - 1),
+                &targetDesc
+            )
+        }
+
+        guard createStatus == noErr else {
+            return OSStatus(createStatus)
+        }
+        defer { AEDisposeDesc(&targetDesc) }
+
+        return AEDeterminePermissionToAutomateTarget(
+            &targetDesc,
+            AEEventClass(typeWildCard),
+            AEEventID(typeWildCard),
+            askUserIfNeeded
+        )
+    }
+
+    private func automationStatus(for target: AutomationPreflightTarget) -> AutomationPreflightStatus? {
+        automationPreflightStatusByBundleID[target.bundleID]
+    }
+
+    @MainActor
+    private func loadAutomationPreflightIcons(for targets: [AutomationPreflightTarget]) -> [String: NSImage] {
+        var iconsByBundleID: [String: NSImage] = [:]
+
+        for target in targets {
+            let appURL = target.appURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: target.bundleID)
+            if let appURL {
+                let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+                icon.size = NSSize(width: 20, height: 20)
+                iconsByBundleID[target.bundleID] = icon
+            }
+        }
+
+        return iconsByBundleID
+    }
+
+    private func automationStatusDescription(for target: AutomationPreflightTarget) -> String {
+        if let status = automationStatus(for: target) {
+            switch status {
+            case .granted:
+                return automationPreflightRunningBundleIDs.contains(target.bundleID)
+                    ? "Enabled"
+                    : "Enabled (last check)"
+            case .skipped:
+                return "Skipped"
+            case .denied:
+                return "You Denied Permissions"
+            case .timedOut:
+                return "Allow timed out"
+            case .failed:
+                return "Allow failed"
+            }
+        }
+
+        if automationPreflightRunningBundleIDs.contains(target.bundleID) {
+            return "Ready to allow"
+        }
+
+        return "Not running"
+    }
+
+    private func automationStatusColor(for target: AutomationPreflightTarget) -> Color {
+        if let status = automationStatus(for: target) {
+            switch status {
+            case .granted:
+                return .retraceSuccess
+            case .skipped:
+                return .retraceSecondary
+            case .denied, .timedOut, .failed:
+                return .retraceWarning
+            }
+        }
+
+        return .retraceSecondary
+    }
+
+    private func skipAutomationTarget(_ target: AutomationPreflightTarget) {
+        automationPreflightStatusByBundleID[target.bundleID] = .skipped
+        persistAutomationPreflightStatuses()
+        Log.info("[OnboardingView] App URL preflight \(target.bundleID) -> skipped", category: .ui)
+    }
+
+    private func unskipAutomationTarget(_ target: AutomationPreflightTarget) {
+        guard automationPreflightStatusByBundleID[target.bundleID] == .skipped else {
+            return
+        }
+        automationPreflightStatusByBundleID.removeValue(forKey: target.bundleID)
+        persistAutomationPreflightStatuses()
+        Log.info("[OnboardingView] App URL preflight \(target.bundleID) -> unskipped", category: .ui)
+    }
+
+    @MainActor
+    private func bulkSkipAllAutomationTargets() {
+        guard !isBulkAllowingAutomationTargets && !isBulkSkippingAutomationTargets else {
+            return
+        }
+
+        let targets = actionableAutomationPreflightTargets
+        guard !targets.isEmpty else { return }
+
+        isBulkSkippingAutomationTargets = true
+        defer {
+            isBulkSkippingAutomationTargets = false
+        }
+
+        for target in targets {
+            skipAutomationTarget(target)
+        }
+    }
+
+    @MainActor
+    private func bulkUnskipAllAutomationTargets() {
+        guard !isBulkAllowingAutomationTargets && !isBulkSkippingAutomationTargets else {
+            return
+        }
+
+        let targets = skippedAutomationPreflightTargets
+        guard !targets.isEmpty else { return }
+
+        for target in targets {
+            unskipAutomationTarget(target)
+        }
+    }
+
+    @MainActor
+    private func presentBulkAllowAllConfirmation() {
+        guard !isBulkAllowingAutomationTargets && !isBulkSkippingAutomationTargets else {
+            return
+        }
+
+        let targets = actionableAutomationPreflightTargets
+        guard !targets.isEmpty else { return }
+
+        bulkAllowAllLaunchPreviewNames = bulkAllowAllLaunchPreviewNames(for: targets)
+        showBulkAllowAllConfirmation = true
+    }
+
+    @MainActor
+    private func bulkAllowAllLaunchPreviewNames(for targets: [AutomationPreflightTarget]) -> [String] {
+        let directLaunchTargets = targets.filter { !automationPreflightRunningBundleIDs.contains($0.bundleID) }
+        guard !directLaunchTargets.isEmpty else { return [] }
+
+        var orderedNames: [String] = []
+        var seenNames: Set<String> = []
+
+        func appendNameIfNeeded(_ name: String) {
+            guard !seenNames.contains(name) else { return }
+            seenNames.insert(name)
+            orderedNames.append(name)
+        }
+
+        for target in directLaunchTargets {
+            appendNameIfNeeded(target.displayName)
+
+            // Chromium app shims can trigger host browser launch as a side effect.
+            guard let hostBundleID = Self.hostBrowserBundleID(forChromiumAppShim: target.bundleID),
+                  !automationPreflightRunningBundleIDs.contains(hostBundleID) else {
+                continue
+            }
+
+            if let hostTarget = automationPreflightTargets.first(where: { $0.bundleID == hostBundleID }) {
+                appendNameIfNeeded(hostTarget.displayName)
+            } else {
+                appendNameIfNeeded(hostBundleID)
+            }
+        }
+
+        return orderedNames
+    }
+
+    @MainActor
+    private func bulkAllowAllAutomationTargetsConfirmed() async {
+        guard !isBulkAllowingAutomationTargets && !isBulkSkippingAutomationTargets else {
+            return
+        }
+
+        let initialTargets = actionableAutomationPreflightTargets
+        guard !initialTargets.isEmpty else { return }
+
+        isBulkAllowingAutomationTargets = true
+        defer {
+            isBulkAllowingAutomationTargets = false
+            bulkAllowAllLaunchPreviewNames = []
+        }
+
+        let targetsToLaunch = initialTargets.filter { target in
+            !automationPreflightRunningBundleIDs.contains(target.bundleID)
+        }
+
+        for target in targetsToLaunch {
+            await launchAutomationTarget(target)
+        }
+
+        await refreshAutomationRunningBundleIDs()
+
+        let targetsToAllow = actionableAutomationPreflightTargets
+        for target in targetsToAllow {
+            await enableAutomationPermission(for: target)
+        }
+
+        bringOnboardingToFront(reason: "bulk-allow-all-finished")
+    }
+
+    @MainActor
+    private func launchAutomationTarget(_ target: AutomationPreflightTarget) async {
+        guard !automationPreflightBusyBundleIDs.contains(target.bundleID) else { return }
+        automationPreflightBusyBundleIDs.insert(target.bundleID)
+        defer {
+            automationPreflightBusyBundleIDs.remove(target.bundleID)
+        }
+
+        guard let appURL = target.appURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: target.bundleID) else {
+            Log.warning("[OnboardingView] No app URL found for \(target.bundleID)", category: .ui)
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+            Log.info("[OnboardingView] Launched app URL target \(target.bundleID)", category: .ui)
+            automationPreflightLaunchedByOnboardingBundleIDs.insert(target.bundleID)
+            bringOnboardingToFrontAfterLaunchWithRetries(reason: "app-launched-\(target.bundleID)")
+        } catch {
+            Log.warning("[OnboardingView] Failed to launch app URL target \(target.bundleID): \(error)", category: .ui)
+        }
+
+        await refreshAutomationRunningBundleIDs()
+    }
+
+    @MainActor
+    private func closeLaunchedAutomationApps() async {
+        guard !isClosingLaunchedAutomationApps else { return }
+        isClosingLaunchedAutomationApps = true
+        defer {
+            isClosingLaunchedAutomationApps = false
+        }
+
+        let bundleIDsToClose = automationPreflightLaunchedByOnboardingBundleIDs
+            .intersection(automationPreflightRunningBundleIDs)
+        guard !bundleIDsToClose.isEmpty else {
+            return
+        }
+
+        let appsToClose = NSWorkspace.shared.runningApplications.filter { app in
+            guard let bundleID = app.bundleIdentifier else { return false }
+            return bundleIDsToClose.contains(bundleID)
+        }
+
+        for app in appsToClose {
+            guard let bundleID = app.bundleIdentifier else { continue }
+            _ = app.terminate()
+            Log.info("[OnboardingView] Requested close for onboarding-launched app \(bundleID)", category: .ui)
+        }
+
+        // Give the system a brief moment to process terminations before re-reading running apps.
+        try? await Task.sleep(for: .milliseconds(500), clock: .continuous)
+        await refreshAutomationRunningBundleIDs()
+
+        automationPreflightLaunchedByOnboardingBundleIDs = automationPreflightLaunchedByOnboardingBundleIDs
+            .intersection(automationPreflightRunningBundleIDs)
+    }
+
+    @MainActor
+    private func enableAutomationPermission(for target: AutomationPreflightTarget) async {
+        guard automationPreflightRunningBundleIDs.contains(target.bundleID) else {
+            Log.info("[OnboardingView] Skipping enable for non-running target \(target.bundleID)", category: .ui)
+            return
+        }
+
+        let requiredBundleIDs = Self.automationPermissionRequiredBundleIDs(forTargetBundleID: target.bundleID)
+        for requiredBundleID in requiredBundleIDs where requiredBundleID != target.bundleID {
+            guard !automationPreflightRunningBundleIDs.contains(requiredBundleID) else { continue }
+            if let requiredTarget = automationPreflightTargets.first(where: { $0.bundleID == requiredBundleID }) {
+                Log.info(
+                    "[OnboardingView] Launching required host target \(requiredBundleID) before allow flow for \(target.bundleID)",
+                    category: .ui
+                )
+                await launchAutomationTarget(requiredTarget)
+            } else if let requiredTarget = await installedAutomationTarget(
+                bundleID: requiredBundleID,
+                fallbackDisplayName: requiredBundleID
+            ) {
+                Log.info(
+                    "[OnboardingView] Launching discovered required host target \(requiredBundleID) before allow flow for \(target.bundleID)",
+                    category: .ui
+                )
+                await launchAutomationTarget(requiredTarget)
+            } else {
+                Log.warning(
+                    "[OnboardingView] Missing required host target \(requiredBundleID) for allow flow \(target.bundleID)",
+                    category: .ui
+                )
+            }
+            await refreshAutomationRunningBundleIDs()
+        }
+
+        guard !automationPreflightBusyBundleIDs.contains(target.bundleID) else { return }
+
+        automationPreflightBusyBundleIDs.insert(target.bundleID)
+        defer {
+            automationPreflightBusyBundleIDs.remove(target.bundleID)
+        }
+
+        let previousStatus = automationPreflightStatusByBundleID[target.bundleID]
+        Log.info(
+            "[OnboardingView] Starting app URL allow attempt bundle=\(target.bundleID), previousStatus=\(String(describing: previousStatus))",
+            category: .ui
+        )
+        let status = await requestAutomationPermission(for: target, userInitiated: true)
+        automationPreflightStatusByBundleID[target.bundleID] = status
+        persistAutomationPreflightStatuses()
+        if status == .granted {
+            bringOnboardingToFront(reason: "automation-granted-\(target.bundleID)")
+        } else if status == .denied {
+            bringOnboardingToFront(reason: "automation-denied-\(target.bundleID)")
+        } else if status == .timedOut || status == .failed {
+            // Some AppleEvents flows report "failed"/timeout before the user finishes the prompt.
+            // Keep polling silently so we can refocus onboarding right after the Allow/Deny decision.
+            startAutomationPermissionDecisionMonitor(for: target)
+        }
+        Log.info(
+            "[OnboardingView] Completed app URL allow attempt bundle=\(target.bundleID), previousStatus=\(String(describing: previousStatus)), newStatus=\(status)",
+            category: .ui
+        )
+    }
+
+    @MainActor
+    private func startAutomationPermissionDecisionMonitor(for target: AutomationPreflightTarget) {
+        guard currentStep == 4 else { return }
+        guard automationPermissionDecisionMonitorTasksByBundleID[target.bundleID] == nil else { return }
+
+        let bundleID = target.bundleID
+        let task = Task { @MainActor in
+            defer {
+                automationPermissionDecisionMonitorTasksByBundleID.removeValue(forKey: bundleID)
+            }
+
+            Log.info("[OnboardingView] Started automation decision monitor for \(bundleID)", category: .ui)
+            let timeoutDate = Date().addingTimeInterval(Self.automationPreflightUserAllowTimeoutSeconds)
+
+            while !Task.isCancelled && Date() < timeoutDate && currentStep == 4 {
+                try? await Task.sleep(for: .milliseconds(500), clock: .continuous)
+                guard !Task.isCancelled else { return }
+
+                let result = await automationPermissionProbeResult(
+                    for: target,
+                    askUserIfNeeded: false
+                )
+
+                switch result {
+                case .granted:
+                    automationPreflightStatusByBundleID[bundleID] = .granted
+                    persistAutomationPreflightStatuses()
+                    bringOnboardingToFront(reason: "automation-granted-after-dialog-\(bundleID)")
+                    Log.info("[OnboardingView] Automation decision resolved granted for \(bundleID)", category: .ui)
+                    return
+                case .denied:
+                    automationPreflightStatusByBundleID[bundleID] = .denied
+                    persistAutomationPreflightStatuses()
+                    bringOnboardingToFront(reason: "automation-denied-after-dialog-\(bundleID)")
+                    Log.info("[OnboardingView] Automation decision resolved denied for \(bundleID)", category: .ui)
+                    return
+                case .requiresUserConsent:
+                    continue
+                case .unavailable(let statusCode):
+                    // App closed; stop waiting and leave row in retry state.
+                    if statusCode == Self.automationPermissionTargetNotRunningStatus {
+                        let existingStatus = automationPreflightStatusByBundleID[bundleID]
+                        if existingStatus != .granted && existingStatus != .denied && existingStatus != .skipped {
+                            automationPreflightStatusByBundleID.removeValue(forKey: bundleID)
+                            persistAutomationPreflightStatuses()
+                        }
+                        Log.info(
+                            "[OnboardingView] Automation decision monitor stopped for \(bundleID): target not running, preservedStatus=\(String(describing: existingStatus))",
+                            category: .ui
+                        )
+                        return
+                    }
+                    continue
+                }
+            }
+
+            Log.info("[OnboardingView] Automation decision monitor timed out for \(bundleID)", category: .ui)
+        }
+
+        automationPermissionDecisionMonitorTasksByBundleID[bundleID] = task
+    }
+
+    @MainActor
+    private func loadPersistedAutomationPreflightStatuses() -> [String: AutomationPreflightStatus] {
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        guard let rawStatuses = defaults.dictionary(forKey: Self.automationPreflightStatusesKey) as? [String: String] else {
+            return [:]
+        }
+
+        var statuses: [String: AutomationPreflightStatus] = [:]
+        for (bundleID, rawStatus) in rawStatuses {
+            guard let status = AutomationPreflightStatus(rawValue: rawStatus) else {
+                continue
+            }
+            statuses[bundleID] = status
+        }
+        return statuses
+    }
+
+    @MainActor
+    private func persistAutomationPreflightStatuses() {
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        let persistableStatuses: [String: String] = automationPreflightStatusByBundleID.compactMapValues { status in
+            switch status {
+            case .granted, .skipped, .denied:
+                return status.rawValue
+            case .timedOut, .failed:
+                return nil
+            }
+        }
+        defaults.set(persistableStatuses, forKey: Self.automationPreflightStatusesKey)
+    }
+
+    private func buildAutomationPreflightTargets() async -> [AutomationPreflightTarget] {
+        let runningApps = await MainActor.run {
+            NSWorkspace.shared.runningApplications
+        }
+
+        var targetsByBundleID: [String: AutomationPreflightTarget] = [:]
+        for target in Self.automationPreflightBaseTargets {
+            if let installedTarget = await installedAutomationTarget(
+                bundleID: target.bundleID,
+                fallbackDisplayName: target.displayName
+            ) {
+                targetsByBundleID[installedTarget.bundleID] = installedTarget
+            }
+        }
+
+        // Include all installed Chromium web apps from known app folders.
+        for target in discoverInstalledWebAppAutomationTargets() {
+            targetsByBundleID[target.bundleID] = target
+
+            if let hostBundleID = Self.hostBrowserBundleID(forChromiumAppShim: target.bundleID),
+               let hostTarget = await installedAutomationTarget(
+                bundleID: hostBundleID,
+                fallbackDisplayName: hostBundleID
+               ) {
+                targetsByBundleID[hostTarget.bundleID] = hostTarget
+            }
+        }
+
+        // Also include currently running Chromium web-app shims (covers non-standard install paths).
+        for runningApp in runningApps {
+            guard let bundleID = runningApp.bundleIdentifier else { continue }
+
+            let isChromiumAppShim = Self.automationChromiumAppShimPrefixes.contains {
+                bundleID.hasPrefix($0)
+            }
+            guard isChromiumAppShim else { continue }
+
+            let displayName = runningApp.localizedName ?? bundleID
+            targetsByBundleID[bundleID] = AutomationPreflightTarget(
+                bundleID: bundleID,
+                displayName: displayName,
+                appURL: runningApp.bundleURL
+            )
+
+            if let hostBundleID = Self.hostBrowserBundleID(forChromiumAppShim: bundleID),
+               let hostTarget = await installedAutomationTarget(
+                bundleID: hostBundleID,
+                fallbackDisplayName: hostBundleID
+               ) {
+                targetsByBundleID[hostTarget.bundleID] = hostTarget
+            }
+        }
+
+        return targetsByBundleID.values.sorted(by: { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending })
+    }
+
+    private func requestAutomationPermission(
+        for target: AutomationPreflightTarget,
+        userInitiated: Bool
+    ) async -> AutomationPreflightStatus {
+        let requiredBundleIDs = Self.automationPermissionRequiredBundleIDs(forTargetBundleID: target.bundleID)
+        let result = await automationPermissionProbeResult(
+            for: target,
+            askUserIfNeeded: userInitiated
+        )
+
+        switch result {
+        case .granted:
+            return .granted
+        case .denied:
+            return .denied
+        case .requiresUserConsent:
+            // User dismissed prompt or no decision yet.
+            return userInitiated ? .timedOut : .failed
+        case .unavailable(let statusCode):
+            Log.warning(
+                "[OnboardingView] Automation probe unavailable for \(target.bundleID) (required=\(requiredBundleIDs.joined(separator: "+"))); osstatus=\(statusCode), mode=\(userInitiated ? "user" : "background")",
+                category: .ui
+            )
+            return .failed
+        }
+    }
+
+    private func automationPreflightProbe(for target: AutomationPreflightTarget) -> (source: String, label: String) {
+        let bundleID = target.bundleID
+
+        if bundleID == "com.apple.finder" {
+            return (
+                """
+                tell application id "com.apple.finder"
+                    if (count of Finder windows) > 0 then
+                        try
+                            set u to URL of target of front Finder window
+                            if u is not missing value and u is not "" then return u
+                        end try
+                    end if
+                    return URL of desktop
+                end tell
+                """,
+                "finder-target-url-probe"
+            )
+        }
+
+        if bundleID == "company.thebrowser.Browser" {
+            return (
+                """
+                tell application "Arc"
+                    if (count of windows) > 0 then
+                        try
+                            set u to URL of active tab of front window
+                            if u is not missing value and u is not "" then return u
+                        end try
+                    end if
+                    return ""
+                end tell
+                """,
+                "arc-url-probe"
+            )
+        }
+
+        if let hostBundleID = Self.hostBrowserBundleID(forChromiumAppShim: bundleID) {
+            let escapedDisplayName = appleScriptEscaped(target.displayName)
+            return (
+                """
+                set shimTitle to ""
+                set shimResolved to false
+                try
+                    tell application id "\(bundleID)"
+                        if (count of windows) > 0 then
+                            set shimTitle to name of front window
+                        end if
+                    end tell
+                    set shimResolved to true
+                end try
+
+                if shimResolved is false then
+                    try
+                        tell application "\(escapedDisplayName)"
+                            if (count of windows) > 0 then
+                                set shimTitle to name of front window
+                            end if
+                        end tell
+                        set shimResolved to true
+                    end try
+                end if
+
+                if shimResolved is false then return ""
+
+                if shimTitle is missing value then set shimTitle to ""
+
+                tell application id "\(hostBundleID)"
+                    if (count of windows) = 0 then return ""
+
+                    repeat with w in windows
+                        set tabTitle to ""
+                        set tabURL to ""
+                        try
+                            set tabTitle to title of active tab of w
+                            set tabURL to URL of active tab of w
+                        end try
+
+                        if tabURL is not "" and shimTitle is not "" and tabTitle is not "" then
+                            if shimTitle contains tabTitle or tabTitle contains shimTitle then
+                                return tabURL
+                            end if
+                        end if
+                    end repeat
+                end tell
+
+                return ""
+                """,
+                "app-shim-host-browser-probe[\(hostBundleID)]"
+            )
+        }
+
+        if Self.automationChromiumHostBundleIDs.contains(bundleID) {
+            return (
+                """
+                tell application id "\(bundleID)"
+                    if (count of windows) > 0 then
+                        try
+                            set u to URL of active tab of front window
+                            if u is not missing value and u is not "" then return u
+                        end try
+                    end if
+                    return ""
+                end tell
+                """,
+                "chromium-host-url-probe"
+            )
+        }
+
+        return (
+            """
+            tell application id "\(bundleID)"
+                return count of windows
+            end tell
+            """,
+            "generic-window-count-probe"
+        )
+    }
+
+    private func installedAutomationTarget(
+        bundleID: String,
+        fallbackDisplayName: String
+    ) async -> AutomationPreflightTarget? {
+        await MainActor.run {
+            guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+                return nil
+            }
+
+            let displayName: String
+            if let bundle = Bundle(url: appURL) {
+                displayName =
+                    (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String) ??
+                    (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ??
+                    appURL.deletingPathExtension().lastPathComponent
+            } else {
+                displayName = fallbackDisplayName
+            }
+
+            return AutomationPreflightTarget(bundleID: bundleID, displayName: displayName, appURL: appURL)
+        }
+    }
+
+    private static func hostBrowserBundleID(forChromiumAppShim bundleID: String) -> String? {
+        for prefix in automationChromiumAppShimPrefixes where bundleID.hasPrefix(prefix) {
+            guard prefix.hasSuffix(".app.") else { continue }
+            return String(prefix.dropLast(5))
+        }
+        return nil
+    }
+
+    private static func automationPermissionRequiredBundleIDs(forTargetBundleID targetBundleID: String) -> [String] {
+        if let hostBundleID = hostBrowserBundleID(forChromiumAppShim: targetBundleID),
+           hostBundleID != targetBundleID {
+            return [targetBundleID, hostBundleID]
+        }
+        return [targetBundleID]
+    }
+
+    private func discoverInstalledWebAppAutomationTargets() -> [AutomationPreflightTarget] {
+        let fileManager = FileManager.default
+        let appFolders = [
+            URL(fileURLWithPath: "/Applications"),
+            URL(fileURLWithPath: "/Applications/Chrome Apps.localized"),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Chrome Apps.localized"),
+        ]
+
+        var targetsByBundleID: [String: AutomationPreflightTarget] = [:]
+
+        for folder in appFolders {
+            guard let contents = try? fileManager.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else {
+                continue
+            }
+
+            for appURL in contents where appURL.pathExtension == "app" {
+                guard let bundle = Bundle(url: appURL),
+                      let bundleID = bundle.bundleIdentifier,
+                      !bundleID.isEmpty else {
+                    continue
+                }
+
+                let isChromiumAppShim = Self.automationChromiumAppShimPrefixes.contains {
+                    bundleID.hasPrefix($0)
+                }
+                guard isChromiumAppShim else {
+                    continue
+                }
+
+                let displayName =
+                    (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String) ??
+                    (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ??
+                    appURL.deletingPathExtension().lastPathComponent
+
+                targetsByBundleID[bundleID] = AutomationPreflightTarget(
+                    bundleID: bundleID,
+                    displayName: displayName,
+                    appURL: appURL
+                )
+            }
+        }
+
+        return targetsByBundleID.values.sorted(by: {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        })
+    }
+
+    private func runAutomationAppleScript(
+        for bundleID: String,
+        source: String,
+        scriptLabel: String,
+        timeoutSeconds: TimeInterval,
+        mode: String
+    ) async -> AutomationPreflightStatus {
+        let startTime = Date()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", source]
+        Log.info(
+            "[OnboardingView] AppleScript preflight start bundle=\(bundleID), script=\(scriptLabel), mode=\(mode), timeoutSeconds=\(timeoutSeconds)",
+            category: .ui
+        )
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+        } catch {
+            Log.warning("[OnboardingView] Failed to launch AppleScript preflight for \(bundleID): \(error)", category: .ui)
+            return .failed
+        }
+
+        let timedOut = await waitForProcessExitOrTimeout(
+            process,
+            timeoutSeconds: timeoutSeconds
+        )
+        if timedOut {
+            process.terminate()
+            await waitForProcessExit(process)
+            let elapsedMs = Date().timeIntervalSince(startTime) * 1000
+            Log.warning(
+                "[OnboardingView] AppleScript preflight timed out bundle=\(bundleID), script=\(scriptLabel), mode=\(mode), elapsedMs=\(String(format: "%.1f", elapsedMs))",
+                category: .ui
+            )
+            return .timedOut
+        }
+
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdout = String(data: outputData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stderr = String(data: errorData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let elapsedMs = Date().timeIntervalSince(startTime) * 1000
+        let failureCode = parseAutomationFailureCode(from: stderr)
+
+        guard process.terminationStatus == 0 else {
+            let failureCodeString = failureCode.map(String.init) ?? "none"
+            let safeStdErr = stderr.isEmpty ? "<empty>" : stderr
+            Log.warning(
+                "[OnboardingView] AppleScript preflight failed bundle=\(bundleID), script=\(scriptLabel), mode=\(mode), exitCode=\(process.terminationStatus), failureCode=\(failureCodeString), elapsedMs=\(String(format: "%.1f", elapsedMs)), stderr=\(safeStdErr)",
+                category: .ui
+            )
+
+            let isDenied =
+                failureCode == -1743 ||
+                stderr.contains("-1743") ||
+                stderr.localizedCaseInsensitiveContains("not authorized") ||
+                stderr.localizedCaseInsensitiveContains("Not authorized to send Apple events")
+            if isDenied {
+                Log.warning("[OnboardingView] AppleScript automation denied for \(bundleID)", category: .ui)
+                return .denied
+            }
+            return .failed
+        }
+
+        let safeStdout = stdout.isEmpty ? "<empty>" : stdout
+        Log.info(
+            "[OnboardingView] AppleScript preflight success bundle=\(bundleID), script=\(scriptLabel), mode=\(mode), elapsedMs=\(String(format: "%.1f", elapsedMs)), stdout=\(safeStdout)",
+            category: .ui
+        )
+        return .granted
+    }
+
+    private func parseAutomationFailureCode(from stderr: String) -> Int? {
+        guard let range = stderr.range(of: "(-\\d+)\\)", options: .regularExpression) else {
+            return nil
+        }
+
+        let matched = String(stderr[range])
+        return Int(matched.dropFirst().dropLast())
+    }
+
+    private func appleScriptEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private func waitForProcessExit(_ process: Process) async {
+        while process.isRunning {
+            try? await Task.sleep(for: .milliseconds(15), clock: .continuous)
+        }
+    }
+
+    private func waitForProcessExitOrTimeout(_ process: Process, timeoutSeconds: TimeInterval) async -> Bool {
+        let timeoutDate = Date().addingTimeInterval(timeoutSeconds)
+        while process.isRunning && Date() < timeoutDate {
+            try? await Task.sleep(for: .milliseconds(15), clock: .continuous)
+        }
+        return process.isRunning
     }
 
     // MARK: - Rewind Data Detection

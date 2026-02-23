@@ -165,7 +165,8 @@ public struct AppInfo: Identifiable, Hashable, Sendable {
         "com.brave.Browser",
         "com.operasoftware.Opera",
         "com.vivaldi.Vivaldi",
-        "company.thebrowser.Browser"  // Arc
+        "company.thebrowser.Browser", // Arc
+        "com.aspect.browser"          // Dia
     ]
 
     public var isBrowser: Bool {

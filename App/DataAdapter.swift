@@ -743,7 +743,11 @@ public actor DataAdapter {
         case .relevant:
             allResults.sort { $0.relevanceScore > $1.relevanceScore }
         case .all:
-            allResults.sort { $0.timestamp > $1.timestamp }
+            if query.sortOrder == .oldestFirst {
+                allResults.sort { $0.timestamp < $1.timestamp }
+            } else {
+                allResults.sort { $0.timestamp > $1.timestamp }
+            }
         }
 
         let searchTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
@@ -2757,6 +2761,10 @@ public actor DataAdapter {
         // Tag include uses INNER JOIN (more efficient than EXISTS in WHERE clause)
         // Determine sort order
         let sortOrderClause = query.sortOrder == .newestFirst ? "DESC" : "ASC"
+        // Keep FTS candidate preselection aligned with requested chronology.
+        // The no-filter fast path limits candidate docids before joining frames.
+        // If this stays DESC unconditionally, oldest-first can never surface old matches.
+        let ftsCandidateOrderClause = query.sortOrder == .newestFirst ? "DESC" : "ASC"
 
         let sql: String
         if hasAppFilter || hasTagFilters || hasMetadataFilters {
@@ -2794,7 +2802,7 @@ public actor DataAdapter {
                 FROM doc_segment ds
                 JOIN frame f ON ds.frameId = f.id
                 WHERE ds.docid IN (
-                    SELECT rowid FROM searchRanking WHERE searchRanking MATCH ? ORDER BY rowid DESC LIMIT \(ftsLimit)
+                    SELECT rowid FROM searchRanking WHERE searchRanking MATCH ? ORDER BY rowid \(ftsCandidateOrderClause) LIMIT \(ftsLimit)
                 ) \(filterClause)
                 ORDER BY f.createdAt \(sortOrderClause)
                 LIMIT ? OFFSET ?

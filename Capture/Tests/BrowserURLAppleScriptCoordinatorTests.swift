@@ -52,7 +52,7 @@ final class BrowserURLAppleScriptCoordinatorTests: XCTestCase {
         let probe = RunnerProbe()
         let coordinator = BrowserURLAppleScriptCoordinator(
             timeoutBaseBackoffSeconds: 5.0,
-            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout in
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
                 await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
                 return BrowserURLAppleScriptResult(didTimeOut: true)
             }
@@ -80,7 +80,7 @@ final class BrowserURLAppleScriptCoordinatorTests: XCTestCase {
         let probe = RunnerProbe()
         let coordinator = BrowserURLAppleScriptCoordinator(
             deniedBaseBackoffSeconds: 20.0,
-            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout in
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
                 await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
                 return BrowserURLAppleScriptResult(
                     permissionDenied: true,
@@ -90,15 +90,15 @@ final class BrowserURLAppleScriptCoordinatorTests: XCTestCase {
         )
 
         let first = await coordinator.execute(
-            source: "tell application \"Firefox\" to return \"\"",
-            browserBundleID: "org.mozilla.firefox",
+            source: "tell application \"Arc\" to return \"\"",
+            browserBundleID: "company.thebrowser.Browser",
             pid: 321
         )
         XCTAssertTrue(first.permissionDenied)
 
         let second = await coordinator.execute(
-            source: "tell application \"Firefox\" to return \"\"",
-            browserBundleID: "org.mozilla.firefox",
+            source: "tell application \"Arc\" to return \"\"",
+            browserBundleID: "company.thebrowser.Browser",
             pid: 321
         )
         XCTAssertTrue(second.skippedByCooldown)
@@ -112,7 +112,7 @@ final class BrowserURLAppleScriptCoordinatorTests: XCTestCase {
         let coordinator = BrowserURLAppleScriptCoordinator(
             bootstrapTimeoutSeconds: 11.0,
             normalTimeoutSeconds: 3.0,
-            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout in
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
                 await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
                 return BrowserURLAppleScriptResult(completedWithoutTimeout: true)
             }
@@ -142,7 +142,7 @@ final class BrowserURLAppleScriptCoordinatorTests: XCTestCase {
         await probe.enableBlocking()
 
         let coordinator = BrowserURLAppleScriptCoordinator(
-            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout in
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
                 await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
                 await probe.waitIfBlockingEnabled()
                 return BrowserURLAppleScriptResult(
@@ -178,11 +178,131 @@ final class BrowserURLAppleScriptCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshot.callCount, 1)
     }
 
+    func testSyntaxErrorEntersCooldownAndSkipsImmediateRelaunch() async {
+        let probe = RunnerProbe()
+        let coordinator = BrowserURLAppleScriptCoordinator(
+            syntaxBaseBackoffSeconds: 20.0,
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
+                await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
+                return BrowserURLAppleScriptResult(
+                    completedWithoutTimeout: true,
+                    scriptSyntaxError: true,
+                    failureCode: -2741
+                )
+            }
+        )
+
+        let first = await coordinator.execute(
+            source: "tell application id \"com.google.Chrome.app.fake\" to return \"\"",
+            browserBundleID: "com.google.Chrome.app.fake",
+            pid: 888,
+            scriptLabel: "syntax-test-1"
+        )
+        XCTAssertTrue(first.scriptSyntaxError)
+        XCTAssertEqual(first.failureCode, -2741)
+
+        let second = await coordinator.execute(
+            source: "tell application id \"com.google.Chrome.app.fake\" to return \"\"",
+            browserBundleID: "com.google.Chrome.app.fake",
+            pid: 888,
+            scriptLabel: "syntax-test-2"
+        )
+        XCTAssertTrue(second.skippedByCooldown)
+
+        let snapshot = await probe.snapshot()
+        XCTAssertEqual(snapshot.callCount, 1)
+    }
+
+    func testCacheTTLOverrideKeepsCachedResultBeyondDefaultTTL() async {
+        let probe = RunnerProbe()
+        let coordinator = BrowserURLAppleScriptCoordinator(
+            cacheTTLSeconds: 0.02,
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
+                await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
+                return BrowserURLAppleScriptResult(
+                    output: "https://example.com/ttl-test",
+                    completedWithoutTimeout: true
+                )
+            }
+        )
+
+        let first = await coordinator.execute(
+            source: "tell application \"Arc\" to return \"https://example.com/ttl-test\"",
+            browserBundleID: "company.thebrowser.Browser",
+            pid: 990,
+            scriptLabel: "ttl-override-1",
+            cacheTTLOverrideSeconds: 0.2
+        )
+        XCTAssertEqual(first.output, "https://example.com/ttl-test")
+        XCTAssertFalse(first.returnedFromCache)
+
+        try? await Task.sleep(for: .milliseconds(80), clock: .continuous)
+
+        let second = await coordinator.execute(
+            source: "tell application \"Arc\" to return \"https://example.com/ttl-test\"",
+            browserBundleID: "company.thebrowser.Browser",
+            pid: 990,
+            scriptLabel: "ttl-override-2",
+            cacheTTLOverrideSeconds: 0.2
+        )
+        XCTAssertEqual(second.output, "https://example.com/ttl-test")
+        XCTAssertTrue(second.returnedFromCache)
+
+        let snapshot = await probe.snapshot()
+        XCTAssertEqual(snapshot.callCount, 1)
+    }
+
+    func testWindowCacheKeySeparatesCacheEntriesForSameBundleAndPID() async {
+        let probe = RunnerProbe()
+        let coordinator = BrowserURLAppleScriptCoordinator(
+            cacheTTLSeconds: 60.0,
+            runner: { _, _, _, timeoutSeconds, isBootstrapTimeout, _ in
+                await probe.recordCall(timeoutSeconds: timeoutSeconds, isBootstrapTimeout: isBootstrapTimeout)
+                return BrowserURLAppleScriptResult(
+                    output: "https://example.com/window-sensitive",
+                    completedWithoutTimeout: true
+                )
+            }
+        )
+
+        let first = await coordinator.execute(
+            source: "tell application \"Arc\" to return \"https://example.com/window-sensitive\"",
+            browserBundleID: "company.thebrowser.Browser",
+            pid: 991,
+            windowCacheKey: "Window A",
+            scriptLabel: "window-key-a"
+        )
+        XCTAssertEqual(first.output, "https://example.com/window-sensitive")
+        XCTAssertFalse(first.returnedFromCache)
+
+        let second = await coordinator.execute(
+            source: "tell application \"Arc\" to return \"https://example.com/window-sensitive\"",
+            browserBundleID: "company.thebrowser.Browser",
+            pid: 991,
+            windowCacheKey: "Window B",
+            scriptLabel: "window-key-b"
+        )
+        XCTAssertEqual(second.output, "https://example.com/window-sensitive")
+        XCTAssertFalse(second.returnedFromCache)
+
+        let snapshot = await probe.snapshot()
+        XCTAssertEqual(snapshot.callCount, 2)
+    }
+
     func testIsBrowserRecognizesChromiumAppShims() {
         XCTAssertTrue(BrowserURLExtractor.isBrowser("com.google.Chrome.app.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
         XCTAssertTrue(BrowserURLExtractor.isBrowser("com.microsoft.edgemac.app.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
         XCTAssertTrue(BrowserURLExtractor.isBrowser("com.brave.Browser.app.cccccccccccccccccccccccccccccccc"))
         XCTAssertTrue(BrowserURLExtractor.isBrowser("org.chromium.Chromium.app.dddddddddddddddddddddddddddddddd"))
+        XCTAssertTrue(BrowserURLExtractor.isBrowser("com.aspect.browser.app.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"))
+    }
+
+    func testIsBrowserRecognizesDiaBundleID() {
+        XCTAssertTrue(BrowserURLExtractor.isBrowser("com.aspect.browser"))
+    }
+
+    func testIsBrowserRejectsSafariWebApps() {
+        XCTAssertFalse(BrowserURLExtractor.isBrowser("com.apple.Safari.WebApp.0E0342B7-F35F-420B-951B-F2CDB1400D12"))
     }
 
     func testIsBrowserRejectsNonBrowserBundleID() {
