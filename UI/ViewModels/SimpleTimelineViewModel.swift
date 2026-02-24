@@ -7328,8 +7328,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
-    /// Parse relative offsets like "3 hours later" / "10 minutes earlier" using the current playhead timestamp.
-    /// This path is intentionally limited to "earlier|later" so "... ago" continues to use bucket anchoring logic.
+    /// Parse relative offsets like "3 hours later" / "10 minutes earlier" / "1 hour before"
+    /// using the current playhead timestamp.
+    /// This path is intentionally limited to "earlier|later|before|after" so "... ago" continues
+    /// to use bucket anchoring logic.
     private func parsePlayheadRelativeDateIfNeeded(_ text: String) -> Date? {
         let normalized = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7356,7 +7358,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     private func parsePlayheadRelativeDate(_ normalizedText: String, relativeTo baseTimestamp: Date) -> Date? {
         guard let regex = try? NSRegularExpression(
-            pattern: #"^\s*(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h|day|days|week|weeks|wk|wks|month|months|mo|mos|year|years|yr|yrs)\s*(earlier|later)\s*$"#,
+            pattern: #"^\s*(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h|day|days|week|weeks|wk|wks|month|months|mo|mos|year|years|yr|yrs)\s*(earlier|later|before|after)\s*$"#,
             options: [.caseInsensitive]
         ) else {
             return nil
@@ -7374,7 +7376,15 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         let unitToken = String(normalizedText[unitRange])
         let directionToken = String(normalizedText[directionRange])
-        let directionSign = directionToken == "later" ? 1 : -1
+        let directionSign: Int
+        switch directionToken {
+        case "later", "after":
+            directionSign = 1
+        case "earlier", "before":
+            directionSign = -1
+        default:
+            return nil
+        }
         let calendar = Calendar.current
 
         switch unitToken {
@@ -7709,7 +7719,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     private func shouldCoerceTimeOnlyDateToPast(_ input: String) -> Bool {
         // Keep explicit relative expressions as-is (tomorrow/next/in 2 hours/etc).
         if input.range(
-            of: #"\b(today|tomorrow|yesterday|next|last|ago|this|now|tonight|earlier|later)\b|from now|\bin\s+\d+"#,
+            of: #"\b(today|tomorrow|yesterday|next|last|ago|this|now|tonight|earlier|later|before|after)\b|from now|\bin\s+\d+"#,
             options: .regularExpression
         ) != nil {
             return false

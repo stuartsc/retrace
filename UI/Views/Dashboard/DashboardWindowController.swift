@@ -411,6 +411,16 @@ struct DashboardContentView: View {
             DashboardWindowController.shared.show()
             updateDashboardWindowTitle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRPriority)) { _ in
+            initialSettingsTab = .power
+            initialSettingsScrollTargetID = SettingsView.powerOCRPriorityTargetID
+            currentSettingsTabTitle = SettingsTab.power.rawValue
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedView = .settings
+            }
+            DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .settingsSelectedTabDidChange)) { notification in
             guard let tab = notification.userInfo?["tab"] as? String, !tab.isEmpty else {
                 return

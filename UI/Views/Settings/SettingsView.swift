@@ -63,8 +63,9 @@ enum SettingsDefaults {
     // MARK: OCR Power
     static let ocrEnabled = true
     static let ocrOnlyWhenPluggedIn = false
+    static let ocrPauseInLowPowerMode = false
     static let ocrMaxFramesPerSecond: Double = 0  // Legacy, unused
-    static let ocrProcessingLevel: Int = 3  // Default: Medium (utility priority)
+    static let ocrProcessingLevel: Int = 3  // Default: Balanced (background priority, 2 workers)
     static let ocrAppFilterMode: OCRAppFilterMode = .allApps
     static let ocrFilteredApps = ""  // JSON array of bundle IDs
 }
@@ -101,6 +102,8 @@ public struct SettingsView: View {
     @State private var pauseReminderHighlightTask: Task<Void, Never>? = nil
     @State private var isOCRCardHighlighted = false
     @State private var ocrCardHighlightTask: Task<Void, Never>? = nil
+    @State private var isOCRPrioritySliderHighlighted = false
+    @State private var ocrPrioritySliderHighlightTask: Task<Void, Never>? = nil
 
     // Settings search
     @State private var showSettingsSearch = false
@@ -248,6 +251,7 @@ public struct SettingsView: View {
     // MARK: OCR Power Settings
     @AppStorage("ocrEnabled", store: settingsStore) private var ocrEnabled = SettingsDefaults.ocrEnabled
     @AppStorage("ocrOnlyWhenPluggedIn", store: settingsStore) private var ocrOnlyWhenPluggedIn = SettingsDefaults.ocrOnlyWhenPluggedIn
+    @AppStorage("ocrPauseInLowPowerMode", store: settingsStore) private var ocrPauseInLowPowerMode = SettingsDefaults.ocrPauseInLowPowerMode
     @AppStorage("ocrMaxFramesPerSecond", store: settingsStore) private var ocrMaxFramesPerSecond = SettingsDefaults.ocrMaxFramesPerSecond
     @AppStorage("ocrProcessingLevel", store: settingsStore) private var ocrProcessingLevel = SettingsDefaults.ocrProcessingLevel
     @AppStorage("ocrAppFilterMode", store: settingsStore) private var ocrAppFilterMode: OCRAppFilterMode = SettingsDefaults.ocrAppFilterMode
@@ -256,6 +260,7 @@ public struct SettingsView: View {
     @State private var installedAppsForOCR: [(bundleID: String, name: String)] = []
     @State private var otherAppsForOCR: [(bundleID: String, name: String)] = []
     @State private var currentPowerSource: PowerStateMonitor.PowerSource = .unknown
+    @State private var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var pendingOCRFrameCount: Int = 0
 
     // MARK: Tag Management
@@ -411,6 +416,8 @@ public struct SettingsView: View {
     private static let pauseReminderCardAnchorID = "settings.pauseReminderCard"
     static let powerOCRCardTargetID = "settings.powerOCRCard"
     private static let powerOCRCardAnchorID = "settings.powerOCRCardAnchor"
+    static let powerOCRPriorityTargetID = "settings.powerOCRPriority"
+    private static let powerOCRPriorityAnchorID = "settings.powerOCRPriorityAnchor"
 
     public var body: some View {
         GeometryReader { geometry in
@@ -502,6 +509,9 @@ public struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRCard)) { _ in
             requestNavigation(to: Self.powerOCRCardTargetID)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRPriority)) { _ in
+            requestNavigation(to: Self.powerOCRPriorityTargetID)
+        }
         .onDisappear {
             pauseReminderHighlightTask?.cancel()
             pauseReminderHighlightTask = nil
@@ -509,6 +519,9 @@ public struct SettingsView: View {
             ocrCardHighlightTask?.cancel()
             ocrCardHighlightTask = nil
             isOCRCardHighlighted = false
+            ocrPrioritySliderHighlightTask?.cancel()
+            ocrPrioritySliderHighlightTask = nil
+            isOCRPrioritySliderHighlighted = false
         }
         .overlay {
             settingsSearchOverlay
@@ -787,6 +800,8 @@ public struct SettingsView: View {
             selectedTab = .capture
         case Self.powerOCRCardTargetID:
             selectedTab = .power
+        case Self.powerOCRPriorityTargetID:
+            selectedTab = .power
         default:
             break
         }
@@ -810,6 +825,8 @@ public struct SettingsView: View {
             guard selectedTab == .capture else { return }
         case Self.powerOCRCardTargetID:
             guard selectedTab == .power else { return }
+        case Self.powerOCRPriorityTargetID:
+            guard selectedTab == .power else { return }
         default:
             pendingScrollTargetID = nil
             return
@@ -821,6 +838,8 @@ public struct SettingsView: View {
             anchorID = Self.pauseReminderCardAnchorID
         case Self.powerOCRCardTargetID:
             anchorID = Self.powerOCRCardAnchorID
+        case Self.powerOCRPriorityTargetID:
+            anchorID = Self.powerOCRPriorityAnchorID
         default:
             pendingScrollTargetID = nil
             return
@@ -840,6 +859,10 @@ public struct SettingsView: View {
             if targetID == Self.powerOCRCardTargetID {
                 try? await Task.sleep(for: .nanoseconds(Int64(140_000_000)), clock: .continuous)
                 triggerOCRCardHighlight()
+            }
+            if targetID == Self.powerOCRPriorityTargetID {
+                try? await Task.sleep(for: .nanoseconds(Int64(140_000_000)), clock: .continuous)
+                triggerOCRPrioritySliderHighlight()
             }
             pendingScrollTargetID = nil
             isScrollingToTarget = false
@@ -885,6 +908,27 @@ public struct SettingsView: View {
                 isOCRCardHighlighted = false
             }
             ocrCardHighlightTask = nil
+        }
+    }
+
+    private func triggerOCRPrioritySliderHighlight() {
+        ocrPrioritySliderHighlightTask?.cancel()
+        ocrPrioritySliderHighlightTask = nil
+
+        isOCRPrioritySliderHighlighted = false
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                isOCRPrioritySliderHighlighted = true
+            }
+        }
+
+        ocrPrioritySliderHighlightTask = Task { @MainActor in
+            try? await Task.sleep(for: .nanoseconds(Int64(2_100_000_000)), clock: .continuous)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.38)) {
+                isOCRPrioritySliderHighlighted = false
+            }
+            ocrPrioritySliderHighlightTask = nil
         }
     }
 
@@ -2597,6 +2641,9 @@ public struct SettingsView: View {
             ocrProcessingCard
 
             if ocrEnabled {
+                Color.clear
+                    .frame(height: 0)
+                    .id(Self.powerOCRPriorityAnchorID)
                 powerEfficiencyCard
                 appFilterCard
             }
@@ -2609,6 +2656,9 @@ public struct SettingsView: View {
             loadOCRFilteredApps()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("PowerSourceDidChange"))) { _ in
+            updatePowerSourceStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
             updatePowerSourceStatus()
         }
     }
@@ -2704,6 +2754,15 @@ public struct SettingsView: View {
                             notifyPowerSettingsChanged()
                         }
 
+                        ModernToggleRow(
+                            title: "Pause in Low Power Mode",
+                            subtitle: "Queue OCR while macOS Low Power Mode is enabled",
+                            isOn: $ocrPauseInLowPowerMode
+                        )
+                        .onChange(of: ocrPauseInLowPowerMode) { _ in
+                            notifyPowerSettingsChanged()
+                        }
+
                         // Show power status when plugged-in mode is enabled
                         if ocrOnlyWhenPluggedIn {
                             HStack(spacing: 8) {
@@ -2711,6 +2770,21 @@ public struct SettingsView: View {
                                     .foregroundColor(currentPowerSource == .ac ? .green : .orange)
                                     .font(.system(size: 14))
                                 Text(currentPowerSource == .ac ? "On AC power - processing OCR" : "On battery - OCR queued")
+                                    .font(.retraceCaption2)
+                                    .foregroundColor(.retraceSecondary)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.retraceCard)
+                            .cornerRadius(8)
+                        }
+
+                        if ocrPauseInLowPowerMode {
+                            HStack(spacing: 8) {
+                                Image(systemName: isLowPowerModeEnabled ? "leaf.fill" : "leaf")
+                                    .foregroundColor(isLowPowerModeEnabled ? .orange : .green)
+                                    .font(.system(size: 14))
+                                Text(isLowPowerModeEnabled ? "Low Power Mode is on - OCR queued" : "Low Power Mode is off - processing OCR")
                                     .font(.retraceCaption2)
                                     .foregroundColor(.retraceSecondary)
                             }
@@ -2740,39 +2814,55 @@ public struct SettingsView: View {
     private var powerEfficiencyCard: some View {
         ModernSettingsCard(title: "Processing Speed", icon: "gauge.with.dots.needle.33percent") {
                     VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Text("OCR Priority")
-                                .font(.retraceCalloutMedium)
-                                .foregroundColor(.retracePrimary)
-                            Spacer()
-                            Text(processingLevelDisplayText)
-                                .font(.retraceCalloutBold)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(processingLevelColor.opacity(0.3))
-                                .cornerRadius(8)
-                        }
-
-                        // 5-level discrete slider: Efficiency (1) to Max (5)
-                        ModernSlider(
-                            value: Binding(
-                                get: { Double(ocrProcessingLevel) },
-                                set: { ocrProcessingLevel = Int($0) }
-                            ),
-                            range: 1...5,
-                            step: 1
-                        )
-                            .onChange(of: ocrProcessingLevel) { _ in
-                                notifyPowerSettingsChanged()
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Text("OCR Priority")
+                                    .font(.retraceCalloutMedium)
+                                    .foregroundColor(.retracePrimary)
+                                Spacer()
+                                Text(processingLevelDisplayText)
+                                    .font(.retraceCalloutBold)
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(processingLevelColor.opacity(0.3))
+                                    .cornerRadius(8)
                             }
 
-                        HStack {
-                            Text(processingLevelLabels)
-                                .font(.retraceCaption2)
-                                .foregroundColor(.retraceSecondary.opacity(0.7))
-                            Spacer()
+                            // 5-level discrete slider: Efficiency (1) to Max (5)
+                            ModernSlider(
+                                value: Binding(
+                                    get: { Double(ocrProcessingLevel) },
+                                    set: { ocrProcessingLevel = Int($0) }
+                                ),
+                                range: 1...5,
+                                step: 1
+                            )
+                                .onChange(of: ocrProcessingLevel) { _ in
+                                    notifyPowerSettingsChanged()
+                                }
                         }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(
+                                    isOCRPrioritySliderHighlighted
+                                        ? Color.retraceAccent.opacity(0.15)
+                                        : Color.white.opacity(0.02)
+                                )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(
+                                    Color.retraceAccent.opacity(isOCRPrioritySliderHighlighted ? 0.94 : 0.10),
+                                    lineWidth: isOCRPrioritySliderHighlighted ? 2.8 : 1
+                                )
+                                .shadow(
+                                    color: Color.retraceAccent.opacity(isOCRPrioritySliderHighlighted ? 0.55 : 0),
+                                    radius: 12
+                                )
+                        )
+                        .animation(.easeInOut(duration: 0.2), value: isOCRPrioritySliderHighlighted)
 
                         // CPU profile visualization
                         VStack(alignment: .leading, spacing: 6) {
@@ -2969,10 +3059,6 @@ public struct SettingsView: View {
         }
     }
 
-    private var processingLevelLabels: String {
-        "Efficiency  ·  Light  ·  Balanced  ·  Performance  ·  Max"
-    }
-
     private var processingLevelSummary: String {
         switch ocrProcessingLevel {
         case 1: return "Low CPU, always running"
@@ -3030,7 +3116,7 @@ public struct SettingsView: View {
             "Low intensity, mostly running — may fall behind during busy sessions but catches up when idle"
         ]
         case 3: return [
-            "~1.5 frames/sec  ·  150–200% CPU",
+            "~1.5 frames/sec  ·  150–200% CPU  ·  2 workers",
             "Moderate bursts then idle — keeps up with most workflows",
             "Recommended for most users"
         ]
@@ -3043,7 +3129,7 @@ public struct SettingsView: View {
             "Sharp spikes then done — everything is searchable almost instantly"
         ]
         default: return [
-            "~1.5 frames/sec  ·  150–200% CPU",
+            "~1.5 frames/sec  ·  150–200% CPU  ·  2 workers",
             "Moderate bursts then idle — keeps up with most workflows",
             "Recommended for most users"
         ]
@@ -3136,16 +3222,26 @@ public struct SettingsView: View {
 
     private func updatePowerSourceStatus() {
         currentPowerSource = PowerStateMonitor.shared.getCurrentPowerSource()
+        isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
     private func notifyPowerSettingsChanged() {
-        // Post notification to trigger applyPowerSettings in coordinator
-        NotificationCenter.default.post(name: NSNotification.Name("PowerSettingsDidChange"), object: nil)
+        let snapshot = OCRPowerSettingsSnapshot(
+            ocrEnabled: ocrEnabled,
+            pauseOnBattery: ocrOnlyWhenPluggedIn,
+            pauseOnLowPowerMode: ocrPauseInLowPowerMode,
+            processingLevel: ocrProcessingLevel,
+            appFilterModeRaw: ocrAppFilterMode.rawValue,
+            filteredAppsJSON: ocrFilteredAppsString
+        )
+
+        NotificationCenter.default.post(name: OCRPowerSettingsNotification.didChange, object: snapshot)
     }
 
     func resetPowerSettings() {
         ocrEnabled = SettingsDefaults.ocrEnabled
         ocrOnlyWhenPluggedIn = SettingsDefaults.ocrOnlyWhenPluggedIn
+        ocrPauseInLowPowerMode = SettingsDefaults.ocrPauseInLowPowerMode
         ocrProcessingLevel = SettingsDefaults.ocrProcessingLevel
         ocrAppFilterMode = SettingsDefaults.ocrAppFilterMode
         ocrFilteredAppsString = SettingsDefaults.ocrFilteredApps

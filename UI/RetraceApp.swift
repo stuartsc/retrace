@@ -96,8 +96,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var sleepWakeObservers: [NSObjectProtocol] = []
     private var powerSourceRunLoopSource: CFRunLoopSource?
     private var powerSettingsApplyTask: Task<Void, Never>?
+    private var powerSettingsObserver: NSObjectProtocol?
+    private var lowPowerModeObserver: NSObjectProtocol?
+    private var pendingPowerSettingsSnapshot: OCRPowerSettingsSnapshot?
     private var wasRecordingBeforeSleep = false
     private var lastKnownPowerSource: PowerStateMonitor.PowerSource?
+    private var lastKnownLowPowerMode: Bool?
     private var isHandlingSystemSleep = false
     private var isHandlingSystemWake = false
     private var pendingDeeplinkURLs: [URL] = []
@@ -760,6 +764,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 1. Check power state on wake (covers most plug/unplug during sleep)
         // 2. Use IOKit's power source notification for real-time detection
         setupPowerSourceMonitoring()
+        setupLowPowerModeObserver()
 
         Log.info("[AppDelegate] Sleep/wake observers registered", category: .app)
     }
@@ -788,6 +793,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func setupLowPowerModeObserver() {
+        guard lowPowerModeObserver == nil else {
+            return
+        }
+
+        lastKnownLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        lowPowerModeObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.handleLowPowerModeChange()
+            }
+        }
+    }
+
     @MainActor
     private func handlePowerSourceChange() async {
         guard coordinatorWrapper != nil else { return }
@@ -806,7 +828,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func schedulePowerSettingsApply() {
+    private func handleLowPowerModeChange() async {
+        guard coordinatorWrapper != nil else { return }
+
+        let isLowPowerEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+        if let lastKnownLowPowerMode, lastKnownLowPowerMode == isLowPowerEnabled {
+            return
+        }
+        lastKnownLowPowerMode = isLowPowerEnabled
+
+        Log.info("[AppDelegate] Low Power Mode changed: \(isLowPowerEnabled)", category: .app)
+        schedulePowerSettingsApply()
+    }
+
+    @MainActor
+    private func schedulePowerSettingsApply(snapshot: OCRPowerSettingsSnapshot? = nil) {
+        if let snapshot {
+            pendingPowerSettingsSnapshot = snapshot
+        }
+
         powerSettingsApplyTask?.cancel()
         powerSettingsApplyTask = Task { @MainActor [weak self] in
             do {
@@ -816,22 +856,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             guard let self, let wrapper = self.coordinatorWrapper else { return }
-            await wrapper.coordinator.applyPowerSettings()
+            if let snapshot = self.pendingPowerSettingsSnapshot {
+                await wrapper.coordinator.applyPowerSettings(snapshot: snapshot)
+                self.pendingPowerSettingsSnapshot = nil
+            } else {
+                await wrapper.coordinator.applyPowerSettings()
+            }
             self.powerSettingsApplyTask = nil
         }
     }
 
     /// Setup observer for power settings changes from Settings UI
     private func setupPowerSettingsObserver() {
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("PowerSettingsDidChange"),
+        guard powerSettingsObserver == nil else {
+            return
+        }
+
+        powerSettingsObserver = NotificationCenter.default.addObserver(
+            forName: OCRPowerSettingsNotification.didChange,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
             Task { @MainActor in
-                guard let wrapper = self?.coordinatorWrapper else { return }
+                guard let self else { return }
+                guard self.coordinatorWrapper != nil else { return }
                 Log.info("[AppDelegate] Power settings changed, applying...", category: .app)
-                await wrapper.coordinator.applyPowerSettings()
+
+                if let snapshot = notification.object as? OCRPowerSettingsSnapshot {
+                    self.schedulePowerSettingsApply(snapshot: snapshot)
+                } else {
+                    self.schedulePowerSettingsApply()
+                }
             }
         }
     }
@@ -1003,9 +1058,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sleepWakeObservers.removeAll()
         powerSettingsApplyTask?.cancel()
         powerSettingsApplyTask = nil
+        pendingPowerSettingsSnapshot = nil
         if let powerSourceRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
             self.powerSourceRunLoopSource = nil
+        }
+        if let powerSettingsObserver {
+            NotificationCenter.default.removeObserver(powerSettingsObserver)
+            self.powerSettingsObserver = nil
+        }
+        if let lowPowerModeObserver {
+            NotificationCenter.default.removeObserver(lowPowerModeObserver)
+            self.lowPowerModeObserver = nil
         }
         DistributedNotificationCenter.default().removeObserver(self)
 

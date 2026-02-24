@@ -1400,6 +1400,7 @@ extension Notification.Name {
     static let openSettingsTags = Notification.Name("openSettingsTags")
     static let openSettingsPauseReminderInterval = Notification.Name("openSettingsPauseReminderInterval")
     static let openSettingsPowerOCRCard = Notification.Name("openSettingsPowerOCRCard")
+    static let openSettingsPowerOCRPriority = Notification.Name("openSettingsPowerOCRPriority")
     static let openFeedback = Notification.Name("openFeedback")
     static let openSystemMonitor = Notification.Name("openSystemMonitor")
     static let toggleSystemMonitor = Notification.Name("toggleSystemMonitor")

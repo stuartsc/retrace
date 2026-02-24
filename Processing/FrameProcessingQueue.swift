@@ -51,12 +51,19 @@ public actor FrameProcessingQueue {
     /// Whether to pause OCR when on battery power
     private var pauseOnBattery = false
 
+    /// Whether to pause OCR when Low Power Mode is enabled
+    private var pauseOnLowPowerMode = false
+
     /// Current power source (updated by AppCoordinator)
     private var currentPowerSource: PowerStateMonitor.PowerSource = .unknown
 
-    /// Whether currently paused due to battery (computed from pauseOnBattery && currentPowerSource)
-    private var isPausedForBattery: Bool {
-        pauseOnBattery && currentPowerSource == .battery
+    /// Whether Low Power Mode is currently enabled
+    private var isLowPowerModeEnabled = false
+
+    /// Whether OCR is currently paused due to battery or low power mode policy
+    private var isPausedForPowerState: Bool {
+        (pauseOnBattery && currentPowerSource == .battery) ||
+        (pauseOnLowPowerMode && isLowPowerModeEnabled)
     }
 
     /// Minimum delay between processing frames (for rate limiting)
@@ -73,10 +80,10 @@ public actor FrameProcessingQueue {
     /// Empty set means all apps (default behavior)
     private var ocrIncludedBundleIDs: Set<String> = []
 
-    /// Whether we're in deferred mode (pauseOnBattery is enabled)
+    /// Whether we're in deferred mode (pause policies are enabled)
     /// In deferred mode, we don't cache raw frames and must wait for video finalization
     private var isDeferredMode: Bool {
-        pauseOnBattery
+        pauseOnBattery || pauseOnLowPowerMode
     }
 
     /// Reduced cache size when in deferred mode (raw frames won't be used)
@@ -105,6 +112,8 @@ public actor FrameProcessingQueue {
     public func updatePowerConfig(
         ocrEnabled: Bool,
         pauseOnBattery: Bool,
+        pauseOnLowPowerMode: Bool,
+        isLowPowerModeEnabled: Bool,
         currentPowerSource: PowerStateMonitor.PowerSource,
         maxFPS: Double,
         workerCount: Int,
@@ -114,6 +123,8 @@ public actor FrameProcessingQueue {
     ) {
         self.ocrEnabled = ocrEnabled
         self.pauseOnBattery = pauseOnBattery
+        self.pauseOnLowPowerMode = pauseOnLowPowerMode
+        self.isLowPowerModeEnabled = isLowPowerModeEnabled
         self.currentPowerSource = currentPowerSource
         self.ocrExcludedBundleIDs = excludedBundleIDs
         self.ocrIncludedBundleIDs = includedBundleIDs
@@ -139,7 +150,10 @@ public actor FrameProcessingQueue {
             }
         }
 
-        Log.info("[Queue] Power config updated: ocrEnabled=\(ocrEnabled), pauseOnBattery=\(pauseOnBattery), power=\(currentPowerSource), maxFPS=\(maxFPS), workers=\(workers.count), priority=\(taskPriority), paused=\(isPausedForBattery)", category: .processing)
+        Log.info(
+            "[Queue] Power config updated: ocrEnabled=\(ocrEnabled), pauseOnBattery=\(pauseOnBattery), pauseOnLowPowerMode=\(pauseOnLowPowerMode), isLowPowerModeEnabled=\(isLowPowerModeEnabled), power=\(currentPowerSource), maxFPS=\(maxFPS), workers=\(workers.count), priority=\(taskPriority), paused=\(isPausedForPowerState)",
+            category: .processing
+        )
     }
 
     /// Adjust the number of running workers to the desired count
@@ -213,7 +227,7 @@ public actor FrameProcessingQueue {
     ///   - priority: Processing priority (higher = processed first)
     ///   - capturedFrame: Optional raw frame data. If provided, OCR uses this directly
     ///                    instead of extracting from video, avoiding B-frame timing issues.
-    ///                    In deferred mode (pauseOnBattery enabled), raw frames are NOT cached
+    ///                    In deferred mode (a pause policy is enabled), raw frames are NOT cached
     ///                    since we'll extract from finalized video later.
     public func enqueue(frameID: Int64, priority: Int = 0, capturedFrame: CapturedFrame? = nil) async throws {
         // Log.info("[Queue-DIAG] Attempting to enqueue frame \(frameID) with priority \(priority), hasFrameData: \(capturedFrame != nil)", category: .processing)
@@ -286,17 +300,15 @@ public actor FrameProcessingQueue {
             currentQueueDepth = counts.pending + counts.processing
         }
 
-        // Log.info("[Queue-DIAG] Starting \(config.workerCount) processing workers, isRunning=\(isRunning)", category: .processing)
-
         let priority = workerPriority
         for workerID in 0..<config.workerCount {
             let task = Task(priority: priority) {
                 await runWorker(id: workerID)
             }
             workers.append(task)
-            // Log.info("[Queue-DIAG] Worker \(workerID) task created", category: .processing)
         }
-        // Log.info("[Queue-DIAG] All \(workers.count) worker tasks created", category: .processing)
+
+        Log.info("[Queue] Started \(workers.count) workers (priority=\(priority))", category: .processing)
     }
 
     /// Stop processing workers
@@ -332,9 +344,9 @@ public actor FrameProcessingQueue {
                 continue
             }
 
-            // Check if paused due to battery power
-            guard !isPausedForBattery else {
-                try? await Task.sleep(for: .nanoseconds(Int64(2_000_000_000)), clock: .continuous) // 2s poll when paused for battery
+            // Check if paused due to battery/low-power policy
+            guard !isPausedForPowerState else {
+                try? await Task.sleep(for: .nanoseconds(Int64(2_000_000_000)), clock: .continuous) // 2s poll when paused by power policy
                 if Task.isCancelled { break }
                 continue
             }

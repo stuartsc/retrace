@@ -8,6 +8,52 @@ import Search
 import Migration
 import CoreGraphics
 
+// MARK: - OCR Power Settings Notifications
+
+public enum OCRPowerSettingsNotification {
+    public static let didChange = Notification.Name("PowerSettingsDidChange")
+}
+
+/// Snapshot of OCR power settings, used to apply settings immediately without
+/// relying on asynchronous UserDefaults propagation.
+public struct OCRPowerSettingsSnapshot: Sendable {
+    public let ocrEnabled: Bool
+    public let pauseOnBattery: Bool
+    public let pauseOnLowPowerMode: Bool
+    public let processingLevel: Int
+    public let appFilterModeRaw: String
+    public let filteredAppsJSON: String
+
+    public init(
+        ocrEnabled: Bool,
+        pauseOnBattery: Bool,
+        pauseOnLowPowerMode: Bool,
+        processingLevel: Int,
+        appFilterModeRaw: String,
+        filteredAppsJSON: String
+    ) {
+        self.ocrEnabled = ocrEnabled
+        self.pauseOnBattery = pauseOnBattery
+        self.pauseOnLowPowerMode = pauseOnLowPowerMode
+        self.processingLevel = processingLevel
+        self.appFilterModeRaw = appFilterModeRaw
+        self.filteredAppsJSON = filteredAppsJSON
+    }
+
+    public static func fromDefaults(
+        _ defaults: UserDefaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+    ) -> OCRPowerSettingsSnapshot {
+        OCRPowerSettingsSnapshot(
+            ocrEnabled: defaults.object(forKey: "ocrEnabled") as? Bool ?? true,
+            pauseOnBattery: defaults.bool(forKey: "ocrOnlyWhenPluggedIn"),
+            pauseOnLowPowerMode: defaults.bool(forKey: "ocrPauseInLowPowerMode"),
+            processingLevel: (defaults.object(forKey: "ocrProcessingLevel") as? NSNumber)?.intValue ?? 3,
+            appFilterModeRaw: defaults.string(forKey: "ocrAppFilterMode") ?? "all",
+            filteredAppsJSON: defaults.string(forKey: "ocrFilteredApps") ?? ""
+        )
+    }
+}
+
 // MARK: - Thread-Safe Status Holder
 
 /// Thread-safe holder for pipeline status that can be read without actor isolation.
@@ -542,15 +588,20 @@ public actor AppCoordinator {
     /// Apply power-aware OCR settings to the processing queue
     /// Called on startup, when settings change, and when power source changes
     public func applyPowerSettings() async {
-        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        let snapshot = OCRPowerSettingsSnapshot.fromDefaults()
+        await applyPowerSettings(snapshot: snapshot)
+    }
 
-        // Get OCR enabled state (defaults to true if not set)
-        let ocrEnabled = defaults.object(forKey: "ocrEnabled") as? Bool ?? true
-        let pauseOnBattery = defaults.bool(forKey: "ocrOnlyWhenPluggedIn")
-        let processingLevel = (defaults.object(forKey: "ocrProcessingLevel") as? NSNumber)?.intValue ?? 3
+    /// Apply power-aware OCR settings from an explicit snapshot.
+    /// This path avoids races where UserDefaults writes are not immediately visible.
+    public func applyPowerSettings(snapshot: OCRPowerSettingsSnapshot) async {
+        let ocrEnabled = snapshot.ocrEnabled
+        let pauseOnBattery = snapshot.pauseOnBattery
+        let pauseOnLowPowerMode = snapshot.pauseOnLowPowerMode
+        let processingLevel = min(max(snapshot.processingLevel, 1), 5)
 
         // Parse app filter mode and filtered apps
-        let filterModeRaw = defaults.string(forKey: "ocrAppFilterMode") ?? "all"
+        let filterModeRaw = snapshot.appFilterModeRaw
         let filterMode = OCRAppFilterMode(rawValue: filterModeRaw) ?? .allApps
 
         var excludedBundleIDs: Set<String> = []
@@ -560,9 +611,9 @@ public actor AppCoordinator {
         struct FilteredAppInfo: Codable {
             let bundleID: String
         }
-        let appsString = defaults.string(forKey: "ocrFilteredApps") ?? ""
-        Log.info("[AppCoordinator] Raw ocrFilteredApps from UserDefaults: '\(appsString)'", category: .app)
-        Log.info("[AppCoordinator] Raw ocrAppFilterMode from UserDefaults: '\(filterModeRaw)'", category: .app)
+        let appsString = snapshot.filteredAppsJSON
+        Log.info("[AppCoordinator] Raw ocrFilteredApps from snapshot: '\(appsString)'", category: .app)
+        Log.info("[AppCoordinator] Raw ocrAppFilterMode from snapshot: '\(filterModeRaw)'", category: .app)
 
         if !appsString.isEmpty,
            let data = appsString.data(using: .utf8),
@@ -586,13 +637,14 @@ public actor AppCoordinator {
 
         // Get current power source
         let powerSource = PowerStateMonitor.shared.getCurrentPowerSource()
+        let isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
 
         // Derive priority, FPS limit, and worker count from processing level
-        // Level 1: Very Low  - background, 0.5 FPS, 1 worker
-        // Level 2: Low       - background, no limit, 1 worker
-        // Level 3: Medium    - utility, no limit, 1 worker
-        // Level 4: High      - medium, no limit, 1 worker
-        // Level 5: Very High - high, no limit, 2 workers
+        // Level 1: Efficiency  - background, 0.5 FPS, 1 worker
+        // Level 2: Light       - background, no limit, 1 worker
+        // Level 3: Balanced    - background, no limit, 2 workers
+        // Level 4: Performance - medium, no limit, 1 worker
+        // Level 5: Max         - high, no limit, 2 workers
         let taskPriority: TaskPriority
         let maxFPS: Double
         let workerCount: Int
@@ -628,6 +680,8 @@ public actor AppCoordinator {
             await queue.updatePowerConfig(
                 ocrEnabled: ocrEnabled,
                 pauseOnBattery: pauseOnBattery,
+                pauseOnLowPowerMode: pauseOnLowPowerMode,
+                isLowPowerModeEnabled: isLowPowerModeEnabled,
                 currentPowerSource: powerSource,
                 maxFPS: maxFPS,
                 workerCount: workerCount,
@@ -639,7 +693,10 @@ public actor AppCoordinator {
             Log.warning("[AppCoordinator] processingQueue is nil, cannot apply power config", category: .app)
         }
 
-        Log.info("[AppCoordinator] Applied power settings: ocrEnabled=\(ocrEnabled), level=\(processingLevel), workers=\(workerCount), priority=\(taskPriority), maxFPS=\(maxFPS), preferBgProcessing=\(preferBackground), pauseOnBattery=\(pauseOnBattery), power=\(powerSource)", category: .app)
+        Log.info(
+            "[AppCoordinator] Applied power settings: ocrEnabled=\(ocrEnabled), level=\(processingLevel), workers=\(workerCount), priority=\(taskPriority), maxFPS=\(maxFPS), preferBgProcessing=\(preferBackground), pauseOnBattery=\(pauseOnBattery), pauseOnLowPowerMode=\(pauseOnLowPowerMode), isLowPowerModeEnabled=\(isLowPowerModeEnabled), power=\(powerSource)",
+            category: .app
+        )
     }
 
     /// Handle capture stopped unexpectedly (e.g., user clicked "Stop sharing" in macOS)
@@ -1293,10 +1350,12 @@ public actor AppCoordinator {
 
     /// Get current power state for monitoring display
     nonisolated public func getCurrentPowerState() -> (source: PowerStateMonitor.PowerSource, isPaused: Bool) {
-        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-        let pauseOnBattery = defaults.bool(forKey: "ocrOnlyWhenPluggedIn")
+        let snapshot = OCRPowerSettingsSnapshot.fromDefaults()
         let source = PowerStateMonitor.shared.getCurrentPowerSource()
-        let isPaused = pauseOnBattery && source == .battery
+        let isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let isPaused =
+            (snapshot.pauseOnBattery && source == .battery) ||
+            (snapshot.pauseOnLowPowerMode && isLowPowerModeEnabled)
         return (source, isPaused)
     }
 

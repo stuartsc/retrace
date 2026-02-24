@@ -347,6 +347,31 @@ final class DateJumpPlayheadRelativeParsingTests: XCTestCase {
         assertDateComponents(result, year: 2026, month: 4, day: 15, hour: 9, minute: 48)
     }
 
+    func testHourBeforeResolvesToExact60MinutesFromPlayhead() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let base = makeDate(year: 2026, month: 2, day: 23, hour: 9, minute: 48)
+
+        guard let result = viewModel.test_parsePlayheadRelativeDateForDateSearch("1 hour before", baseTimestamp: base) else {
+            XCTFail("Expected parser to resolve playhead-relative hour offset")
+            return
+        }
+
+        XCTAssertEqual(result.timeIntervalSince(base), -60 * 60, accuracy: 0.001)
+        assertDateComponents(result, year: 2026, month: 2, day: 23, hour: 8, minute: 48)
+    }
+
+    func testMonthAfterUsesPlayheadAsBaseAndPreservesClockTime() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let base = makeDate(year: 2026, month: 5, day: 15, hour: 9, minute: 48)
+
+        guard let result = viewModel.test_parsePlayheadRelativeDateForDateSearch("1 month after", baseTimestamp: base) else {
+            XCTFail("Expected parser to resolve playhead-relative month offset")
+            return
+        }
+
+        assertDateComponents(result, year: 2026, month: 6, day: 15, hour: 9, minute: 48)
+    }
+
     func testAgoPhraseIsNotHandledByPlayheadEarlierLaterParser() {
         let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
         let base = makeDate(year: 2026, month: 2, day: 23, hour: 9, minute: 48)
