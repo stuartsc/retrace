@@ -960,6 +960,7 @@ Relates to #456
 
 1. **Automated checks** run (tests, lint)
 2. **Maintainer review** (usually within 2-3 days)
+   - Maintainers may push small fixups or branch-sync commits to open PRs to keep review and merge flow efficient.
 3. **Address feedback** by pushing new commits
 4. **Approval** from at least one maintainer
 5. **Merge** (squash merge preferred for features)
