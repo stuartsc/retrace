@@ -2616,6 +2616,24 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
+    /// Clear all applied/pending filters without triggering a reload.
+    /// Used by hidden-cache expiration so the next refresh runs unfiltered.
+    public func clearFiltersWithoutReload() {
+        guard filterCriteria.hasActiveFilters || pendingFilterCriteria.hasActiveFilters else { return }
+
+        // Invalidate peek cache since filters are changing.
+        invalidatePeekCache()
+        clearFilterState()
+
+        if isFilterPanelVisible {
+            dismissFilterPanel()
+        } else {
+            dismissFilterDropdown()
+        }
+
+        Log.info("[Filter] Cleared filters without immediate reload", category: .ui)
+    }
+
     /// Clear filter state without triggering a reload
     /// Used by goToNow() which handles its own reload
     private func clearFilterState() {
@@ -4179,6 +4197,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             }
             currentImage = nil
             frameNotReady = true
+            frameLoadError = false
             // Still preload nearby frames
             preloadNearbyFrames()
             return
@@ -5908,6 +5927,14 @@ public class SimpleTimelineViewModel: ObservableObject {
         return currentIndex >= frames.count - count && !hasMoreNewer
     }
 
+    /// Whether the timeline is within N frames of the latest loaded frame.
+    /// Unlike `isNearMostRecentFrame`, this intentionally ignores `hasMoreNewer`.
+    /// Useful for UI decisions where stale boundary flags should not block "near-now" behavior.
+    public func isNearLatestLoadedFrame(within count: Int) -> Bool {
+        guard !frames.isEmpty else { return true }
+        return currentIndex >= frames.count - count
+    }
+
     /// Whether to show the "Go to Now" button
     /// Shows when not viewing the most recent available frame
     public var shouldShowGoToNow: Bool {
@@ -6446,32 +6473,11 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     /// Parse relative offsets like "3 hours later" / "10 minutes earlier" using the current playhead timestamp.
+    /// This path is intentionally limited to "earlier|later" so "... ago" continues to use bucket anchoring logic.
     private func parsePlayheadRelativeDateIfNeeded(_ text: String) -> Date? {
         let normalized = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-
-        guard let regex = try? NSRegularExpression(
-            pattern: #"^\s*(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h)\s*(earlier|later)\s*$"#,
-            options: [.caseInsensitive]
-        ) else {
-            return nil
-        }
-
-        let range = NSRange(normalized.startIndex..., in: normalized)
-        guard let match = regex.firstMatch(in: normalized, options: [], range: range),
-              let amountRange = Range(match.range(at: 1), in: normalized),
-              let unitRange = Range(match.range(at: 2), in: normalized),
-              let directionRange = Range(match.range(at: 3), in: normalized),
-              let amount = Int(normalized[amountRange]),
-              amount > 0 else {
-            return nil
-        }
-
-        let unitToken = String(normalized[unitRange])
-        let directionToken = String(normalized[directionRange])
-        let component: Calendar.Component = unitToken.hasPrefix("h") ? .hour : .minute
-        let signedAmount = directionToken == "later" ? amount : -amount
 
         let baseTimestamp: Date
         if let currentTimestamp {
@@ -6481,7 +6487,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             Log.warning("[DateSearch] Relative '\(normalized)' had no playhead timestamp; falling back to now", category: .ui)
         }
 
-        guard let resolvedDate = Calendar.current.date(byAdding: component, value: signedAmount, to: baseTimestamp) else {
+        guard let resolvedDate = parsePlayheadRelativeDate(normalized, relativeTo: baseTimestamp) else {
             return nil
         }
 
@@ -6492,20 +6498,90 @@ public class SimpleTimelineViewModel: ObservableObject {
         return resolvedDate
     }
 
+    private func parsePlayheadRelativeDate(_ normalizedText: String, relativeTo baseTimestamp: Date) -> Date? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"^\s*(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h|day|days|week|weeks|wk|wks|month|months|mo|mos|year|years|yr|yrs)\s*(earlier|later)\s*$"#,
+            options: [.caseInsensitive]
+        ) else {
+            return nil
+        }
+
+        let range = NSRange(normalizedText.startIndex..., in: normalizedText)
+        guard let match = regex.firstMatch(in: normalizedText, options: [], range: range),
+              let amountRange = Range(match.range(at: 1), in: normalizedText),
+              let unitRange = Range(match.range(at: 2), in: normalizedText),
+              let directionRange = Range(match.range(at: 3), in: normalizedText),
+              let amount = Int(normalizedText[amountRange]),
+              amount > 0 else {
+            return nil
+        }
+
+        let unitToken = String(normalizedText[unitRange])
+        let directionToken = String(normalizedText[directionRange])
+        let directionSign = directionToken == "later" ? 1 : -1
+        let calendar = Calendar.current
+
+        switch unitToken {
+        case "minute", "minutes", "min", "mins":
+            return calendar.date(byAdding: .minute, value: directionSign * amount, to: baseTimestamp)
+        case "hour", "hours", "hr", "hrs", "h":
+            return calendar.date(byAdding: .minute, value: directionSign * amount * 60, to: baseTimestamp)
+        case "day", "days":
+            return calendar.date(byAdding: .minute, value: directionSign * amount * 24 * 60, to: baseTimestamp)
+        case "week", "weeks", "wk", "wks":
+            return calendar.date(byAdding: .minute, value: directionSign * amount * 7 * 24 * 60, to: baseTimestamp)
+        case "month", "months", "mo", "mos":
+            return calendar.date(byAdding: .month, value: directionSign * amount, to: baseTimestamp)
+        case "year", "years", "yr", "yrs":
+            return calendar.date(byAdding: .year, value: directionSign * amount, to: baseTimestamp)
+        default:
+            return nil
+        }
+    }
+
     /// Parse natural language date strings
-    private func parseNaturalLanguageDate(_ text: String) -> Date? {
+    private func parseNaturalLanguageDate(_ text: String, now: Date = Date()) -> Date? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let calendar = Calendar.current
-        let now = Date()
         let normalizedInput = trimmed.lowercased()
+        let collapsedInput = normalizedInput.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
 
-        func normalizeParsedDate(_ parsedDate: Date) -> Date {
-            adjustYearlessAbsoluteFutureDateToRecentPastIfNeeded(
-                parsedDate,
+        if collapsedInput.range(of: #"^start of (the )?day$"#, options: .regularExpression) != nil {
+            return calendar.startOfDay(for: now)
+        }
+
+        func finalizeParsedDate(_ parsedDate: Date) -> Date {
+            let anchorMode = inferDateSearchAnchorMode(for: normalizedInput)
+            let dateForYearAdjustment: Date
+
+            // For date-only input ("Feb 23"), normalize to start-of-day before
+            // yearless-future coercion so "today" isn't treated as future.
+            if anchorMode == .firstFrameInDay {
+                dateForYearAdjustment = calendar.startOfDay(for: parsedDate)
+            } else {
+                dateForYearAdjustment = parsedDate
+            }
+
+            var normalized = adjustYearlessAbsoluteFutureDateToRecentPastIfNeeded(
+                dateForYearAdjustment,
                 input: normalizedInput,
                 now: now,
                 calendar: calendar
             )
+            normalized = adjustTimeOnlyFutureDateToRecentPastIfNeeded(
+                normalized,
+                input: normalizedInput,
+                now: now,
+                calendar: calendar
+            )
+            if anchorMode == .firstFrameInDay {
+                return calendar.startOfDay(for: normalized)
+            }
+            return normalized
         }
 
         // === PRIMARY: SwiftyChrono NLP Parser ===
@@ -6513,7 +6589,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Handles: "next Friday", "3 days from now", "last Monday", "in 2 weeks", etc.
         let chrono = Chrono()
         if let result = chrono.parse(text: trimmed, refDate: now, opt: [:]).first?.start.date {
-            let normalized = normalizeParsedDate(result)
+            let normalized = finalizeParsedDate(result)
             Log.debug("[DateSearch] SwiftyChrono parsed '\(trimmed)' as \(normalized)", category: .ui)
             return normalized
         }
@@ -6528,7 +6604,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Try parsing time-only input (assumes "today" if just time is given)
         // Handles: "938pm", "9:38pm", "938 pm", "9:38 pm", "938", "9:38", "21:38"
         if let timeOnlyDate = parseTimeOnly(trimmedLower, relativeTo: now) {
-            return normalizeParsedDate(timeOnlyDate)
+            return finalizeParsedDate(timeOnlyDate)
         }
 
         // Normalize compact time formats (e.g., "827am" -> "8:27am") before passing to NSDataDetector
@@ -6541,7 +6617,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let range = NSRange(normalizedText.startIndex..., in: normalizedText)
             if let match = detector.firstMatch(in: normalizedText, options: [], range: range),
                let date = match.date {
-                return normalizeParsedDate(date)
+                return finalizeParsedDate(date)
             }
         }
 
@@ -6570,21 +6646,34 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Try original text first
             if let date = df.date(from: text) {
-                return normalizeParsedDate(date)
+                return finalizeParsedDate(date)
             }
             // Try lowercased
             if let date = df.date(from: trimmedLower) {
-                return normalizeParsedDate(date)
+                return finalizeParsedDate(date)
             }
             // Try with first letter capitalized (for month names)
             let capitalized = trimmedLower.prefix(1).uppercased() + trimmedLower.dropFirst()
             if let date = df.date(from: capitalized) {
-                return normalizeParsedDate(date)
+                return finalizeParsedDate(date)
             }
         }
 
         return nil
     }
+
+#if DEBUG
+    func test_parseNaturalLanguageDateForDateSearch(_ text: String, now: Date) -> Date? {
+        parseNaturalLanguageDate(text, now: now)
+    }
+
+    func test_parsePlayheadRelativeDateForDateSearch(_ text: String, baseTimestamp: Date) -> Date? {
+        parsePlayheadRelativeDate(
+            text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+            relativeTo: baseTimestamp
+        )
+    }
+#endif
 
     private enum DateSearchAnchorMode: String {
         case exact
@@ -6631,23 +6720,28 @@ public class SimpleTimelineViewModel: ObservableObject {
             .lowercased()
 
         if normalized.range(
-            of: #"\b\d+\s*(minute|minutes|min|mins)\s+(ago|earlier|later)\b"#,
+            of: #"\b\d+\s*(minute|minutes|min|mins)\s+ago\b"#,
             options: .regularExpression
         ) != nil {
             return .firstFrameInMinute
         }
 
         if normalized.range(
-            of: #"\b\d+\s*(hour|hours|hr|hrs|h)\s+(ago|earlier|later)\b"#,
+            of: #"\b\d+\s*(hour|hours|hr|hrs|h)\s+ago\b"#,
             options: .regularExpression
         ) != nil {
             return .firstFrameInHour
         }
 
-        let hasDateLikeToken = normalized.range(
+        let hasCalendarDateToken = normalized.range(
             of: #"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b"#,
             options: .regularExpression
         ) != nil
+        let hasDayLevelNaturalLanguageToken = normalized.range(
+            of: #"\b(?:today|tomorrow|yesterday|(?:next|last|this)\s+(?:mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b"#,
+            options: .regularExpression
+        ) != nil
+        let hasDateLikeToken = hasCalendarDateToken || hasDayLevelNaturalLanguageToken
         let hasExplicitTime = normalized.range(
             of: #"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(am|pm)\b|\b\d{3,4}\s*(am|pm)\b|\bnoon\b|\bmidnight\b"#,
             options: .regularExpression
@@ -6706,6 +6800,28 @@ public class SimpleTimelineViewModel: ObservableObject {
         return priorYearDate
     }
 
+    /// Time-only inputs (e.g. "4pm") should target historical timeline data.
+    /// If the parsed time has not happened yet today, shift to the previous day.
+    private func adjustTimeOnlyFutureDateToRecentPastIfNeeded(
+        _ parsedDate: Date,
+        input: String,
+        now: Date,
+        calendar: Calendar
+    ) -> Date {
+        guard parsedDate > now else { return parsedDate }
+        guard shouldCoerceTimeOnlyDateToPast(input) else { return parsedDate }
+        guard let priorDayDate = calendar.date(byAdding: .day, value: -1, to: parsedDate) else {
+            return parsedDate
+        }
+        guard priorDayDate <= now else { return parsedDate }
+
+        Log.debug(
+            "[DateSearch] Adjusted future time-only input '\(input)' from \(parsedDate) to \(priorDayDate)",
+            category: .ui
+        )
+        return priorDayDate
+    }
+
     private func shouldCoerceYearlessAbsoluteDateToPast(_ input: String) -> Bool {
         // Keep relative expressions as-is (tomorrow/next/last/etc).
         if input.range(
@@ -6734,6 +6850,33 @@ public class SimpleTimelineViewModel: ObservableObject {
         return true
     }
 
+    private func shouldCoerceTimeOnlyDateToPast(_ input: String) -> Bool {
+        // Keep explicit relative expressions as-is (tomorrow/next/in 2 hours/etc).
+        if input.range(
+            of: #"\b(today|tomorrow|yesterday|next|last|ago|this|now|tonight|earlier|later)\b|from now|\bin\s+\d+"#,
+            options: .regularExpression
+        ) != nil {
+            return false
+        }
+
+        // If the input includes any explicit calendar date token, this is not a time-only query.
+        if input.range(
+            of: #"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b\d{4}-\d{1,2}-\d{1,2}\b"#,
+            options: .regularExpression
+        ) != nil {
+            return false
+        }
+
+        let normalized = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^\s*at\s+"#, with: "", options: .regularExpression)
+
+        return normalized.range(
+            of: #"^(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a|p)?|\d{3,4}\s*(?:am|pm|a|p)?|noon|midnight)$"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
     /// Extract first number from a string
     private func extractNumber(from text: String) -> Int? {
         let pattern = "\\d+"
@@ -6745,7 +6888,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         return nil
     }
 
-    /// Parse time-only input and return a Date for today at that time
+    /// Parse time-only input and return a Date for today at that time.
     /// Handles formats like: "938pm", "9:38pm", "938 pm", "9:38 pm", "938", "9:38", "21:38", "2138"
     private func parseTimeOnly(_ text: String, relativeTo now: Date) -> Date? {
         let calendar = Calendar.current

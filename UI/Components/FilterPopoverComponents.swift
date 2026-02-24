@@ -2057,6 +2057,7 @@ public struct DateRangeFilterPopover: View {
         // === PRIMARY: SwiftyChrono NLP Parser ===
         // Use reference date if provided for context-aware parsing
         // forwardDate: 0 disables the "prefer future dates" behavior, perfect for a history search app
+        Chrono.defaultImpliedHour = 0
         let chrono = Chrono()
         let results = chrono.parse(text: trimmed, refDate: referenceDate ?? now, opt: [.forwardDate: 0])
         if let result = results.first?.start.date {

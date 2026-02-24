@@ -622,9 +622,9 @@ public class MenuBarManager: ObservableObject {
         settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(settingsItem)
 
-        // Report an Issue / Get Help
+        // Get Help
         let feedbackItem = NSMenuItem(
-            title: "Report an Issue...",
+            title: "Get Help...",
             action: #selector(openFeedback),
             keyEquivalent: feedbackShortcut.key.isEmpty ? "" : feedbackShortcut.menuKeyEquivalent
         )

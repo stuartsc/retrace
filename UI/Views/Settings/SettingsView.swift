@@ -27,6 +27,7 @@ enum SettingsDefaults {
     static let timelineColoredBorders = false
     static let scrubbingAnimationDuration: Double = 0.10  // 0 = no animation, max 0.20
     static let scrollSensitivity: Double = 0.50  // 0.0 = slowest, 1.0 = fastest
+    static let timelineScrollOrientation: TimelineScrollOrientation = .horizontal
 
     // MARK: Capture
     static let pauseReminderDelayMinutes: Double = 30  // 0 = never remind again
@@ -122,6 +123,7 @@ public struct SettingsView: View {
     @AppStorage("timelineColoredBorders", store: settingsStore) private var timelineColoredBorders: Bool = SettingsDefaults.timelineColoredBorders
     @AppStorage("scrubbingAnimationDuration", store: settingsStore) private var scrubbingAnimationDuration: Double = SettingsDefaults.scrubbingAnimationDuration
     @AppStorage("scrollSensitivity", store: settingsStore) private var scrollSensitivity: Double = SettingsDefaults.scrollSensitivity
+    @AppStorage("timelineScrollOrientation", store: settingsStore) private var timelineScrollOrientation: TimelineScrollOrientation = SettingsDefaults.timelineScrollOrientation
 
     // Font style - tracked as @State to trigger view refresh on change
     @State private var fontStyle: RetraceFontStyle = RetraceFont.currentStyle
@@ -333,7 +335,7 @@ public struct SettingsView: View {
         SettingsSearchEntry(id: "general.startup", tab: .general, cardTitle: "Startup", cardIcon: "power",
             searchableText: ["startup", "launch at login", "start automatically", "menu bar icon", "show menu bar"]),
         SettingsSearchEntry(id: "general.appearance", tab: .general, cardTitle: "Appearance", cardIcon: "paintbrush",
-            searchableText: ["appearance", "font style", "accent color", "color theme", "timeline colored borders", "scrubbing animation", "scroll sensitivity", "dark mode", "light mode", "theme"]),
+            searchableText: ["appearance", "font style", "accent color", "color theme", "timeline colored borders", "scrubbing animation", "scroll sensitivity", "scroll orientation", "horizontal scroll", "vertical scroll", "dark mode", "light mode", "theme"]),
         // Capture
         SettingsSearchEntry(id: "capture.rate", tab: .capture, cardTitle: "Capture Rate", cardIcon: "gauge.with.dots.needle.50percent",
             searchableText: ["capture rate", "capture interval", "capture on window change", "frame rate", "screenshot frequency"]),
@@ -1300,6 +1302,56 @@ public struct SettingsView: View {
                         if scrollSensitivity != SettingsDefaults.scrollSensitivity {
                             Button(action: {
                                 scrollSensitivity = SettingsDefaults.scrollSensitivity
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.counterclockwise")
+                                        .font(.system(size: 10))
+                                    Text("Reset to Default")
+                                        .font(.retraceCaption2)
+                                }
+                                .foregroundColor(.white.opacity(0.7))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Divider()
+                    .background(Color.retraceBorder)
+
+                // Scroll Orientation Section
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Text("Timeline scroll orientation")
+                            .font(.retraceCalloutMedium)
+                            .foregroundColor(.retracePrimary)
+                        Spacer()
+                        Text(timelineScrollOrientation.displayName)
+                            .font(.retraceCalloutBold)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.retraceAccent.opacity(0.3))
+                            .cornerRadius(8)
+                    }
+
+                    ModernSegmentedPicker(
+                        selection: $timelineScrollOrientation,
+                        options: TimelineScrollOrientation.allCases
+                    ) { option in
+                        Text(option.shortLabel)
+                    }
+
+                    HStack {
+                        Text(timelineScrollOrientation.description)
+                            .font(.retraceCaption2)
+                            .foregroundColor(.retraceSecondary.opacity(0.7))
+
+                        Spacer()
+
+                        if timelineScrollOrientation != SettingsDefaults.timelineScrollOrientation {
+                            Button(action: {
+                                timelineScrollOrientation = SettingsDefaults.timelineScrollOrientation
                             }) {
                                 HStack(spacing: 4) {
                                     Image(systemName: "arrow.counterclockwise")
@@ -3937,12 +3989,13 @@ private struct ModernSegmentedPicker<T: Hashable, Content: View>: View {
                     label(option)
                         .font(selection == option ? .retraceCaptionBold : .retraceCaptionMedium)
                         .foregroundColor(selection == option ? .retracePrimary : .retraceSecondary)
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, minHeight: 36)
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(selection == option ? Color.white.opacity(0.1) : Color.clear)
                         )
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -5422,6 +5475,35 @@ enum ThemePreference: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum TimelineScrollOrientation: String, CaseIterable, Identifiable {
+    case horizontal
+    case vertical
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .horizontal:
+            return "Left/Right"
+        case .vertical:
+            return "Up/Down"
+        }
+    }
+
+    var displayName: String {
+        shortLabel
+    }
+
+    var description: String {
+        switch self {
+        case .horizontal:
+            return "Use left/right scroll movement to scrub the timeline"
+        case .vertical:
+            return "Use up/down scroll movement to scrub the timeline"
+        }
+    }
+}
+
 enum CaptureResolution: String, CaseIterable, Identifiable {
     case original = "Original"
     case uhd4k = "4K"
@@ -6063,6 +6145,7 @@ extension SettingsView {
         timelineColoredBorders = SettingsDefaults.timelineColoredBorders
         scrubbingAnimationDuration = SettingsDefaults.scrubbingAnimationDuration
         scrollSensitivity = SettingsDefaults.scrollSensitivity
+        timelineScrollOrientation = SettingsDefaults.timelineScrollOrientation
     }
 
     /// Reset all Capture settings to defaults

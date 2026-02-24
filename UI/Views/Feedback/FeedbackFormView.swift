@@ -617,7 +617,7 @@ public struct FeedbackFormView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "message.fill")
                             .font(.retraceCallout)
-                        Text("Chat with us on retrace.to")
+                        Text("Chat with me on retrace.to")
                             .font(.retraceCalloutMedium)
                     }
                     .foregroundColor(.white)

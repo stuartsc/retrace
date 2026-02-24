@@ -34,6 +34,9 @@ public class TimelineWindowController: NSObject {
     private var tapeShowAnimationTask: Task<Void, Never>?
     private var liveModeCaptureTask: Task<Void, Never>?
     private var isHiding = false
+    /// Ignore scroll-wheel input for a short grace period after opening in live mode.
+    /// This prevents residual trackpad momentum from immediately exiting live mode.
+    private var suppressLiveScrollUntil: CFAbsoluteTime = 0
 
     // MARK: - Emergency Escape (CGEvent tap for when main thread is blocked)
 
@@ -103,6 +106,14 @@ public class TimelineWindowController: NSObject {
 
     /// Maximum age of velocity samples to consider (seconds)
     private static let velocitySampleWindow: CFAbsoluteTime = 0.08
+    /// Live-mode scroll suppression window (seconds) applied on open.
+    private static let liveScrollSuppressDuration: CFAbsoluteTime = 0.30
+    private static let timelineSettingsStore = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+
+    private enum TimelineScrollOrientation: String {
+        case horizontal
+        case vertical
+    }
 
     // MARK: - Initialization
 
@@ -399,7 +410,7 @@ public class TimelineWindowController: NSObject {
 
         // Only capture/use live screenshot if playhead is at or near the latest frame (last 2 frames)
         // Otherwise, user was viewing a historical frame and should see that instead
-        let shouldUseLiveMode = timelineViewModel?.isNearMostRecentFrame(within: 2) ?? true
+        let shouldUseLiveMode = timelineViewModel?.isNearLatestLoadedFrame(within: 2) ?? true
 
         // Remember if dashboard was the key window before we take over
         dashboardWasKeyWindow = DashboardWindowController.shared.isVisible &&
@@ -532,6 +543,11 @@ public class TimelineWindowController: NSObject {
         }
 
         let isLive = timelineViewModel?.isInLiveMode ?? false
+        if isLive {
+            suppressLiveScrollUntil = CFAbsoluteTimeGetCurrent() + Self.liveScrollSuppressDuration
+        } else {
+            suppressLiveScrollUntil = 0
+        }
         window.alphaValue = isLive ? 1 : 0
 
         // Re-enable mouse events before showing (was disabled while hidden to prevent blocking clicks)
@@ -699,6 +715,7 @@ public class TimelineWindowController: NSObject {
                 self?.isVisible = false
                 Self.isTimelineVisible = false  // For emergency escape tap
                 self?.lastHiddenAt = Date()
+                self?.suppressLiveScrollUntil = 0
                 self?.startBackgroundRefreshTimer()
 
                 // Clean up live mode state AFTER fade-out completes (prevents flicker)
@@ -839,7 +856,7 @@ public class TimelineWindowController: NSObject {
             let screenshot = await self.captureLiveScreenshotAsync()
             guard !Task.isCancelled else { return }
             guard self.isVisible, self.timelineViewModel === targetViewModel else { return }
-            guard targetViewModel.isNearMostRecentFrame(within: 2) else { return }
+            guard targetViewModel.isNearLatestLoadedFrame(within: 2) else { return }
             guard let screenshot else {
                 // Fall back to historical frame rendering if live capture fails.
                 targetViewModel.isInLiveMode = false
@@ -885,6 +902,12 @@ public class TimelineWindowController: NSObject {
                     cacheExpired = Date().timeIntervalSince(lastHidden) > cacheExpirationSeconds
                 } else {
                     cacheExpired = true // No lastHiddenAt means first show, navigate to newest
+                }
+
+                // Expire filtered mode after 1 minute hidden so reopen returns to full timeline.
+                if cacheExpired && viewModel.filterCriteria.hasActiveFilters {
+                    Log.info("[TIMELINE-CACHE] ⏳ Filtered view expired after 60s hidden, clearing filters", category: .ui)
+                    viewModel.clearFiltersWithoutReload()
                 }
 
                 Log.info("[TIMELINE-CACHE] 🔄 Background refresh triggered (cacheExpired: \(cacheExpired))", category: .ui)
@@ -2372,11 +2395,21 @@ public class TimelineWindowController: NSObject {
     private func handleScrollEvent(_ event: NSEvent, source: String) {
         guard isVisible, let viewModel = timelineViewModel else { return }
 
-        let deltaX = event.scrollingDeltaX
-        let deltaY = event.scrollingDeltaY
+        if viewModel.isInLiveMode, CFAbsoluteTimeGetCurrent() < suppressLiveScrollUntil {
+            return
+        }
 
-        // Use horizontal scrolling primarily, fall back to vertical
-        let delta = abs(deltaX) > abs(deltaY) ? -deltaX : -deltaY
+        let orientationRaw = Self.timelineSettingsStore.string(forKey: "timelineScrollOrientation") ?? "horizontal"
+        let orientation = TimelineScrollOrientation(rawValue: orientationRaw) ?? .horizontal
+        let delta: Double
+        switch orientation {
+        case .horizontal:
+            // Default behavior: left/right swipes move timeline.
+            delta = -event.scrollingDeltaX
+        case .vertical:
+            // Optional behavior: up/down swipes move timeline.
+            delta = -event.scrollingDeltaY
+        }
 
         // Trackpads have precise scrolling deltas, mice do not
         let isTrackpad = event.hasPreciseScrollingDeltas

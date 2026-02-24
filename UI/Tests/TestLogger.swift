@@ -252,3 +252,133 @@ final class DashboardWindowTitleFormatterTests: XCTestCase {
         XCTAssertEqual(result, "Terminal - zsh")
     }
 }
+
+@MainActor
+final class DateJumpTimeOnlyParsingTests: XCTestCase {
+    func testFutureTimeOnlyInputResolvesToPreviousDay() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let now = makeDate(year: 2026, month: 2, day: 23, hour: 10, minute: 0)
+
+        guard let result = viewModel.test_parseNaturalLanguageDateForDateSearch("4pm", now: now) else {
+            XCTFail("Expected parser to resolve a time-only date")
+            return
+        }
+
+        assertDateComponents(result, year: 2026, month: 2, day: 22, hour: 16, minute: 0)
+    }
+
+    func testPastTimeOnlyInputStaysOnCurrentDay() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let now = makeDate(year: 2026, month: 2, day: 23, hour: 18, minute: 0)
+
+        guard let result = viewModel.test_parseNaturalLanguageDateForDateSearch("4pm", now: now) else {
+            XCTFail("Expected parser to resolve a time-only date")
+            return
+        }
+
+        assertDateComponents(result, year: 2026, month: 2, day: 23, hour: 16, minute: 0)
+    }
+
+    private func makeDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
+        let calendar = Calendar.current
+        let components = DateComponents(
+            calendar: calendar,
+            timeZone: .current,
+            year: year,
+            month: month,
+            day: day,
+            hour: hour,
+            minute: minute,
+            second: 0
+        )
+        guard let date = components.date else {
+            fatalError("Failed to construct test date")
+        }
+        return date
+    }
+
+    private func assertDateComponents(_ date: Date, year: Int, month: Int, day: Int, hour: Int, minute: Int) {
+        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        XCTAssertEqual(components.year, year)
+        XCTAssertEqual(components.month, month)
+        XCTAssertEqual(components.day, day)
+        XCTAssertEqual(components.hour, hour)
+        XCTAssertEqual(components.minute, minute)
+    }
+}
+
+@MainActor
+final class DateJumpPlayheadRelativeParsingTests: XCTestCase {
+    func testDayEarlierResolvesToExact1440MinutesFromPlayhead() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let base = makeDate(year: 2026, month: 2, day: 23, hour: 9, minute: 48)
+
+        guard let result = viewModel.test_parsePlayheadRelativeDateForDateSearch("1 day earlier", baseTimestamp: base) else {
+            XCTFail("Expected parser to resolve playhead-relative day offset")
+            return
+        }
+
+        XCTAssertEqual(result.timeIntervalSince(base), -24 * 60 * 60, accuracy: 0.001)
+        assertDateComponents(result, year: 2026, month: 2, day: 22, hour: 9, minute: 48)
+    }
+
+    func testWeekLaterResolvesToExact10080MinutesFromPlayhead() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let base = makeDate(year: 2026, month: 2, day: 23, hour: 9, minute: 48)
+
+        guard let result = viewModel.test_parsePlayheadRelativeDateForDateSearch("1 week later", baseTimestamp: base) else {
+            XCTFail("Expected parser to resolve playhead-relative week offset")
+            return
+        }
+
+        XCTAssertEqual(result.timeIntervalSince(base), 7 * 24 * 60 * 60, accuracy: 0.001)
+        assertDateComponents(result, year: 2026, month: 3, day: 2, hour: 9, minute: 48)
+    }
+
+    func testMonthEarlierUsesPlayheadAsBaseAndPreservesClockTime() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let base = makeDate(year: 2026, month: 5, day: 15, hour: 9, minute: 48)
+
+        guard let result = viewModel.test_parsePlayheadRelativeDateForDateSearch("1 month earlier", baseTimestamp: base) else {
+            XCTFail("Expected parser to resolve playhead-relative month offset")
+            return
+        }
+
+        assertDateComponents(result, year: 2026, month: 4, day: 15, hour: 9, minute: 48)
+    }
+
+    func testAgoPhraseIsNotHandledByPlayheadEarlierLaterParser() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let base = makeDate(year: 2026, month: 2, day: 23, hour: 9, minute: 48)
+
+        let result = viewModel.test_parsePlayheadRelativeDateForDateSearch("1 hour ago", baseTimestamp: base)
+        XCTAssertNil(result)
+    }
+
+    private func makeDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
+        let calendar = Calendar.current
+        let components = DateComponents(
+            calendar: calendar,
+            timeZone: .current,
+            year: year,
+            month: month,
+            day: day,
+            hour: hour,
+            minute: minute,
+            second: 0
+        )
+        guard let date = components.date else {
+            fatalError("Failed to construct test date")
+        }
+        return date
+    }
+
+    private func assertDateComponents(_ date: Date, year: Int, month: Int, day: Int, hour: Int, minute: Int) {
+        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        XCTAssertEqual(components.year, year)
+        XCTAssertEqual(components.month, month)
+        XCTAssertEqual(components.day, day)
+        XCTAssertEqual(components.hour, hour)
+        XCTAssertEqual(components.minute, minute)
+    }
+}
