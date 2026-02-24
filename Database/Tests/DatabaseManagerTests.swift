@@ -707,4 +707,174 @@ final class DatabaseManagerTests: XCTestCase {
         retrievedFrame = try await database.getFrame(id: frame.id)
         XCTAssertNil(retrievedFrame)
     }
+
+    // ┌─────────────────────────────────────────────────────────────────────────┐
+    // │ SEGMENT COMMENT TESTS                                                   │
+    // └─────────────────────────────────────────────────────────────────────────┘
+
+    func testSegmentComment_CanLinkToMultipleSegments() async throws {
+        let segmentA = try await insertTestAppSegment(bundleID: "com.test.a")
+        let segmentB = try await insertTestAppSegment(bundleID: "com.test.b")
+
+        let comment = try await database.createSegmentComment(
+            body: "Investigation notes",
+            author: "Test User",
+            attachments: []
+        )
+
+        try await database.addCommentToSegment(segmentId: segmentA, commentId: comment.id)
+        try await database.addCommentToSegment(segmentId: segmentB, commentId: comment.id)
+
+        let commentsForA = try await database.getCommentsForSegment(segmentId: segmentA)
+        let commentsForB = try await database.getCommentsForSegment(segmentId: segmentB)
+        let linkedSegmentCount = try await database.getSegmentCountForComment(commentId: comment.id)
+
+        XCTAssertEqual(commentsForA.count, 1)
+        XCTAssertEqual(commentsForB.count, 1)
+        XCTAssertEqual(commentsForA.first?.id, comment.id)
+        XCTAssertEqual(commentsForB.first?.id, comment.id)
+        XCTAssertEqual(linkedSegmentCount, 2)
+    }
+
+    func testSegmentComment_DuplicateLinkIsIgnored() async throws {
+        let segment = try await insertTestAppSegment(bundleID: "com.test.duplicate")
+        let comment = try await database.createSegmentComment(
+            body: "Same link twice",
+            author: "Test User",
+            attachments: []
+        )
+
+        try await database.addCommentToSegment(segmentId: segment, commentId: comment.id)
+        try await database.addCommentToSegment(segmentId: segment, commentId: comment.id)
+
+        let linkedSegmentCount = try await database.getSegmentCountForComment(commentId: comment.id)
+        XCTAssertEqual(linkedSegmentCount, 1)
+    }
+
+    func testDeleteSegment_RemovesOnlyThatSegmentLink_ForSharedComment() async throws {
+        let segmentA = try await insertTestAppSegment(bundleID: "com.test.shared.a")
+        let segmentB = try await insertTestAppSegment(bundleID: "com.test.shared.b")
+
+        let comment = try await database.createSegmentComment(
+            body: "Shared across segments",
+            author: "Test User",
+            attachments: []
+        )
+
+        try await database.addCommentToSegment(segmentId: segmentA, commentId: comment.id)
+        try await database.addCommentToSegment(segmentId: segmentB, commentId: comment.id)
+
+        try await database.deleteSegment(id: segmentA.value)
+
+        let linkedSegmentCount = try await database.getSegmentCountForComment(commentId: comment.id)
+        let commentsForB = try await database.getCommentsForSegment(segmentId: segmentB)
+
+        XCTAssertEqual(linkedSegmentCount, 1)
+        XCTAssertEqual(commentsForB.count, 1)
+        XCTAssertEqual(commentsForB.first?.id, comment.id)
+    }
+
+    func testRemoveCommentFromLastSegment_DeletesOrphanComment() async throws {
+        let segmentA = try await insertTestAppSegment(bundleID: "com.test.orphan.a")
+
+        let comment = try await database.createSegmentComment(
+            body: "Will become orphan",
+            author: "Test User",
+            attachments: []
+        )
+        try await database.addCommentToSegment(segmentId: segmentA, commentId: comment.id)
+
+        try await database.removeCommentFromSegment(segmentId: segmentA, commentId: comment.id)
+
+        let linkedSegmentCount = try await database.getSegmentCountForComment(commentId: comment.id)
+        XCTAssertEqual(linkedSegmentCount, 0)
+
+        let segmentB = try await insertTestAppSegment(bundleID: "com.test.orphan.b")
+        do {
+            try await database.addCommentToSegment(segmentId: segmentB, commentId: comment.id)
+            XCTFail("Expected linking an orphan-deleted comment to fail")
+        } catch {
+            // Expected: FK violation because orphan cleanup deleted the comment row.
+        }
+    }
+
+    func testDeleteSegment_DeletesOrphanCommentAttachments() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RetraceCommentAttachmentTests_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let attachmentURL = tempDir.appendingPathComponent("note.txt")
+        try Data("attachment-body".utf8).write(to: attachmentURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: attachmentURL.path))
+
+        let segment = try await insertTestAppSegment(bundleID: "com.test.attachment")
+        let comment = try await database.createSegmentComment(
+            body: "Has file",
+            author: "Test User",
+            attachments: [
+                SegmentCommentAttachment(
+                    filePath: attachmentURL.path,
+                    fileName: "note.txt",
+                    mimeType: "text/plain",
+                    sizeBytes: 15
+                )
+            ]
+        )
+        try await database.addCommentToSegment(segmentId: segment, commentId: comment.id)
+
+        try await database.deleteSegment(id: segment.value)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: attachmentURL.path))
+
+        let anotherSegment = try await insertTestAppSegment(bundleID: "com.test.attachment.b")
+        do {
+            try await database.addCommentToSegment(segmentId: anotherSegment, commentId: comment.id)
+            XCTFail("Expected deleted orphan comment to be unavailable for relinking")
+        } catch {
+            // Expected.
+        }
+    }
+
+    func testSegmentComment_GetSegmentCommentCountsMap() async throws {
+        let segmentA = try await insertTestAppSegment(bundleID: "com.test.counts.a")
+        let segmentB = try await insertTestAppSegment(bundleID: "com.test.counts.b")
+
+        let commentA = try await database.createSegmentComment(
+            body: "A",
+            author: "Test User",
+            attachments: []
+        )
+        let commentB = try await database.createSegmentComment(
+            body: "B",
+            author: "Test User",
+            attachments: []
+        )
+
+        try await database.addCommentToSegment(segmentId: segmentA, commentId: commentA.id)
+        try await database.addCommentToSegment(segmentId: segmentA, commentId: commentB.id)
+        try await database.addCommentToSegment(segmentId: segmentB, commentId: commentB.id)
+
+        let map = try await database.getSegmentCommentCountsMap()
+
+        XCTAssertEqual(map[segmentA.value], 2)
+        XCTAssertEqual(map[segmentB.value], 1)
+    }
+
+    // MARK: - Helpers
+
+    private func insertTestAppSegment(bundleID: String) async throws -> SegmentID {
+        let start = Date()
+        let id = try await database.insertSegment(
+            bundleID: bundleID,
+            startDate: start,
+            endDate: start.addingTimeInterval(30),
+            windowName: "Test Window",
+            browserUrl: nil,
+            type: 0
+        )
+        return SegmentID(value: id)
+    }
 }

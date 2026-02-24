@@ -730,7 +730,16 @@ public actor DatabaseManager: DatabaseProtocol {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
+
+        // Capture linked comments before deleting the segment.
+        // The FK on segment_comment_link cascades link deletion; we then clean orphan comments.
+        let linkedCommentIDs = try getCommentIDsForSegment(db: db, segmentId: id)
         try AppSegmentQueries.delete(db: db, id: id)
+
+        // Best-effort orphan cleanup after this segment's links are removed.
+        for commentID in linkedCommentIDs {
+            try cleanupOrphanedCommentIfNeeded(db: db, commentId: commentID)
+        }
     }
 
     /// Get total captured duration across all segments in seconds
@@ -1051,6 +1060,413 @@ public actor DatabaseManager: DatabaseProtocol {
         }
 
         return map
+    }
+
+    /// Get a map of segment IDs to linked comment counts for tape-level comment indicators.
+    public func getSegmentCommentCountsMap() async throws -> [Int64: Int] {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let sql = """
+            SELECT segmentId, COUNT(*)
+            FROM segment_comment_link
+            GROUP BY segmentId;
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        var map: [Int64: Int] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let segmentId = sqlite3_column_int64(statement, 0)
+            let count = Int(sqlite3_column_int64(statement, 1))
+            map[segmentId] = count
+        }
+
+        return map
+    }
+
+    // MARK: - Segment Comment Operations
+
+    /// Create a new long-form comment
+    public func createSegmentComment(
+        body: String,
+        author: String,
+        attachments: [SegmentCommentAttachment] = []
+    ) async throws -> SegmentComment {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let timestamp = Schema.currentTimestamp()
+        let attachmentsJSON = try encodeCommentAttachments(attachments)
+        let sql = """
+            INSERT INTO segment_comment (body, author, attachmentsJson, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?);
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        sqlite3_bind_text(statement, 1, body, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 2, author, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 3, attachmentsJSON, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(statement, 4, timestamp)
+        sqlite3_bind_int64(statement, 5, timestamp)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        let id = sqlite3_last_insert_rowid(db)
+        guard let comment = try getSegmentCommentByID(db: db, commentID: id) else {
+            throw DatabaseError.recordNotFound(table: "segment_comment", id: String(id))
+        }
+        return comment
+    }
+
+    /// Update an existing comment body, author, and attachments
+    public func updateSegmentComment(
+        commentId: SegmentCommentID,
+        body: String,
+        author: String,
+        attachments: [SegmentCommentAttachment]
+    ) async throws {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let attachmentsJSON = try encodeCommentAttachments(attachments)
+        let updatedAt = Schema.currentTimestamp()
+        let sql = """
+            UPDATE segment_comment
+            SET body = ?, author = ?, attachmentsJson = ?, updatedAt = ?
+            WHERE id = ?;
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        sqlite3_bind_text(statement, 1, body, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 2, author, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 3, attachmentsJSON, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(statement, 4, updatedAt)
+        sqlite3_bind_int64(statement, 5, commentId.value)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+    }
+
+    /// Delete a comment and all links, then best-effort cleanup attachment files
+    public func deleteSegmentComment(commentId: SegmentCommentID) async throws {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let attachments = try getCommentAttachments(db: db, commentId: commentId.value)
+        try deleteCommentRow(db: db, commentId: commentId.value)
+        cleanupAttachmentFiles(attachments)
+    }
+
+    /// Link an existing comment to a segment
+    public func addCommentToSegment(segmentId: SegmentID, commentId: SegmentCommentID) async throws {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let sql = "INSERT OR IGNORE INTO segment_comment_link (commentId, segmentId) VALUES (?, ?);"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        sqlite3_bind_int64(statement, 1, commentId.value)
+        sqlite3_bind_int64(statement, 2, segmentId.value)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+    }
+
+    /// Remove a segment-comment link and auto-delete orphaned comments
+    public func removeCommentFromSegment(segmentId: SegmentID, commentId: SegmentCommentID) async throws {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let sql = "DELETE FROM segment_comment_link WHERE segmentId = ? AND commentId = ?;"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        sqlite3_bind_int64(statement, 1, segmentId.value)
+        sqlite3_bind_int64(statement, 2, commentId.value)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        // If this was the last link, delete the now-orphaned comment and clean attachments.
+        try cleanupOrphanedCommentIfNeeded(db: db, commentId: commentId.value)
+    }
+
+    /// Get all comments linked to a segment
+    public func getCommentsForSegment(segmentId: SegmentID) async throws -> [SegmentComment] {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        let sql = """
+            SELECT c.id, c.body, c.author, c.attachmentsJson, c.createdAt, c.updatedAt
+            FROM segment_comment c
+            JOIN segment_comment_link scl ON c.id = scl.commentId
+            WHERE scl.segmentId = ?
+            ORDER BY c.createdAt ASC, c.id ASC;
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        sqlite3_bind_int64(statement, 1, segmentId.value)
+
+        var comments: [SegmentComment] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            comments.append(parseSegmentComment(statement: statement!))
+        }
+
+        return comments
+    }
+
+    /// Get how many segments a comment is currently linked to
+    public func getSegmentCountForComment(commentId: SegmentCommentID) async throws -> Int {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+        return try getSegmentCountForComment(db: db, commentId: commentId.value)
+    }
+
+    // MARK: - Segment Comment Helpers
+
+    private func getSegmentCommentByID(db: OpaquePointer, commentID: Int64) throws -> SegmentComment? {
+        let sql = """
+            SELECT id, body, author, attachmentsJson, createdAt, updatedAt
+            FROM segment_comment
+            WHERE id = ?;
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(
+                query: sql,
+                underlying: String(cString: sqlite3_errmsg(db))
+            )
+        }
+
+        sqlite3_bind_int64(statement, 1, commentID)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+
+        return parseSegmentComment(statement: statement!)
+    }
+
+    private func parseSegmentComment(statement: OpaquePointer) -> SegmentComment {
+        let id = sqlite3_column_int64(statement, 0)
+        let body = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
+        let author = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? ""
+        let attachmentsJSON = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? "[]"
+        let createdAt = Schema.timestampToDate(sqlite3_column_int64(statement, 4))
+        let updatedAt = Schema.timestampToDate(sqlite3_column_int64(statement, 5))
+
+        return SegmentComment(
+            id: SegmentCommentID(value: id),
+            body: body,
+            author: author,
+            attachments: decodeCommentAttachments(attachmentsJSON),
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+
+    private func encodeCommentAttachments(_ attachments: [SegmentCommentAttachment]) throws -> String {
+        do {
+            let data = try JSONEncoder().encode(attachments)
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw DatabaseError.queryExecutionFailed("Failed to convert encoded attachments to UTF-8 string")
+            }
+            return json
+        } catch let error as DatabaseError {
+            throw error
+        } catch {
+            throw DatabaseError.queryExecutionFailed("Failed to encode comment attachments: \(error.localizedDescription)")
+        }
+    }
+
+    private func decodeCommentAttachments(_ attachmentsJSON: String) -> [SegmentCommentAttachment] {
+        guard let data = attachmentsJSON.data(using: .utf8) else {
+            return []
+        }
+        do {
+            return try JSONDecoder().decode([SegmentCommentAttachment].self, from: data)
+        } catch {
+            Log.warning("[DB] Failed to decode comment attachments JSON: \(error.localizedDescription)", category: .database)
+            return []
+        }
+    }
+
+    private func getCommentAttachments(db: OpaquePointer, commentId: Int64) throws -> [SegmentCommentAttachment] {
+        let sql = "SELECT attachmentsJson FROM segment_comment WHERE id = ?;"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+
+        sqlite3_bind_int64(statement, 1, commentId)
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return []
+        }
+
+        let attachmentsJSON = sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? "[]"
+        return decodeCommentAttachments(attachmentsJSON)
+    }
+
+    private func deleteCommentRow(db: OpaquePointer, commentId: Int64) throws {
+        let sql = "DELETE FROM segment_comment WHERE id = ?;"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+
+        sqlite3_bind_int64(statement, 1, commentId)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    private func getCommentIDsForSegment(db: OpaquePointer, segmentId: Int64) throws -> [Int64] {
+        let sql = "SELECT commentId FROM segment_comment_link WHERE segmentId = ?;"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+
+        sqlite3_bind_int64(statement, 1, segmentId)
+
+        var commentIDs: [Int64] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            commentIDs.append(sqlite3_column_int64(statement, 0))
+        }
+
+        return commentIDs
+    }
+
+    private func getSegmentCountForComment(db: OpaquePointer, commentId: Int64) throws -> Int {
+        let sql = "SELECT COUNT(*) FROM segment_comment_link WHERE commentId = ?;"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+
+        sqlite3_bind_int64(statement, 1, commentId)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func cleanupOrphanedCommentIfNeeded(db: OpaquePointer, commentId: Int64) throws {
+        guard try getSegmentCountForComment(db: db, commentId: commentId) == 0 else {
+            return
+        }
+
+        let attachments = try getCommentAttachments(db: db, commentId: commentId)
+        try deleteCommentRow(db: db, commentId: commentId)
+        cleanupAttachmentFiles(attachments)
+    }
+
+    private func cleanupAttachmentFiles(_ attachments: [SegmentCommentAttachment]) {
+        guard !attachments.isEmpty else { return }
+
+        for attachment in attachments {
+            let rawPath = attachment.filePath
+            let resolvedPath: String
+            if rawPath.hasPrefix("/") || rawPath.hasPrefix("~") {
+                resolvedPath = NSString(string: rawPath).expandingTildeInPath
+            } else {
+                resolvedPath = (AppPaths.expandedStorageRoot as NSString).appendingPathComponent(rawPath)
+            }
+
+            guard FileManager.default.fileExists(atPath: resolvedPath) else {
+                continue
+            }
+
+            do {
+                try FileManager.default.removeItem(atPath: resolvedPath)
+            } catch {
+                Log.warning("[DB] Failed to remove attachment file at \(resolvedPath): \(error.localizedDescription)", category: .database)
+            }
+        }
     }
 
     // MARK: - OCR Node Operations (Rewind-compatible)

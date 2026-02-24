@@ -19,7 +19,8 @@ Database/
 │   ├── V4_DailyMetrics.swift
 │   ├── V5_FTSUnicode61.swift
 │   ├── V6_FrameProcessedAt.swift
-│   └── V7_FrameRedactionReason.swift
+│   ├── V7_FrameRedactionReason.swift
+│   └── V8_SegmentComments.swift
 ├── Queries/
 │   ├── FrameQueries.swift     # Frame CRUD operations
 │   ├── SegmentQueries.swift   # Segment CRUD operations

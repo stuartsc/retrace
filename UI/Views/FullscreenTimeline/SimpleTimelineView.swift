@@ -309,16 +309,38 @@ public struct SimpleTimelineView: View {
                     FilterDropdownOverlay(viewModel: viewModel)
                 }
 
-	                // Timeline segment context menu (for right-click on timeline tape)
-	                // Placed at the end of ZStack to ensure it renders above all other content
-	                 if viewModel.showTimelineContextMenu {
-	                    TimelineSegmentContextMenu(
-	                        viewModel: viewModel,
-	                        isPresented: $viewModel.showTimelineContextMenu,
-	                        location: viewModel.timelineContextMenuLocation,
-	                        containerSize: geometry.size
-	                    )
-	                }
+                // Timeline segment context menu (for right-click on timeline tape)
+                // Placed at the end of ZStack to ensure it renders above all other content
+                if viewModel.showTimelineContextMenu {
+                    TimelineSegmentContextMenu(
+                        viewModel: viewModel,
+                        isPresented: $viewModel.showTimelineContextMenu,
+                        location: viewModel.timelineContextMenuLocation,
+                        containerSize: geometry.size
+                    )
+                }
+
+                if viewModel.showCommentSubmenu {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                viewModel.dismissTimelineContextMenu()
+                            }
+                        }
+
+                    VStack {
+                        CommentSubmenu(viewModel: viewModel) {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                viewModel.dismissTimelineContextMenu()
+                            }
+                        }
+                        .frame(maxWidth: min(geometry.size.width - 40, 560))
+                    }
+                    .padding(.horizontal, 20)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                }
 
                 // Toast feedback overlay (centered, larger for errors)
                 if viewModel.toastMessage != nil {
@@ -386,6 +408,7 @@ public struct SimpleTimelineView: View {
             .onReceive(NotificationCenter.default.publisher(for: .fontStyleDidChange)) { _ in
                 appearanceRefreshTick &+= 1
             }
+            .animation(.easeOut(duration: 0.16), value: viewModel.showCommentSubmenu)
             // Note: Keyboard shortcuts (Option+F, Cmd+F, Escape) are handled by TimelineWindowController
             // at the window level for more reliable event handling
         }
@@ -4399,7 +4422,7 @@ class ContextMenuDismissNSView: NSView {
 
 // MARK: - Timeline Segment Context Menu
 
-/// Context menu for right-clicking on timeline segments (Add Tag, Hide, Delete)
+/// Context menu for right-clicking on timeline segments (Add Tag, Add Comment, Hide, Delete)
 struct TimelineSegmentContextMenu: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
     @Binding var isPresented: Bool
@@ -4407,10 +4430,16 @@ struct TimelineSegmentContextMenu: View {
     let containerSize: CGSize
 
     // Menu dimensions
-    private let menuWidth: CGFloat = 180
-    private let menuHeight: CGFloat = 140
-    private let submenuWidth: CGFloat = 160
+    private let menuWidth: CGFloat = 196
+    private let menuHeight: CGFloat = 172
+    private let tagSubmenuWidth: CGFloat = 188
     private let edgePadding: CGFloat = 16
+    
+    private var selectedTagsForContextMenu: [Tag] {
+        viewModel.availableTags
+            .filter { !($0.isHidden) && viewModel.selectedSegmentTags.contains($0.id) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
 
     var body: some View {
         ZStack {
@@ -4420,15 +4449,13 @@ struct TimelineSegmentContextMenu: View {
             // Main menu content
             VStack(alignment: .leading, spacing: 0) {
                 // Add Tag button (with submenu that opens on hover)
-                TimelineMenuButton(
-                    icon: "tag",
-                    title: "Add Tag",
-                    shortcut: "⌘T",
-                    showChevron: true,
+                TimelineTagMenuButton(
+                    selectedTags: selectedTagsForContextMenu,
                     onHoverChanged: { isHovering in
                         viewModel.isHoveringAddTagButton = isHovering
                         if isHovering && !viewModel.showTagSubmenu {
                             withAnimation(.easeOut(duration: 0.15)) {
+                                viewModel.showCommentSubmenu = false
                                 viewModel.showTagSubmenu = true
                             }
                         }
@@ -4436,8 +4463,31 @@ struct TimelineSegmentContextMenu: View {
                 ) {
                     // Toggle on click as well
                     withAnimation(.easeOut(duration: 0.15)) {
+                        viewModel.showCommentSubmenu = false
                         viewModel.showTagSubmenu.toggle()
                     }
+                }
+
+                // Add Comment button (opens a dedicated comment overlay)
+                TimelineMenuButton(
+                    icon: "text.bubble",
+                    title: "Add Comment",
+                    shortcut: "⌥C",
+                    onHoverChanged: { isHovering in
+                        // Close tag submenu when hovering over other items
+                        if isHovering && viewModel.showTagSubmenu {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                viewModel.showTagSubmenu = false
+                            }
+                        }
+                    }
+                ) {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        viewModel.showTagSubmenu = false
+                        viewModel.showTimelineContextMenu = false
+                        viewModel.showCommentSubmenu = true
+                    }
+                    Task { await viewModel.loadCommentsForSelectedTimelineBlock() }
                 }
 
                 // Filter button
@@ -4446,10 +4496,11 @@ struct TimelineSegmentContextMenu: View {
                     title: "Filter App",
                     shortcut: "⌘F",
                     onHoverChanged: { isHovering in
-                        // Close tag submenu when hovering over other items
-                        if isHovering && viewModel.showTagSubmenu {
+                        // Close submenus when hovering over other items
+                        if isHovering && (viewModel.showTagSubmenu || viewModel.showCommentSubmenu) {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 viewModel.showTagSubmenu = false
+                                viewModel.showCommentSubmenu = false
                                 viewModel.showNewTagInput = false
                                 viewModel.newTagName = ""
                             }
@@ -4465,10 +4516,11 @@ struct TimelineSegmentContextMenu: View {
                     title: "Hide",
                     shortcut: "⌥H",
                     onHoverChanged: { isHovering in
-                        // Close tag submenu when hovering over other items
-                        if isHovering && viewModel.showTagSubmenu {
+                        // Close submenus when hovering over other items
+                        if isHovering && (viewModel.showTagSubmenu || viewModel.showCommentSubmenu) {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 viewModel.showTagSubmenu = false
+                                viewModel.showCommentSubmenu = false
                                 viewModel.showNewTagInput = false
                                 viewModel.newTagName = ""
                             }
@@ -4489,10 +4541,11 @@ struct TimelineSegmentContextMenu: View {
                     shortcut: "⌫",
                     isDestructive: true,
                     onHoverChanged: { isHovering in
-                        // Close tag submenu when hovering over other items
-                        if isHovering && viewModel.showTagSubmenu {
+                        // Close submenus when hovering over other items
+                        if isHovering && (viewModel.showTagSubmenu || viewModel.showCommentSubmenu) {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 viewModel.showTagSubmenu = false
+                                viewModel.showCommentSubmenu = false
                                 viewModel.showNewTagInput = false
                                 viewModel.newTagName = ""
                             }
@@ -4510,9 +4563,10 @@ struct TimelineSegmentContextMenu: View {
             // Tag submenu (appears when "Add Tag" is hovered/clicked)
             if viewModel.showTagSubmenu {
                 TagSubmenu(viewModel: viewModel)
-                    .position(submenuPosition)
+                    .position(tagSubmenuPosition)
                     .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .leading)))
             }
+
         }
         .transition(
             .asymmetric(
@@ -4522,6 +4576,7 @@ struct TimelineSegmentContextMenu: View {
         )
         .animation(.easeOut(duration: 0.15), value: isPresented)
         .animation(.spring(response: 0.2, dampingFraction: 0.8), value: viewModel.showTagSubmenu)
+        .animation(.spring(response: 0.2, dampingFraction: 0.8), value: viewModel.showCommentSubmenu)
     }
 
     /// Whether menu should appear above the click
@@ -4554,9 +4609,9 @@ struct TimelineSegmentContextMenu: View {
     }
 
     /// Calculate submenu position (to the right of main menu)
-    private var submenuPosition: CGPoint {
+    private func submenuPosition(rowOffset: CGFloat, submenuWidth: CGFloat) -> CGPoint {
         var x = adjustedPosition.x + menuWidth / 2 + submenuWidth / 2 + 4
-        let y = adjustedPosition.y - menuHeight / 2 + 40 // Align with "Add Tag" row
+        let y = adjustedPosition.y - menuHeight / 2 + rowOffset
 
         // If submenu would go off right edge, show on left side instead
         if x + submenuWidth / 2 > containerSize.width - edgePadding {
@@ -4564,6 +4619,11 @@ struct TimelineSegmentContextMenu: View {
         }
 
         return CGPoint(x: x, y: y)
+    }
+
+    /// Submenu position aligned with the "Add Tag" row
+    private var tagSubmenuPosition: CGPoint {
+        submenuPosition(rowOffset: 40, submenuWidth: tagSubmenuWidth)
     }
 
     private var anchorPoint: UnitPoint {
@@ -4577,6 +4637,107 @@ struct TimelineSegmentContextMenu: View {
 // TimelineMenuButton: now uses the unified RetraceMenuButton from AppTheme
 typealias TimelineMenuButton = RetraceMenuButton
 
+/// Specialized tag row for the timeline context menu.
+/// Shows compact selected-tag badges and intentionally omits a keyboard shortcut hint.
+struct TimelineTagMenuButton: View {
+    let selectedTags: [Tag]
+    var onHoverChanged: ((Bool) -> Void)? = nil
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    private var isTagged: Bool { !selectedTags.isEmpty }
+    private var icon: String { "tag" }
+    private var visibleTags: [Tag] { Array(selectedTags.prefix(2)) }
+    private var overflowCount: Int { max(0, selectedTags.count - visibleTags.count) }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: RetraceMenuStyle.iconTextSpacing) {
+                Image(systemName: icon)
+                    .font(.system(size: RetraceMenuStyle.iconSize, weight: RetraceMenuStyle.fontWeight))
+                    .foregroundColor(foregroundColor)
+                    .frame(width: RetraceMenuStyle.iconFrameWidth)
+
+                if isTagged {
+                    HStack(spacing: 4) {
+                        ForEach(visibleTags) { tag in
+                            tagBadge(tag)
+                        }
+
+                        if overflowCount > 0 {
+                            Text("+\(overflowCount)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(.white.opacity(isHovering ? 0.9 : 0.75))
+                                .padding(.horizontal, 4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("Add Tag")
+                        .font(RetraceMenuStyle.font)
+                        .foregroundColor(foregroundColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer()
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: RetraceMenuStyle.chevronSize, weight: .bold))
+                    .foregroundColor(RetraceMenuStyle.chevronColor)
+            }
+            .padding(.horizontal, RetraceMenuStyle.itemPaddingH)
+            .padding(.vertical, RetraceMenuStyle.itemPaddingV)
+            .background(
+                RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                    .fill(isHovering ? RetraceMenuStyle.itemHoverColor : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: RetraceMenuStyle.hoverAnimationDuration)) {
+                isHovering = hovering
+            }
+            if hovering { NSCursor.pointingHand.push() }
+            else { NSCursor.pop() }
+            onHoverChanged?(hovering)
+        }
+    }
+
+    private var foregroundColor: Color {
+        isHovering ? RetraceMenuStyle.textColor : RetraceMenuStyle.textColorMuted
+    }
+
+    @ViewBuilder
+    private func tagBadge(_ tag: Tag) -> some View {
+        let tint = TagColorStore.color(for: tag)
+        HStack(spacing: 4) {
+            Circle()
+                .fill(tint.opacity(0.95))
+                .frame(width: 5, height: 5)
+
+            Text(tag.name)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.white.opacity(isHovering ? 0.95 : 0.85))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .frame(maxWidth: 62)
+        .background(
+            Capsule()
+                .fill(tint.opacity(isHovering ? 0.26 : 0.18))
+        )
+        .overlay(
+            Capsule()
+                .stroke(tint.opacity(isHovering ? 0.45 : 0.32), lineWidth: 0.8)
+        )
+    }
+}
+
 // MARK: - Tag Submenu
 
 /// Submenu showing available tags with search/create functionality
@@ -4585,6 +4746,7 @@ struct TagSubmenu: View {
     @State private var isHoveringSubmenu = false
     @State private var closeTask: Task<Void, Never>?
     @State private var searchText = ""
+    @State private var isHoveringSettingsButton = false
     @FocusState private var isSearchFocused: Bool
 
     // Filter out the "hidden" tag, apply search filter, and sort with selected tags first
@@ -4700,6 +4862,44 @@ struct TagSubmenu: View {
                 }
                 .frame(maxHeight: 120) // Limit height for scrolling
             }
+
+            Divider()
+                .background(Color.white.opacity(0.1))
+                .padding(.horizontal, 8)
+                .padding(.top, 6)
+
+            Button(action: openTagSettings) {
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.72))
+
+                    Text("Tag Settings")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+
+                    Spacer()
+                }
+                .padding(.leading, 0)
+                .padding(.trailing, 12)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isHoveringSettingsButton ? Color.white.opacity(0.1) : Color.clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 6)
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.1)) {
+                    isHoveringSettingsButton = hovering
+                }
+                if hovering { NSCursor.pointingHand.push() }
+                else { NSCursor.pop() }
+            }
         }
         .padding(.vertical, 2)
         .frame(width: 180)
@@ -4741,6 +4941,1441 @@ struct TagSubmenu: View {
         viewModel.createAndAddTag()
         searchText = ""
     }
+
+    private func openTagSettings() {
+        closeTask?.cancel()
+        withAnimation(.easeOut(duration: 0.12)) {
+            viewModel.showTagSubmenu = false
+            viewModel.showTimelineContextMenu = false
+            searchText = ""
+        }
+
+        TimelineWindowController.shared.hideToShowDashboard()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            DashboardWindowController.shared.show()
+            NotificationCenter.default.post(name: .openSettingsTags, object: nil)
+        }
+    }
+}
+
+// MARK: - Comment Overlay
+
+/// Dedicated overlay for creating rich comments and browsing the existing thread for the selected block.
+struct CommentSubmenu: View {
+    @ObservedObject var viewModel: SimpleTimelineViewModel
+    let onClose: () -> Void
+    @State private var isCommentFocused = false
+    @State private var editorCommand: CommentEditorCommand = .bold
+    @State private var editorCommandNonce: Int = 0
+    @State private var isLinkPopoverPresented = false
+    @State private var pendingLinkURL = "https://"
+    @State private var hoveredCommentID: SegmentCommentID?
+    @State private var pendingDeleteComment: SegmentComment?
+    @State private var isDeletingComment: Bool = false
+    @FocusState private var isLinkFieldFocused: Bool
+    private let submenuWidth: CGFloat = 420
+    private let submenuHeight: CGFloat = 560
+    private let sectionCornerRadius: CGFloat = 14
+
+    private static let threadDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private var trimmedComment: String {
+        viewModel.newCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSubmit: Bool {
+        !trimmedComment.isEmpty && !viewModel.isAddingComment
+    }
+
+    private var normalizedPendingLinkURL: URL? {
+        Self.normalizedURL(from: pendingLinkURL)
+    }
+
+    private var isDeleteConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteComment != nil },
+            set: { shouldShow in
+                if !shouldShow {
+                    pendingDeleteComment = nil
+                    isDeletingComment = false
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            commentHeader
+            commentThreadSection
+                .frame(maxHeight: .infinity)
+                .layoutPriority(1)
+            commentComposerSection
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: submenuWidth)
+        .frame(height: submenuHeight, alignment: .top)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
+        .retraceMenuContainer(addPadding: false)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isCommentFocused = true
+            }
+            if viewModel.selectedBlockComments.isEmpty && !viewModel.isLoadingBlockComments {
+                Task { await viewModel.loadCommentsForSelectedTimelineBlock() }
+            }
+        }
+        .alert(
+            "Delete comment?",
+            isPresented: isDeleteConfirmationPresented,
+            presenting: pendingDeleteComment
+        ) { comment in
+            Button("Cancel", role: .cancel) {
+                pendingDeleteComment = nil
+            }
+            Button(isDeletingComment ? "Deleting..." : "Delete", role: .destructive) {
+                confirmDelete(comment)
+            }
+            .disabled(isDeletingComment)
+        } message: { _ in
+            Text("This removes the comment from all segments in this selected block. If it has no remaining links, it will be deleted permanently.")
+        }
+    }
+
+    private var commentHeader: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 34, height: 34)
+                .overlay(
+                    Image(systemName: "text.bubble.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.retracePrimary.opacity(0.92))
+                )
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Comments")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.retracePrimary)
+            }
+
+            Spacer()
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.retraceSecondary)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        Circle()
+                            .fill(Color.white.opacity(0.08))
+                    )
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() }
+                else { NSCursor.pop() }
+            }
+        }
+    }
+
+    private var commentThreadSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(threadCountLabel)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.retraceSecondary)
+
+            if viewModel.isLoadingBlockComments {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading thread...")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.retraceSecondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 58, alignment: .center)
+            } else if let loadError = viewModel.blockCommentsLoadError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.retraceDanger.opacity(0.9))
+                    Text(loadError)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.retraceSecondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 58, alignment: .center)
+            } else if viewModel.selectedBlockComments.isEmpty {
+                Text("No comments yet. Start the thread below.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.retraceSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 58, alignment: .center)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(viewModel.selectedBlockComments) { comment in
+                            commentThreadCard(comment)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: sectionCornerRadius)
+                .fill(Color.white.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: sectionCornerRadius)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private var commentComposerSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                formattingButton(icon: "bold") { sendEditorCommand(.bold) }
+                formattingButton(icon: "italic") { sendEditorCommand(.italic) }
+                linkFormattingButton
+                formattingButton(icon: "clock") { viewModel.insertCommentTimestampMarkup() }
+                formattingButton(icon: "paperclip") { viewModel.selectCommentAttachmentFiles() }
+                Spacer()
+                Button(action: {
+                    viewModel.addCommentToSelectedSegment()
+                }) {
+                    HStack(spacing: 5) {
+                        if viewModel.isAddingComment {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(viewModel.isAddingComment ? "Adding..." : "Add Comment")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(canSubmit ? .white : .retraceSecondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(canSubmit ? Color.retraceSubmitAccent.opacity(0.92) : Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(canSubmit ? Color.retraceSubmitAccent.opacity(0.35) : Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSubmit)
+                .onHover { hovering in
+                    if hovering && canSubmit { NSCursor.pointingHand.push() }
+                    else { NSCursor.pop() }
+                }
+            }
+
+            ZStack(alignment: .topLeading) {
+                CommentMarkdownEditor(
+                    text: $viewModel.newCommentText,
+                    isFocused: $isCommentFocused,
+                    command: editorCommand,
+                    commandNonce: editorCommandNonce,
+                    onSubmit: submitCommentFromKeyboard,
+                    onRequestLink: presentLinkPopover
+                )
+                    .frame(minHeight: 78, maxHeight: 78)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+
+                if viewModel.newCommentText.isEmpty {
+                    Text("Write a comment... Markdown supported.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.retraceSecondary.opacity(0.75))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .allowsHitTesting(false)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        isCommentFocused ? Color.white.opacity(0.22) : Color.white.opacity(0.1),
+                        lineWidth: 1
+                    )
+            )
+            .animation(.easeOut(duration: 0.12), value: isCommentFocused)
+
+            if !viewModel.newCommentAttachmentDrafts.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(viewModel.newCommentAttachmentDrafts) { draft in
+                            draftAttachmentChip(draft)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: sectionCornerRadius)
+                .fill(Color.white.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: sectionCornerRadius)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func sendEditorCommand(_ command: CommentEditorCommand) {
+        editorCommand = command
+        editorCommandNonce += 1
+    }
+
+    private func submitCommentFromKeyboard() {
+        guard canSubmit else { return }
+        viewModel.addCommentToSelectedSegment()
+    }
+
+    private func confirmDelete(_ comment: SegmentComment) {
+        guard !isDeletingComment else { return }
+        isDeletingComment = true
+
+        Task { @MainActor in
+            let wasDeleted = await viewModel.removeCommentFromSelectedTimelineBlock(comment: comment)
+            isDeletingComment = false
+            if wasDeleted {
+                pendingDeleteComment = nil
+                if hoveredCommentID == comment.id {
+                    hoveredCommentID = nil
+                }
+            }
+        }
+    }
+
+    private var threadCountLabel: String {
+        "Thread (\(viewModel.selectedBlockComments.count))"
+    }
+
+    private var linkFormattingButton: some View {
+        formattingButton(icon: "link") { presentLinkPopover() }
+            .popover(
+                isPresented: $isLinkPopoverPresented,
+                attachmentAnchor: .point(.bottom),
+                arrowEdge: .top
+            ) {
+                linkPopoverContent
+            }
+    }
+
+    private var linkPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Insert Link")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.retracePrimary)
+
+            TextField("https://example.com", text: $pendingLinkURL)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundColor(.retracePrimary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.white.opacity(0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+                .focused($isLinkFieldFocused)
+                .onSubmit { insertLinkFromPopover() }
+
+            HStack(spacing: 8) {
+                Spacer()
+
+                Button("Cancel") {
+                    isLinkPopoverPresented = false
+                    isCommentFocused = true
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.retraceSecondary)
+
+                Button("Insert") {
+                    insertLinkFromPopover()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(normalizedPendingLinkURL == nil ? .retraceSecondary : .white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule()
+                        .fill(
+                            normalizedPendingLinkURL == nil
+                            ? Color.white.opacity(0.08)
+                            : Color.retraceSubmitAccent.opacity(0.9)
+                        )
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(
+                            normalizedPendingLinkURL == nil
+                            ? Color.white.opacity(0.12)
+                            : Color.retraceSubmitAccent.opacity(0.35),
+                            lineWidth: 1
+                        )
+                )
+                .disabled(normalizedPendingLinkURL == nil)
+            }
+        }
+        .padding(12)
+        .frame(width: 280)
+        .background(Color.clear)
+        .onAppear {
+            DispatchQueue.main.async {
+                isLinkFieldFocused = true
+            }
+        }
+        .onDisappear {
+            isLinkFieldFocused = false
+            DispatchQueue.main.async {
+                isCommentFocused = true
+            }
+        }
+    }
+
+    private func formattingButton(icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.retracePrimary.opacity(0.9))
+                .frame(width: 26, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.white.opacity(0.11), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering { NSCursor.pointingHand.push() }
+            else { NSCursor.pop() }
+        }
+    }
+
+    private func presentLinkPopover() {
+        if pendingLinkURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pendingLinkURL = "https://"
+        }
+        // Prevent the NSTextView wrapper from re-claiming first responder while popover input is active.
+        isCommentFocused = false
+        isLinkPopoverPresented = true
+        DispatchQueue.main.async {
+            isLinkFieldFocused = true
+        }
+    }
+
+    private func insertLinkFromPopover() {
+        guard let url = normalizedPendingLinkURL else { return }
+        isLinkPopoverPresented = false
+        sendEditorCommand(.link(url: url.absoluteString))
+        DispatchQueue.main.async {
+            isCommentFocused = true
+        }
+    }
+
+    private static func normalizedURL(from rawValue: String) -> URL? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let direct = URL(string: trimmed), direct.scheme != nil {
+            return direct
+        }
+        return URL(string: "https://\(trimmed)")
+    }
+
+    private func draftAttachmentChip(_ draft: CommentAttachmentDraft) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "doc.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.retraceSecondary.opacity(0.9))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(draft.fileName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.retracePrimary.opacity(0.95))
+                    .lineLimit(1)
+                if let sizeBytes = draft.sizeBytes {
+                    Text(ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.retraceSecondary)
+                }
+            }
+            Button(action: { viewModel.removeCommentAttachmentDraft(draft) }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.retraceSecondary.opacity(0.9))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.06))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.11), lineWidth: 1)
+        )
+    }
+
+    private func commentThreadCard(_ comment: SegmentComment) -> some View {
+        let isHoveringCard = hoveredCommentID == comment.id
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(comment.author)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.retracePrimary)
+
+                Text(Self.threadDateFormatter.string(from: comment.createdAt))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.retraceSecondary.opacity(0.85))
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    pendingDeleteComment = comment
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.retraceDanger.opacity(0.95))
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Circle()
+                                .fill(Color.retraceDanger.opacity(0.14))
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(Color.retraceDanger.opacity(0.28), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .frame(width: 20, height: 20)
+                .opacity(isHoveringCard ? 1 : 0)
+                .allowsHitTesting(isHoveringCard)
+                .animation(.easeOut(duration: 0.12), value: isHoveringCard)
+                .onHover { hovering in
+                    if hovering { NSCursor.pointingHand.push() }
+                    else { NSCursor.pop() }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                renderedMarkdownView(from: comment.body)
+                    .foregroundColor(.retracePrimary.opacity(0.95))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.openURL, OpenURLAction { url in
+                        NSWorkspace.shared.open(url)
+                        return .handled
+                    })
+
+                if !comment.attachments.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(comment.attachments) { attachment in
+                            Button(action: { viewModel.openCommentAttachment(attachment) }) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "paperclip")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundColor(.retraceSecondary.opacity(0.9))
+                                    Text(attachment.fileName)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.retracePrimary.opacity(0.95))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    if let sizeBytes = attachment.sizeBytes {
+                                        Text(ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file))
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(.retraceSecondary)
+                                    }
+                                }
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color.white.opacity(0.05))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.white.opacity(0.09), lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            )
+        }
+        .padding(.trailing, 26)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering {
+                hoveredCommentID = comment.id
+            } else if hoveredCommentID == comment.id {
+                hoveredCommentID = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func renderedMarkdownView(from source: String) -> some View {
+        let normalized = source
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                if line.isEmpty {
+                    Text(" ")
+                } else if let headingLevel = markdownHeadingLevel(in: line) {
+                    Text(renderedMarkdownLine(from: line))
+                        .font(markdownHeadingFont(for: headingLevel))
+                } else {
+                    Text(renderedMarkdownLine(from: line))
+                }
+            }
+        }
+    }
+
+    private func renderedMarkdownLine(from source: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        if let parsed = try? AttributedString(markdown: source, options: options) {
+            return parsed
+        }
+        return AttributedString(source)
+    }
+
+    private func markdownHeadingLevel(in line: String) -> Int? {
+        let trimmedLeading = line.drop { $0 == " " || $0 == "\t" }
+        guard !trimmedLeading.isEmpty else { return nil }
+
+        var index = trimmedLeading.startIndex
+        var level = 0
+        while index < trimmedLeading.endIndex,
+              trimmedLeading[index] == "#",
+              level < 6 {
+            level += 1
+            index = trimmedLeading.index(after: index)
+        }
+
+        guard level > 0, index < trimmedLeading.endIndex else { return nil }
+        guard trimmedLeading[index].isWhitespace else { return nil }
+        return level
+    }
+
+    private func markdownHeadingFont(for level: Int) -> Font {
+        let size = max(13.0, 20.0 - (Double(level - 1) * 1.8))
+        return .system(size: size, weight: .semibold)
+    }
+}
+
+private enum CommentEditorCommand: Equatable {
+    case bold
+    case italic
+    case link(url: String)
+}
+
+private struct CommentMarkdownEditor: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    let command: CommentEditorCommand
+    let commandNonce: Int
+    let onSubmit: (() -> Void)?
+    let onRequestLink: (() -> Void)?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+
+        let textStorage = NSTextStorage(
+            attributedString: Coordinator.attributedString(fromMarkdown: text)
+        )
+        let layoutManager = NSLayoutManager()
+        textStorage.addLayoutManager(layoutManager)
+
+        let textContainer = NSTextContainer(containerSize: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+
+        let textView = CommentMarkdownTextView(frame: .zero, textContainer: textContainer)
+        textView.delegate = context.coordinator
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = true
+        textView.importsGraphics = false
+        textView.allowsImageEditing = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.backgroundColor = NSColor.clear
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 0, height: 4)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.commandHandler = { command in
+            context.coordinator.apply(command: command, in: textView)
+        }
+        textView.requestLinkHandler = {
+            context.coordinator.parent.onRequestLink?()
+        }
+        textView.submitHandler = {
+            context.coordinator.parent.onSubmit?()
+        }
+
+        scrollView.documentView = textView
+        context.coordinator.normalizeEditorAttributes(in: textView)
+        textView.typingAttributes = Coordinator.baseTypingAttributes
+        context.coordinator.lastSerializedMarkdown = text
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? CommentMarkdownTextView else { return }
+        context.coordinator.parent = self
+
+        if context.coordinator.lastSerializedMarkdown != text {
+            context.coordinator.isApplyingProgrammaticUpdate = true
+            context.coordinator.replaceContents(of: textView, withMarkdown: text)
+            context.coordinator.isApplyingProgrammaticUpdate = false
+            context.coordinator.lastSerializedMarkdown = text
+        }
+
+        if context.coordinator.lastHandledCommandNonce != commandNonce {
+            context.coordinator.lastHandledCommandNonce = commandNonce
+            context.coordinator.apply(command: command, in: textView)
+        }
+
+        textView.submitHandler = {
+            context.coordinator.parent.onSubmit?()
+        }
+        textView.requestLinkHandler = {
+            context.coordinator.parent.onRequestLink?()
+        }
+
+        if isFocused, let window = textView.window, window.firstResponder !== textView {
+            window.makeFirstResponder(textView)
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: CommentMarkdownEditor
+        var isApplyingProgrammaticUpdate = false
+        var lastHandledCommandNonce: Int = -1
+        var lastSerializedMarkdown: String = ""
+
+        private static let baseFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+        private static let baseColor = NSColor(white: 0.95, alpha: 1.0)
+        private static let linkColor = NSColor(red: 0.56, green: 0.76, blue: 0.98, alpha: 1.0)
+        private static let inlinePresentationIntentKey = NSAttributedString.Key("NSInlinePresentationIntent")
+        private static let headingLevelAttributeKey = NSAttributedString.Key("RetraceHeadingLevel")
+        private static let markdownParsingOptions = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+
+        static let baseTypingAttributes: [NSAttributedString.Key: Any] = [
+            .font: baseFont,
+            .foregroundColor: baseColor
+        ]
+
+        private enum InlineStyle {
+            case bold
+            case italic
+        }
+
+        private struct HeadingShortcut {
+            let level: Int
+            let markerLength: Int
+        }
+
+        init(parent: CommentMarkdownEditor) {
+            self.parent = parent
+            self.lastHandledCommandNonce = parent.commandNonce
+            self.lastSerializedMarkdown = parent.text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            guard !isApplyingProgrammaticUpdate else { return }
+
+            isApplyingProgrammaticUpdate = true
+            applyHeadingShortcutIfNeeded(in: textView)
+            normalizeEditorAttributes(in: textView)
+            syncMarkdownBinding(from: textView)
+            isApplyingProgrammaticUpdate = false
+        }
+
+        func apply(command: CommentEditorCommand, in textView: NSTextView) {
+            isApplyingProgrammaticUpdate = true
+            switch command {
+            case .bold:
+                toggle(style: .bold, in: textView)
+            case .italic:
+                toggle(style: .italic, in: textView)
+            case .link(let urlString):
+                insertLink(in: textView, urlString: urlString)
+            }
+            normalizeEditorAttributes(in: textView)
+            syncMarkdownBinding(from: textView)
+            isApplyingProgrammaticUpdate = false
+        }
+
+        private func insertLink(in textView: NSTextView, urlString: String) {
+            let selectedRange = textView.selectedRange()
+            guard selectedRange.location != NSNotFound else { return }
+            guard let storage = textView.textStorage else { return }
+            guard let url = Self.normalizeLink(urlString) else { return }
+
+            if selectedRange.length == 0 {
+                let placeholder = "link text"
+                textView.insertText(placeholder, replacementRange: selectedRange)
+                let insertedRange = NSRange(location: selectedRange.location, length: (placeholder as NSString).length)
+                applyLinkAttributes(in: insertedRange, storage: storage, url: url)
+                textView.setSelectedRange(insertedRange)
+                return
+            }
+
+            applyLinkAttributes(in: selectedRange, storage: storage, url: url)
+            textView.setSelectedRange(selectedRange)
+        }
+
+        private func applyLinkAttributes(in range: NSRange, storage: NSTextStorage, url: URL?) {
+            var attributes: [NSAttributedString.Key: Any] = [
+                .foregroundColor: Self.linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue
+            ]
+            if let url {
+                attributes[.link] = url
+            }
+            storage.addAttributes(attributes, range: range)
+        }
+
+        private func toggle(style: InlineStyle, in textView: NSTextView) {
+            let selectedRange = textView.selectedRange()
+            guard selectedRange.location != NSNotFound else { return }
+
+            if selectedRange.length == 0 {
+                var typingAttributes = textView.typingAttributes
+                let currentFont = normalizeFont(typingAttributes[.font] as? NSFont)
+                let shouldEnable = !font(currentFont, contains: style)
+                typingAttributes[.font] = font(currentFont, setting: style, enabled: shouldEnable)
+                typingAttributes[.foregroundColor] = Self.baseColor
+                textView.typingAttributes = typingAttributes
+                return
+            }
+
+            guard let storage = textView.textStorage else { return }
+            let shouldEnable = !selectionFullyContains(style: style, range: selectedRange, storage: storage)
+            storage.beginEditing()
+            storage.enumerateAttribute(.font, in: selectedRange, options: []) { value, range, _ in
+                let currentFont = normalizeFont(value as? NSFont)
+                let updatedFont = font(currentFont, setting: style, enabled: shouldEnable)
+                storage.addAttribute(.font, value: updatedFont, range: range)
+            }
+            storage.endEditing()
+            textView.setSelectedRange(selectedRange)
+        }
+
+        private func selectionFullyContains(style: InlineStyle, range: NSRange, storage: NSTextStorage) -> Bool {
+            var allStyled = true
+            storage.enumerateAttribute(.font, in: range, options: []) { value, _, stop in
+                let currentFont = normalizeFont(value as? NSFont)
+                if !self.font(currentFont, contains: style) {
+                    allStyled = false
+                    stop.pointee = true
+                }
+            }
+            return allStyled
+        }
+
+        func replaceContents(of textView: NSTextView, withMarkdown markdown: String) {
+            guard let storage = textView.textStorage else { return }
+            let attributed = Self.attributedString(fromMarkdown: markdown)
+            storage.setAttributedString(attributed)
+            normalizeEditorAttributes(in: textView)
+            let insertionPoint = NSRange(location: storage.length, length: 0)
+            textView.setSelectedRange(insertionPoint)
+            textView.typingAttributes = Self.baseTypingAttributes
+        }
+
+        private func syncMarkdownBinding(from textView: NSTextView) {
+            let markdown = Self.markdownString(from: textView.attributedString())
+            lastSerializedMarkdown = markdown
+            parent.text = markdown
+        }
+
+        private func applyHeadingShortcutIfNeeded(in textView: NSTextView) {
+            guard let storage = textView.textStorage else { return }
+            let source = storage.string as NSString
+            guard source.length > 0 else { return }
+
+            let selection = textView.selectedRange()
+            guard selection.location != NSNotFound else { return }
+
+            let lineLookupLocation = min(max(selection.location, 0), max(source.length - 1, 0))
+            let lineRange = source.lineRange(for: NSRange(location: lineLookupLocation, length: 0))
+            let contentRange = Self.lineContentRange(from: lineRange, in: source)
+            guard contentRange.length > 0 else { return }
+
+            let lineText = source.substring(with: contentRange)
+            guard let shortcut = Self.parseHeadingShortcut(in: lineText) else { return }
+            guard shortcut.markerLength > 0, shortcut.markerLength <= contentRange.length else { return }
+
+            let markerRange = NSRange(location: contentRange.location, length: shortcut.markerLength)
+            storage.replaceCharacters(in: markerRange, with: "")
+
+            let updatedLineRange = NSRange(
+                location: contentRange.location,
+                length: max(0, contentRange.length - shortcut.markerLength)
+            )
+            if updatedLineRange.length > 0 {
+                storage.addAttribute(Self.headingLevelAttributeKey, value: shortcut.level, range: updatedLineRange)
+            }
+
+            var adjustedSelection = selection
+            let markerUpperBound = markerRange.location + markerRange.length
+            if adjustedSelection.location >= markerUpperBound {
+                adjustedSelection.location -= markerRange.length
+            } else if adjustedSelection.location > markerRange.location {
+                adjustedSelection.location = markerRange.location
+            }
+            if adjustedSelection.length > 0 {
+                let selectionEnd = selection.location + selection.length
+                let overlapStart = max(selection.location, markerRange.location)
+                let overlapEnd = min(selectionEnd, markerUpperBound)
+                if overlapEnd > overlapStart {
+                    adjustedSelection.length = max(0, adjustedSelection.length - (overlapEnd - overlapStart))
+                }
+            }
+            adjustedSelection.location = min(adjustedSelection.location, storage.length)
+            textView.setSelectedRange(adjustedSelection)
+
+            var typing = textView.typingAttributes
+            typing[.font] = Self.headingBaseFont(for: shortcut.level)
+            typing[.foregroundColor] = Self.baseColor
+            typing[Self.headingLevelAttributeKey] = shortcut.level
+            textView.typingAttributes = typing
+        }
+
+        private func normalizeHeadingAttributes(in storage: NSTextStorage) {
+            let source = storage.string as NSString
+            guard source.length > 0 else { return }
+
+            var lineStart = 0
+            while lineStart < source.length {
+                let lineRange = source.lineRange(for: NSRange(location: lineStart, length: 0))
+                let contentRange = Self.lineContentRange(from: lineRange, in: source)
+
+                if contentRange.length > 0 {
+                    if let level = Self.headingLevel(in: storage, range: contentRange) {
+                        storage.addAttribute(Self.headingLevelAttributeKey, value: level, range: contentRange)
+                    } else {
+                        storage.removeAttribute(Self.headingLevelAttributeKey, range: contentRange)
+                    }
+                }
+
+                let newlineLength = lineRange.length - contentRange.length
+                if newlineLength > 0 {
+                    let newlineRange = NSRange(location: contentRange.location + contentRange.length, length: newlineLength)
+                    storage.removeAttribute(Self.headingLevelAttributeKey, range: newlineRange)
+                }
+
+                lineStart = lineRange.location + lineRange.length
+            }
+        }
+
+        func normalizeEditorAttributes(in textView: NSTextView) {
+            guard let storage = textView.textStorage else { return }
+            let fullRange = NSRange(location: 0, length: storage.length)
+            guard fullRange.length > 0 else {
+                textView.typingAttributes = Self.baseTypingAttributes
+                return
+            }
+
+            let selectedRanges = textView.selectedRanges
+
+            storage.beginEditing()
+            normalizeHeadingAttributes(in: storage)
+            storage.addAttribute(.foregroundColor, value: Self.baseColor, range: fullRange)
+            storage.addAttribute(.underlineStyle, value: 0, range: fullRange)
+
+            storage.enumerateAttributes(in: fullRange, options: []) { attributes, range, _ in
+                let currentFont = normalizeFont(attributes[.font] as? NSFont)
+                let headingLevel = Self.headingLevelValue(from: attributes[Self.headingLevelAttributeKey])
+
+                var targetFont = headingLevel.map(Self.headingBaseFont(for:)) ?? Self.baseFont
+                let traits = currentFont.fontDescriptor.symbolicTraits
+                if traits.contains(.bold) {
+                    targetFont = NSFontManager.shared.convert(targetFont, toHaveTrait: .boldFontMask)
+                }
+                if traits.contains(.italic) {
+                    targetFont = NSFontManager.shared.convert(targetFont, toHaveTrait: .italicFontMask)
+                }
+                storage.addAttribute(.font, value: targetFont, range: range)
+            }
+
+            storage.enumerateAttribute(.link, in: fullRange, options: []) { value, range, _ in
+                guard Self.normalizeLink(value) != nil else { return }
+                storage.addAttributes(
+                    [
+                        .foregroundColor: Self.linkColor,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue
+                    ],
+                    range: range
+                )
+            }
+
+            storage.endEditing()
+            textView.setSelectedRanges(selectedRanges, affinity: .downstream, stillSelecting: false)
+            textView.typingAttributes = typingAttributes(for: textView)
+        }
+
+        private func typingAttributes(for textView: NSTextView) -> [NSAttributedString.Key: Any] {
+            let currentFont = normalizeFont(textView.typingAttributes[.font] as? NSFont)
+
+            var headingLevel: Int?
+            if let storage = textView.textStorage, storage.length > 0 {
+                let source = storage.string as NSString
+                let selection = textView.selectedRange()
+                let location = min(max(selection.location, 0), max(source.length - 1, 0))
+                let lineRange = source.lineRange(for: NSRange(location: location, length: 0))
+                let contentRange = Self.lineContentRange(from: lineRange, in: source)
+                headingLevel = Self.headingLevel(in: storage, range: contentRange)
+            }
+
+            var targetFont = headingLevel.map(Self.headingBaseFont(for:)) ?? Self.baseFont
+            let traits = currentFont.fontDescriptor.symbolicTraits
+            if traits.contains(.bold) {
+                targetFont = NSFontManager.shared.convert(targetFont, toHaveTrait: .boldFontMask)
+            }
+            if traits.contains(.italic) {
+                targetFont = NSFontManager.shared.convert(targetFont, toHaveTrait: .italicFontMask)
+            }
+
+            var result: [NSAttributedString.Key: Any] = [
+                .font: targetFont,
+                .foregroundColor: Self.baseColor
+            ]
+            if let headingLevel {
+                result[Self.headingLevelAttributeKey] = headingLevel
+            }
+            return result
+        }
+
+        private func normalizeFont(_ font: NSFont?) -> NSFont {
+            let source = font ?? Self.baseFont
+            let descriptor = source.fontDescriptor.symbolicTraits
+            var normalized = Self.baseFont
+            if descriptor.contains(.bold) {
+                normalized = NSFontManager.shared.convert(normalized, toHaveTrait: .boldFontMask)
+            }
+            if descriptor.contains(.italic) {
+                normalized = NSFontManager.shared.convert(normalized, toHaveTrait: .italicFontMask)
+            }
+            return normalized
+        }
+
+        private func font(_ font: NSFont, contains style: InlineStyle) -> Bool {
+            let traits = font.fontDescriptor.symbolicTraits
+            switch style {
+            case .bold:
+                return traits.contains(.bold)
+            case .italic:
+                return traits.contains(.italic)
+            }
+        }
+
+        private func font(_ base: NSFont, setting style: InlineStyle, enabled: Bool) -> NSFont {
+            let trait: NSFontTraitMask = {
+                switch style {
+                case .bold:
+                    return .boldFontMask
+                case .italic:
+                    return .italicFontMask
+                }
+            }()
+
+            if enabled {
+                return NSFontManager.shared.convert(base, toHaveTrait: trait)
+            }
+            return NSFontManager.shared.convert(base, toNotHaveTrait: trait)
+        }
+
+        static func attributedString(fromMarkdown markdown: String) -> NSAttributedString {
+            let normalized = markdown
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            guard !normalized.isEmpty else {
+                return NSAttributedString(string: "", attributes: baseTypingAttributes)
+            }
+
+            let output = NSMutableAttributedString()
+            let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+            for (index, line) in lines.enumerated() {
+                if let shortcut = parseHeadingShortcut(in: line) {
+                    let contentStart = line.index(line.startIndex, offsetBy: min(shortcut.markerLength, line.count))
+                    let content = String(line[contentStart...])
+                    let attributedLine = attributedInlineString(fromInlineMarkdown: content)
+                    if attributedLine.length > 0 {
+                        attributedLine.addAttribute(headingLevelAttributeKey, value: shortcut.level, range: NSRange(location: 0, length: attributedLine.length))
+                    }
+                    output.append(attributedLine)
+                } else {
+                    output.append(attributedInlineString(fromInlineMarkdown: line))
+                }
+
+                if index < lines.count - 1 {
+                    output.append(NSAttributedString(string: "\n", attributes: baseTypingAttributes))
+                }
+            }
+
+            return output
+        }
+
+        private static func attributedInlineString(fromInlineMarkdown markdown: String) -> NSMutableAttributedString {
+            guard let parsed = try? AttributedString(markdown: markdown, options: markdownParsingOptions) else {
+                return NSMutableAttributedString(string: markdown, attributes: baseTypingAttributes)
+            }
+
+            let source = NSAttributedString(parsed)
+            let output = NSMutableAttributedString(string: source.string, attributes: baseTypingAttributes)
+            let fullRange = NSRange(location: 0, length: output.length)
+            guard fullRange.length > 0 else { return output }
+
+            source.enumerateAttribute(inlinePresentationIntentKey, in: fullRange, options: []) { value, range, _ in
+                guard let intent = inlineIntent(from: value) else { return }
+                var font = baseFont
+                if intent.contains(.stronglyEmphasized) {
+                    font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+                }
+                if intent.contains(.emphasized) {
+                    font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+                }
+                output.addAttribute(.font, value: font, range: range)
+            }
+
+            source.enumerateAttribute(.link, in: fullRange, options: []) { value, range, _ in
+                guard let link = normalizeLink(value) else { return }
+                output.addAttributes(
+                    [
+                        .link: link,
+                        .foregroundColor: linkColor,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue
+                    ],
+                    range: range
+                )
+            }
+
+            return output
+        }
+
+        static func markdownString(from attributedText: NSAttributedString) -> String {
+            guard attributedText.length > 0 else { return "" }
+
+            let source = attributedText.string as NSString
+            var lineStart = 0
+            var lines: [String] = []
+
+            while lineStart < source.length {
+                let lineRange = source.lineRange(for: NSRange(location: lineStart, length: 0))
+                let contentRange = lineContentRange(from: lineRange, in: source)
+                let headingLevel = headingLevel(in: attributedText, range: contentRange)
+
+                var lineMarkdown = markdownInlineString(
+                    from: attributedText,
+                    range: contentRange,
+                    suppressBoldFromHeading: headingLevel != nil
+                )
+                if let headingLevel {
+                    lineMarkdown = "\(String(repeating: "#", count: headingLevel)) \(lineMarkdown)"
+                }
+                lines.append(lineMarkdown)
+                lineStart = lineRange.location + lineRange.length
+            }
+
+            var markdown = lines.joined(separator: "\n")
+            if source.character(at: source.length - 1) == 10 {
+                markdown += "\n"
+            }
+            return markdown
+        }
+
+        private static func markdownInlineString(
+            from attributedText: NSAttributedString,
+            range: NSRange,
+            suppressBoldFromHeading: Bool
+        ) -> String {
+            guard range.length > 0 else { return "" }
+
+            let source = attributedText.string as NSString
+            var markdown = ""
+            var index = range.location
+            let end = range.location + range.length
+
+            while index < end {
+                var effectiveRange = NSRange(location: 0, length: 0)
+                let attributes = attributedText.attributes(
+                    at: index,
+                    longestEffectiveRange: &effectiveRange,
+                    in: range
+                )
+                let segment = source.substring(with: effectiveRange)
+                markdown += markdownFragment(
+                    for: segment,
+                    attributes: attributes,
+                    suppressBoldFromHeading: suppressBoldFromHeading
+                )
+                index = effectiveRange.location + effectiveRange.length
+            }
+
+            return markdown
+        }
+
+        private static func headingLevel(in attributedText: NSAttributedString, range: NSRange) -> Int? {
+            guard range.length > 0 else { return nil }
+            var foundLevel: Int?
+            attributedText.enumerateAttribute(
+                headingLevelAttributeKey,
+                in: range,
+                options: [.longestEffectiveRangeNotRequired]
+            ) { value, _, stop in
+                if let level = headingLevelValue(from: value) {
+                    foundLevel = level
+                    stop.pointee = true
+                }
+            }
+            return foundLevel
+        }
+
+        private static func headingLevelValue(from value: Any?) -> Int? {
+            let level: Int?
+            if let intValue = value as? Int {
+                level = intValue
+            } else if let numberValue = value as? NSNumber {
+                level = numberValue.intValue
+            } else {
+                level = nil
+            }
+            guard let level, (1...6).contains(level) else { return nil }
+            return level
+        }
+
+        private static func lineContentRange(from lineRange: NSRange, in source: NSString) -> NSRange {
+            guard lineRange.length > 0 else { return lineRange }
+            let lineEnd = lineRange.location + lineRange.length
+            if lineEnd > 0, lineEnd <= source.length, source.character(at: lineEnd - 1) == 10 {
+                return NSRange(location: lineRange.location, length: lineRange.length - 1)
+            }
+            return lineRange
+        }
+
+        private static func headingBaseFont(for level: Int) -> NSFont {
+            let size = headingPointSize(for: level)
+            return NSFont.systemFont(ofSize: size, weight: .regular)
+        }
+
+        private static func headingPointSize(for level: Int) -> CGFloat {
+            max(13.0, 20.0 - (CGFloat(level - 1) * 1.8))
+        }
+
+        private static func parseHeadingShortcut(in line: String) -> HeadingShortcut? {
+            let source = line as NSString
+            guard source.length > 1 else { return nil }
+
+            var index = 0
+            var level = 0
+            while index < source.length, source.character(at: index) == 35, level < 6 {
+                level += 1
+                index += 1
+            }
+
+            guard level > 0, index < source.length else { return nil }
+            guard let firstWhitespaceScalar = UnicodeScalar(Int(source.character(at: index))),
+                  CharacterSet.whitespaces.contains(firstWhitespaceScalar) else {
+                return nil
+            }
+
+            while index < source.length,
+                  let scalar = UnicodeScalar(Int(source.character(at: index))),
+                  CharacterSet.whitespaces.contains(scalar) {
+                index += 1
+            }
+
+            return HeadingShortcut(level: level, markerLength: index)
+        }
+
+        private static func markdownFragment(
+            for segment: String,
+            attributes: [NSAttributedString.Key: Any],
+            suppressBoldFromHeading: Bool
+        ) -> String {
+            guard !segment.isEmpty else { return "" }
+
+            if let link = normalizeLink(attributes[.link]) {
+                let text = escapeMarkdownText(segment)
+                let destination = link.absoluteString.replacingOccurrences(of: ")", with: "%29")
+                return "[\(text)](\(destination))"
+            }
+
+            let font = attributes[.font] as? NSFont ?? baseFont
+            let traits = font.fontDescriptor.symbolicTraits
+            let isBold = traits.contains(.bold) && !suppressBoldFromHeading
+            let isItalic = traits.contains(.italic)
+
+            let escaped = escapeMarkdownText(segment)
+            guard !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return escaped
+            }
+
+            if isBold && isItalic {
+                return "***\(escaped)***"
+            }
+            if isBold {
+                return "**\(escaped)**"
+            }
+            if isItalic {
+                return "*\(escaped)*"
+            }
+            return escaped
+        }
+
+        private static func escapeMarkdownText(_ text: String) -> String {
+            var escaped = ""
+            escaped.reserveCapacity(text.count)
+
+            for character in text {
+                switch character {
+                case "\\", "*", "_", "[", "]", "(", ")":
+                    escaped.append("\\")
+                    escaped.append(character)
+                default:
+                    escaped.append(character)
+                }
+            }
+            return escaped
+        }
+
+        private static func inlineIntent(from value: Any?) -> InlinePresentationIntent? {
+            if let intent = value as? InlinePresentationIntent {
+                return intent
+            }
+            if let number = value as? NSNumber {
+                return InlinePresentationIntent(rawValue: number.uintValue)
+            }
+            return nil
+        }
+
+        private static func normalizeLink(_ value: Any?) -> URL? {
+            if let url = value as? URL {
+                return url
+            }
+            if let string = value as? String {
+                return URL(string: string)
+            }
+            if let string = value as? NSString {
+                return URL(string: string as String)
+            }
+            return nil
+        }
+    }
+}
+
+private final class CommentMarkdownTextView: NSTextView {
+    var commandHandler: ((CommentEditorCommand) -> Void)?
+    var submitHandler: (() -> Void)?
+    var requestLinkHandler: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if isSubmitKeyEquivalent(event), let submitHandler {
+            submitHandler()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isSubmitKeyEquivalent(event), let submitHandler {
+            submitHandler()
+            return true
+        }
+
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        guard modifiers == [.command],
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        switch key {
+        case "b":
+            commandHandler?(.bold)
+            return true
+        case "i":
+            commandHandler?(.italic)
+            return true
+        case "k":
+            requestLinkHandler?()
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    private func isSubmitKeyEquivalent(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        guard modifiers == [.command] else { return false }
+        return event.keyCode == 36 || event.keyCode == 76
+    }
 }
 
 // MARK: - Tag Submenu Row
@@ -4756,10 +6391,13 @@ struct TagSubmenuRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                // TODO: Add color picker/editing for tags later
-                // Circle()
-                //     .fill(Color.segmentColor(for: tag.name))
-                //     .frame(width: 8, height: 8)
+                Circle()
+                    .fill(TagColorStore.color(for: tag))
+                    .frame(width: 8, height: 8)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                    )
 
                 Text(tag.name)
                     .font(.system(size: 13, weight: .medium))

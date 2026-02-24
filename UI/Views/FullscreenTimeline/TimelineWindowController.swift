@@ -278,6 +278,12 @@ public class TimelineWindowController: NSObject {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleOpenSettings(_:)),
+            name: .openSettingsTags,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOpenSettings(_:)),
             name: .openSettingsPauseReminderInterval,
             object: nil
         )
@@ -1059,6 +1065,18 @@ public class TimelineWindowController: NSObject {
         return nil
     }
 
+    /// Resolve add-comment shortcut key from an NSEvent.
+    /// Supports Option+C.
+    private func addCommentShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
+        guard event.keyCode == 8 else { // C key
+            return nil
+        }
+        if modifiers == [.option] {
+            return "Option+C"
+        }
+        return nil
+    }
+
     /// Toggle quick app filter for the app at the current playhead.
     /// First press applies a single-app include filter, second press clears it.
     private func togglePlayheadAppFilter(trigger: String) {
@@ -1172,6 +1190,26 @@ public class TimelineWindowController: NSObject {
                     }
                 }
             }
+        }
+    }
+
+    /// Open the timeline segment "Add Comment" composer for the current playhead index.
+    private func openAddCommentComposerAtPlayhead(trigger _: String) {
+        guard let viewModel = timelineViewModel else {
+            return
+        }
+        guard !viewModel.frames.isEmpty else {
+            return
+        }
+
+        let clampedIndex = max(0, min(viewModel.currentIndex, viewModel.frames.count - 1))
+        guard let block = viewModel.getBlock(forFrameAt: clampedIndex) else {
+            return
+        }
+
+        viewModel.dismissOtherDialogs()
+        withAnimation(.easeOut(duration: 0.15)) {
+            viewModel.openCommentSubmenuForTimelineBlock(block)
         }
     }
 
@@ -1558,6 +1596,11 @@ public class TimelineWindowController: NSObject {
         // Monitor for all key events globally (when timeline is visible but not key window)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .scrollWheel, .magnify]) { [weak self] event in
             if event.type == .keyDown {
+                let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                // Keep Option+C local to the timeline window; do not react globally.
+                if self?.addCommentShortcutTrigger(for: event, modifiers: modifiers) != nil {
+                    return
+                }
                 self?.handleKeyEvent(event)
             } else if event.type == .scrollWheel {
                 // Don't handle scroll events when search overlay, filter dropdown, or tag submenu is open
@@ -1594,6 +1637,12 @@ public class TimelineWindowController: NSObject {
 
                 // Cmd+K to toggle search overlay
                 if event.keyCode == 40 && modifiers == [.command] { // Cmd+K
+                    if let viewModel = self?.timelineViewModel,
+                       viewModel.showCommentSubmenu,
+                       isTextFieldActive {
+                        // Let the in-modal text editor own Cmd+K for link insertion.
+                        return event
+                    }
                     _ = self?.handleKeyEvent(event)
                     return nil // Always consume the event to prevent propagation
                 }
@@ -1650,7 +1699,10 @@ public class TimelineWindowController: NSObject {
                 // But let it pass through when a dialog with text input is active
                 if event.keyCode == 0 && modifiers == [.command] {
                     if let viewModel = self?.timelineViewModel,
-                       (viewModel.isSearchOverlayVisible || viewModel.isFilterPanelVisible || viewModel.isDateSearchActive) {
+                       (viewModel.isSearchOverlayVisible ||
+                        viewModel.isFilterPanelVisible ||
+                        viewModel.isDateSearchActive ||
+                        viewModel.showCommentSubmenu) {
                         return event // Let the text field handle Cmd+A
                     }
                     _ = self?.handleKeyEvent(event)
@@ -1716,6 +1768,10 @@ public class TimelineWindowController: NSObject {
             } else if event.type == .scrollWheel {
                 // Let UI overlays consume scrolling before timeline navigation.
                 if let viewModel = self?.timelineViewModel {
+                    // Comment overlay thread/composer are scrollable and should own wheel events.
+                    if viewModel.showCommentSubmenu {
+                        return event
+                    }
                     // Filter-panel popovers are ScrollViews.
                     if viewModel.isFilterDropdownOpen {
                         return event
@@ -1763,6 +1819,7 @@ public class TimelineWindowController: NSObject {
     private func handleKeyEvent(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let addTagTrigger = addTagShortcutTrigger(for: event, modifiers: modifiers)
+        let addCommentTrigger = addCommentShortcutTrigger(for: event, modifiers: modifiers)
         let isAddTagShortcut = addTagTrigger != nil
 
         // Don't handle escape if a modal panel (save panel, etc.) is open
@@ -1772,6 +1829,7 @@ public class TimelineWindowController: NSObject {
 
         // Don't handle escape if our window is not the key window (e.g., save panel is open)
         if let keyWindow = NSApp.keyWindow, keyWindow != window {
+            // Option+C must remain timeline-local; don't steal focus for it.
             if isAddTagShortcut {
                 NSApp.activate(ignoringOtherApps: true)
                 window?.makeKeyAndOrderFront(nil)
@@ -1795,7 +1853,7 @@ public class TimelineWindowController: NSObject {
                     return true
                 }
                 // Right-click menus should dismiss before any higher-level escape behavior.
-                if viewModel.showTimelineContextMenu || viewModel.showContextMenu {
+                if viewModel.showTimelineContextMenu || viewModel.showContextMenu || viewModel.showCommentSubmenu {
                     withAnimation(.easeOut(duration: 0.12)) {
                         viewModel.dismissContextMenu()
                         viewModel.dismissTimelineContextMenu()
@@ -1948,6 +2006,13 @@ public class TimelineWindowController: NSObject {
             return true
         }
 
+        // Add Comment composer for segment block at playhead (Option+C)
+        if let trigger = addCommentTrigger {
+            recordShortcut("opt+c")
+            openAddCommentComposerAtPlayhead(trigger: trigger)
+            return true
+        }
+
         // Cmd+F to toggle app filter for the current playhead frame
         if let trigger = quickAppFilterTrigger(for: event, modifiers: modifiers) {
             togglePlayheadAppFilter(trigger: trigger)
@@ -1998,7 +2063,10 @@ public class TimelineWindowController: NSObject {
         if event.keyCode == 0 && modifiers == [.command] { // A key with Command
             if let viewModel = timelineViewModel {
                 // Don't intercept when dialogs with text inputs are open
-                if viewModel.isSearchOverlayVisible || viewModel.isFilterPanelVisible || viewModel.isDateSearchActive {
+                if viewModel.isSearchOverlayVisible ||
+                    viewModel.isFilterPanelVisible ||
+                    viewModel.isDateSearchActive ||
+                    viewModel.showCommentSubmenu {
                     return false // Let the text field handle Cmd+A
                 }
                 recordShortcut("cmd+a")
@@ -2394,6 +2462,11 @@ public class TimelineWindowController: NSObject {
 
     private func handleScrollEvent(_ event: NSEvent, source: String) {
         guard isVisible, let viewModel = timelineViewModel else { return }
+
+        // Dedicated overlays own wheel gestures while visible.
+        if viewModel.showCommentSubmenu {
+            return
+        }
 
         if viewModel.isInLiveMode, CFAbsoluteTimeGetCurrent() < suppressLiveScrollUntil {
             return

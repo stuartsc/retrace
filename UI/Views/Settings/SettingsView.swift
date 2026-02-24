@@ -261,9 +261,11 @@ public struct SettingsView: View {
     // MARK: Tag Management
     @State private var tagsForSettings: [Tag] = []
     @State private var tagSegmentCounts: [TagID: Int] = [:]
+    @State private var tagColorsForSettings: [TagID: Color] = [:]
     @State private var tagToDelete: Tag? = nil
     @State private var showTagDeleteConfirmation = false
     @State private var newTagName: String = ""
+    @State private var newTagColor: Color = TagColorStore.suggestedColor(for: "")
     @State private var isCreatingTag = false
     @State private var tagCreationError: String? = nil
 
@@ -488,6 +490,10 @@ public struct SettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPower)) { _ in
             selectedTab = .power
+            pendingScrollTargetID = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsTags)) { _ in
+            selectedTab = .tags
             pendingScrollTargetID = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPauseReminderInterval)) { _ in
@@ -3179,7 +3185,7 @@ public struct SettingsView: View {
     private var manageTagsCard: some View {
         ModernSettingsCard(title: "Manage Tags", icon: "tag") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Create and manage tags for organizing your recordings.")
+                    Text("Create and manage tags for organizing your recordings. Choose a color for each tag to make it easier to scan across the app.")
                         .font(.retraceCaption)
                         .foregroundColor(.retraceSecondary)
 
@@ -3200,6 +3206,14 @@ public struct SettingsView: View {
                                         await createTag()
                                     }
                                 }
+
+                            ColorPicker("Tag color", selection: $newTagColor, supportsOpacity: false)
+                                .labelsHidden()
+                                .frame(width: 28, height: 28)
+                                .padding(6)
+                                .background(Color.retraceSecondary.opacity(0.08))
+                                .cornerRadius(8)
+                                .disabled(isCreatingTag)
 
                             ModernButton(
                                 title: isCreatingTag ? "Creating..." : "Create Tag",
@@ -3261,7 +3275,11 @@ public struct SettingsView: View {
         }
 
     private func tagRow(for tag: Tag) -> some View {
-        HStack {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(tagColorBinding(for: tag).wrappedValue)
+                .frame(width: 10, height: 10)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(tag.name)
                     .font(.retraceCalloutMedium)
@@ -3274,6 +3292,13 @@ public struct SettingsView: View {
             }
 
             Spacer()
+
+            ColorPicker("Tag color", selection: tagColorBinding(for: tag), supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 28, height: 28)
+                .padding(6)
+                .background(Color.retraceSecondary.opacity(0.08))
+                .cornerRadius(8)
 
             Button {
                 tagToDelete = tag
@@ -3289,6 +3314,18 @@ public struct SettingsView: View {
         .padding(.vertical, 8)
     }
 
+    private func tagColorBinding(for tag: Tag) -> Binding<Color> {
+        Binding(
+            get: {
+                tagColorsForSettings[tag.id] ?? TagColorStore.color(for: tag)
+            },
+            set: { newColor in
+                tagColorsForSettings[tag.id] = newColor
+                TagColorStore.setColor(newColor, for: tag.id)
+            }
+        )
+    }
+
     private func loadTagsForSettings() async {
         let coordinator = coordinatorWrapper.coordinator
 
@@ -3296,6 +3333,8 @@ public struct SettingsView: View {
             let allTags = try await coordinator.getAllTags()
             // Filter out the hidden system tag
             let userTags = allTags.filter { !$0.isHidden }
+            let validTagIDs = Set(userTags.map { $0.id.value })
+            TagColorStore.pruneColors(keeping: validTagIDs)
 
             // Get segment counts for each tag
             var counts: [TagID: Int] = [:]
@@ -3303,9 +3342,14 @@ public struct SettingsView: View {
                 counts[tag.id] = try await coordinator.getSegmentCountForTag(tagId: tag.id)
             }
 
+            let colors: [TagID: Color] = userTags.reduce(into: [:]) { map, tag in
+                map[tag.id] = TagColorStore.color(for: tag)
+            }
+
             await MainActor.run {
                 self.tagsForSettings = userTags
                 self.tagSegmentCounts = counts
+                self.tagColorsForSettings = colors
             }
         } catch {
             Log.error("[Settings] Failed to load tags: \(error)", category: .ui)
@@ -3317,6 +3361,10 @@ public struct SettingsView: View {
 
         do {
             try await coordinator.deleteTag(tagId: tag.id)
+            TagColorStore.removeColor(for: tag.id)
+            await MainActor.run {
+                _ = tagColorsForSettings.removeValue(forKey: tag.id)
+            }
             await loadTagsForSettings()
         } catch {
             Log.error("[Settings] Failed to delete tag: \(error)", category: .ui)
@@ -3326,6 +3374,7 @@ public struct SettingsView: View {
     private func createTag() async {
         let trimmedName = newTagName.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { return }
+        let selectedColor = newTagColor
 
         await MainActor.run {
             isCreatingTag = true
@@ -3345,10 +3394,12 @@ public struct SettingsView: View {
             }
 
             // Create the tag
-            _ = try await coordinator.createTag(name: trimmedName)
+            let createdTag = try await coordinator.createTag(name: trimmedName)
+            TagColorStore.setColor(selectedColor, for: createdTag.id)
 
             await MainActor.run {
                 newTagName = ""
+                tagColorsForSettings[createdTag.id] = selectedColor
                 isCreatingTag = false
             }
 

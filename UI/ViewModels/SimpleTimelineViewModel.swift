@@ -1,10 +1,12 @@
 import SwiftUI
 import Combine
 import AVFoundation
+import AppKit
 import Shared
 import App
 import Processing
 import SwiftyChrono
+import UniformTypeIdentifiers
 
 /// Shared timeline configuration
 public enum TimelineConfig {
@@ -62,7 +64,7 @@ public struct TimelineFrame: Identifiable, Equatable {
 }
 
 /// Represents a block of consecutive frames from the same app
-public struct AppBlock: Identifiable {
+public struct AppBlock: Identifiable, Sendable {
     // Use stable ID based on content to prevent unnecessary view recreation during infinite scroll
     public var id: String {
         "\(bundleID ?? "nil")_\(startIndex)_\(endIndex)"
@@ -72,6 +74,10 @@ public struct AppBlock: Identifiable {
     public let startIndex: Int
     public let endIndex: Int
     public let frameCount: Int
+    /// Unique tag IDs applied anywhere in this block (excluding hidden tag)
+    public let tagIDs: [Int64]
+    /// Whether any segment in this block has one or more linked comments.
+    public let hasComments: Bool
 
     /// Time gap in seconds BEFORE this block (if > 2 minutes, a gap indicator should be shown)
     public let gapBeforeSeconds: TimeInterval?
@@ -108,6 +114,29 @@ public struct AppBlock: Identifiable {
         } else {
             return "\(totalMinutes)m"
         }
+    }
+}
+
+/// Local draft attachment selected in the timeline comment composer.
+public struct CommentAttachmentDraft: Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let sourceURL: URL
+    public let fileName: String
+    public let mimeType: String?
+    public let sizeBytes: Int64?
+
+    public init(
+        id: UUID = UUID(),
+        sourceURL: URL,
+        fileName: String,
+        mimeType: String?,
+        sizeBytes: Int64?
+    ) {
+        self.id = id
+        self.sourceURL = sourceURL
+        self.fileName = fileName
+        self.mimeType = mimeType
+        self.sizeBytes = sizeBytes
     }
 }
 
@@ -149,15 +178,21 @@ public class SimpleTimelineViewModel: ObservableObject {
         #endif
     }()
 
+    /// Timestamp formatter used by comment helper actions.
+    private static let commentTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+
     // MARK: - Published State
 
     /// All loaded frames with their preloaded video info
     @Published public var frames: [TimelineFrame] = [] {
         didSet {
-            // Clear cached blocks when frames change
-            // Note: This is necessary because blocks depend on frame ranges
-            // The slight performance hit is acceptable for correctness
-            _cachedAppBlockSnapshot = nil
+            invalidateAppBlockSnapshot(reason: "frames.didSet")
         }
     }
 
@@ -729,17 +764,46 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Whether the tag submenu is visible
     @Published public var showTagSubmenu: Bool = false
 
+    /// Whether the comment submenu is visible
+    @Published public var showCommentSubmenu: Bool = false
+
     /// Whether the "create new tag" input is visible
     @Published public var showNewTagInput: Bool = false
 
     /// Text for the new tag name input
     @Published public var newTagName: String = ""
 
+    /// Text for the new comment body
+    @Published public var newCommentText: String = ""
+
+    /// Draft file attachments for the pending comment
+    @Published public var newCommentAttachmentDrafts: [CommentAttachmentDraft] = []
+
+    /// Existing comments linked to the selected timeline block (deduplicated by comment ID)
+    @Published public var selectedBlockComments: [SegmentComment] = []
+
+    /// Whether existing comments are loading for the selected timeline block
+    @Published public var isLoadingBlockComments: Bool = false
+
+    /// Optional error surfaced when loading selected block comments fails
+    @Published public var blockCommentsLoadError: String? = nil
+
     /// Whether the mouse is hovering over the "Add Tag" button
     @Published public var isHoveringAddTagButton: Bool = false
 
+    /// Whether the mouse is hovering over the "Add Comment" button
+    @Published public var isHoveringAddCommentButton: Bool = false
+
+    /// Whether a comment creation request is currently in flight
+    @Published public var isAddingComment: Bool = false
+
     /// All available tags
-    @Published public var availableTags: [Tag] = []
+    @Published public var availableTags: [Tag] = [] {
+        didSet {
+            hasLoadedAvailableTags = true
+            refreshTagCachesAndInvalidateSnapshotIfNeeded(reason: "availableTags.didSet")
+        }
+    }
 
     /// Tags applied to the currently selected segment (for showing checkmarks)
     @Published public var selectedSegmentTags: Set<TagID> = []
@@ -757,13 +821,21 @@ public class SimpleTimelineViewModel: ObservableObject {
         let resetMenuState = {
             self.showTimelineContextMenu = false
             self.showTagSubmenu = false
+            self.showCommentSubmenu = false
             self.showNewTagInput = false
             self.newTagName = ""
+            self.newCommentText = ""
+            self.newCommentAttachmentDrafts = []
+            self.selectedBlockComments = []
+            self.isLoadingBlockComments = false
+            self.blockCommentsLoadError = nil
             self.isHoveringAddTagButton = false
+            self.isHoveringAddCommentButton = false
+            self.isAddingComment = false
             self.selectedSegmentTags = []
         }
 
-        let shouldAnimate = showTimelineContextMenu || showTagSubmenu || showNewTagInput
+        let shouldAnimate = showTimelineContextMenu || showTagSubmenu || showCommentSubmenu || showNewTagInput
         if shouldAnimate {
             withAnimation(.easeOut(duration: Self.timelineMenuDismissAnimationDuration)) {
                 resetMenuState()
@@ -853,7 +925,29 @@ public class SimpleTimelineViewModel: ObservableObject {
     @Published public var isLoadingAppsForFilter = false
 
     /// Map of segment IDs to their tag IDs (for efficient tag filtering)
-    @Published public var segmentTagsMap: [Int64: Set<Int64>] = [:]
+    @Published public var segmentTagsMap: [Int64: Set<Int64>] = [:] {
+        didSet {
+            hasLoadedSegmentTagsMap = true
+            invalidateAppBlockSnapshot(reason: "segmentTagsMap.didSet")
+        }
+    }
+
+    /// Map of segment ID to linked comment count (used for comment tape indicators).
+    @Published public var segmentCommentCountsMap: [Int64: Int] = [:] {
+        didSet {
+            hasLoadedSegmentCommentCountsMap = true
+            invalidateAppBlockSnapshot(reason: "segmentCommentCountsMap.didSet")
+        }
+    }
+
+    /// Background load guard for timeline tape tag indicators.
+    private var isLoadingTapeTagIndicatorData = false
+    /// Prevents repeatedly refetching empty tags.
+    private var hasLoadedAvailableTags = false
+    /// Prevents repeatedly refetching empty segment-tag maps.
+    private var hasLoadedSegmentTagsMap = false
+    /// Prevents repeatedly refetching empty comment-count maps.
+    private var hasLoadedSegmentCommentCountsMap = false
 
     /// Number of active filters (for badge display)
     public var activeFilterCount: Int {
@@ -970,15 +1064,44 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     // MARK: - Computed Properties for Timeline Tape
 
-    private struct AppBlockSnapshot {
+    private struct AppBlockSnapshot: Sendable {
         let blocks: [AppBlock]
         let frameToBlockIndex: [Int]
         let videoBoundaryIndices: [Int]
+
+        static let empty = AppBlockSnapshot(blocks: [], frameToBlockIndex: [], videoBoundaryIndices: [])
     }
 
-    /// Cached block snapshot - recomputed when frames change.
+    private struct SnapshotFrameInput: Sendable {
+        let bundleID: String?
+        let appName: String?
+        let segmentIDValue: Int64
+        let timestamp: Date
+        let videoPath: String?
+    }
+
+    /// Cached block snapshot for timeline tape rendering and navigation.
     private var _cachedAppBlockSnapshot: AppBlockSnapshot?
     private var _cachedAppBlockSnapshotRevision: Int = 0
+    private var appBlockSnapshotDirty = false
+    private var appBlockSnapshotBuildGeneration: UInt64 = 0
+    private var appBlockSnapshotBuildTask: Task<AppBlockSnapshot, Never>?
+    private var appBlockSnapshotApplyTask: Task<Void, Never>?
+
+    /// Cached derived tag metadata used by tape rendering.
+    private var cachedHiddenTagIDValue: Int64? = nil
+    private var cachedAvailableTagsByID: [Int64: Tag] = [:]
+    private var _tagCatalogRevision: UInt64 = 0
+
+    /// Read-only lookup map used by TimelineTapeView hot paths.
+    public var availableTagsByID: [Int64: Tag] {
+        cachedAvailableTagsByID
+    }
+
+    /// Increments whenever tag metadata changes so tag-indicator overlays can update cheaply.
+    public var tagCatalogRevision: UInt64 {
+        _tagCatalogRevision
+    }
 
     /// Increments when a new block snapshot is built. Useful for view-level layout caching.
     public var appBlockSnapshotRevision: Int {
@@ -986,12 +1109,26 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     private var appBlockSnapshot: AppBlockSnapshot {
+        if appBlockSnapshotDirty {
+            scheduleAppBlockSnapshotRebuild(reason: "appBlockSnapshot.read")
+        }
+
         if let cached = _cachedAppBlockSnapshot {
             return cached
         }
 
-        let snapshot = buildAppBlockSnapshot(from: frames)
+        guard !frames.isEmpty else {
+            return AppBlockSnapshot.empty
+        }
+
+        let snapshot = Self.buildAppBlockSnapshot(
+            from: makeSnapshotFrameInputs(from: frames),
+            segmentTagsMap: segmentTagsMap,
+            segmentCommentCountsMap: segmentCommentCountsMap,
+            hiddenTagID: cachedHiddenTagIDValue
+        )
         _cachedAppBlockSnapshot = snapshot
+        appBlockSnapshotDirty = false
         _cachedAppBlockSnapshotRevision &+= 1
         return snapshot
     }
@@ -1000,6 +1137,106 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Note: Since we do server-side filtering, frames already contains only filtered results when filters are active
     public var appBlocks: [AppBlock] {
         appBlockSnapshot.blocks
+    }
+
+    private func makeSnapshotFrameInputs(from frameList: [TimelineFrame]) -> [SnapshotFrameInput] {
+        frameList.map { timelineFrame in
+            SnapshotFrameInput(
+                bundleID: timelineFrame.frame.metadata.appBundleID,
+                appName: timelineFrame.frame.metadata.appName,
+                segmentIDValue: timelineFrame.frame.segmentID.value,
+                timestamp: timelineFrame.frame.timestamp,
+                videoPath: timelineFrame.videoInfo?.videoPath
+            )
+        }
+    }
+
+    private func refreshTagCachesAndInvalidateSnapshotIfNeeded(reason: String) {
+        cachedAvailableTagsByID = Dictionary(
+            uniqueKeysWithValues: availableTags.map { ($0.id.value, $0) }
+        )
+        _tagCatalogRevision &+= 1
+
+        let previousHiddenTagID = cachedHiddenTagIDValue
+        cachedHiddenTagIDValue = availableTags.first(where: { $0.isHidden })?.id.value
+
+        if previousHiddenTagID != cachedHiddenTagIDValue {
+            invalidateAppBlockSnapshot(reason: "\(reason).hiddenTagChanged")
+        }
+    }
+
+    private func invalidateAppBlockSnapshot(reason: String) {
+        appBlockSnapshotDirty = true
+        scheduleAppBlockSnapshotRebuild(reason: reason)
+    }
+
+    /// Rebuild block snapshot immediately from current in-memory state.
+    /// Use on optimistic local mutations to avoid transient stale tape/group mapping.
+    /// The async reconciliation rebuild from didSet invalidation still applies afterward.
+    private func refreshAppBlockSnapshotImmediately(reason: String) {
+        let snapshot = Self.buildAppBlockSnapshot(
+            from: makeSnapshotFrameInputs(from: frames),
+            segmentTagsMap: segmentTagsMap,
+            segmentCommentCountsMap: segmentCommentCountsMap,
+            hiddenTagID: cachedHiddenTagIDValue
+        )
+        _cachedAppBlockSnapshot = snapshot
+        appBlockSnapshotDirty = false
+        _cachedAppBlockSnapshotRevision &+= 1
+
+        if Self.isVerboseTimelineLoggingEnabled {
+            Log.debug(
+                "[TimelineBlocks] Applied immediate snapshot reason='\(reason)' blocks=\(snapshot.blocks.count)",
+                category: .ui
+            )
+        }
+    }
+
+    private func scheduleAppBlockSnapshotRebuild(reason: String) {
+        guard appBlockSnapshotDirty else { return }
+
+        let frameInputs = makeSnapshotFrameInputs(from: frames)
+        let segmentTagsMapSnapshot = segmentTagsMap
+        let segmentCommentCountsSnapshot = segmentCommentCountsMap
+        let hiddenTagID = cachedHiddenTagIDValue
+
+        appBlockSnapshotDirty = false
+        appBlockSnapshotBuildGeneration &+= 1
+        let generation = appBlockSnapshotBuildGeneration
+        appBlockSnapshotBuildTask?.cancel()
+        appBlockSnapshotApplyTask?.cancel()
+
+        let buildTask = Task.detached(priority: .userInitiated) {
+            Self.buildAppBlockSnapshot(
+                from: frameInputs,
+                segmentTagsMap: segmentTagsMapSnapshot,
+                segmentCommentCountsMap: segmentCommentCountsSnapshot,
+                hiddenTagID: hiddenTagID
+            )
+        }
+        appBlockSnapshotBuildTask = buildTask
+
+        appBlockSnapshotApplyTask = Task { [weak self] in
+            let snapshot = await buildTask.value
+
+            guard !Task.isCancelled, let self else { return }
+            guard generation == self.appBlockSnapshotBuildGeneration else { return }
+
+            self._cachedAppBlockSnapshot = snapshot
+            self._cachedAppBlockSnapshotRevision &+= 1
+
+            if Self.isVerboseTimelineLoggingEnabled {
+                Log.debug(
+                    "[TimelineBlocks] Applied async snapshot reason='\(reason)' generation=\(generation) blocks=\(snapshot.blocks.count)",
+                    category: .ui
+                )
+            }
+        }
+    }
+
+    deinit {
+        appBlockSnapshotBuildTask?.cancel()
+        appBlockSnapshotApplyTask?.cancel()
     }
 
     // MARK: - Private State
@@ -1435,7 +1672,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Clear app blocks cache
         let hadAppBlocks = _cachedAppBlockSnapshot != nil
-        _cachedAppBlockSnapshot = nil
+        hasLoadedAvailableTags = false
+        hasLoadedSegmentTagsMap = false
+        hasLoadedSegmentCommentCountsMap = false
+        invalidateAppBlockSnapshot(reason: "invalidateCachesAndReload")
         Log.debug("[DataSourceChange] Cleared app blocks cache (had cached: \(hadAppBlocks))", category: .ui)
 
         // Clear search results (data source changed, results may no longer be valid)
@@ -1508,6 +1748,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
                 updateWindowBoundaries()
                 resetBoundaryStateForReloadWindow()
+
+                // Load tag metadata/map lazily so the tape can render subtle tag indicators.
+                ensureTapeTagIndicatorDataLoadedIfNeeded()
 
                 loadImageIfNeeded()
 
@@ -1619,8 +1862,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Remove from frames array (optimistic deletion)
         frames.remove(at: index)
 
-        // Clear cached blocks since frames changed
-        _cachedAppBlockSnapshot = nil
+        // Keep block grouping/navigation consistent immediately for optimistic UI.
+        refreshAppBlockSnapshotImmediately(reason: "confirmDeleteSelectedFrame")
 
         // Adjust current index if needed
         if currentIndex >= frames.count {
@@ -1785,8 +2028,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Remove frames from array (in reverse to maintain indices)
         frames.removeSubrange(block.startIndex...min(block.endIndex, frames.count - 1))
 
-        // Clear cached blocks since frames changed
-        _cachedAppBlockSnapshot = nil
+        // Keep block grouping/navigation consistent immediately for optimistic UI.
+        refreshAppBlockSnapshotImmediately(reason: "confirmDeleteSegment")
 
         // Adjust current index
         if currentIndex >= startIndex + deleteCount {
@@ -1821,6 +2064,119 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     // MARK: - Tag Operations
 
+    /// Load context-menu support data used by tag/comment submenus.
+    public func loadTimelineContextMenuData() async {
+        async let tagsTask: Void = loadTags()
+        async let commentsTask: Void = loadCommentsForSelectedTimelineBlock()
+        _ = await (tagsTask, commentsTask)
+    }
+
+    /// Opens the timeline context menu directly into the tag submenu for a tape block.
+    public func openTagSubmenuForTimelineBlock(_ block: AppBlock) {
+        guard block.frameCount > 0 else { return }
+
+        timelineContextMenuSegmentIndex = block.startIndex
+        selectedFrameIndex = block.startIndex
+        newCommentText = ""
+        newCommentAttachmentDrafts = []
+        selectedBlockComments = []
+        blockCommentsLoadError = nil
+        showTagSubmenu = true
+        showCommentSubmenu = false
+        isHoveringAddTagButton = false
+        isHoveringAddCommentButton = false
+
+        if let pointerLocation = currentMouseLocationInContentCoordinates() {
+            timelineContextMenuLocation = pointerLocation
+        }
+
+        showTimelineContextMenu = true
+
+        Task { await loadTags() }
+    }
+
+    /// Opens the timeline context menu directly into the comment submenu for a tape block.
+    public func openCommentSubmenuForTimelineBlock(_ block: AppBlock) {
+        guard block.frameCount > 0 else { return }
+
+        timelineContextMenuSegmentIndex = block.startIndex
+        selectedFrameIndex = block.startIndex
+        newCommentText = ""
+        newCommentAttachmentDrafts = []
+        selectedBlockComments = []
+        blockCommentsLoadError = nil
+        showTagSubmenu = false
+        showCommentSubmenu = true
+        isHoveringAddTagButton = false
+        isHoveringAddCommentButton = false
+
+        if let pointerLocation = currentMouseLocationInContentCoordinates() {
+            timelineContextMenuLocation = pointerLocation
+        }
+
+        // Open only the dedicated comment overlay; do not present the right-click context menu.
+        showTimelineContextMenu = false
+
+        Task { await loadCommentsForSelectedTimelineBlock() }
+    }
+
+    /// Load existing comments linked anywhere in the currently selected timeline block.
+    /// Results are deduplicated by comment ID and sorted oldest → newest.
+    public func loadCommentsForSelectedTimelineBlock() async {
+        guard let index = timelineContextMenuSegmentIndex,
+              let block = getBlock(forFrameAt: index) else {
+            selectedBlockComments = []
+            blockCommentsLoadError = nil
+            isLoadingBlockComments = false
+            return
+        }
+
+        let segmentIDs = getSegmentIds(inBlock: block).sorted { $0.value < $1.value }
+        guard !segmentIDs.isEmpty else {
+            selectedBlockComments = []
+            blockCommentsLoadError = nil
+            isLoadingBlockComments = false
+            return
+        }
+
+        isLoadingBlockComments = true
+        blockCommentsLoadError = nil
+
+        do {
+            var commentsByID: [Int64: SegmentComment] = [:]
+            for segmentID in segmentIDs {
+                let comments = try await coordinator.getCommentsForSegment(segmentId: segmentID)
+                for comment in comments {
+                    commentsByID[comment.id.value] = comment
+                }
+            }
+
+            selectedBlockComments = commentsByID.values.sorted {
+                if $0.createdAt == $1.createdAt {
+                    return $0.id.value < $1.id.value
+                }
+                return $0.createdAt < $1.createdAt
+            }
+            isLoadingBlockComments = false
+        } catch {
+            isLoadingBlockComments = false
+            selectedBlockComments = []
+            blockCommentsLoadError = "Could not load comments."
+            Log.error("[Comments] Failed to load block comments: \(error)", category: .ui)
+        }
+    }
+
+    private func currentMouseLocationInContentCoordinates() -> CGPoint? {
+        guard let window = NSApp.keyWindow,
+              let contentView = window.contentView else {
+            return nil
+        }
+
+        let mouseOnScreen = NSEvent.mouseLocation
+        let mouseInWindow = window.convertPoint(fromScreen: mouseOnScreen)
+        return CGPoint(x: mouseInWindow.x, y: contentView.bounds.height - mouseInWindow.y)
+    }
+
     /// Load all available tags from the database, and tags for the selected segment
     public func loadTags() async {
         do {
@@ -1853,6 +2209,116 @@ public class SimpleTimelineViewModel: ObservableObject {
         } catch {
             Log.error("[Tags] Failed to load hidden segments: \(error)", category: .ui)
         }
+    }
+
+    /// Loads tag metadata needed for subtle tape indicators.
+    /// Done lazily in the background so timeline open stays responsive.
+    private func ensureTapeTagIndicatorDataLoadedIfNeeded() {
+        guard !frames.isEmpty else { return }
+
+        let needsTags = !hasLoadedAvailableTags
+        let needsSegmentTagsMap = !hasLoadedSegmentTagsMap
+        let needsSegmentCommentCountsMap = !hasLoadedSegmentCommentCountsMap
+        guard needsTags || needsSegmentTagsMap || needsSegmentCommentCountsMap else { return }
+        guard !isLoadingTapeTagIndicatorData else { return }
+
+        isLoadingTapeTagIndicatorData = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isLoadingTapeTagIndicatorData = false }
+
+            do {
+                var didLoadCommentCounts = false
+                if needsTags && needsSegmentTagsMap && needsSegmentCommentCountsMap {
+                    async let tagsTask = coordinator.getAllTags()
+                    async let segmentTagsTask = coordinator.getSegmentTagsMap()
+                    async let commentCountsTask = coordinator.getSegmentCommentCountsMap()
+                    let (tags, segmentTags, segmentCommentCounts) = try await (tagsTask, segmentTagsTask, commentCountsTask)
+                    self.availableTags = tags
+                    self.segmentTagsMap = segmentTags
+                    self.segmentCommentCountsMap = segmentCommentCounts
+                    didLoadCommentCounts = true
+                } else if needsTags && needsSegmentTagsMap {
+                    async let tagsTask = coordinator.getAllTags()
+                    async let segmentTagsTask = coordinator.getSegmentTagsMap()
+                    let (tags, segmentTags) = try await (tagsTask, segmentTagsTask)
+                    self.availableTags = tags
+                    self.segmentTagsMap = segmentTags
+                } else if needsTags {
+                    self.availableTags = try await coordinator.getAllTags()
+                } else if needsSegmentTagsMap {
+                    self.segmentTagsMap = try await coordinator.getSegmentTagsMap()
+                }
+
+                if needsSegmentCommentCountsMap && !didLoadCommentCounts {
+                    self.segmentCommentCountsMap = try await coordinator.getSegmentCommentCountsMap()
+                }
+            } catch {
+                Log.error("[Tags] Failed to load tape tag indicator data: \(error)", category: .ui)
+            }
+        }
+    }
+
+    private var hiddenTagIDValue: Int64? {
+        cachedHiddenTagIDValue
+    }
+
+    private func addTagToSegmentTagsMap(tagID: TagID, segmentIDs: Set<SegmentID>) {
+        guard !segmentIDs.isEmpty else { return }
+
+        var updatedMap = segmentTagsMap
+        for segmentID in segmentIDs {
+            var tags = updatedMap[segmentID.value] ?? Set<Int64>()
+            tags.insert(tagID.value)
+            updatedMap[segmentID.value] = tags
+        }
+        segmentTagsMap = updatedMap
+        refreshAppBlockSnapshotImmediately(reason: "addTagToSegmentTagsMap")
+    }
+
+    private func removeTagFromSegmentTagsMap(tagID: TagID, segmentIDs: Set<SegmentID>) {
+        guard !segmentIDs.isEmpty else { return }
+
+        var updatedMap = segmentTagsMap
+        for segmentID in segmentIDs {
+            guard var tags = updatedMap[segmentID.value] else { continue }
+            tags.remove(tagID.value)
+            if tags.isEmpty {
+                updatedMap.removeValue(forKey: segmentID.value)
+            } else {
+                updatedMap[segmentID.value] = tags
+            }
+        }
+        segmentTagsMap = updatedMap
+        refreshAppBlockSnapshotImmediately(reason: "removeTagFromSegmentTagsMap")
+    }
+
+    private func incrementCommentCountsForSegments(_ segmentIDs: Set<SegmentID>) {
+        guard !segmentIDs.isEmpty else { return }
+
+        var updatedMap = segmentCommentCountsMap
+        for segmentID in segmentIDs {
+            updatedMap[segmentID.value, default: 0] += 1
+        }
+        segmentCommentCountsMap = updatedMap
+        refreshAppBlockSnapshotImmediately(reason: "incrementCommentCountsForSegments")
+    }
+
+    private func decrementCommentCountsForSegments(_ segmentIDs: Set<SegmentID>) {
+        guard !segmentIDs.isEmpty else { return }
+
+        var updatedMap = segmentCommentCountsMap
+        for segmentID in segmentIDs {
+            let current = updatedMap[segmentID.value] ?? 0
+            if current <= 1 {
+                updatedMap.removeValue(forKey: segmentID.value)
+            } else {
+                updatedMap[segmentID.value] = current - 1
+            }
+        }
+        segmentCommentCountsMap = updatedMap
+        refreshAppBlockSnapshotImmediately(reason: "decrementCommentCountsForSegments")
     }
 
     /// Get the segment ID for a frame at the given index (as SegmentID for database operations)
@@ -1933,8 +2399,8 @@ public class SimpleTimelineViewModel: ObservableObject {
             }
             let removedCount = beforeCount - frames.count
 
-            // Clear cached blocks since frames changed
-            _cachedAppBlockSnapshot = nil
+            // Keep block grouping/navigation consistent immediately for optimistic UI.
+            refreshAppBlockSnapshotImmediately(reason: "performHideSegment.removeFrames")
 
             // Preserve current frame if still present after removal; otherwise clamp safely.
             if let previousCurrentFrameID,
@@ -2032,8 +2498,8 @@ public class SimpleTimelineViewModel: ObservableObject {
                 }
                 let removedCount = beforeCount - frames.count
 
-                // Clear cached blocks since frames changed
-                _cachedAppBlockSnapshot = nil
+                // Keep block grouping/navigation consistent immediately for optimistic UI.
+                refreshAppBlockSnapshotImmediately(reason: "performUnhideSegment.removeFrames")
 
                 // Preserve current frame if still present after removal; otherwise clamp safely.
                 if let previousCurrentFrameID,
@@ -2094,6 +2560,9 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Get all unique segment IDs in this visible block
         let segmentIds = getSegmentIds(inBlock: block)
 
+        // Optimistic in-memory update so tape indicators refresh immediately.
+        addTagToSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
+
         dismissTimelineContextMenu()
 
         // Persist to database in background
@@ -2129,8 +2598,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Update UI immediately
         if isCurrentlySelected {
             selectedSegmentTags.remove(tag.id)
+            removeTagFromSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
         } else {
             selectedSegmentTags.insert(tag.id)
+            addTagToSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
         }
 
         // Persist to database in background
@@ -2149,8 +2620,10 @@ public class SimpleTimelineViewModel: ObservableObject {
                 await MainActor.run {
                     if isCurrentlySelected {
                         selectedSegmentTags.insert(tag.id)
+                        addTagToSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
                     } else {
                         selectedSegmentTags.remove(tag.id)
+                        removeTagFromSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
                     }
                 }
             }
@@ -2197,6 +2670,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                     }
                     // Mark it as selected on the current segment
                     selectedSegmentTags.insert(newTag.id)
+                    addTagToSegmentTagsMap(tagID: newTag.id, segmentIDs: segmentIds)
                 }
 
                 Log.debug("[Tags] Created tag '\(tagName)' and added to \(segmentIds.count) segments in block", category: .ui)
@@ -2204,6 +2678,322 @@ public class SimpleTimelineViewModel: ObservableObject {
                 Log.error("[Tags] Failed to create tag: \(error)", category: .ui)
             }
         }
+    }
+
+    // MARK: - Comment Operations
+
+    /// Insert markdown helpers into the comment draft.
+    public func insertCommentBoldMarkup() {
+        appendCommentSnippet("**bold text**")
+    }
+
+    public func insertCommentItalicMarkup() {
+        appendCommentSnippet("*italic text*")
+    }
+
+    public func insertCommentLinkMarkup() {
+        appendCommentSnippet("[link text](https://example.com)")
+    }
+
+    public func insertCommentTimestampMarkup() {
+        guard currentIndex >= 0, currentIndex < frames.count else { return }
+        let timestamp = frames[currentIndex].frame.timestamp
+        let formatted = Self.commentTimestampFormatter.string(from: timestamp)
+        appendCommentSnippet("[\(formatted)] ")
+    }
+
+    /// Open native file picker and add selected files as draft comment attachments.
+    public func selectCommentAttachmentFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Select files to attach to this comment"
+        panel.prompt = "Attach"
+
+        // The timeline window runs at a very high level. Presenting as a sheet keeps the
+        // picker reliably above the timeline instead of behind it.
+        if let hostWindow = NSApp.keyWindow ?? NSApp.mainWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            hostWindow.makeKeyAndOrderFront(nil)
+            panel.beginSheetModal(for: hostWindow) { [weak self] response in
+                guard response == .OK else { return }
+                Task { @MainActor [weak self] in
+                    self?.addCommentAttachmentDrafts(from: panel.urls)
+                }
+            }
+            return
+        }
+
+        // Fallback when no host window is available.
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        addCommentAttachmentDrafts(from: panel.urls)
+    }
+
+    public func removeCommentAttachmentDraft(_ draft: CommentAttachmentDraft) {
+        newCommentAttachmentDrafts.removeAll { $0.id == draft.id }
+    }
+
+    /// Open an attachment from an existing saved comment.
+    public func openCommentAttachment(_ attachment: SegmentCommentAttachment) {
+        let resolvedPath: String
+        if attachment.filePath.hasPrefix("/") || attachment.filePath.hasPrefix("~") {
+            resolvedPath = NSString(string: attachment.filePath).expandingTildeInPath
+        } else {
+            resolvedPath = (AppPaths.expandedStorageRoot as NSString).appendingPathComponent(attachment.filePath)
+        }
+
+        let url = URL(fileURLWithPath: resolvedPath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            showToast("Attachment file is missing", icon: "exclamationmark.triangle.fill")
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Remove a comment from the currently selected timeline block.
+    /// This unlinks the comment from segments in this block (and orphan cleanup is automatic).
+    @discardableResult
+    public func removeCommentFromSelectedTimelineBlock(comment: SegmentComment) async -> Bool {
+        guard let index = timelineContextMenuSegmentIndex,
+              let block = getBlock(forFrameAt: index) else {
+            showToast("Could not resolve selected segment block", icon: "exclamationmark.triangle.fill")
+            return false
+        }
+
+        let segmentIDs = getSegmentIds(inBlock: block)
+        guard !segmentIDs.isEmpty else {
+            showToast("No segments selected", icon: "exclamationmark.circle.fill")
+            return false
+        }
+
+        do {
+            var linkedSegmentIDs: Set<SegmentID> = []
+            for segmentID in segmentIDs {
+                let comments = try await coordinator.getCommentsForSegment(segmentId: segmentID)
+                if comments.contains(where: { $0.id == comment.id }) {
+                    linkedSegmentIDs.insert(segmentID)
+                }
+            }
+
+            if linkedSegmentIDs.isEmpty {
+                selectedBlockComments.removeAll { $0.id == comment.id }
+                return true
+            }
+
+            try await coordinator.removeCommentFromSegments(
+                segmentIds: Array(linkedSegmentIDs),
+                commentId: comment.id
+            )
+
+            selectedBlockComments.removeAll { $0.id == comment.id }
+            decrementCommentCountsForSegments(linkedSegmentIDs)
+            showToast("Comment deleted", icon: "trash.fill")
+            return true
+        } catch {
+            Log.error("[Comments] Failed to delete comment from block: \(error)", category: .ui)
+            showToast("Failed to delete comment", icon: "xmark.circle.fill")
+            return false
+        }
+    }
+
+    public func addCommentToSelectedSegment() {
+        let commentBody = newCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !commentBody.isEmpty else {
+            showToast("Comment cannot be empty", icon: "exclamationmark.circle.fill")
+            return
+        }
+        guard !isAddingComment else { return }
+
+        guard let index = timelineContextMenuSegmentIndex,
+              let block = getBlock(forFrameAt: index) else {
+            dismissTimelineContextMenu()
+            return
+        }
+
+        if isFrameFromRewind(at: index) {
+            showToast("Cannot comment on Rewind data")
+            dismissTimelineContextMenu()
+            return
+        }
+
+        let segmentIds = getSegmentIds(inBlock: block)
+        guard !segmentIds.isEmpty else {
+            showToast("No segments selected", icon: "exclamationmark.circle.fill")
+            return
+        }
+
+        isAddingComment = true
+        let attachmentDrafts = newCommentAttachmentDrafts
+
+        Task {
+            var persistedAttachments: [SegmentCommentAttachment] = []
+            do {
+                persistedAttachments = try await Task.detached(priority: .userInitiated) {
+                    try Self.persistCommentAttachmentDrafts(attachmentDrafts)
+                }.value
+
+                let createResult = try await coordinator.createCommentForSegments(
+                    body: commentBody,
+                    segmentIds: Array(segmentIds),
+                    attachments: persistedAttachments,
+                    author: nil
+                )
+
+                await MainActor.run {
+                    newCommentText = ""
+                    newCommentAttachmentDrafts = []
+                    incrementCommentCountsForSegments(Set(createResult.linkedSegmentIDs))
+                    isAddingComment = false
+                    let requestedCount = segmentIds.count
+                    let linkedCount = createResult.linkedSegmentIDs.count
+
+                    if linkedCount == requestedCount {
+                        showToast("Comment added", icon: "checkmark.circle.fill")
+                    } else {
+                        showToast(
+                            "Comment added to \(linkedCount)/\(requestedCount) segments",
+                            icon: "exclamationmark.triangle.fill"
+                        )
+                    }
+                }
+                await loadCommentsForSelectedTimelineBlock()
+            } catch {
+                Self.cleanupPersistedCommentAttachments(persistedAttachments)
+                Log.error("[Comments] Failed to add comment: \(error)", category: .ui)
+                await MainActor.run {
+                    isAddingComment = false
+                    showToast("Failed to add comment", icon: "xmark.circle.fill")
+                }
+            }
+        }
+    }
+
+    private func appendCommentSnippet(_ snippet: String) {
+        let trimmedSnippet = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSnippet.isEmpty else { return }
+
+        let current = newCommentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current.isEmpty {
+            newCommentText = trimmedSnippet
+            return
+        }
+
+        if newCommentText.hasSuffix("\n\n") || newCommentText.hasSuffix(" ") {
+            newCommentText += trimmedSnippet
+        } else if newCommentText.hasSuffix("\n") {
+            newCommentText += "\(trimmedSnippet)"
+        } else {
+            newCommentText += "\n\(trimmedSnippet)"
+        }
+    }
+
+    private func addCommentAttachmentDrafts(from urls: [URL]) {
+        guard !urls.isEmpty else { return }
+
+        var existingPaths = Set(
+            newCommentAttachmentDrafts.map { $0.sourceURL.resolvingSymlinksInPath().path }
+        )
+        var appended = 0
+        let fileManager = FileManager.default
+
+        for rawURL in urls {
+            let resolvedURL = rawURL.resolvingSymlinksInPath()
+            guard !existingPaths.contains(resolvedURL.path) else { continue }
+
+            let fileName = resolvedURL.lastPathComponent
+            guard !fileName.isEmpty else { continue }
+
+            let mimeType = UTType(filenameExtension: resolvedURL.pathExtension)?.preferredMIMEType
+            let sizeBytes = (try? fileManager.attributesOfItem(atPath: resolvedURL.path)[.size] as? NSNumber)?.int64Value
+
+            newCommentAttachmentDrafts.append(
+                CommentAttachmentDraft(
+                    sourceURL: resolvedURL,
+                    fileName: fileName,
+                    mimeType: mimeType,
+                    sizeBytes: sizeBytes
+                )
+            )
+            existingPaths.insert(resolvedURL.path)
+            appended += 1
+        }
+
+        if appended > 0 {
+            showToast("Attached \(appended) file\(appended == 1 ? "" : "s")", icon: "paperclip")
+        }
+    }
+
+    private nonisolated static func persistCommentAttachmentDrafts(_ drafts: [CommentAttachmentDraft]) throws -> [SegmentCommentAttachment] {
+        guard !drafts.isEmpty else { return [] }
+
+        let fileManager = FileManager.default
+        let baseDirectoryURL = URL(fileURLWithPath: AppPaths.expandedStorageRoot, isDirectory: true)
+        let attachmentsDirectoryName = "comment_attachments"
+        let attachmentsDirectoryURL = baseDirectoryURL.appendingPathComponent(attachmentsDirectoryName, isDirectory: true)
+        try fileManager.createDirectory(at: attachmentsDirectoryURL, withIntermediateDirectories: true)
+
+        var persisted: [SegmentCommentAttachment] = []
+
+        do {
+            for draft in drafts {
+                let safeName = sanitizedAttachmentFileName(draft.fileName)
+                let persistedName = "\(UUID().uuidString)_\(safeName)"
+                let destinationURL = attachmentsDirectoryURL.appendingPathComponent(persistedName, isDirectory: false)
+
+                try fileManager.copyItem(at: draft.sourceURL, to: destinationURL)
+
+                let sizeBytes = (try? fileManager.attributesOfItem(atPath: destinationURL.path)[.size] as? NSNumber)?.int64Value ?? draft.sizeBytes
+                let relativePath = "\(attachmentsDirectoryName)/\(persistedName)"
+
+                persisted.append(
+                    SegmentCommentAttachment(
+                        filePath: relativePath,
+                        fileName: draft.fileName,
+                        mimeType: draft.mimeType,
+                        sizeBytes: sizeBytes
+                    )
+                )
+            }
+        } catch {
+            for attachment in persisted {
+                let removeURL = baseDirectoryURL.appendingPathComponent(attachment.filePath, isDirectory: false)
+                try? fileManager.removeItem(at: removeURL)
+            }
+            throw error
+        }
+
+        return persisted
+    }
+
+    private nonisolated static func cleanupPersistedCommentAttachments(_ attachments: [SegmentCommentAttachment]) {
+        guard !attachments.isEmpty else { return }
+
+        let fileManager = FileManager.default
+        let baseDirectoryURL = URL(fileURLWithPath: AppPaths.expandedStorageRoot, isDirectory: true)
+
+        for attachment in attachments {
+            let path: String
+            if attachment.filePath.hasPrefix("/") || attachment.filePath.hasPrefix("~") {
+                path = NSString(string: attachment.filePath).expandingTildeInPath
+            } else {
+                path = baseDirectoryURL.appendingPathComponent(attachment.filePath, isDirectory: false).path
+            }
+
+            if fileManager.fileExists(atPath: path) {
+                try? fileManager.removeItem(atPath: path)
+            }
+        }
+    }
+
+    private nonisolated static func sanitizedAttachmentFileName(_ fileName: String) -> String {
+        let disallowed = CharacterSet(charactersIn: "/:\\")
+        let sanitizedScalars = fileName.unicodeScalars.map { scalar in
+            disallowed.contains(scalar) ? "_" : Character(scalar)
+        }
+        let sanitized = String(sanitizedScalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? "attachment" : sanitized
     }
 
     /// Request deletion from timeline context menu (shows confirmation dialog)
@@ -2283,32 +3073,52 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Group frames into app blocks (parameterized version for filtered frames)
     /// Splits on app change OR time gaps ≥2 min
     private func groupFramesIntoBlocks(from frameList: [TimelineFrame]) -> [AppBlock] {
-        buildAppBlockSnapshot(from: frameList).blocks
+        Self.buildAppBlockSnapshot(
+            from: makeSnapshotFrameInputs(from: frameList),
+            segmentTagsMap: segmentTagsMap,
+            segmentCommentCountsMap: segmentCommentCountsMap,
+            hiddenTagID: cachedHiddenTagIDValue
+        ).blocks
     }
 
     /// Build app blocks, frame->block index mapping, and video boundaries in one pass.
-    private func buildAppBlockSnapshot(from frameList: [TimelineFrame]) -> AppBlockSnapshot {
+    private nonisolated static func buildAppBlockSnapshot(
+        from frameList: [SnapshotFrameInput],
+        segmentTagsMap: [Int64: Set<Int64>],
+        segmentCommentCountsMap: [Int64: Int],
+        hiddenTagID: Int64?
+    ) -> AppBlockSnapshot {
+        if Task.isCancelled {
+            return AppBlockSnapshot.empty
+        }
+
         guard !frameList.isEmpty else {
-            return AppBlockSnapshot(blocks: [], frameToBlockIndex: [], videoBoundaryIndices: [])
+            return AppBlockSnapshot.empty
         }
 
         var blocks: [AppBlock] = []
         var frameToBlockIndex = Array(repeating: 0, count: frameList.count)
         var boundaries: [Int] = []
 
-        var currentBundleID: String? = frameList[0].frame.metadata.appBundleID
+        var currentBundleID: String? = frameList[0].bundleID
         var blockStartIndex = 0
         var currentBlockIndex = 0
         var gapBeforeCurrentBlock: TimeInterval? = nil
-        var previousVideoPath = frameList[0].videoInfo?.videoPath
+        var previousVideoPath = frameList[0].videoPath
+        var currentBlockTagIDs = Set<Int64>()
+        var currentBlockHasComments = false
 
         for index in frameList.indices {
+            if Task.isCancelled {
+                return AppBlockSnapshot.empty
+            }
+
             let timelineFrame = frameList[index]
-            let frameBundleID = timelineFrame.frame.metadata.appBundleID
+            let frameBundleID = timelineFrame.bundleID
 
             // Track boundary when video path changes from previous frame.
             if index > 0 {
-                let currentVideoPath = timelineFrame.videoInfo?.videoPath
+                let currentVideoPath = timelineFrame.videoPath
                 if let previousVideoPath,
                    let currentVideoPath,
                    previousVideoPath != currentVideoPath {
@@ -2319,8 +3129,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             var gapDuration: TimeInterval = 0
             if index > 0 {
-                let previousTimestamp = frameList[index - 1].frame.timestamp
-                let currentTimestamp = timelineFrame.frame.timestamp
+                let previousTimestamp = frameList[index - 1].timestamp
+                let currentTimestamp = timelineFrame.timestamp
                 gapDuration = currentTimestamp.timeIntervalSince(previousTimestamp)
             }
 
@@ -2328,12 +3138,21 @@ public class SimpleTimelineViewModel: ObservableObject {
             let appChanged = frameBundleID != currentBundleID
 
             if (appChanged || hasSignificantGap) && index > 0 {
+                let filteredTagIDs = currentBlockTagIDs
+                    .filter { tagID in
+                        guard let hiddenTagID else { return true }
+                        return tagID != hiddenTagID
+                    }
+                    .sorted()
+
                 blocks.append(AppBlock(
                     bundleID: currentBundleID,
-                    appName: frameList[blockStartIndex].frame.metadata.appName,
+                    appName: frameList[blockStartIndex].appName,
                     startIndex: blockStartIndex,
                     endIndex: index - 1,
                     frameCount: index - blockStartIndex,
+                    tagIDs: filteredTagIDs,
+                    hasComments: currentBlockHasComments,
                     gapBeforeSeconds: gapBeforeCurrentBlock
                 ))
 
@@ -2341,17 +3160,36 @@ public class SimpleTimelineViewModel: ObservableObject {
                 currentBundleID = frameBundleID
                 blockStartIndex = index
                 gapBeforeCurrentBlock = hasSignificantGap ? gapDuration : nil
+                currentBlockTagIDs.removeAll(keepingCapacity: true)
+                currentBlockHasComments = false
+            }
+
+            if let segmentTagIDs = segmentTagsMap[timelineFrame.segmentIDValue] {
+                currentBlockTagIDs.formUnion(segmentTagIDs)
+            }
+
+            if let commentCount = segmentCommentCountsMap[timelineFrame.segmentIDValue], commentCount > 0 {
+                currentBlockHasComments = true
             }
 
             frameToBlockIndex[index] = currentBlockIndex
         }
 
+        let finalFilteredTagIDs = currentBlockTagIDs
+            .filter { tagID in
+                guard let hiddenTagID else { return true }
+                return tagID != hiddenTagID
+            }
+            .sorted()
+
         blocks.append(AppBlock(
             bundleID: currentBundleID,
-            appName: frameList[blockStartIndex].frame.metadata.appName,
+            appName: frameList[blockStartIndex].appName,
             startIndex: blockStartIndex,
             endIndex: frameList.count - 1,
             frameCount: frameList.count - blockStartIndex,
+            tagIDs: finalFilteredTagIDs,
+            hasComments: currentBlockHasComments,
             gapBeforeSeconds: gapBeforeCurrentBlock
         ))
 
@@ -2935,9 +3773,9 @@ public class SimpleTimelineViewModel: ObservableObject {
     private func loadFilterPanelDataBatched() async {
         // Skip if already loaded
         let needsApps = availableAppsForFilter.isEmpty
-        let needsTags = availableTags.isEmpty
+        let needsTags = !hasLoadedAvailableTags
         let needsHidden = hiddenSegmentIds.isEmpty
-        let needsTagsMap = segmentTagsMap.isEmpty
+        let needsTagsMap = !hasLoadedSegmentTagsMap
 
         guard needsApps || needsTags || needsHidden || needsTagsMap else {
             return
@@ -2949,6 +3787,9 @@ public class SimpleTimelineViewModel: ObservableObject {
         var newTags: [Tag] = []
         var newHiddenSegmentIds: Set<SegmentID> = []
         var newSegmentTagsMap: [Int64: Set<Int64>] = [:]
+        var loadedTags = false
+        var loadedHiddenSegmentIDs = false
+        var loadedSegmentTagsMap = false
 
         // Load apps
         if needsApps {
@@ -2974,6 +3815,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         if needsTags {
             do {
                 newTags = try await coordinator.getAllTags()
+                loadedTags = true
             } catch {
                 Log.error("[Filter] Failed to load tags: \(error)", category: .ui)
             }
@@ -2983,6 +3825,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         if needsHidden {
             do {
                 newHiddenSegmentIds = try await coordinator.getHiddenSegmentIds()
+                loadedHiddenSegmentIDs = true
             } catch {
                 Log.error("[Filter] Failed to load hidden segments: \(error)", category: .ui)
             }
@@ -2992,6 +3835,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         if needsTagsMap {
             do {
                 newSegmentTagsMap = try await coordinator.getSegmentTagsMap()
+                loadedSegmentTagsMap = true
             } catch {
                 Log.error("[Filter] Failed to load segment tags map: \(error)", category: .ui)
             }
@@ -3002,13 +3846,13 @@ public class SimpleTimelineViewModel: ObservableObject {
             availableAppsForFilter = newApps
             otherAppsForFilter = newOtherApps
         }
-        if needsTags {
+        if needsTags && loadedTags {
             availableTags = newTags
         }
-        if needsHidden {
+        if needsHidden && loadedHiddenSegmentIDs {
             hiddenSegmentIds = newHiddenSegmentIds
         }
-        if needsTagsMap {
+        if needsTagsMap && loadedSegmentTagsMap {
             segmentTagsMap = newSegmentTagsMap
         }
     }
@@ -3300,6 +4144,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Start at the most recent frame (last in array since sorted ascending, oldest first)
             currentIndex = frames.count - 1
 
+            let newestBlock = newestEdgeBlockSummary(in: frames)
+            Log.info(
+                "[TIMELINE-BLOCK] initial-load reason=loadMostRecentFrame newest={\(summarizeEdgeBlock(newestBlock))}",
+                category: .ui
+            )
+
             // Record initial position for undo history
             scheduleStoppedPositionRecording()
 
@@ -3313,6 +4163,9 @@ public class SimpleTimelineViewModel: ObservableObject {
             // 1. Hidden segments are already EXCLUDED from the query (via NOT EXISTS clause)
             // 2. The hatch marks only matter when viewing hidden segments via filter
             // 3. loadHiddenSegments will be called lazily when filter panel opens
+
+            // Load tag metadata/map lazily so the tape can render subtle tag indicators.
+            ensureTapeTagIndicatorDataLoadedIfNeeded()
 
             // Load image if needed for current frame
             loadImageIfNeeded()
@@ -3371,6 +4224,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Restore cached search results if any
         searchViewModel.restoreCachedSearchResults()
+
+        // Load tag metadata/map lazily so the tape can render subtle tag indicators.
+        ensureTapeTagIndicatorDataLoadedIfNeeded()
 
         // Load image if needed for current frame
         loadImageIfNeeded()
@@ -7033,13 +7889,36 @@ public class SimpleTimelineViewModel: ObservableObject {
     // MARK: - Private Helpers
 
     /// Minimum gap in seconds to show a gap indicator (2 minutes)
-    private static let minimumGapThreshold: TimeInterval = 120
+    private nonisolated static let minimumGapThreshold: TimeInterval = 120
     /// Small epsilon to avoid re-fetching the boundary frame in bounded load-more queries.
     private static let boundedLoadBoundaryEpsilonSeconds: TimeInterval = 0.001
 
+    /// Convert Date to truncated millisecond epoch, matching DB binding semantics.
+    private func timestampMilliseconds(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSince1970 * 1000)
+    }
+
+    /// Create Date from millisecond epoch exactly (avoids floating-point drift around boundaries).
+    private func dateFromMilliseconds(_ milliseconds: Int64) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000.0)
+    }
+
+    private func oneMillisecondAfter(_ date: Date) -> Date {
+        dateFromMilliseconds(timestampMilliseconds(date) + 1)
+    }
+
+    private func oneMillisecondBefore(_ date: Date) -> Date {
+        dateFromMilliseconds(timestampMilliseconds(date) - 1)
+    }
+
     /// Group consecutive frames into blocks, splitting on app change OR time gaps ≥2 min
     private func groupFramesIntoBlocks() -> [AppBlock] {
-        buildAppBlockSnapshot(from: frames).blocks
+        Self.buildAppBlockSnapshot(
+            from: makeSnapshotFrameInputs(from: frames),
+            segmentTagsMap: segmentTagsMap,
+            segmentCommentCountsMap: segmentCommentCountsMap,
+            hiddenTagID: cachedHiddenTagIDValue
+        ).blocks
     }
 
     // MARK: - Infinite Scroll
@@ -7052,6 +7931,79 @@ public class SimpleTimelineViewModel: ObservableObject {
         if let oldest = oldestLoadedTimestamp, let newest = newestLoadedTimestamp {
             Log.debug("[InfiniteScroll] Window boundaries: \(oldest) to \(newest)", category: .ui)
         }
+    }
+
+    private struct EdgeBlockSummary {
+        let bundleID: String?
+        let startIndex: Int
+        let endIndex: Int
+        let frameCount: Int
+        let startTimestamp: Date
+        let endTimestamp: Date
+    }
+
+    /// Summarize the newest (right-edge) app block using the same split rules as tape blocks:
+    /// app change OR significant gap.
+    private func newestEdgeBlockSummary(in frameList: [TimelineFrame]) -> EdgeBlockSummary? {
+        guard !frameList.isEmpty else { return nil }
+
+        let endIndex = frameList.count - 1
+        let bundleID = frameList[endIndex].frame.metadata.appBundleID
+        var startIndex = endIndex
+
+        while startIndex > 0 {
+            let current = frameList[startIndex]
+            let previous = frameList[startIndex - 1]
+            let appChanged = previous.frame.metadata.appBundleID != bundleID
+            let hasSignificantGap = current.frame.timestamp.timeIntervalSince(previous.frame.timestamp) >= Self.minimumGapThreshold
+            if appChanged || hasSignificantGap {
+                break
+            }
+            startIndex -= 1
+        }
+
+        return EdgeBlockSummary(
+            bundleID: bundleID,
+            startIndex: startIndex,
+            endIndex: endIndex,
+            frameCount: endIndex - startIndex + 1,
+            startTimestamp: frameList[startIndex].frame.timestamp,
+            endTimestamp: frameList[endIndex].frame.timestamp
+        )
+    }
+
+    private func summarizeEdgeBlock(_ block: EdgeBlockSummary?) -> String {
+        guard let block else { return "none" }
+        let bundle = block.bundleID ?? "nil"
+        let start = Log.timestamp(from: block.startTimestamp)
+        let end = Log.timestamp(from: block.endTimestamp)
+        return "bundle=\(bundle) range=\(block.startIndex)-\(block.endIndex) frames=\(block.frameCount) ts=\(start)->\(end)"
+    }
+
+    private func logNewestEdgeBlockTransition(
+        context: String,
+        reason: String,
+        before: EdgeBlockSummary?,
+        after: EdgeBlockSummary?,
+        appendedCount: Int
+    ) {
+        guard let after else { return }
+
+        if let before,
+           before.bundleID == after.bundleID,
+           after.frameCount > before.frameCount {
+            let growth = after.frameCount - before.frameCount
+            Log.info(
+                "[TIMELINE-BLOCK] \(context) reason=\(reason) newestBlockGrewBy=\(growth) appended=\(appendedCount) before={\(summarizeEdgeBlock(before))} after={\(summarizeEdgeBlock(after))}",
+                category: .ui
+            )
+            return
+        }
+
+        Log.info(
+            "[TIMELINE-BLOCK] \(context) reason=\(reason) newestBlockChanged appended=\(appendedCount) before={\(summarizeEdgeBlock(before))} after={\(summarizeEdgeBlock(after))}",
+            category: .ui
+        )
     }
 
     private struct BoundaryLoadTrigger: Sendable {
@@ -7135,7 +8087,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Query frames before the oldest timestamp
             // Use a bounded window to avoid expensive full-history scans.
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let rangeEnd = oldestTimestamp.addingTimeInterval(-Self.boundedLoadBoundaryEpsilonSeconds)
+            let rangeEnd = oneMillisecondBefore(oldestTimestamp)
             let rangeStart = rangeEnd.addingTimeInterval(-WindowConfig.loadWindowSpanSeconds)
             guard let boundedFilters = makeBoundedBoundaryFilters(rangeStart: rangeStart, rangeEnd: rangeEnd) else {
                 Log.info(
@@ -7297,7 +8249,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Query frames after the newest timestamp
             // Use a bounded window to avoid expensive full-future scans.
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let rangeStart = newestTimestamp.addingTimeInterval(Self.boundedLoadBoundaryEpsilonSeconds)
+            let rangeStart = oneMillisecondAfter(newestTimestamp)
             let rangeEnd = rangeStart.addingTimeInterval(WindowConfig.loadWindowSpanSeconds)
             Log.info(
                 "[BoundaryNewer] START reason=\(reason) window=\(Log.timestamp(from: rangeStart))->\(Log.timestamp(from: rangeEnd)) currentNewest=\(Log.timestamp(from: newestTimestamp))",
@@ -7361,12 +8313,37 @@ public class SimpleTimelineViewModel: ObservableObject {
             // framesWithVideoInfo are returned ASC (oldest first), which is correct for appending
             let newTimelineFrames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
 
+            let existingFrameIDs = Set(frames.map { $0.frame.id })
+            let uniqueTimelineFrames = newTimelineFrames.filter { !existingFrameIDs.contains($0.frame.id) }
+            let duplicateCount = newTimelineFrames.count - uniqueTimelineFrames.count
+
+            if uniqueTimelineFrames.isEmpty {
+                let newestFrameID = frames.last?.frame.id.value ?? -1
+                let duplicateFrameID = newTimelineFrames.first?.frame.id.value ?? -1
+                Log.warning(
+                    "[BoundaryNewer] Duplicate-only result reason=\(reason) count=\(newTimelineFrames.count) newestFrameID=\(newestFrameID) duplicateFrameID=\(duplicateFrameID) newestTs=\(Log.timestamp(from: newestTimestamp)); marking end to stop retry loop",
+                    category: .ui
+                )
+                hasMoreNewer = false
+                hasReachedAbsoluteEnd = true
+                isLoadingNewer = false
+                return
+            }
+
+            if duplicateCount > 0 {
+                Log.warning(
+                    "[BoundaryNewer] Dropping \(duplicateCount)/\(newTimelineFrames.count) duplicate frame(s) reason=\(reason)",
+                    category: .ui
+                )
+            }
+
             // Append to existing frames
             // Use append(contentsOf:) to avoid unnecessary @Published triggers
             let beforeCount = frames.count
             let wasAtNewestBeforeAppend = currentIndex >= beforeCount - 1
             let oldLastTimestamp = frames.last?.frame.timestamp
-            frames.append(contentsOf: newTimelineFrames)
+            let previousNewestBlock = newestEdgeBlockSummary(in: frames)
+            frames.append(contentsOf: uniqueTimelineFrames)
 
             // Keep playhead pinned to "now" when the user was already at the live edge.
             if wasAtNewestBeforeAppend {
@@ -7374,8 +8351,17 @@ public class SimpleTimelineViewModel: ObservableObject {
                 subFrameOffset = 0
             }
 
-            Log.info("[Memory] LOADED NEWER: +\(newTimelineFrames.count) frames (\(beforeCount)→\(frames.count))", category: .ui)
-            if let oldLastTimestamp, let bridge = newTimelineFrames.first?.frame.timestamp {
+            let currentNewestBlock = newestEdgeBlockSummary(in: frames)
+            logNewestEdgeBlockTransition(
+                context: "boundary-newer",
+                reason: reason,
+                before: previousNewestBlock,
+                after: currentNewestBlock,
+                appendedCount: uniqueTimelineFrames.count
+            )
+
+            Log.info("[Memory] LOADED NEWER: +\(uniqueTimelineFrames.count) frames (\(beforeCount)→\(frames.count))", category: .ui)
+            if let oldLastTimestamp, let bridge = uniqueTimelineFrames.first?.frame.timestamp {
                 let bridgeGap = max(0, bridge.timeIntervalSince(oldLastTimestamp))
                 Log.info(
                     "[BoundaryNewer] MERGE reason=\(reason) bridgeGap=\(String(format: "%.1fs", bridgeGap)) oldLast=\(Log.timestamp(from: oldLastTimestamp)) insertedFirst=\(Log.timestamp(from: bridge))",
@@ -7410,7 +8396,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                     criticalThresholdMs: 500
                 )
                 Log.info(
-                    "[CmdFPerf][\(cmdFTrace.id)] Boundary newer load complete reason=\(reason) query=\(String(format: "%.1f", queryElapsedMs))ms load=\(String(format: "%.1f", loadElapsedMs))ms added=\(newTimelineFrames.count) total=\(String(format: "%.1f", totalFromShortcutMs))ms",
+                    "[CmdFPerf][\(cmdFTrace.id)] Boundary newer load complete reason=\(reason) query=\(String(format: "%.1f", queryElapsedMs))ms load=\(String(format: "%.1f", loadElapsedMs))ms added=\(uniqueTimelineFrames.count) total=\(String(format: "%.1f", totalFromShortcutMs))ms",
                     category: .ui
                 )
             }

@@ -67,7 +67,8 @@ retrace/
 │   │   ├── Audio.swift          # Audio model types (Release 2)
 │   │   ├── FilterCriteria.swift # Timeline/search filter criteria
 │   │   ├── Source.swift         # Data source enum (native, rewind, etc.)
-│   │   └── Tag.swift            # Tag model types
+│   │   ├── Tag.swift            # Tag model types
+│   │   └── Comment.swift        # Segment comment and attachment models
 │   └── Protocols/               # Module interfaces
 │       ├── DatabaseProtocol.swift
 │       ├── StorageProtocol.swift
@@ -416,4 +417,4 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-*This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-02-20*
+*This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-02-24*

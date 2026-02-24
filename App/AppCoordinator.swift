@@ -101,6 +101,24 @@ public final class PipelineStatusHolder: @unchecked Sendable {
 /// Implements the core data pipeline: Capture → Storage → Processing → Database → Search
 /// Owner: APP integration
 public actor AppCoordinator {
+    public struct SegmentCommentCreateResult: Sendable {
+        public let comment: SegmentComment
+        public let linkedSegmentIDs: [SegmentID]
+        public let skippedSegmentIDs: [SegmentID]
+        public let failedSegmentIDs: [SegmentID]
+
+        public init(
+            comment: SegmentComment,
+            linkedSegmentIDs: [SegmentID],
+            skippedSegmentIDs: [SegmentID],
+            failedSegmentIDs: [SegmentID]
+        ) {
+            self.comment = comment
+            self.linkedSegmentIDs = linkedSegmentIDs
+            self.skippedSegmentIDs = skippedSegmentIDs
+            self.failedSegmentIDs = failedSegmentIDs
+        }
+    }
 
     // MARK: - Properties
 
@@ -1713,6 +1731,11 @@ public actor AppCoordinator {
         try await services.database.getSegmentTagsMap()
     }
 
+    /// Get a map of segment IDs to linked comment counts for timeline comment indicators.
+    public func getSegmentCommentCountsMap() async throws -> [Int64: Int] {
+        try await services.database.getSegmentCommentCountsMap()
+    }
+
     /// Hide a segment by adding the "hidden" tag
     public func hideSegment(segmentId: SegmentID) async throws {
         try await hideSegments(segmentIds: [segmentId])
@@ -1735,6 +1758,147 @@ public actor AppCoordinator {
             try await services.database.addTagToSegment(segmentId: segmentId, tagId: hiddenTag.id)
         }
         Log.info("[AppCoordinator] Hidden \(segmentIds.count) segments", category: .app)
+    }
+
+    // MARK: - Segment Comment Operations
+
+    /// Create a comment and apply it to all provided segments (bulk by default)
+    /// Rewind segments are skipped to preserve read-only semantics.
+    public func createCommentForSegments(
+        body: String,
+        segmentIds: [SegmentID],
+        attachments: [SegmentCommentAttachment] = [],
+        author: String? = nil
+    ) async throws -> SegmentCommentCreateResult {
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBody.isEmpty else {
+            throw DatabaseError.constraintViolation(underlying: "Comment body cannot be empty")
+        }
+
+        let resolvedAuthor = resolvedCommentAuthor(author)
+        let comment = try await services.database.createSegmentComment(
+            body: trimmedBody,
+            author: resolvedAuthor,
+            attachments: attachments
+        )
+
+        var linkedSegmentIDs: [SegmentID] = []
+        var skippedSegmentIDs: [SegmentID] = []
+        var failedSegmentIDs: [SegmentID] = []
+
+        for segmentId in segmentIds {
+            do {
+                if try await isRewindSegment(segmentId: segmentId) {
+                    skippedSegmentIDs.append(segmentId)
+                    continue
+                }
+                try await services.database.addCommentToSegment(segmentId: segmentId, commentId: comment.id)
+                linkedSegmentIDs.append(segmentId)
+            } catch {
+                failedSegmentIDs.append(segmentId)
+                Log.warning(
+                    "[AppCoordinator] Failed linking comment \(comment.id.value) to segment \(segmentId.value): \(error)",
+                    category: .app
+                )
+            }
+        }
+
+        if linkedSegmentIDs.isEmpty {
+            // No eligible segments were linked, clean up the newly-created comment (and attachments).
+            do {
+                try await services.database.deleteSegmentComment(commentId: comment.id)
+            } catch {
+                Log.warning(
+                    "[AppCoordinator] Failed cleanup for unlinked comment \(comment.id.value): \(error)",
+                    category: .app
+                )
+            }
+            throw DatabaseError.constraintViolation(underlying: "No eligible segments to attach comment")
+        }
+
+        Log.info(
+            "[AppCoordinator] Created comment \(comment.id.value): linked=\(linkedSegmentIDs.count), skipped=\(skippedSegmentIDs.count), failed=\(failedSegmentIDs.count)",
+            category: .app
+        )
+        return SegmentCommentCreateResult(
+            comment: comment,
+            linkedSegmentIDs: linkedSegmentIDs,
+            skippedSegmentIDs: skippedSegmentIDs,
+            failedSegmentIDs: failedSegmentIDs
+        )
+    }
+
+    /// Link an existing comment to multiple segments
+    public func addCommentToSegments(segmentIds: [SegmentID], commentId: SegmentCommentID) async throws {
+        var linkedCount = 0
+        for segmentId in segmentIds {
+            if try await isRewindSegment(segmentId: segmentId) {
+                continue
+            }
+            try await services.database.addCommentToSegment(segmentId: segmentId, commentId: commentId)
+            linkedCount += 1
+        }
+        Log.info("[AppCoordinator] Linked comment \(commentId.value) to \(linkedCount) segments", category: .app)
+    }
+
+    /// Remove a comment link from multiple segments
+    public func removeCommentFromSegments(segmentIds: [SegmentID], commentId: SegmentCommentID) async throws {
+        var removedCount = 0
+        for segmentId in segmentIds {
+            if try await isRewindSegment(segmentId: segmentId) {
+                continue
+            }
+            try await services.database.removeCommentFromSegment(segmentId: segmentId, commentId: commentId)
+            removedCount += 1
+        }
+        Log.info("[AppCoordinator] Removed comment \(commentId.value) from \(removedCount) segments", category: .app)
+    }
+
+    /// Get comments linked to a segment
+    public func getCommentsForSegment(segmentId: SegmentID) async throws -> [SegmentComment] {
+        try await services.database.getCommentsForSegment(segmentId: segmentId)
+    }
+
+    /// Update an existing comment
+    public func updateSegmentComment(
+        commentId: SegmentCommentID,
+        body: String,
+        attachments: [SegmentCommentAttachment],
+        author: String? = nil
+    ) async throws {
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBody.isEmpty else {
+            throw DatabaseError.constraintViolation(underlying: "Comment body cannot be empty")
+        }
+
+        try await services.database.updateSegmentComment(
+            commentId: commentId,
+            body: trimmedBody,
+            author: resolvedCommentAuthor(author),
+            attachments: attachments
+        )
+    }
+
+    /// Delete a comment and all of its segment links
+    public func deleteSegmentComment(commentId: SegmentCommentID) async throws {
+        try await services.database.deleteSegmentComment(commentId: commentId)
+    }
+
+    /// Get the number of linked segments for a comment
+    public func getSegmentCountForComment(commentId: SegmentCommentID) async throws -> Int {
+        try await services.database.getSegmentCountForComment(commentId: commentId)
+    }
+
+    private nonisolated func resolvedCommentAuthor(_ proposedAuthor: String?) -> String {
+        if let proposedAuthor {
+            let trimmed = proposedAuthor.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+
+        let fallback = NSFullUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "Unknown User" : fallback
     }
 
     // MARK: - Text Region Retrieval

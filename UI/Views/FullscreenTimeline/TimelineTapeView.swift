@@ -98,6 +98,7 @@ public struct TimelineTapeView: View {
             let buffer = geometry.size.width
             let cullingLeftX = visibleLeftX - buffer
             let cullingRightX = visibleRightX + buffer
+            let tagsByID = viewModel.availableTagsByID
 
             ZStack(alignment: .leading) {
                 // Main tape blocks with gap indicators
@@ -113,7 +114,12 @@ public struct TimelineTapeView: View {
                             .offset(x: gapX)
                     }
                     // The block itself
-                    appBlockView(item: item, cullingLeftX: cullingLeftX, cullingRightX: cullingRightX)
+                    appBlockView(
+                        item: item,
+                        cullingLeftX: cullingLeftX,
+                        cullingRightX: cullingRightX,
+                        tagsByID: tagsByID
+                    )
                         .offset(x: item.leftX)
                 }
                 .frame(width: totalTapeWidth, alignment: .leading)
@@ -186,7 +192,12 @@ public struct TimelineTapeView: View {
 
     // MARK: - App Block View
 
-    private func appBlockView(item: TapeBlockLayout, cullingLeftX: CGFloat, cullingRightX: CGFloat) -> some View {
+    private func appBlockView(
+        item: TapeBlockLayout,
+        cullingLeftX: CGFloat,
+        cullingRightX: CGFloat,
+        tagsByID: [Int64: Tag]
+    ) -> some View {
         let block = item.block
         let isCurrentBlock = viewModel.currentIndex >= block.startIndex && viewModel.currentIndex <= block.endIndex
         let isSelectedBlock = viewModel.selectedFrameIndex.map { $0 >= block.startIndex && $0 <= block.endIndex } ?? false
@@ -249,6 +260,20 @@ public struct TimelineTapeView: View {
                 appIcon(for: bundleID)
                     .frame(width: appIconSize, height: appIconSize)
                     .allowsHitTesting(false) // Allow clicks to pass through to frame segments
+            }
+
+            // Top-edge indicators (tags + comment thread shortcut).
+            if !isHidingBlock, blockWidth > 22, (!block.tagIDs.isEmpty || block.hasComments) {
+                BlockIndicatorsOverlay(
+                    block: block,
+                    blockWidth: blockWidth,
+                    emphasized: isCurrentBlock || isSelectedBlock,
+                    tagsByID: tagsByID,
+                    tagCatalogRevision: viewModel.tagCatalogRevision,
+                    onOpenTags: { viewModel.openTagSubmenuForTimelineBlock(block) },
+                    onOpenComments: { viewModel.openCommentSubmenuForTimelineBlock(block) }
+                )
+                .equatable()
             }
 
             // Selection/current border overlay (on top of frame segments so border is fully visible)
@@ -448,6 +473,101 @@ public struct TimelineTapeView: View {
 
     private func appIcon(for bundleID: String) -> some View {
         AppIconView(bundleID: bundleID, size: appIconSize)
+    }
+
+    private struct BlockIndicatorsOverlay: View, Equatable {
+        let block: AppBlock
+        let blockWidth: CGFloat
+        let emphasized: Bool
+        let tagsByID: [Int64: Tag]
+        let tagCatalogRevision: UInt64
+        let onOpenTags: () -> Void
+        let onOpenComments: () -> Void
+
+        static func == (lhs: BlockIndicatorsOverlay, rhs: BlockIndicatorsOverlay) -> Bool {
+            lhs.block.id == rhs.block.id &&
+                lhs.block.tagIDs == rhs.block.tagIDs &&
+                lhs.block.hasComments == rhs.block.hasComments &&
+                lhs.emphasized == rhs.emphasized &&
+                lhs.tagCatalogRevision == rhs.tagCatalogRevision &&
+                abs(lhs.blockWidth - rhs.blockWidth) < 0.001
+        }
+
+        var body: some View {
+            let topLift: CGFloat = emphasized ? 17 : 16
+
+            return HStack(spacing: 6) {
+                if !block.tagIDs.isEmpty {
+                    Button(action: onOpenTags) {
+                        tagIndicatorDots
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open tags")
+                    .onHover { hovering in
+                        if hovering { NSCursor.pointingHand.push() }
+                        else { NSCursor.pop() }
+                    }
+                }
+
+                if block.hasComments {
+                    Button(action: onOpenComments) {
+                        Image(systemName: "text.bubble")
+                            .font(.system(size: emphasized ? 10 : 9, weight: .semibold))
+                            .foregroundColor(.white.opacity(emphasized ? 0.9 : 0.8))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open comments")
+                    .onHover { hovering in
+                        if hovering { NSCursor.pointingHand.push() }
+                        else { NSCursor.pop() }
+                    }
+                }
+            }
+            .padding(.leading, 6)
+            .offset(y: -topLift)
+            .frame(width: blockWidth, height: TimelineScaleFactor.tapeHeight, alignment: .topLeading)
+        }
+
+        private var tagIndicatorDots: some View {
+            let visibleTagIDs = Array(block.tagIDs.prefix(3))
+            let hasOverflow = block.tagIDs.count > visibleTagIDs.count
+            let dotOpacity = emphasized ? 0.96 : 0.82
+            let dotStrokeOpacity = emphasized ? 0.58 : 0.42
+            let dotGlowOpacity = emphasized ? 0.40 : 0.26
+            let dotSize: CGFloat = emphasized ? 9 : 8
+            let visibleCount = CGFloat(visibleTagIDs.count + (hasOverflow ? 1 : 0))
+            let intrinsicRowWidth = visibleCount * dotSize + max(0, visibleCount - 1) * 3
+            let rowWidth = max(10, intrinsicRowWidth)
+
+            return HStack(spacing: 3) {
+                ForEach(visibleTagIDs, id: \.self) { tagID in
+                    let color = tagColor(forTagIDValue: tagID)
+                    Circle()
+                        .fill(color.opacity(dotOpacity))
+                        .overlay(
+                            Circle()
+                                .stroke(color.opacity(dotStrokeOpacity), lineWidth: 0.8)
+                        )
+                        .shadow(color: color.opacity(dotGlowOpacity), radius: emphasized ? 3.2 : 2.4, x: 0, y: 0)
+                        .frame(width: dotSize, height: dotSize)
+                }
+
+                if hasOverflow {
+                    Circle()
+                        .fill(Color.white.opacity(dotOpacity))
+                        .frame(width: dotSize - 1, height: dotSize - 1)
+                }
+            }
+            .frame(width: rowWidth, alignment: .center)
+        }
+
+        private func tagColor(forTagIDValue tagIDValue: Int64) -> Color {
+            if let tag = tagsByID[tagIDValue] {
+                return TagColorStore.color(for: tag)
+            }
+            return TagColorStore.color(forTagID: TagID(value: tagIDValue))
+        }
     }
 
     // MARK: - Fixed Playhead
@@ -2503,15 +2623,22 @@ class FrameRightClickNSView: NSView {
         DispatchQueue.main.async {
             // Reset submenu state when opening a new context menu
             viewModel.showTagSubmenu = false
+            viewModel.showCommentSubmenu = false
             viewModel.isHoveringAddTagButton = false
+            viewModel.isHoveringAddCommentButton = false
             viewModel.selectedSegmentTags = []
+            viewModel.newCommentText = ""
+            viewModel.newCommentAttachmentDrafts = []
+            viewModel.selectedBlockComments = []
+            viewModel.blockCommentsLoadError = nil
+            viewModel.isLoadingBlockComments = false
 
             // Update to new location/frame
             viewModel.timelineContextMenuSegmentIndex = self.frameIndex
             viewModel.timelineContextMenuLocation = menuLocation
             viewModel.selectedFrameIndex = self.frameIndex  // Highlight the right-clicked block
             viewModel.showTimelineContextMenu = true
-            Task { await viewModel.loadTags() }
+            Task { await viewModel.loadTimelineContextMenuData() }
         }
     }
 }

@@ -94,7 +94,8 @@ actor MigrationRunner {
             V4_DailyMetrics(),
             V5_FTSUnicode61(),
             V6_FrameProcessedAt(),
-            V7_FrameRedactionReason()
+            V7_FrameRedactionReason(),
+            V8_SegmentComments()
         ]
     }
 

@@ -1091,6 +1091,156 @@ public class AppIconColorCache {
     }
 }
 
+// MARK: - Tag Color Storage
+
+/// Persists per-tag colors selected by users in Settings.
+/// Colors are keyed by tag ID and fall back to a deterministic color when unset.
+public enum TagColorStore {
+    private static let defaults: UserDefaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+    private static let storageKey = "tagColorsByID"
+    private static let lock = NSLock()
+    private static var cachedHexByTagID: [Int64: String] = [:]
+    private static var didLoadCache = false
+
+    public static func color(for tag: Tag) -> Color {
+        color(forTagID: tag.id, tagName: tag.name)
+    }
+
+    public static func color(forTagID tagID: TagID, tagName: String? = nil) -> Color {
+        lock.lock()
+        loadCacheIfNeededLocked()
+        let storedHex = cachedHexByTagID[tagID.value]
+        lock.unlock()
+
+        if let storedHex, let storedColor = colorFromHex(storedHex) {
+            return storedColor
+        }
+
+        return fallbackColor(forTagID: tagID, tagName: tagName)
+    }
+
+    public static func setColor(_ color: Color, for tagID: TagID) {
+        let hex = hexString(from: color)
+        var didChange = false
+
+        lock.lock()
+        loadCacheIfNeededLocked()
+
+        if cachedHexByTagID[tagID.value] != hex {
+            cachedHexByTagID[tagID.value] = hex
+            persistLocked()
+            didChange = true
+        }
+
+        lock.unlock()
+
+        if didChange {
+            NotificationCenter.default.post(name: .tagColorsDidChange, object: tagID)
+        }
+    }
+
+    public static func removeColor(for tagID: TagID) {
+        var didChange = false
+
+        lock.lock()
+        loadCacheIfNeededLocked()
+
+        if cachedHexByTagID.removeValue(forKey: tagID.value) != nil {
+            persistLocked()
+            didChange = true
+        }
+
+        lock.unlock()
+
+        if didChange {
+            NotificationCenter.default.post(name: .tagColorsDidChange, object: tagID)
+        }
+    }
+
+    public static func pruneColors(keeping validTagIDs: Set<Int64>) {
+        var didChange = false
+
+        lock.lock()
+        loadCacheIfNeededLocked()
+
+        let initialCount = cachedHexByTagID.count
+        cachedHexByTagID = cachedHexByTagID.filter { validTagIDs.contains($0.key) }
+        didChange = cachedHexByTagID.count != initialCount
+
+        if didChange {
+            persistLocked()
+        }
+
+        lock.unlock()
+
+        if didChange {
+            NotificationCenter.default.post(name: .tagColorsDidChange, object: nil)
+        }
+    }
+
+    public static func suggestedColor(for tagName: String) -> Color {
+        fallbackColor(forTagID: TagID(value: 0), tagName: tagName)
+    }
+
+    private static func loadCacheIfNeededLocked() {
+        guard !didLoadCache else { return }
+        defer { didLoadCache = true }
+
+        guard let raw = defaults.dictionary(forKey: storageKey) as? [String: String] else {
+            cachedHexByTagID = [:]
+            return
+        }
+
+        cachedHexByTagID = raw.reduce(into: [:]) { map, entry in
+            guard let id = Int64(entry.key) else { return }
+            map[id] = entry.value
+        }
+    }
+
+    private static func persistLocked() {
+        let serialized = cachedHexByTagID.reduce(into: [String: String]()) { map, entry in
+            map[String(entry.key)] = entry.value
+        }
+        defaults.set(serialized, forKey: storageKey)
+    }
+
+    private static func fallbackColor(forTagID tagID: TagID, tagName: String?) -> Color {
+        let normalizedName = (tagName ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let hashSeed = normalizedName.isEmpty ? "tag-\(tagID.value)" : "tag-\(tagID.value)-\(normalizedName)"
+        let hash = stableHash(for: hashSeed)
+        let hue = Double(hash % 360) / 360.0
+        return Color(hue: hue, saturation: 0.72, brightness: 0.88)
+    }
+
+    private static func stableHash(for input: String) -> UInt64 {
+        // FNV-1a 64-bit hash for deterministic color assignment.
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in input.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+
+    private static func colorFromHex(_ hex: String) -> Color? {
+        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard cleaned.count == 6 else { return nil }
+        return Color(hex: cleaned)
+    }
+
+    private static func hexString(from color: Color) -> String {
+        let nsColor = NSColor(color).usingColorSpace(.sRGB) ?? NSColor.systemBlue
+
+        let red = max(0, min(255, Int((nsColor.redComponent * 255).rounded())))
+        let green = max(0, min(255, Int((nsColor.greenComponent * 255).rounded())))
+        let blue = max(0, min(255, Int((nsColor.blueComponent * 255).rounded())))
+
+        return String(format: "#%02X%02X%02X", red, green, blue)
+    }
+}
+
 // MARK: - Colors
 
 extension Color {
@@ -2137,4 +2287,6 @@ public struct PingDotView: View {
 extension Notification.Name {
     /// Posted when the font style preference changes
     public static let fontStyleDidChange = Notification.Name("fontStyleDidChange")
+    /// Posted when user-defined tag colors are updated
+    public static let tagColorsDidChange = Notification.Name("tagColorsDidChange")
 }

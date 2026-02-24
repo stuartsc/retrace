@@ -381,6 +381,16 @@ struct DashboardContentView: View {
             DashboardWindowController.shared.show()
             updateDashboardWindowTitle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsTags)) { _ in
+            initialSettingsTab = .tags
+            initialSettingsScrollTargetID = nil
+            currentSettingsTabTitle = SettingsTab.tags.rawValue
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedView = .settings
+            }
+            DashboardWindowController.shared.show()
+            updateDashboardWindowTitle()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPauseReminderInterval)) { _ in
             initialSettingsTab = .capture
             initialSettingsScrollTargetID = SettingsView.pauseReminderIntervalTargetID
