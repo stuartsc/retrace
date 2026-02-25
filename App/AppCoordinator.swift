@@ -641,8 +641,8 @@ public actor AppCoordinator {
 
         // Derive priority, FPS limit, and worker count from processing level
         // Level 1: Efficiency  - background, 0.5 FPS, 1 worker
-        // Level 2: Light       - background, no limit, 1 worker
-        // Level 3: Balanced    - background, no limit, 2 workers
+        // Level 2: Light       - background, no limit, 2 workers
+        // Level 3: Balanced    - utility, no limit, 1 worker
         // Level 4: Performance - medium, no limit, 1 worker
         // Level 5: Max         - high, no limit, 2 workers
         let taskPriority: TaskPriority
@@ -652,13 +652,13 @@ public actor AppCoordinator {
         case 1:
             taskPriority = .background; maxFPS = 0.5; workerCount = 1
         case 2:
-            taskPriority = .background; maxFPS = 0; workerCount = 1
+            taskPriority = .background; maxFPS = 0; workerCount = 2
         case 4:
             taskPriority = .medium; maxFPS = 0; workerCount = 1
         case 5:
             taskPriority = .high; maxFPS = 0; workerCount = 2
-        default: // 3 = Medium (default)
-            taskPriority = .background; maxFPS = 0; workerCount = 2
+        default: // 3 = Balanced (default)
+            taskPriority = .utility; maxFPS = 0; workerCount = 1
         }
 
         // Update processing config - always prefer background processing for VNRecognizeTextRequest

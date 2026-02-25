@@ -1535,7 +1535,7 @@ struct MoreOptionsMenu: View {
                     )
                 )
                     .retraceMenuContainer()
-                    .frame(width: 205)
+                    .frame(width: 248)
                     .clipped()
                     .contentShape(Rectangle())
                     .onHover { hovering in

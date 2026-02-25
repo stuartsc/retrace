@@ -65,7 +65,7 @@ enum SettingsDefaults {
     static let ocrOnlyWhenPluggedIn = false
     static let ocrPauseInLowPowerMode = false
     static let ocrMaxFramesPerSecond: Double = 0  // Legacy, unused
-    static let ocrProcessingLevel: Int = 3  // Default: Balanced (background priority, 2 workers)
+    static let ocrProcessingLevel: Int = 3  // Default: Balanced (utility priority, 1 worker)
     static let ocrAppFilterMode: OCRAppFilterMode = .allApps
     static let ocrFilteredApps = ""  // JSON array of bundle IDs
 }
@@ -3116,7 +3116,7 @@ public struct SettingsView: View {
             "Low intensity, mostly running — may fall behind during busy sessions but catches up when idle"
         ]
         case 3: return [
-            "~1.5 frames/sec  ·  150–200% CPU  ·  2 workers",
+            "~1.5 frames/sec  ·  150–200% CPU  ·  1 worker",
             "Moderate bursts then idle — keeps up with most workflows",
             "Recommended for most users"
         ]
@@ -3129,7 +3129,7 @@ public struct SettingsView: View {
             "Sharp spikes then done — everything is searchable almost instantly"
         ]
         default: return [
-            "~1.5 frames/sec  ·  150–200% CPU  ·  2 workers",
+            "~1.5 frames/sec  ·  150–200% CPU  ·  1 worker",
             "Moderate bursts then idle — keeps up with most workflows",
             "Recommended for most users"
         ]
