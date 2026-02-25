@@ -44,6 +44,7 @@ public class PauseReminderManager: ObservableObject {
     private var wasCapturing = false
     private var hasCheckedInitialState = false
     private var wasSuppressedForPausedState = false
+    private var wasSuppressedForOnboarding = false
 
     // MARK: - Initialization
 
@@ -71,7 +72,27 @@ public class PauseReminderManager: ObservableObject {
     /// Check the current capture state and manage the reminder timer
     private func checkCaptureState() async {
         let isCapturing = await coordinator.isCapturing()
+        let hasCompletedOnboarding = await coordinator.onboardingManager.hasCompletedOnboarding
         let isPausedState = MenuBarManager.shared?.isPausedState == true
+
+        if !hasCompletedOnboarding {
+            if pauseStartTime != nil || reminderTimer != nil || remindLaterTimer != nil || shouldShowReminder {
+                onCaptureResumed()
+                Log.debug("[PauseReminderManager] Suppressing reminder during onboarding", category: .ui)
+            }
+            // Reset initial-state logic so reminder behavior is recalculated
+            // once onboarding has actually completed.
+            hasCheckedInitialState = false
+            wasCapturing = isCapturing
+            wasSuppressedForPausedState = false
+            wasSuppressedForOnboarding = true
+            return
+        }
+
+        if wasSuppressedForOnboarding {
+            hasCheckedInitialState = false
+            wasSuppressedForOnboarding = false
+        }
 
         // "Paused" (timed pause) should not show the off reminder.
         if isPausedState {
@@ -125,7 +146,7 @@ public class PauseReminderManager: ObservableObject {
         // Start a new timer for 5 minutes
         reminderTimer = Timer.scheduledTimer(withTimeInterval: Self.reminderDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self?.showReminderIfNotDismissed()
+                await self?.showReminderIfNotDismissed()
             }
         }
 
@@ -146,9 +167,15 @@ public class PauseReminderManager: ObservableObject {
     }
 
     /// Show the reminder if the user hasn't dismissed it
-    private func showReminderIfNotDismissed() {
+    private func showReminderIfNotDismissed() async {
         guard !isDismissedForSession else {
             Log.debug("[PauseReminderManager] Reminder suppressed (user dismissed)", category: .ui)
+            return
+        }
+
+        let hasCompletedOnboarding = await coordinator.onboardingManager.hasCompletedOnboarding
+        guard hasCompletedOnboarding else {
+            Log.debug("[PauseReminderManager] Reminder suppressed during onboarding", category: .ui)
             return
         }
 
@@ -190,8 +217,8 @@ public class PauseReminderManager: ObservableObject {
         remindLaterTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.isDismissedForSession = false
-                self?.shouldShowReminder = true
-                Log.debug("[PauseReminderManager] Remind later timer fired, showing reminder again", category: .ui)
+                await self?.showReminderIfNotDismissed()
+                Log.debug("[PauseReminderManager] Remind later timer fired, attempting reminder display", category: .ui)
             }
         }
 

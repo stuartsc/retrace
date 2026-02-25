@@ -2058,8 +2058,9 @@ public struct RetraceMenuButton: View {
                     .foregroundColor(foregroundColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .layoutPriority(1)
 
-                Spacer()
+                Spacer(minLength: 0)
 
                 if let shortcut {
                     Text(shortcut)

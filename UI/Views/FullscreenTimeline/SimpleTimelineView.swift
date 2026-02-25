@@ -4477,7 +4477,7 @@ struct TimelineSegmentContextMenu: View {
     let containerSize: CGSize
 
     // Menu dimensions
-    private let menuWidth: CGFloat = 196
+    private let menuWidth: CGFloat = 208
     private let menuHeight: CGFloat = 172
     private let tagSubmenuWidth: CGFloat = 188
     private let edgePadding: CGFloat = 16
@@ -4685,7 +4685,7 @@ struct TimelineSegmentContextMenu: View {
 typealias TimelineMenuButton = RetraceMenuButton
 
 /// Specialized tag row for the timeline context menu.
-/// Shows compact selected-tag badges and intentionally omits a keyboard shortcut hint.
+/// Shows compact selected-tag badges, and only shows the shortcut hint in the neutral "Add Tag" state.
 struct TimelineTagMenuButton: View {
     let selectedTags: [Tag]
     var onHoverChanged: ((Bool) -> Void)? = nil
@@ -4726,8 +4726,16 @@ struct TimelineTagMenuButton: View {
                         .foregroundColor(foregroundColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .layoutPriority(1)
 
-                    Spacer()
+                    Spacer(minLength: 0)
+
+                    Text("⌘T")
+                        .font(RetraceMenuStyle.shortcutFont)
+                        .foregroundColor(shortcutColor)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(minWidth: RetraceMenuStyle.shortcutColumnMinWidth, alignment: .trailing)
                 }
 
                 Image(systemName: "chevron.right")
@@ -4755,6 +4763,10 @@ struct TimelineTagMenuButton: View {
 
     private var foregroundColor: Color {
         isHovering ? RetraceMenuStyle.textColor : RetraceMenuStyle.textColorMuted
+    }
+
+    private var shortcutColor: Color {
+        RetraceMenuStyle.textColorMuted.opacity(isHovering ? 0.95 : 0.7)
     }
 
     @ViewBuilder
