@@ -480,3 +480,49 @@ final class DateJumpPlayheadRelativeParsingTests: XCTestCase {
         XCTAssertEqual(components.minute, minute)
     }
 }
+
+@MainActor
+final class SearchHighlightQueryParsingTests: XCTestCase {
+    func testQuotedPhraseSearchOnlyHighlightsPhraseMatches() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.ocrNodes = [
+            makeNode(id: 1, text: "Create a feature quickly"),
+            makeNode(id: 2, text: "Roadmap for release"),
+            makeNode(id: 3, text: "Status table")
+        ]
+        viewModel.searchHighlightQuery = "\"create a feature\""
+        viewModel.isShowingSearchHighlight = true
+
+        let matches = viewModel.searchHighlightNodes
+
+        XCTAssertEqual(matches.map(\.node.id), [1])
+        XCTAssertEqual(matches.first?.ranges.count, 1)
+    }
+
+    func testMixedPhraseAndTermSearchDoesNotSplitPhraseIntoSingleWords() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.ocrNodes = [
+            makeNode(id: 1, text: "Create a feature quickly"),
+            makeNode(id: 2, text: "Launch checklist"),
+            makeNode(id: 3, text: "Status table")
+        ]
+        viewModel.searchHighlightQuery = "\"create a feature\" launch"
+        viewModel.isShowingSearchHighlight = true
+
+        let matches = viewModel.searchHighlightNodes
+
+        XCTAssertEqual(matches.map(\.node.id), [1, 2])
+    }
+
+    private func makeNode(id: Int, text: String) -> OCRNodeWithText {
+        OCRNodeWithText(
+            id: id,
+            frameId: 1,
+            x: 0.1,
+            y: 0.1,
+            width: 0.3,
+            height: 0.1,
+            text: text
+        )
+    }
+}

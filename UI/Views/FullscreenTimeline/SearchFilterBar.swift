@@ -861,6 +861,8 @@ private struct SearchOrderChip: View {
     @State private var isHovered = false
 
     var body: some View {
+        let isHighlighted = isHovered || isOpen
+
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: selection.icon)
@@ -873,18 +875,18 @@ private struct SearchOrderChip: View {
                 Image(systemName: "chevron.down")
                     .font(.retraceCaption2)
             }
-            .foregroundColor(.white.opacity(0.7))
+            .foregroundColor(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.white.opacity((isHovered || isOpen) ? 0.15 : 0.1))
+                    .fill(Color.white.opacity(isHighlighted ? 0.22 : 0.2))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(
-                        (isHovered || isOpen) ? RetraceMenuStyle.filterStrokeStrong : Color.clear,
-                        lineWidth: (isHovered || isOpen) ? 1.2 : 1
+                        isHighlighted ? RetraceMenuStyle.filterStrokeStrong : RetraceMenuStyle.filterStrokeMedium,
+                        lineWidth: isHighlighted ? 1.2 : 1
                     )
             )
         }

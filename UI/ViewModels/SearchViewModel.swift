@@ -158,8 +158,9 @@ public class SearchViewModel: ObservableObject {
     /// Cache version - increment when data structure changes to invalidate old caches
     private static let searchCacheVersion = 4  // v4: Advanced metadata filters (window name + browser URL)
     private static let searchCacheVersionKey = "search.cacheVersion"
-    /// How long the cached search results remain valid (2 minutes)
-    private static let searchCacheExpirationSeconds: TimeInterval = 120
+    /// How long cached search results remain valid.
+    /// Keep this aligned with timeline hidden-state cache invalidation.
+    private static let searchCacheExpirationSeconds: TimeInterval = TimelineWindowController.hiddenStateCacheExpirationSeconds
 
     // MARK: - Other Apps Cache (for uninstalled apps from DB)
 

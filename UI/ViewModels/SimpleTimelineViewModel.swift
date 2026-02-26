@@ -4846,33 +4846,26 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
-    /// Get OCR nodes that match the search query (for highlighting)
-    /// Supports exact matches and stem-based matches for nominalized words (e.g., "calling" matches "call")
+    /// Get OCR nodes that match the search query (for highlighting).
+    /// Preserves quoted phrases so exact phrase searches do not over-highlight short words.
     public var searchHighlightNodes: [(node: OCRNodeWithText, ranges: [Range<String.Index>])] {
         guard let query = searchHighlightQuery, !query.isEmpty, isShowingSearchHighlight else {
             return []
         }
 
-        // Strip quotes and normalize query for highlighting
-        let cleanedQuery = query.lowercased()
-            .replacingOccurrences(of: "\"", with: "")
-        // Split query into individual search terms
-        let queryTerms = cleanedQuery.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        Log.debug("[SearchHighlight] Query: '\(query)', cleaned: '\(cleanedQuery)', terms: \(queryTerms)", category: .ui)
+        let queryTokens = tokenizeSearchHighlightQuery(query)
+        guard !queryTokens.isEmpty else { return [] }
+
+        let tokenDescriptions = queryTokens.map(\.debugDescription)
+        Log.debug("[SearchHighlight] Query: '\(query)', tokens: \(tokenDescriptions)", category: .ui)
         var matchingNodes: [(node: OCRNodeWithText, ranges: [Range<String.Index>])] = []
 
         for node in ocrNodes {
             let nodeText = node.text.lowercased()
             var ranges: [Range<String.Index>] = []
 
-            // For each query term, find exact matches in this node
-            for term in queryTerms {
-                var searchStartIndex = nodeText.startIndex
-
-                while let range = nodeText.range(of: term, range: searchStartIndex..<nodeText.endIndex) {
-                    ranges.append(range)
-                    searchStartIndex = range.upperBound
-                }
+            for token in queryTokens {
+                ranges.append(contentsOf: rangesForSearchHighlightToken(token, in: nodeText))
             }
 
             if !ranges.isEmpty {
@@ -4893,6 +4886,88 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         return matchingNodes
+    }
+
+    private enum SearchHighlightToken {
+        case term(String)
+        case phrase(String)
+
+        var debugDescription: String {
+            switch self {
+            case .term(let term):
+                return "term(\(term))"
+            case .phrase(let phrase):
+                return "phrase(\(phrase))"
+            }
+        }
+    }
+
+    private func tokenizeSearchHighlightQuery(_ query: String) -> [SearchHighlightToken] {
+        let normalizedQuery = query
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else { return [] }
+
+        var tokens: [SearchHighlightToken] = []
+        var current = ""
+        var inQuotes = false
+
+        func flushCurrentToken() {
+            let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                current = ""
+                return
+            }
+
+            if inQuotes {
+                tokens.append(.phrase(value))
+            } else {
+                let terms = value.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+                for term in terms {
+                    tokens.append(.term(term))
+                }
+            }
+            current = ""
+        }
+
+        for character in normalizedQuery {
+            if character == "\"" {
+                flushCurrentToken()
+                inQuotes.toggle()
+                continue
+            }
+            current.append(character)
+        }
+
+        flushCurrentToken()
+        return tokens
+    }
+
+    private func rangesForSearchHighlightToken(
+        _ token: SearchHighlightToken,
+        in text: String
+    ) -> [Range<String.Index>] {
+        switch token {
+        case .term(let term):
+            return allRanges(of: term, in: text)
+        case .phrase(let phrase):
+            return allRanges(of: phrase, in: text)
+        }
+    }
+
+    private func allRanges(of needle: String, in haystack: String) -> [Range<String.Index>] {
+        guard !needle.isEmpty else { return [] }
+
+        var ranges: [Range<String.Index>] = []
+        var searchStartIndex = haystack.startIndex
+
+        while searchStartIndex < haystack.endIndex,
+              let range = haystack.range(of: needle, range: searchStartIndex..<haystack.endIndex) {
+            ranges.append(range)
+            searchStartIndex = range.upperBound
+        }
+
+        return ranges
     }
 
     /// Exit live mode and transition to historical frames

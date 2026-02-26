@@ -215,6 +215,10 @@ public struct OnboardingView: View {
             }
         }
         .frame(minWidth: 1000, minHeight: 700)
+        .onTapGesture {
+            guard currentStep == 1 else { return }
+            advanceFromWelcomeStep()
+        }
         .task {
             // Only auto-detect Rewind data on first load
             // Don't check permissions until user reaches permissions step
@@ -524,7 +528,7 @@ public struct OnboardingView: View {
                 .multilineTextAlignment(.center)
 
             // Get Started button centered in welcome step - goes to creator features
-            Button(action: { withAnimation { currentStep = 2 } }) {
+            Button(action: advanceFromWelcomeStep) {
                 Text("Get Started")
                     .font(.retraceHeadline)
                     .foregroundColor(.white)
@@ -538,6 +542,10 @@ public struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity) // Match width with other steps to prevent layout jumping
+    }
+
+    private func advanceFromWelcomeStep() {
+        withAnimation { currentStep = 2 }
     }
 
     // MARK: - Step 3: Core Permissions

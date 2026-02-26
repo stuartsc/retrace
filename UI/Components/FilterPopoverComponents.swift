@@ -1460,7 +1460,7 @@ public struct DateRangeFilterPopover: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white.opacity(0.45))
 
-                    TextField("e.g. dec 5 to 8 | last week to now", text: $rangeInputText)
+                    TextField("e.g. Dec 5, 2025 to Dec 8, 2025 | last week to now", text: $rangeInputText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12, weight: .regular))
                         .foregroundColor(.white)
@@ -1469,6 +1469,8 @@ public struct DateRangeFilterPopover: View {
                         .onChange(of: isRangeInputFocused) { isFocused in
                             if isFocused {
                                 focusedItem = -1  // Clear keyboard navigation highlight when text field is focused
+                            } else {
+                                canonicalizeInputTextIfPossible()
                             }
                         }
                         .onSubmit {
@@ -1869,7 +1871,7 @@ public struct DateRangeFilterPopover: View {
     private func applyInputTextToLocalRange(applyImmediately: Bool) -> Bool {
         let trimmed = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            parseError = "Enter a range like \"Dec 5 to 8\"."
+            parseError = "Enter a range like \"Dec 5, 2025 to Dec 8, 2025\"."
             return false
         }
 
@@ -1984,6 +1986,22 @@ public struct DateRangeFilterPopover: View {
         }
 
         return "\(fullDateFormatter.string(from: startDay)) to \(fullDateFormatter.string(from: endDay))"
+    }
+
+    /// Normalize freeform user text to the canonical full-year display format without applying filters yet.
+    private func canonicalizeInputTextIfPossible() {
+        let trimmed = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let parsedRange = parseDateRangeInput(trimmed) else {
+            return
+        }
+
+        localStartDate = parsedRange.start
+        localEndDate = parsedRange.end
+        displayedMonth = parsedRange.end
+        rangeInputText = formatRangeInput(start: parsedRange.start, end: parsedRange.end)
+        parseError = nil
+        activeCalendarBoundary = .start
     }
 
     private func parseDateRangeInput(_ text: String) -> (start: Date, end: Date)? {

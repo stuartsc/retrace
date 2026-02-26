@@ -63,6 +63,9 @@ public class TimelineWindowController: NSObject {
     /// Whether the timeline overlay is currently visible
     public private(set) var isVisible = false
 
+    /// Shared hidden-state cache expiry used by timeline and search-state invalidation.
+    static let hiddenStateCacheExpirationSeconds: TimeInterval = 60
+
     /// Monotonic counter for deeplink search invocations (debug tracing).
     private var deeplinkSearchInvocationCounter = 0
 
@@ -801,8 +804,8 @@ public class TimelineWindowController: NSObject {
                     viewModel.resetFrameZoom()  // Reset zoom so it's at 100% on next open
                 }
 
-                // Immediately refresh frame data so next open has fresh data
-                // Use navigateToNewest: false to preserve user's position within the 2-minute grace period
+                // Immediately refresh frame data so next open has fresh data.
+                // Use navigateToNewest: false so short hide/show cycles preserve position.
                 if let viewModel = self?.timelineViewModel {
                     await viewModel.refreshFrameData(navigateToNewest: false)
                     // Reset zoom region state on hide
@@ -972,9 +975,9 @@ public class TimelineWindowController: NSObject {
                     return
                 }
 
-                // Check if position cache has expired (1 minute)
+                // Check if hidden-state cache has expired.
                 // If expired, navigate to newest; if not expired, preserve user's position
-                let cacheExpirationSeconds: TimeInterval = 60
+                let cacheExpirationSeconds = Self.hiddenStateCacheExpirationSeconds
                 let cacheExpired: Bool
                 if let lastHidden = self.lastHiddenAt {
                     cacheExpired = Date().timeIntervalSince(lastHidden) > cacheExpirationSeconds
@@ -982,10 +985,18 @@ public class TimelineWindowController: NSObject {
                     cacheExpired = true // No lastHiddenAt means first show, navigate to newest
                 }
 
-                // Expire filtered mode after 1 minute hidden so reopen returns to full timeline.
-                if cacheExpired && viewModel.filterCriteria.hasActiveFilters {
-                    Log.info("[TIMELINE-CACHE] ⏳ Filtered view expired after 60s hidden, clearing filters", category: .ui)
-                    viewModel.clearFiltersWithoutReload()
+                // Expire hidden-state caches together so reopen returns to fresh timeline/search state.
+                if cacheExpired {
+                    if viewModel.filterCriteria.hasActiveFilters {
+                        Log.info("[TIMELINE-CACHE] ⏳ Filtered view expired after \(Int(cacheExpirationSeconds))s hidden, clearing filters", category: .ui)
+                        viewModel.clearFiltersWithoutReload()
+                    }
+
+                    let searchViewModel = viewModel.searchViewModel
+                    if searchViewModel.hasResults || !searchViewModel.searchQuery.isEmpty {
+                        Log.info("[TIMELINE-CACHE] ⏳ Search state expired after \(Int(cacheExpirationSeconds))s hidden, clearing search cache", category: .ui)
+                        searchViewModel.clearSearchResults()
+                    }
                 }
 
                 Log.info("[TIMELINE-CACHE] 🔄 Background refresh triggered (cacheExpired: \(cacheExpired))", category: .ui)

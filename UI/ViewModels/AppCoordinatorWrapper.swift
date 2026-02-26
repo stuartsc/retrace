@@ -43,6 +43,12 @@ public class AppCoordinatorWrapper: ObservableObject {
             }
         }
 
+        let hasCompletedOnboarding = await coordinator.onboardingManager.hasCompletedOnboarding
+        if !hasCompletedOnboarding {
+            Log.debug("[AppCoordinatorWrapper] Skipping auto-start: onboarding not completed", category: .app)
+            return
+        }
+
         // Auto-start recording if it was previously running
         let shouldAutoStart = AppCoordinator.shouldAutoStartRecording()
         Log.debug("[AppCoordinatorWrapper] shouldAutoStartRecording() = \(shouldAutoStart)", category: .app)

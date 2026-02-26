@@ -8,6 +8,18 @@ import SQLCipher
 /// Seamlessly blends data from Retrace (native) and Rewind (encrypted) databases
 public actor DataAdapter {
 
+    /// High-frequency function words that should not use prefix expansion.
+    /// These still participate in MATCH, but as exact token matches.
+    private static let exactMatchStopwords: Set<String> = [
+        "a", "an", "and", "as", "at",
+        "be", "but", "by",
+        "for", "from",
+        "if", "in", "into", "is", "it",
+        "of", "on", "or",
+        "the", "to",
+        "with"
+    ]
+
     // MARK: - Connections
 
     private let retraceConnection: DatabaseConnection
@@ -3054,10 +3066,10 @@ public actor DataAdapter {
                     // End of quoted phrase
                     if !current.isEmpty {
                         // Phrase search: wrap in quotes, no prefix matching
-                        let escaped = current
-                            .replacingOccurrences(of: "*", with: "")
-                            .replacingOccurrences(of: ":", with: "")
-                        parts.append("\"\(escaped)\"")
+                        let escaped = sanitizeFTSTerm(current)
+                        if !escaped.isEmpty {
+                            parts.append("\"\(escaped)\"")
+                        }
                     }
                     current = ""
                     inQuotes = false
@@ -3065,11 +3077,10 @@ public actor DataAdapter {
                     // Start of quoted phrase - save any pending word first
                     if !current.trimmingCharacters(in: .whitespaces).isEmpty {
                         let word = current.trimmingCharacters(in: .whitespaces)
-                        let escaped = word
-                            .replacingOccurrences(of: "\"", with: "")
-                            .replacingOccurrences(of: "*", with: "")
-                            .replacingOccurrences(of: ":", with: "")
-                        parts.append("\"\(escaped)\"*")
+                        let escaped = sanitizeFTSTerm(word)
+                        if !escaped.isEmpty {
+                            parts.append(formatUnquotedTerm(escaped))
+                        }
                     }
                     current = ""
                     inQuotes = true
@@ -3077,11 +3088,10 @@ public actor DataAdapter {
             } else if char.isWhitespace && !inQuotes {
                 // Word boundary outside quotes
                 if !current.isEmpty {
-                    let escaped = current
-                        .replacingOccurrences(of: "\"", with: "")
-                        .replacingOccurrences(of: "*", with: "")
-                        .replacingOccurrences(of: ":", with: "")
-                    parts.append("\"\(escaped)\"*")
+                    let escaped = sanitizeFTSTerm(current)
+                    if !escaped.isEmpty {
+                        parts.append(formatUnquotedTerm(escaped))
+                    }
                     current = ""
                 }
             } else {
@@ -3091,19 +3101,43 @@ public actor DataAdapter {
 
         // Handle remaining content
         if !current.isEmpty {
-            let escaped = current
-                .replacingOccurrences(of: "\"", with: "")
-                .replacingOccurrences(of: "*", with: "")
-                .replacingOccurrences(of: ":", with: "")
-            if inQuotes {
-                // Unclosed quote - treat as phrase anyway
-                parts.append("\"\(escaped)\"")
-            } else {
-                parts.append("\"\(escaped)\"*")
+            let escaped = sanitizeFTSTerm(current)
+            if !escaped.isEmpty {
+                if inQuotes {
+                    // Unclosed quote - treat as phrase anyway
+                    parts.append("\"\(escaped)\"")
+                } else {
+                    parts.append(formatUnquotedTerm(escaped))
+                }
             }
         }
 
         return parts.joined(separator: " ")
+    }
+
+    /// Remove characters that have special meaning in FTS query syntax.
+    private func sanitizeFTSTerm(_ text: String) -> String {
+        text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: ":", with: "")
+    }
+
+    /// For unquoted terms, avoid prefix expansion on stopwords and very short tokens.
+    /// This keeps terms like "a" as exact-token matches instead of broad "a*" prefix matches.
+    private func formatUnquotedTerm(_ term: String) -> String {
+        if shouldUseExactMatch(term) {
+            return "\"\(term)\""
+        }
+        return "\"\(term)\"*"
+    }
+
+    private func shouldUseExactMatch(_ term: String) -> Bool {
+        if term.count <= 2 {
+            return true
+        }
+        return Self.exactMatchStopwords.contains(term.lowercased())
     }
 
     /// Build SQL clause for app filtering (IN or NOT IN based on filter mode)
