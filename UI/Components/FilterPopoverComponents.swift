@@ -1378,13 +1378,12 @@ public struct DateRangeFilterPopover: View {
     @State private var activeCalendarBoundary: CalendarBoundary = .start
     @State private var displayedMonth: Date = Date()
     @State private var focusedItem: Int = 0
-    @State private var lastFocusBeforeApply: Int?
     @State private var keyboardMonitor: Any?
     @FocusState private var isRangeInputFocused: Bool
 
     private let calendar = Calendar.current
     private let weekdaySymbols = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
-    private let itemCount = 6
+    private let itemCount = 5
 
     private enum CalendarBoundary {
         case start
@@ -1587,30 +1586,6 @@ public struct DateRangeFilterPopover: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-
-            // Apply button
-            Button(action: {
-                applyCurrentSelection(moveToNextDropdown: false)
-            }) {
-                Text("Apply")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(enableKeyboardNavigation && focusedItem == 5 ? RetraceMenuStyle.actionBlue : RetraceMenuStyle.actionBlue.opacity(0.85))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(
-                                enableKeyboardNavigation && focusedItem == 5 ? Color.white.opacity(0.35) : Color.clear,
-                                lineWidth: 1.5
-                            )
-                    )
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 10)
             .padding(.bottom, 10)
         }
         .onAppear {
@@ -1861,6 +1836,10 @@ public struct DateRangeFilterPopover: View {
                 localEndDate = day
             }
             activeCalendarBoundary = .start
+            rangeInputText = formatRangeInput(start: localStartDate, end: localEndDate)
+            parseError = nil
+            applyCustomRange(moveToNextDropdown: false)
+            return
         }
 
         rangeInputText = formatRangeInput(start: localStartDate, end: localEndDate)
@@ -2305,7 +2284,7 @@ public struct DateRangeFilterPopover: View {
                     if activeCalendarBoundary == .start {
                         activeCalendarBoundary = .end
                     } else {
-                        activeCalendarBoundary = .start
+                        applyCustomRange(moveToNextDropdown: false)
                     }
                     return nil
                 }
@@ -2388,7 +2367,6 @@ public struct DateRangeFilterPopover: View {
         case 2: applyPreset(.today)
         case 3: applyPreset(.lastWeek)
         case 4: applyPreset(.lastMonth)
-        case 5: applyCurrentSelection(moveToNextDropdown: false)
         default: break
         }
     }
@@ -2406,9 +2384,6 @@ public struct DateRangeFilterPopover: View {
             case 123: // Left
                 if (1...4).contains(focusedItem) {
                     focusedItem = max(1, focusedItem - 1)
-                } else if focusedItem == 5 {
-                    // Apply button - move up to presets
-                    focusedItem = 4
                 } else {
                     moveFocusedItem(by: -1)
                 }
@@ -2418,9 +2393,6 @@ public struct DateRangeFilterPopover: View {
                     focusedItem = min(4, focusedItem + 1)
                 } else if focusedItem == 0 {
                     focusedItem = 1
-                } else if focusedItem == 5 {
-                    // Apply button - move up to presets
-                    focusedItem = 1
                 } else {
                     moveFocusedItem(by: 1)
                 }
@@ -2428,8 +2400,6 @@ public struct DateRangeFilterPopover: View {
             case 125: // Down
                 if focusedItem == 0 {
                     focusedItem = 1
-                } else if (1...4).contains(focusedItem) {
-                    focusedItem = 5
                 } else {
                     moveFocusedItem(by: 1)
                 }
@@ -2440,9 +2410,6 @@ public struct DateRangeFilterPopover: View {
                     return
                 } else if (1...4).contains(focusedItem) {
                     focusedItem = 0
-                } else if focusedItem == 5 {
-                    // Apply button - move up to presets
-                    focusedItem = 4
                 } else {
                     moveFocusedItem(by: -1)
                 }
