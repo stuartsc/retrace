@@ -326,10 +326,17 @@ public actor AppCoordinator {
         // Finalize any orphaned videos (processingState=1 but no active WAL session)
         // This cleans up videos left unfinalised due to dev restarts or crashes
         let activeWALSessions = try await walManager.listActiveSessions()
-        let activeVideoIDs = Set(activeWALSessions.map { $0.videoID.value })
-        let orphanedVideosFinalized = try await services.database.finalizeOrphanedVideos(activeVideoIDs: activeVideoIDs)
-        if orphanedVideosFinalized > 0 {
-            Log.warning("[Recovery] Finalized \(orphanedVideosFinalized) orphaned videos (processingState was stuck at 1)", category: .app)
+        let activeVideoIDs = try await resolveActiveDatabaseVideoIDs(from: activeWALSessions)
+        if !activeWALSessions.isEmpty && activeVideoIDs.isEmpty {
+            Log.warning(
+                "[Recovery] Skipping orphan video finalization: \(activeWALSessions.count) active WAL sessions but no matching unfinalised DB video IDs",
+                category: .app
+            )
+        } else {
+            let orphanedVideosFinalized = try await services.database.finalizeOrphanedVideos(activeVideoIDs: activeVideoIDs)
+            if orphanedVideosFinalized > 0 {
+                Log.warning("[Recovery] Finalized \(orphanedVideosFinalized) orphaned videos (processingState was stuck at 1)", category: .app)
+            }
         }
 
         // Re-enqueue frames that were processing during crash
@@ -810,7 +817,15 @@ public actor AppCoordinator {
 
             let walManager = await storageManager.getWALManager()
             let activeWALSessions = try await walManager.listActiveSessions()
-            let activeVideoIDs = Set(activeWALSessions.map { $0.videoID.value })
+            let activeVideoIDs = try await resolveActiveDatabaseVideoIDs(from: activeWALSessions)
+
+            if !activeWALSessions.isEmpty && activeVideoIDs.isEmpty {
+                Log.warning(
+                    "[OrphanCleanup] Skipping orphan finalization: \(activeWALSessions.count) active WAL sessions but no matching unfinalised DB video IDs",
+                    category: .app
+                )
+                return
+            }
 
             let orphanedCount = try await services.database.finalizeOrphanedVideos(activeVideoIDs: activeVideoIDs)
             if orphanedCount > 0 {
@@ -821,12 +836,47 @@ public actor AppCoordinator {
         }
     }
 
+    /// Map active WAL session path IDs to active DB video IDs.
+    /// WAL sessions are keyed by timestamp-based path IDs, while `video.id` is DB autoincrement.
+    private func resolveActiveDatabaseVideoIDs(from activeWALSessions: [WALSession]) async throws -> Set<Int64> {
+        guard !activeWALSessions.isEmpty else { return [] }
+
+        let activeWALPathIDs = Set(activeWALSessions.map { $0.videoID.value })
+        let unfinalisedVideos = try await services.database.getAllUnfinalisedVideos()
+
+        var activeDBVideoIDs: Set<Int64> = []
+        var matchedWALPathIDs: Set<Int64> = []
+
+        for video in unfinalisedVideos {
+            let pathIDString = URL(fileURLWithPath: video.relativePath).lastPathComponent
+            guard let pathID = Int64(pathIDString) else { continue }
+            if activeWALPathIDs.contains(pathID) {
+                activeDBVideoIDs.insert(video.id)
+                matchedWALPathIDs.insert(pathID)
+            }
+        }
+
+        let unmatchedWALPathIDs = activeWALPathIDs.subtracting(matchedWALPathIDs)
+        if !unmatchedWALPathIDs.isEmpty {
+            let sample = unmatchedWALPathIDs
+                .sorted()
+                .prefix(3)
+                .map(String.init)
+                .joined(separator: ", ")
+            Log.warning(
+                "[OrphanCleanup] \(unmatchedWALPathIDs.count) active WAL sessions had no matching unfinalised DB video path IDs (sample: \(sample))",
+                category: .app
+            )
+        }
+
+        return activeDBVideoIDs
+    }
+
     // MARK: - Pipeline Implementation
 
-    /// Buffered frame entry - stores both the frame ID and captured frame data
+    /// Buffered frame entry - tracks frames pending readability confirmation
     private struct BufferedFrame {
         let frameID: Int64
-        let capturedFrame: CapturedFrame
         /// The frame's index in the video segment (0-based)
         let frameIndexInSegment: Int
     }
@@ -880,18 +930,15 @@ public actor AppCoordinator {
                 if shouldFlushPendingFrames {
                     shouldFlushPendingFrames = false
                     if let processingQueue = await services.processingQueue {
-                        for (resKey, state) in writersByResolution {
+                        for (_, state) in writersByResolution {
                             let pendingCount = state.pendingFrames.count
                             if pendingCount > 0 {
-                                Log.info("[FLUSH] Timeline opened - enqueueing \(pendingCount) pending frames for OCR (keeping in buffer for later readable marking)", category: .app)
-                                // Enqueue frames for OCR (uses cached pixel data, not video file)
-                                // DON'T clear pendingFrames - they still need to be marked readable later
-                                // when the fragment actually flushes to disk
+                                Log.info("[FLUSH] Timeline opened - enqueueing \(pendingCount) pending frames for OCR", category: .app)
+                                // DON'T clear pendingFrames here - they still need to be marked readable
+                                // when the fragment actually flushes to disk.
                                 for bufferedFrame in state.pendingFrames {
-                                    try? await processingQueue.enqueue(frameID: bufferedFrame.frameID, capturedFrame: bufferedFrame.capturedFrame)
+                                    try? await processingQueue.enqueue(frameID: bufferedFrame.frameID)
                                 }
-                                // Note: NOT clearing pendingFrames here - frames will be marked readable
-                                // when flushedCount catches up in the normal pipeline flow
                             }
                         }
                     }
@@ -964,6 +1011,24 @@ public actor AppCoordinator {
                 )
                 let frameID = try await services.database.insertFrame(frameRef)
 
+                // Persist WAL mapping for exact frameID -> raw frame lookup while segment is unfinalized.
+                if let storageManager = services.storage as? StorageManager {
+                    let walVideoID = await writerState.writer.segmentID
+                    let walManager = await storageManager.getWALManager()
+                    do {
+                        try await walManager.registerFrameID(
+                            videoID: walVideoID,
+                            frameID: frameID,
+                            frameIndex: frameIndexInSegment
+                        )
+                    } catch {
+                        Log.warning(
+                            "[WAL] Failed to register frameID mapping for frame \(frameID) (video \(walVideoID.value), index \(frameIndexInSegment)): \(error)",
+                            category: .app
+                        )
+                    }
+                }
+
                 Log.verbose("[CAPTURE-DEBUG] Captured frameID=\(frameID), videoDBID=\(writerState.videoDBID), frameIndexInSegment=\(frameIndexInSegment), app=\(frame.metadata.appName)", category: .app)
 
                 if writerState.frameCount % videoUpdateInterval == 0 {
@@ -985,8 +1050,8 @@ public actor AppCoordinator {
                     continue
                 }
 
-                // Create buffered frame entry with both ID, raw pixel data, and frame index
-                let bufferedFrame = BufferedFrame(frameID: frameID, capturedFrame: frame, frameIndexInSegment: frameIndexInSegment)
+                // Track frame in pending buffer until it's confirmed flushed/readable.
+                let bufferedFrame = BufferedFrame(frameID: frameID, frameIndexInSegment: frameIndexInSegment)
 
                 // Add frame to the pending buffer
                 writerState.pendingFrames.append(bufferedFrame)
@@ -1009,8 +1074,7 @@ public actor AppCoordinator {
                     let frameToEnqueue = writerState.pendingFrames.removeFirst()
                     // Mark frame as readable now that it's confirmed flushed to video file
                     try await services.database.markFrameReadable(frameID: frameToEnqueue.frameID)
-                    // Pass the original captured frame pixels directly to OCR
-                    try await processingQueue.enqueue(frameID: frameToEnqueue.frameID, capturedFrame: frameToEnqueue.capturedFrame)
+                    try await processingQueue.enqueue(frameID: frameToEnqueue.frameID)
                 }
 
                 writersByResolution[resolutionKey] = writerState
@@ -1076,9 +1140,7 @@ public actor AppCoordinator {
             let pendingFrames = writerState.pendingFrames.count
             guard pendingFrames > 0 else { continue }
 
-            let pendingBytes = writerState.pendingFrames.reduce(into: Int64(0)) { partialResult, bufferedFrame in
-                partialResult += Int64(bufferedFrame.capturedFrame.imageData.count)
-            }
+            let pendingBytes: Int64 = 0
             totalPendingFrames += pendingFrames
             totalPendingBytes += pendingBytes
             perResolutionParts.append("\(resolutionKey):\(pendingFrames)f/\(Self.formatBytes(pendingBytes))")
@@ -1206,7 +1268,7 @@ public actor AppCoordinator {
                 Log.debug("Enqueueing \(writerState.pendingFrames.count) pending frames after finalization", category: .app)
                 for bufferedFrame in writerState.pendingFrames {
                     try await services.database.markFrameReadable(frameID: bufferedFrame.frameID)
-                    try await processingQueue.enqueue(frameID: bufferedFrame.frameID, capturedFrame: bufferedFrame.capturedFrame)
+                    try await processingQueue.enqueue(frameID: bufferedFrame.frameID)
                 }
                 writerState.pendingFrames = []
             }
