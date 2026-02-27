@@ -2330,7 +2330,7 @@ public struct PingDotView: View {
         .onAppear {
             if isAnimating {
                 withAnimation(
-                    Animation.easeOut(duration: 1.5)
+                    Animation.easeOut(duration: 3.0)
                         .repeatForever(autoreverses: false)
                 ) {
                     isPulsing = true

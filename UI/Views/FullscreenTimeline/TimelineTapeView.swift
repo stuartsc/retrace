@@ -327,8 +327,9 @@ public struct TimelineTapeView: View {
         static let empty = TapeLayoutSnapshot(blocks: [], totalTapeWidth: 0, frameCenterOffsets: [])
 
         func offsetForFrame(_ frameIndex: Int) -> CGFloat {
-            guard frameIndex >= 0 && frameIndex < frameCenterOffsets.count else { return 0 }
-            return frameCenterOffsets[frameIndex]
+            guard !frameCenterOffsets.isEmpty else { return 0 }
+            let clampedIndex = max(0, min(frameCenterOffsets.count - 1, frameIndex))
+            return frameCenterOffsets[clampedIndex]
         }
     }
 

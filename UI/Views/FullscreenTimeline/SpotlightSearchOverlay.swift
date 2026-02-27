@@ -19,7 +19,7 @@ public struct SpotlightSearchOverlay: View {
     /// This allows search results to be preserved when clicking on a result
     @ObservedObject private var viewModel: SearchViewModel
     @State private var isVisible = false
-    @State private var resultsHeight: CGFloat = 0
+    @State private var resultsHeight: CGFloat = 0  // Reserved results viewport height to avoid collapse during reloads
     @State private var isExpanded = false  // Whether to show filters and results (expanded view)
     @State private var refocusSearchField: UUID = UUID()  // Trigger to refocus search field
     @State private var keyboardSelectedResultIndex: Int?
@@ -151,6 +151,9 @@ public struct SpotlightSearchOverlay: View {
             }
             installKeyEventMonitor()
             scheduleOpenLatencyMeasurement()
+            if !viewModel.visibleResults.isEmpty {
+                reserveExpandedResultsHeight()
+            }
         }
         .onDisappear {
             removeKeyEventMonitor()
@@ -172,6 +175,9 @@ public struct SpotlightSearchOverlay: View {
             Log.debug("\(searchLog) Query changed to: '\(newValue)'", category: .ui)
             if newValue != viewModel.committedSearchQuery {
                 clearResultKeyboardNavigation()
+            }
+            if newValue.isEmpty {
+                resultsHeight = 0
             }
         }
         .onChange(of: viewModel.isSearching) { isSearching in
@@ -196,6 +202,9 @@ public struct SpotlightSearchOverlay: View {
                 "\(searchLog) Results count changed: generation=\(viewModel.searchGeneration), isSearching=\(viewModel.isSearching), filteredCount=\(viewModel.visibleResults.count), totalCount=\(viewModel.results?.results.count ?? 0), query='\(viewModel.searchQuery)', committed='\(viewModel.committedSearchQuery)'",
                 category: .ui
             )
+            if !viewModel.visibleResults.isEmpty {
+                reserveExpandedResultsHeight()
+            }
             syncKeyboardSelectionWithCurrentResults()
         }
         .onChange(of: viewModel.searchGeneration) { generation in
@@ -219,6 +228,13 @@ public struct SpotlightSearchOverlay: View {
         }
         .onChange(of: viewModel.dismissOverlaySignal.id) { _ in
             dismissOverlay(clearSearchState: viewModel.dismissOverlaySignal.clearSearchState)
+        }
+        .onPreferenceChange(ResultsAreaHeightPreferenceKey.self) { height in
+            guard height > 0 else { return }
+            let clampedHeight = min(maxResultsHeight, max(150, height))
+            // Guard with epsilon to prevent geometry-driven update loops.
+            guard abs(resultsHeight - clampedHeight) > 1 else { return }
+            resultsHeight = clampedHeight
         }
     }
 
@@ -335,7 +351,16 @@ public struct SpotlightSearchOverlay: View {
     // MARK: - Results Area
 
     private var hasResults: Bool {
-        !viewModel.searchQuery.isEmpty && (viewModel.isSearching || viewModel.results != nil)
+        !viewModel.searchQuery.isEmpty && (viewModel.isSearching || viewModel.results != nil || resultsHeight > 0)
+    }
+
+    private var reservedResultsHeight: CGFloat {
+        max(150, resultsHeight)
+    }
+
+    private func reserveExpandedResultsHeight() {
+        guard resultsHeight < maxResultsHeight - 1 else { return }
+        resultsHeight = maxResultsHeight
     }
 
     /// Records first-frame overlay open latency once per presentation.
@@ -360,11 +385,11 @@ public struct SpotlightSearchOverlay: View {
     private var resultsArea: some View {
         if viewModel.isSearching && viewModel.results == nil {
             searchingView
-                .frame(height: 150)
+                .frame(height: reservedResultsHeight)
         } else if viewModel.results != nil {
             if viewModel.visibleResults.isEmpty {
                 noResultsView
-                    .frame(height: 150)
+                    .frame(height: reservedResultsHeight)
             } else {
                 resultsList(viewModel.visibleResults)
             }
@@ -436,6 +461,14 @@ public struct SpotlightSearchOverlay: View {
             }
             .scrollContentBackground(.hidden)
             .frame(maxHeight: maxResultsHeight)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: ResultsAreaHeightPreferenceKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
             .onAppear {
                 // Restore scroll position when overlay appears
                 if viewModel.savedScrollPosition > 0 {
@@ -1106,6 +1139,14 @@ private struct GalleryResultCard: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, yyyy HH:mm"
         return formatter.string(from: date)
+    }
+}
+
+private struct ResultsAreaHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

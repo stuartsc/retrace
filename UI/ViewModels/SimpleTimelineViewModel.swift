@@ -179,17 +179,67 @@ public class SimpleTimelineViewModel: ObservableObject {
         return formatter
     }()
 
+    private static func frameIDsMatch(_ lhs: [TimelineFrame], _ rhs: [TimelineFrame]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for index in lhs.indices where lhs[index].frame.id != rhs[index].frame.id {
+            return false
+        }
+        return true
+    }
+
+    private static func isPureAppend(oldFrames: [TimelineFrame], newFrames: [TimelineFrame]) -> Bool {
+        guard !oldFrames.isEmpty, newFrames.count > oldFrames.count else { return false }
+        let leadingWindow = Array(newFrames.prefix(oldFrames.count))
+        return frameIDsMatch(oldFrames, leadingWindow)
+    }
+
+    private static func isPurePrepend(oldFrames: [TimelineFrame], newFrames: [TimelineFrame]) -> Bool {
+        guard !oldFrames.isEmpty, newFrames.count > oldFrames.count else { return false }
+        let trailingWindow = Array(newFrames.suffix(oldFrames.count))
+        return frameIDsMatch(oldFrames, trailingWindow)
+    }
+
     // MARK: - Published State
 
     /// All loaded frames with their preloaded video info
     @Published public var frames: [TimelineFrame] = [] {
         didSet {
-            if frames.count != oldValue.count
+            let didChangeIdentity = frames.count != oldValue.count
                 || frames.first?.frame.id != oldValue.first?.frame.id
-                || frames.last?.frame.id != oldValue.last?.frame.id {
+                || frames.last?.frame.id != oldValue.last?.frame.id
+            if didChangeIdentity {
                 hotWindowRange = nil
             }
+
+            let pendingPreferredIndex = pendingCurrentIndexAfterFrameReplacement
+            pendingCurrentIndexAfterFrameReplacement = nil
+
+            if frames.isEmpty {
+                if currentIndex != 0 {
+                    currentIndex = 0
+                }
+            } else {
+                let targetIndex = pendingPreferredIndex ?? currentIndex
+                let clampedIndex = max(0, min(targetIndex, frames.count - 1))
+                if clampedIndex != currentIndex {
+                    currentIndex = clampedIndex
+                }
+            }
+
             invalidateAppBlockSnapshot(reason: "frames.didSet")
+
+            let isPureAppend = didChangeIdentity && Self.isPureAppend(oldFrames: oldValue, newFrames: frames)
+            let isPurePrepend = didChangeIdentity && Self.isPurePrepend(oldFrames: oldValue, newFrames: frames)
+            let isWindowReplacement = didChangeIdentity && !isPureAppend && !isPurePrepend
+
+            if isWindowReplacement {
+                refreshAppBlockSnapshotImmediately(reason: "frames.didSet.windowReplaced")
+            } else if isPurePrepend {
+                // Keep tape geometry in sync during boundary loads to avoid stale-viewport jumps.
+                refreshAppBlockSnapshotImmediately(reason: "frames.didSet.prepended")
+            } else if isPureAppend {
+                refreshAppBlockSnapshotImmediately(reason: "frames.didSet.appended")
+            }
         }
     }
 
@@ -1356,6 +1406,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Pending Cmd+F trace, consumed by the next filter-triggered reload call.
     private var pendingCmdFQuickFilterLatencyTrace: CmdFQuickFilterLatencyTrace?
 
+    /// Preferred index to apply atomically with the next full-frame-window replacement.
+    /// Prevents transient edge snaps when `frames` changes before index selection finishes.
+    private var pendingCurrentIndexAfterFrameReplacement: Int?
+
     /// Monotonic ID for loading state transitions in logs.
     private var loadingTransitionID: UInt64 = 0
     /// Start time of the currently active loading state.
@@ -1820,6 +1874,18 @@ public class SimpleTimelineViewModel: ObservableObject {
         return "active=\(filters.hasActiveFilters) count=\(filters.activeFilterCount) apps=\(appCount) tags=\(tagCount) appMode=\(filters.appFilterMode.rawValue) hidden=\(filters.hiddenFilter.rawValue) window=\(hasWindowFilter) url=\(hasURLFilter) date=\(hasDateRange)"
     }
 
+    private func logCmdFPlayheadState(
+        _ stage: String,
+        trace: CmdFQuickFilterLatencyTrace?,
+        targetTimestamp: Date? = nil,
+        extra: String? = nil
+    ) {
+        _ = stage
+        _ = trace
+        _ = targetTimestamp
+        _ = extra
+    }
+
     private func setLoadingState(_ loading: Bool, reason: String) {
         if loading {
             if isLoading {
@@ -2070,6 +2136,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 category: .ui
             )
         }
+        logCmdFPlayheadState("reload.start", trace: cmdFTrace, targetTimestamp: timestamp)
         setLoadingState(true, reason: "reloadFramesAroundTimestamp")
         clearError()
         cancelBoundaryLoadTasks(reason: "reloadFramesAroundTimestamp")
@@ -2093,11 +2160,24 @@ public class SimpleTimelineViewModel: ObservableObject {
             Log.debug("[DataSourceChange] Fetched \(framesWithVideoInfo.count) frames from data adapter", category: .ui)
 
             if !framesWithVideoInfo.isEmpty {
-                frames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+                let timelineFrames = framesWithVideoInfo.map {
+                    TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus)
+                }
+                let closestIndex = Self.findClosestFrameIndex(in: timelineFrames, to: timestamp)
+                pendingCurrentIndexAfterFrameReplacement = closestIndex
+                frames = timelineFrames
+                logCmdFPlayheadState("reload.framesReplaced", trace: cmdFTrace, targetTimestamp: timestamp)
 
                 // Find the frame closest to the original timestamp
-                let closestIndex = findClosestFrameIndex(to: timestamp)
-                currentIndex = closestIndex
+                if currentIndex != closestIndex {
+                    currentIndex = closestIndex
+                }
+                logCmdFPlayheadState(
+                    "reload.closestIndexSelected",
+                    trace: cmdFTrace,
+                    targetTimestamp: timestamp,
+                    extra: "closestIndex=\(closestIndex)"
+                )
 
                 updateWindowBoundaries()
                 resetBoundaryStateForReloadWindow()
@@ -2109,6 +2189,12 @@ public class SimpleTimelineViewModel: ObservableObject {
 
                 // Check if we need to pre-load more frames (near edge of loaded window)
                 let boundaryLoad = checkAndLoadMoreFrames(reason: "reloadFramesAroundTimestamp", cmdFTrace: cmdFTrace)
+                logCmdFPlayheadState(
+                    "reload.boundaryCheck",
+                    trace: cmdFTrace,
+                    targetTimestamp: timestamp,
+                    extra: "boundaryOlder=\(boundaryLoad.older) boundaryNewer=\(boundaryLoad.newer)"
+                )
 
                 Log.info("[DataSourceChange] Reloaded \(frames.count) frames around \(timestamp)", category: .ui)
                 if let cmdFTrace {
@@ -2137,10 +2223,12 @@ public class SimpleTimelineViewModel: ObservableObject {
                         category: .ui
                     )
                 }
+                logCmdFPlayheadState("reload.emptyWindow", trace: cmdFTrace, targetTimestamp: timestamp)
                 let fallbackStart = CFAbsoluteTimeGetCurrent()
                 // Hand off loading ownership so fallback can run loadMostRecentFrame instead of being skipped.
                 setLoadingState(false, reason: "reloadFramesAroundTimestamp.fallbackHandoff")
                 await loadMostRecentFrame()
+                logCmdFPlayheadState("reload.fallbackComplete", trace: cmdFTrace, targetTimestamp: timestamp)
                 if let cmdFTrace {
                     let fallbackElapsedMs = (CFAbsoluteTimeGetCurrent() - fallbackStart) * 1000
                     let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
@@ -3690,24 +3778,11 @@ public class SimpleTimelineViewModel: ObservableObject {
         trigger: String,
         source: FrameSource
     ) {
-        if let existing = pendingCmdFQuickFilterLatencyTrace {
-            Log.warning("[CmdFPerf][\(existing.id)] Replaced by a newer Cmd+F request before execution", category: .ui)
-        }
-
-        let trace = CmdFQuickFilterLatencyTrace(
-            id: String(UUID().uuidString.prefix(8)),
-            startedAt: CFAbsoluteTimeGetCurrent(),
-            trigger: trigger,
-            action: action,
-            bundleID: bundleID,
-            source: source
-        )
-        pendingCmdFQuickFilterLatencyTrace = trace
-
-        Log.info(
-            "[CmdFPerf][\(trace.id)] Start action=\(action) trigger=\(trigger) app=\(bundleID) source=\(source.rawValue) index=\(currentIndex) frameCount=\(frames.count)",
-            category: .ui
-        )
+        _ = bundleID
+        _ = action
+        _ = trigger
+        _ = source
+        pendingCmdFQuickFilterLatencyTrace = nil
     }
 
     /// Apply pending filters
@@ -3721,9 +3796,21 @@ public class SimpleTimelineViewModel: ObservableObject {
         let timestampToPreserve = currentTimestamp
         let cmdFTrace = pendingCmdFQuickFilterLatencyTrace
         pendingCmdFQuickFilterLatencyTrace = nil
+        logCmdFPlayheadState(
+            "applyFilters.capture",
+            trace: cmdFTrace,
+            targetTimestamp: timestampToPreserve,
+            extra: "pending={\(summarizeFiltersForLog(pendingFilterCriteria))} current={\(summarizeFiltersForLog(filterCriteria))}"
+        )
 
         filterCriteria = pendingFilterCriteria
         Log.debug("[Filter] Applied filters - filterCriteria.selectedApps=\(String(describing: filterCriteria.selectedApps))", category: .ui)
+        logCmdFPlayheadState(
+            "applyFilters.applied",
+            trace: cmdFTrace,
+            targetTimestamp: timestampToPreserve,
+            extra: "applied={\(summarizeFiltersForLog(filterCriteria))}"
+        )
 
         // Record timeline filter metric with JSON of applied filters
         let filterJson = buildTimelineFilterJson()
@@ -3739,6 +3826,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             if let timestamp = timestampToPreserve {
                 // Try to reload frames around the same timestamp (with new filters)
                 // If no frames match, reloadFramesAroundTimestamp will fall back to loadMostRecentFrame
+                logCmdFPlayheadState("applyFilters.reloadDispatch", trace: cmdFTrace, targetTimestamp: timestamp)
                 await reloadFramesAroundTimestamp(timestamp, cmdFTrace: cmdFTrace)
             } else {
                 // No current position, fall back to most recent
@@ -3746,6 +3834,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                     Log.warning("[CmdFPerf][\(cmdFTrace.id)] No current timestamp available after action=\(cmdFTrace.action), falling back to loadMostRecentFrame()", category: .ui)
                 }
                 await loadMostRecentFrame()
+                logCmdFPlayheadState("applyFilters.fallbackComplete", trace: cmdFTrace)
                 if let cmdFTrace {
                     let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
                     Log.recordLatency(
@@ -3777,13 +3866,21 @@ public class SimpleTimelineViewModel: ObservableObject {
         let timestampToPreserve = currentTimestamp
         let cmdFTrace = pendingCmdFQuickFilterLatencyTrace
         pendingCmdFQuickFilterLatencyTrace = nil
+        logCmdFPlayheadState(
+            "clearFilters.capture",
+            trace: cmdFTrace,
+            targetTimestamp: timestampToPreserve,
+            extra: "current={\(summarizeFiltersForLog(filterCriteria))}"
+        )
 
         clearFilterState()
+        logCmdFPlayheadState("clearFilters.cleared", trace: cmdFTrace, targetTimestamp: timestampToPreserve)
 
         // Reload timeline without filters, preserving current position
         Task {
             if let timestamp = timestampToPreserve {
                 // Reload frames around the same timestamp (without filters)
+                logCmdFPlayheadState("clearFilters.reloadDispatch", trace: cmdFTrace, targetTimestamp: timestamp)
                 await reloadFramesAroundTimestamp(timestamp, cmdFTrace: cmdFTrace)
             } else {
                 // No current position, fall back to most recent
@@ -3791,6 +3888,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                     Log.warning("[CmdFPerf][\(cmdFTrace.id)] No current timestamp available after action=\(cmdFTrace.action), falling back to loadMostRecentFrame()", category: .ui)
                 }
                 await loadMostRecentFrame()
+                logCmdFPlayheadState("clearFilters.fallbackComplete", trace: cmdFTrace)
                 if let cmdFTrace {
                     let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
                     Log.recordLatency(
@@ -8513,12 +8611,17 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Find the frame index closest to a target date
     private func findClosestFrameIndex(to targetDate: Date) -> Int {
-        guard !frames.isEmpty else { return 0 }
+        Self.findClosestFrameIndex(in: frames, to: targetDate)
+    }
+
+    /// Find the closest frame index in an arbitrary timeline frame window.
+    private static func findClosestFrameIndex(in timelineFrames: [TimelineFrame], to targetDate: Date) -> Int {
+        guard !timelineFrames.isEmpty else { return 0 }
 
         var closestIndex = 0
-        var smallestDiff = abs(frames[0].frame.timestamp.timeIntervalSince(targetDate))
+        var smallestDiff = abs(timelineFrames[0].frame.timestamp.timeIntervalSince(targetDate))
 
-        for (index, timelineFrame) in frames.enumerated() {
+        for (index, timelineFrame) in timelineFrames.enumerated() {
             let diff = abs(timelineFrame.frame.timestamp.timeIntervalSince(targetDate))
             if diff < smallestDiff {
                 smallestDiff = diff
@@ -8815,6 +8918,11 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Adjust currentIndex to maintain position
             currentIndex += newTimelineFrames.count
+            logCmdFPlayheadState(
+                "boundary.older.indexAdjusted",
+                trace: cmdFTrace,
+                extra: "reason=\(reason) oldIndex=\(oldCurrentIndex) added=\(newTimelineFrames.count)"
+            )
 
             Log.info("[Memory] LOADED OLDER: +\(newTimelineFrames.count) frames (\(beforeCount)→\(frames.count)), index adjusted from \(oldCurrentIndex) to \(currentIndex), maintaining timestamp=\(oldTimestamp)", category: .ui)
             Log.info("[INFINITE-SCROLL] After load older: new first frame=\(frames.first?.frame.timestamp.description ?? "nil"), new last frame=\(frames.last?.frame.timestamp.description ?? "nil")", category: .ui)
@@ -8993,6 +9101,11 @@ public class SimpleTimelineViewModel: ObservableObject {
                 currentIndex = frames.count - 1
                 subFrameOffset = 0
             }
+            logCmdFPlayheadState(
+                "boundary.newer.appended",
+                trace: cmdFTrace,
+                extra: "reason=\(reason) added=\(uniqueTimelineFrames.count) pinnedToNewest=\(wasAtNewestBeforeAppend)"
+            )
 
             let currentNewestBlock = newestEdgeBlockSummary(in: frames)
             logNewestEdgeBlockTransition(

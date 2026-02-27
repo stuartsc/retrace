@@ -1112,13 +1112,6 @@ public class TimelineWindowController: NSObject {
             criteria.endDate == nil
     }
 
-    private func summarizeFilterCriteria(_ criteria: FilterCriteria) -> String {
-        let selectedApps = (criteria.selectedApps ?? []).sorted()
-        let selectedSources = (criteria.selectedSources ?? []).map { $0.rawValue }.sorted()
-        let selectedTags = (criteria.selectedTags ?? []).sorted()
-        return "apps=\(selectedApps), appMode=\(criteria.appFilterMode.rawValue), sources=\(selectedSources), hidden=\(criteria.hiddenFilter.rawValue), tags=\(selectedTags), tagMode=\(criteria.tagFilterMode.rawValue), window=\(criteria.windowNameFilter ?? "nil"), browser=\(criteria.browserUrlFilter ?? "nil"), start=\(criteria.startDate?.description ?? "nil"), end=\(criteria.endDate?.description ?? "nil")"
-    }
-
     /// Resolve quick app filter trigger key from an NSEvent.
     /// Supports Cmd+F.
     private func quickAppFilterTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
