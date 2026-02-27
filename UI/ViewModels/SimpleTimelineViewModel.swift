@@ -43,7 +43,7 @@ private enum MemoryTracker {
         let newest = newestTimestamp.map { dateFormatter.string(from: $0) } ?? "nil"
 
         Log.debug(
-            "[Memory] \(context) | frames=\(frameCount)/\(WindowConfig.maxFrames) | imageCache=\(imageCacheCount) | window=[\(oldest) → \(newest)]",
+            "[Memory] \(context) | frames=\(frameCount)/\(WindowConfig.maxFrames) | frameBuffer=\(imageCacheCount) | window=[\(oldest) → \(newest)]",
             category: .ui
         )
     }
@@ -1270,7 +1270,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             if oldCount != newCount {
                 if Self.isVerboseTimelineLoggingEnabled {
                     Log.debug(
-                        "[Memory] imageCache changed: \(oldCount) → \(newCount) images (\(Self.formatBytes(imageCacheBytes)))",
+                        "[Memory] inMemoryFrameBuffer changed: \(oldCount) → \(newCount) frames (\(Self.formatBytes(imageCacheBytes)))",
                         category: .ui
                     )
                 }
@@ -1479,7 +1479,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     private func logImageCacheMemorySnapshot() {
         Log.info(
-            "[Timeline-Memory] imageCacheCount=\(imageCache.count) imageCacheBytes=\(Self.formatBytes(imageCacheBytes)) frameWindowCount=\(frames.count)",
+            "[Timeline-Memory] inMemoryFrameBufferCount=\(imageCache.count) inMemoryFrameBufferBytes=\(Self.formatBytes(imageCacheBytes)) frameWindowCount=\(frames.count)",
             category: .ui
         )
     }
@@ -1721,9 +1721,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Clear image cache
         let oldImageCount = imageCache.count
-        Log.debug("[DataSourceChange] Clearing image cache with \(oldImageCount) entries", category: .ui)
+        Log.debug("[DataSourceChange] Clearing in-memory frame buffer with \(oldImageCount) entries", category: .ui)
         imageCache.removeAll()
-        Log.debug("[DataSourceChange] Image cache cleared, new count: \(imageCache.count)", category: .ui)
+        Log.debug("[DataSourceChange] In-memory frame buffer cleared, new count: \(imageCache.count)", category: .ui)
 
         // Clear app blocks cache
         let hadAppBlocks = _cachedAppBlockSnapshot != nil
@@ -1742,7 +1742,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         clearCachedFilterCriteria()
         Log.debug("[DataSourceChange] Cleared filter state and cache", category: .ui)
 
-        Log.info("[DataSourceChange] Cleared \(oldImageCount) cached images, search results, and filters, reloading from current position", category: .ui)
+        Log.info("[DataSourceChange] Cleared \(oldImageCount) buffered frames, search results, and filters, reloading from current position", category: .ui)
         Log.debug("[DataSourceChange] Current frames count: \(frames.count), currentIndex: \(currentIndex)", category: .ui)
 
         // Reload frames from the current timestamp
@@ -4803,7 +4803,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let oldCacheCount = imageCache.count
             imageCache.removeAll()
             if oldCacheCount > 0 {
-                Log.debug("[SearchNavigation] Cleared image cache (\(oldCacheCount) images removed)", category: .ui)
+                Log.debug("[SearchNavigation] Cleared in-memory frame buffer (\(oldCacheCount) frames removed)", category: .ui)
             }
 
             // Convert to TimelineFrame - video info is already included from the JOIN
@@ -6742,7 +6742,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         let removedCount = oldCount - imageCache.count
         if removedCount > 0 {
             if Self.isVerboseTimelineLoggingEnabled {
-                Log.info("[Memory] Pruned \(removedCount) images from cache (frames no longer in window)", category: .ui)
+                Log.info("[Memory] Pruned \(removedCount) frames from in-memory frame buffer (frames no longer in window)", category: .ui)
             }
         }
 
@@ -6752,7 +6752,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let keysToRemove = Array(imageCache.keys.prefix(toRemove))
             keysToRemove.forEach { imageCache.removeValue(forKey: $0) }
             if Self.isVerboseTimelineLoggingEnabled {
-                Log.info("[Memory] Force-pruned \(toRemove) images from cache (cache overflow)", category: .ui)
+                Log.info("[Memory] Force-pruned \(toRemove) frames from in-memory frame buffer (buffer overflow)", category: .ui)
             }
         }
     }
@@ -7248,7 +7248,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let oldCacheCount = imageCache.count
             imageCache.removeAll()
             if oldCacheCount > 0 {
-                Log.info("[Memory] Cleared image cache on calendar navigation (\(oldCacheCount) images removed)", category: .ui)
+                Log.info("[Memory] Cleared in-memory frame buffer on calendar navigation (\(oldCacheCount) frames removed)", category: .ui)
             }
 
             frames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
@@ -7372,7 +7372,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let oldCacheCount = imageCache.count
             imageCache.removeAll()
             if oldCacheCount > 0 {
-                Log.info("[Memory] Cleared image cache on date search (\(oldCacheCount) images removed)", category: .ui)
+                Log.info("[Memory] Cleared in-memory frame buffer on date search (\(oldCacheCount) frames removed)", category: .ui)
             }
 
             // Convert to TimelineFrame - video info is already included from the JOIN
@@ -7457,7 +7457,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             let oldCacheCount = imageCache.count
             imageCache.removeAll()
             if oldCacheCount > 0 {
-                Log.info("[Memory] Cleared image cache on frame ID search (\(oldCacheCount) images removed)", category: .ui)
+                Log.info("[Memory] Cleared in-memory frame buffer on frame ID search (\(oldCacheCount) frames removed)", category: .ui)
             }
 
             // Convert to TimelineFrame
