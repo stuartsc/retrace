@@ -16,11 +16,19 @@ public final class UpdaterManager: ObservableObject {
     /// The Sparkle updater controller
     private var updaterController: SPUStandardUpdaterController?
 
-    /// Whether automatic update checks are enabled
-    /// Default: true (matches SettingsDefaults.automaticUpdates)
-    @Published public var automaticUpdatesEnabled: Bool = true {
+    /// Whether automatic update checks are enabled.
+    /// Default: true.
+    @Published public var automaticUpdateChecksEnabled: Bool = true {
         didSet {
-            updaterController?.updater.automaticallyChecksForUpdates = automaticUpdatesEnabled
+            updaterController?.updater.automaticallyChecksForUpdates = automaticUpdateChecksEnabled
+        }
+    }
+
+    /// Whether updates are automatically downloaded and installed.
+    /// Default: false.
+    @Published public var automaticallyDownloadsUpdatesEnabled: Bool = false {
+        didSet {
+            updaterController?.updater.automaticallyDownloadsUpdates = automaticallyDownloadsUpdatesEnabled
         }
     }
 
@@ -61,9 +69,10 @@ public final class UpdaterManager: ObservableObject {
         // Check if properly configured
         canCheckForUpdates = updaterController?.updater.canCheckForUpdates ?? false
 
-        // Sync automatic updates setting
+        // Sync updater settings
         if let updater = updaterController?.updater {
-            automaticUpdatesEnabled = updater.automaticallyChecksForUpdates
+            automaticUpdateChecksEnabled = updater.automaticallyChecksForUpdates
+            automaticallyDownloadsUpdatesEnabled = updater.automaticallyDownloadsUpdates
             lastUpdateCheckDate = updater.lastUpdateCheckDate
         }
 
@@ -103,6 +112,23 @@ public final class UpdaterManager: ObservableObject {
         guard canCheckForUpdates else { return }
 
         Log.info("[UpdaterManager] Checking for updates in background...", category: .app)
+        updaterController?.updater.checkForUpdatesInBackground()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.lastUpdateCheckDate = self?.updaterController?.updater.lastUpdateCheckDate
+        }
+    }
+
+    /// Run one background update check during startup.
+    /// This respects the user's automatic update checks preference.
+    public func checkForUpdatesOnStartup() {
+        guard canCheckForUpdates else { return }
+        guard automaticUpdateChecksEnabled else {
+            Log.info("[UpdaterManager] Skipping startup update check because automatic checks are disabled", category: .app)
+            return
+        }
+
+        Log.info("[UpdaterManager] Running startup update check...", category: .app)
         updaterController?.updater.checkForUpdatesInBackground()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in

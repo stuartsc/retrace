@@ -90,6 +90,10 @@
     <key>SUAllowsAutomaticUpdates</key>
     <true/>
 
+    <!-- Default to not automatically downloading/installing updates -->
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+
     <!-- Show release notes in update dialog -->
     <key>SUShowReleaseNotes</key>
     <true/>

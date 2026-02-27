@@ -186,6 +186,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Initialize the Sparkle updater for automatic updates
         UpdaterManager.shared.initialize()
+        UpdaterManager.shared.checkForUpdatesOnStartup()
 
         // Start main thread hang detection (writes emergency diagnostics if main thread freezes)
         MainThreadHangDetector.shared.start()

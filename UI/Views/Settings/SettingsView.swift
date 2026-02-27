@@ -20,7 +20,8 @@ enum SettingsDefaults {
     static let launchAtLogin = false
     static let showMenuBarIcon = true
     static let theme: ThemePreference = .auto
-    static let automaticUpdates = true
+    static let automaticUpdateChecks = true
+    static let automaticallyDownloadUpdates = false
 
     // MARK: Appearance
     static let fontStyle: RetraceFontStyle = .default
@@ -1140,9 +1141,15 @@ public struct SettingsView: View {
             }
 
             ModernToggleRow(
-                title: "Automatic Updates",
-                subtitle: "Automatically download and install updates",
-                isOn: $updaterManager.automaticUpdatesEnabled
+                title: "Automatically Check for Updates",
+                subtitle: "Check for new updates in the background",
+                isOn: $updaterManager.automaticUpdateChecksEnabled
+            )
+
+            ModernToggleRow(
+                title: "Automatically Download and Install Updates",
+                subtitle: "Download and install updates in the background",
+                isOn: $updaterManager.automaticallyDownloadsUpdatesEnabled
             )
         }
     }
@@ -6724,7 +6731,8 @@ extension SettingsView {
         showMenuBarIcon = SettingsDefaults.showMenuBarIcon
 
         // Updates
-        UpdaterManager.shared.automaticUpdatesEnabled = SettingsDefaults.automaticUpdates
+        UpdaterManager.shared.automaticUpdateChecksEnabled = SettingsDefaults.automaticUpdateChecks
+        UpdaterManager.shared.automaticallyDownloadsUpdatesEnabled = SettingsDefaults.automaticallyDownloadUpdates
 
         // Appearance
         theme = SettingsDefaults.theme
