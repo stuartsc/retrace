@@ -33,17 +33,6 @@ public actor FrameProcessingQueue {
     private var pendingCount: Int = 0      // Frames with status 0
     private var processingCount: Int = 0   // Frames with status 1
 
-    // Frame data cache - stores raw captured frames to avoid B-frame timing issues
-    // When a frame is enqueued with its CapturedFrame data, we cache it here.
-    // Workers use cached data directly instead of extracting from video.
-    // This bypasses B-frame reordering issues in fragmented MP4s.
-    private var frameDataCache: [Int64: CapturedFrame] = [:]
-    private var frameDataCacheBytes: Int64 = 0
-
-    // Maximum number of frames to keep in cache to prevent unbounded memory growth
-    // Each CapturedFrame is ~10-30MB, so 50 frames = 500MB-1.5GB max
-    // If processing falls behind, oldest frames will be evicted
-    private let maxFrameDataCacheSize = 50
     private let memoryReportIntervalNs: UInt64 = 5_000_000_000
 
     // MARK: - Power-Aware Processing Control
@@ -82,15 +71,6 @@ public actor FrameProcessingQueue {
     /// Bundle IDs to include for OCR (when ocrAppFilterMode == .onlyTheseApps)
     /// Empty set means all apps (default behavior)
     private var ocrIncludedBundleIDs: Set<String> = []
-
-    /// Whether we're in deferred mode (pause policies are enabled)
-    /// In deferred mode, we don't cache raw frames and must wait for video finalization
-    private var isDeferredMode: Bool {
-        pauseOnBattery || pauseOnLowPowerMode
-    }
-
-    /// Reduced cache size when in deferred mode (raw frames won't be used)
-    private let deferredModeCacheSize = 4
 
     // MARK: - Initialization
 
@@ -228,43 +208,7 @@ public actor FrameProcessingQueue {
     /// - Parameters:
     ///   - frameID: The database ID of the frame
     ///   - priority: Processing priority (higher = processed first)
-    ///   - capturedFrame: Optional raw frame data. If provided, OCR uses this directly
-    ///                    instead of extracting from video, avoiding B-frame timing issues.
-    ///                    In deferred mode (a pause policy is enabled), raw frames are NOT cached
-    ///                    since we'll extract from finalized video later.
-    public func enqueue(frameID: Int64, priority: Int = 0, capturedFrame: CapturedFrame? = nil) async throws {
-        // Log.info("[Queue-DIAG] Attempting to enqueue frame \(frameID) with priority \(priority), hasFrameData: \(capturedFrame != nil)", category: .processing)
-
-        // In deferred mode, don't cache raw frames - we'll extract from encoded video later
-        // This saves memory when OCR is deferred until plugged in
-        let effectiveCacheSize = isDeferredMode ? deferredModeCacheSize : maxFrameDataCacheSize
-
-        // Cache the frame data if provided and not in deferred mode (or cache not full in deferred mode)
-        if let frame = capturedFrame {
-            // Evict oldest frames if cache is at capacity to prevent unbounded memory growth
-            // This can happen if OCR processing falls behind the capture rate
-            if frameDataCache.count >= effectiveCacheSize {
-                // Remove oldest entries (lowest frame IDs, since IDs are sequential)
-                let sortedKeys = frameDataCache.keys.sorted()
-                let keysToRemove = sortedKeys.prefix(frameDataCache.count - effectiveCacheSize + 1)
-                for key in keysToRemove {
-                    if let removedFrame = frameDataCache.removeValue(forKey: key) {
-                        frameDataCacheBytes -= Int64(removedFrame.imageData.count)
-                    }
-                }
-                if !isDeferredMode {
-                    Log.warning("[Queue-DIAG] Frame data cache at capacity (\(effectiveCacheSize)), evicted \(keysToRemove.count) oldest frames", category: .processing)
-                }
-            }
-
-            if let existingFrame = frameDataCache[frameID] {
-                frameDataCacheBytes -= Int64(existingFrame.imageData.count)
-            }
-            frameDataCache[frameID] = frame
-            frameDataCacheBytes += Int64(frame.imageData.count)
-            // Log.debug("[Queue-DIAG] Cached frame data for frameID \(frameID), cache size: \(frameDataCache.count)", category: .processing)
-        }
-
+    public func enqueue(frameID: Int64, priority: Int = 0) async throws {
         try await databaseManager.enqueueFrameForProcessing(frameID: frameID, priority: priority)
         currentQueueDepth += 1
         // Log.info("[Queue-DIAG] Successfully enqueued frame \(frameID), local depth: \(currentQueueDepth), isRunning: \(isRunning)", category: .processing)
@@ -388,8 +332,8 @@ public actor FrameProcessingQueue {
                     let result = try await processFrame(queuedFrame)
 
                     // Handle deferred processing result
-                    if case .deferredNotFinalized = result {
-                        // Frame's video not finalized yet - re-enqueue for later
+                    if case .deferredSourceNotReady = result {
+                        // Frame's source is not readable yet (e.g. WAL write still catching up) - re-enqueue for later
                         try await databaseManager.enqueueFrameForProcessing(frameID: queuedFrame.frameID, priority: -1)
                         currentQueueDepth += 1
                         try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 500ms before next attempt
@@ -462,73 +406,59 @@ public actor FrameProcessingQueue {
             return .skippedByAppFilter
         }
 
-        // In deferred mode (no cached frame data), check if video is finalized
-        // We need presentation-order frames, which requires finalized video
-        let hasCachedFrame = frameDataCache[frameID] != nil
-        if !hasCachedFrame, let videoInfo = frameWithInfo.videoInfo, !videoInfo.isVideoFinalized {
-            // Video not finalized yet - defer processing until it is
-            // Don't mark status, leave as pending so it gets re-queued
-            Log.debug("[Queue] Frame \(frameID) deferred - video not finalized yet", category: .processing)
-            return .deferredNotFinalized
-        }
-
-        // Mark as processing
-        try await updateFrameProcessingStatus(frameID, status: .processing)
-
         // Get video segment for dimensions (needed for node insertion)
         guard let videoSegment = try await databaseManager.getVideoSegment(id: frameRef.videoID) else {
             Log.error("[Queue-DIAG] Video segment \(frameRef.videoID.value) not found!", category: .processing)
             throw DatabaseError.queryFailed(query: "getVideoSegment", underlying: "Video segment \(frameRef.videoID) not found")
         }
 
-        // CRITICAL: Verify video file exists before attempting any extraction
-        // This prevents infinite retry loops when database points to missing files
-        let storageRoot = await storage.getStorageDirectory()
-        let videoFullPath = storageRoot.appendingPathComponent(videoSegment.relativePath).path
-        if !FileManager.default.fileExists(atPath: videoFullPath) {
-            Log.error("[Queue] Video file not found for frame \(frameID): \(videoFullPath)", category: .processing)
-            Log.error("[Queue] This suggests database/storage path mismatch. Check AppPaths.storageRoot setting.", category: .processing)
-
-            // Mark as failed permanently - don't retry endlessly for missing files
-            try await updateFrameProcessingStatus(frameID, status: .failed)
-            return .success // Return success to not re-queue (it's a permanent failure)
-        }
-
         let tPrep = CFAbsoluteTimeGetCurrent()
 
-        // Check if we have cached frame data (avoids B-frame timing issues)
+        // Resolve segment ID encoded in the video file path (WAL and storage use this ID).
+        let actualSegmentID = try parseActualSegmentID(from: videoSegment.relativePath)
+
+        // Source select:
+        // - finalized video -> decode frame from encoded segment file
+        // - non-finalized video -> read raw frame directly from WAL by frame index
         let capturedFrame: CapturedFrame
-        if let cachedFrame = frameDataCache[frameID] {
-            // Use cached frame data directly - guaranteed correct
-            capturedFrame = cachedFrame
-            if let removedFrame = frameDataCache.removeValue(forKey: frameID) {
-                frameDataCacheBytes -= Int64(removedFrame.imageData.count)
-            }
-        } else {
-            // Fallback: extract from video (used for deferred mode, reprocessOCR, or crash recovery)
-            // At this point we've verified the video is finalized, so presentation order is correct
+        let isVideoFinalized = frameWithInfo.videoInfo?.isVideoFinalized ?? true
+        if isVideoFinalized {
+            // Verify finalized video file exists before attempting extraction
+            let storageRoot = await storage.getStorageDirectory()
+            let videoFullPath = storageRoot.appendingPathComponent(videoSegment.relativePath).path
+            if !FileManager.default.fileExists(atPath: videoFullPath) {
+                Log.error("[Queue] Video file not found for frame \(frameID): \(videoFullPath)", category: .processing)
+                Log.error("[Queue] This suggests database/storage path mismatch. Check AppPaths.storageRoot setting.", category: .processing)
 
-            // Extract the actual segment ID from the path (last path component is the timestamp-based ID)
-            let pathComponents = videoSegment.relativePath.split(separator: "/")
-            guard let lastComponent = pathComponents.last,
-                  let actualSegmentID = Int64(lastComponent) else {
-                Log.error("[Queue-DIAG] Invalid video path for frame \(frameID): \(videoSegment.relativePath)", category: .processing)
-                throw ProcessingError.invalidVideoPath(path: videoSegment.relativePath)
+                // Mark as failed permanently - don't retry endlessly for missing files
+                try await updateFrameProcessingStatus(frameID, status: .failed)
+                return .success // Return success to not re-queue (it's a permanent failure)
             }
 
-            // Load frame image from video using the actual segment ID from the filename
+            // Read from finalized video and convert JPEG payload for OCR.
             let frameData = try await storage.readFrame(
-                segmentID: VideoSegmentID(value: actualSegmentID),
+                segmentID: actualSegmentID,
                 frameIndex: frameRef.frameIndexInSegment
             )
 
-            // Convert JPEG data to CapturedFrame for OCR
             guard let convertedFrame = try convertJPEGToCapturedFrame(frameData, frameRef: frameRef) else {
                 Log.error("[Queue-DIAG] Frame \(frameID) image conversion failed!", category: .processing)
                 throw ProcessingError.imageConversionFailed
             }
             capturedFrame = convertedFrame
+        } else {
+            guard let walFrame = try await readFrameFromWAL(
+                frameID: frameID,
+                segmentID: actualSegmentID,
+                frameIndex: frameRef.frameIndexInSegment
+            ) else {
+                return .deferredSourceNotReady
+            }
+            capturedFrame = walFrame
         }
+
+        // Mark as processing only after the frame payload source is available.
+        try await updateFrameProcessingStatus(frameID, status: .processing)
 
         let tFrame = CFAbsoluteTimeGetCurrent()
 
@@ -623,6 +553,64 @@ public actor FrameProcessingQueue {
             bytesPerRow: bytesPerRow,
             metadata: frameRef.metadata
         )
+    }
+
+    private func parseActualSegmentID(from relativePath: String) throws -> VideoSegmentID {
+        let pathComponents = relativePath.split(separator: "/")
+        guard let lastComponent = pathComponents.last,
+              let actualSegmentID = Int64(lastComponent) else {
+            throw ProcessingError.invalidVideoPath(path: relativePath)
+        }
+        return VideoSegmentID(value: actualSegmentID)
+    }
+
+    /// Returns nil when WAL data is not ready yet and frame should be deferred.
+    private func readFrameFromWAL(frameID: Int64, segmentID: VideoSegmentID, frameIndex: Int) async throws -> CapturedFrame? {
+        guard let storageManager = storage as? StorageManager else {
+            throw StorageError.fileReadFailed(
+                path: "WAL(\(segmentID.value))",
+                underlying: "Storage manager does not expose WAL manager"
+            )
+        }
+
+        let walManager = await storageManager.getWALManager()
+        do {
+            return try await walManager.readFrame(
+                videoID: segmentID,
+                frameID: frameID,
+                fallbackFrameIndex: frameIndex
+            )
+        } catch {
+            if shouldDeferWALRead(error) {
+                Log.debug(
+                    "[Queue] Frame \(frameID) deferred - WAL source not ready yet (segment \(segmentID.value), index \(frameIndex)): \(error.localizedDescription)",
+                    category: .processing
+                )
+                return nil
+            }
+            throw error
+        }
+    }
+
+    private func shouldDeferWALRead(_ error: Error) -> Bool {
+        if let storageError = error as? StorageError {
+            switch storageError {
+            case .fileNotFound:
+                return true
+            case .fileReadFailed(_, let underlying):
+                let lower = underlying.lowercased()
+                return lower.contains("out of range")
+                    || lower.contains("incomplete")
+                    || lower.contains("empty")
+            default:
+                return false
+            }
+        }
+
+        let lower = error.localizedDescription.lowercased()
+        return lower.contains("out of range")
+            || lower.contains("incomplete")
+            || lower.contains("empty")
     }
 
     // MARK: - Status Management
@@ -866,12 +854,10 @@ public actor FrameProcessingQueue {
     }
 
     private func logMemorySnapshot() {
-        let cacheFrames = frameDataCache.count
-        let cacheBytes = frameDataCacheBytes
         let queueDepth = pendingCount + processingCount
 
         Log.info(
-            "[Queue-Memory] rawCacheFrames=\(cacheFrames) rawCacheBytes=\(Self.formatBytes(cacheBytes)) queueDepth=\(queueDepth) pending=\(pendingCount) processing=\(processingCount) workers=\(workers.count)",
+            "[Queue-Memory] rawCacheFrames=0 rawCacheBytes=0 KB queueDepth=\(queueDepth) pending=\(pendingCount) processing=\(processingCount) workers=\(workers.count)",
             category: .processing
         )
     }
@@ -920,7 +906,7 @@ public enum FrameProcessingStatus: Int, Sendable {
 private enum ProcessFrameResult {
     case success
     case skippedByAppFilter      // Frame skipped due to app filter, mark as completed (no OCR)
-    case deferredNotFinalized    // Video not finalized yet, re-queue for later
+    case deferredSourceNotReady  // Source payload not readable yet (WAL write in progress), re-queue for later
 }
 
 public struct QueueStatistics: Sendable {

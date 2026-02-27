@@ -462,13 +462,13 @@ enum FrameQueries {
 
     // MARK: - Exists Check
 
-    /// Check if a frame exists with the given timestamp (to the second)
-    /// Used by recovery manager to avoid inserting duplicates
+    /// Check if a frame exists near the given timestamp (millisecond window).
+    /// Used by recovery manager to avoid inserting duplicates.
     static func existsAtTimestamp(db: OpaquePointer, timestamp: Date) throws -> Bool {
-        // Convert to seconds precision (truncate milliseconds)
-        let timestampSeconds = Int64(timestamp.timeIntervalSince1970)
-        let startMs = timestampSeconds * 1000
-        let endMs = (timestampSeconds + 1) * 1000 - 1
+        let targetMs = Schema.dateToTimestamp(timestamp)
+        let toleranceMs: Int64 = 5
+        let startMs = targetMs - toleranceMs
+        let endMs = targetMs + toleranceMs
 
         let sql = "SELECT 1 FROM frame WHERE createdAt >= ? AND createdAt <= ? LIMIT 1;"
 
@@ -490,16 +490,22 @@ enum FrameQueries {
         return sqlite3_step(statement) == SQLITE_ROW
     }
 
-    /// Get frame ID at the given timestamp (to the second)
-    /// Returns nil if no frame exists at that timestamp
+    /// Get frame ID near the given timestamp (millisecond window)
+    /// Returns nil if no frame exists in that window.
     /// Used by recovery manager to update existing frames instead of skipping
     static func getFrameIDAtTimestamp(db: OpaquePointer, timestamp: Date) throws -> Int64? {
-        // Convert to seconds precision (truncate milliseconds)
-        let timestampSeconds = Int64(timestamp.timeIntervalSince1970)
-        let startMs = timestampSeconds * 1000
-        let endMs = (timestampSeconds + 1) * 1000 - 1
+        let targetMs = Schema.dateToTimestamp(timestamp)
+        let toleranceMs: Int64 = 5
+        let startMs = targetMs - toleranceMs
+        let endMs = targetMs + toleranceMs
 
-        let sql = "SELECT id FROM frame WHERE createdAt >= ? AND createdAt <= ? LIMIT 1;"
+        let sql = """
+            SELECT id
+            FROM frame
+            WHERE createdAt >= ? AND createdAt <= ?
+            ORDER BY ABS(createdAt - ?) ASC, id ASC
+            LIMIT 1;
+            """
 
         var statement: OpaquePointer?
         defer {
@@ -515,6 +521,7 @@ enum FrameQueries {
 
         sqlite3_bind_int64(statement, 1, startMs)
         sqlite3_bind_int64(statement, 2, endMs)
+        sqlite3_bind_int64(statement, 3, targetMs)
 
         if sqlite3_step(statement) == SQLITE_ROW {
             return sqlite3_column_int64(statement, 0)

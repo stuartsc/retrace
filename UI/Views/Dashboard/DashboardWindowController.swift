@@ -144,7 +144,7 @@ public class DashboardWindowController: NSObject {
         let hostingController = NSHostingController(rootView: dashboardContent)
 
         // Create window
-        let window = NSWindow(contentViewController: hostingController)
+        let window = DashboardWindow(contentViewController: hostingController)
 
         // Configure window properties
         window.title = "Dashboard"
@@ -512,6 +512,31 @@ enum DashboardSelectedView {
     case settings
     case changelog
     case monitor
+}
+
+/// Dashboard window that restores native maximize/restore behavior
+/// when double-clicking the title bar area.
+private final class DashboardWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if shouldToggleZoom(for: event) {
+            zoom(nil)
+            return
+        }
+
+        super.sendEvent(event)
+    }
+
+    private func shouldToggleZoom(for event: NSEvent) -> Bool {
+        guard event.type == .leftMouseDown, event.clickCount == 2 else { return false }
+        guard styleMask.contains(.titled), styleMask.contains(.resizable) else { return false }
+
+        return isPointInTitleBar(event.locationInWindow)
+    }
+
+    private func isPointInTitleBar(_ point: NSPoint) -> Bool {
+        let titleBarMinY = contentLayoutRect.maxY
+        return point.y >= titleBarMinY
+    }
 }
 
 // MARK: - Notifications

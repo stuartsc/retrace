@@ -145,13 +145,22 @@ public actor RecoveryManager {
     private func ensureFramesInDatabase(_ frames: [CapturedFrame], videoID: VideoSegmentID) async throws -> RecoveryResult {
         var newFrameIDs: [Int64] = []
         var existingFrameIDs: [Int64] = []
+        var matchedExistingFrameIDs: Set<Int64> = []
         var currentAppSegmentID: Int64?
 
         for (frameIndex, frame) in frames.enumerated() {
             // Check if frame already exists in database
             if let existingFrameID = try await database.getFrameIDAtTimestamp(frame.timestamp) {
-                existingFrameIDs.append(existingFrameID)
-                continue
+                // Do not allow multiple WAL frames to claim the same existing frame row.
+                if matchedExistingFrameIDs.insert(existingFrameID).inserted {
+                    existingFrameIDs.append(existingFrameID)
+                    continue
+                }
+
+                Log.warning(
+                    "[Recovery] Duplicate existing frame match avoided (frameID=\(existingFrameID), timestamp=\(Int64(frame.timestamp.timeIntervalSince1970 * 1000)), frameIndex=\(frameIndex)); inserting new frame",
+                    category: .storage
+                )
             }
 
             // Frame doesn't exist - create it
@@ -255,6 +264,7 @@ public actor RecoveryManager {
         var totalFramesRecovered = 0
         var totalVideosCreated = 0
         var recoveredFrameIDs: [Int64] = []
+        var recoveredFrameIDSet: Set<Int64> = []
 
         // Split frames into chunks of maxFramesPerSegment
         let frameChunks = stride(from: 0, to: frames.count, by: maxFramesPerSegment).map {
@@ -276,21 +286,32 @@ public actor RecoveryManager {
             // Process each frame: insert to database or update existing
             var currentAppSegmentID: Int64?
             var updatedExistingFrames = 0
+            var matchedExistingFrameIDs: Set<Int64> = []
 
             for (frameIndex, frame) in chunk.enumerated() {
                 // Check if a frame with the same timestamp already exists
                 if let existingFrameID = try await database.getFrameIDAtTimestamp(frame.timestamp) {
-                    // Frame already exists - update its video link to point to the new recovered video
-                    // This fixes orphan frames that were pointing to incomplete/corrupted videos
-                    try await database.updateFrameVideoLink(
-                        frameID: FrameID(value: existingFrameID),
-                        videoID: VideoSegmentID(value: dbVideoID),
-                        frameIndex: frameIndex
+                    // Do not allow multiple WAL frames to claim the same existing frame row.
+                    if matchedExistingFrameIDs.insert(existingFrameID).inserted {
+                        // Frame already exists - update its video link to point to the new recovered video
+                        // This fixes orphan frames that were pointing to incomplete/corrupted videos
+                        try await database.updateFrameVideoLink(
+                            frameID: FrameID(value: existingFrameID),
+                            videoID: VideoSegmentID(value: dbVideoID),
+                            frameIndex: frameIndex
+                        )
+                        if recoveredFrameIDSet.insert(existingFrameID).inserted {
+                            recoveredFrameIDs.append(existingFrameID)
+                        }
+                        updatedExistingFrames += 1
+                        Log.debug("[Recovery] Updated existing frame \(existingFrameID) to point to recovered video \(dbVideoID), frameIndex=\(frameIndex)", category: .storage)
+                        continue
+                    }
+
+                    Log.warning(
+                        "[Recovery] Duplicate existing frame match avoided (frameID=\(existingFrameID), timestamp=\(Int64(frame.timestamp.timeIntervalSince1970 * 1000)), frameIndex=\(frameIndex)); inserting new frame",
+                        category: .storage
                     )
-                    recoveredFrameIDs.append(existingFrameID)
-                    updatedExistingFrames += 1
-                    Log.debug("[Recovery] Updated existing frame \(existingFrameID) to point to recovered video \(dbVideoID), frameIndex=\(frameIndex)", category: .storage)
-                    continue
                 }
 
                 // Create app segment if needed (track app changes within chunk)
@@ -318,7 +339,9 @@ public actor RecoveryManager {
                     source: .native
                 )
                 let frameID = try await database.insertFrame(frameRef)
-                recoveredFrameIDs.append(frameID)
+                if recoveredFrameIDSet.insert(frameID).inserted {
+                    recoveredFrameIDs.append(frameID)
+                }
                 totalFramesRecovered += 1
             }
 
