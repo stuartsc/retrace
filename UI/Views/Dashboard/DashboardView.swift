@@ -59,6 +59,7 @@ public struct DashboardView: View {
     @StateObject private var coordinatorWrapper: AppCoordinatorWrapper
     @ObservedObject var launchOnLoginReminderManager: LaunchOnLoginReminderManager
     @ObservedObject var milestoneCelebrationManager: MilestoneCelebrationManager
+    @ObservedObject private var updaterManager = UpdaterManager.shared
     @State private var isPulsing = false
     @State private var showFeedbackSheet = false
     @State private var usageViewMode: AppUsageViewMode = Self.loadSavedViewMode()
@@ -503,6 +504,9 @@ public struct DashboardView: View {
                 // Action buttons
                 refreshButton
                 monitorButton
+                if updaterManager.shouldShowWhatsNew {
+                    changelogButton
+                }
                 settingsButton
             }
         }
@@ -596,6 +600,18 @@ public struct DashboardView: View {
 
     private var monitorButton: some View {
         MonitorButton(isProcessing: viewModel.ocrQueueDepth > 0)
+    }
+
+    // MARK: - Changelog Button
+
+    private var changelogButton: some View {
+        actionButton(icon: "sparkles", label: "What's New") {
+            NotificationCenter.default.post(
+                name: .openDashboard,
+                object: nil,
+                userInfo: ["target": "changelog"]
+            )
+        }
     }
 
     // MARK: - Settings Button

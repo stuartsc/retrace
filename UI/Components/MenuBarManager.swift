@@ -875,6 +875,15 @@ public class MenuBarManager: ObservableObject {
         checkForUpdatesItem.isEnabled = !UpdaterManager.shared.isCheckingForUpdates && UpdaterManager.shared.canCheckForUpdates
         menu.addItem(checkForUpdatesItem)
 
+        // Changelog
+        let changelogItem = NSMenuItem(
+            title: "Changelog",
+            action: #selector(openChangelog),
+            keyEquivalent: ""
+        )
+        changelogItem.image = NSImage(systemSymbolName: "text.book.closed", accessibilityDescription: nil)
+        menu.addItem(changelogItem)
+
         // Get Help
         let feedbackItem = NSMenuItem(
             title: "Get Help...",
@@ -1091,6 +1100,12 @@ public class MenuBarManager: ObservableObject {
 
     @objc private func openDashboard() {
         NotificationCenter.default.post(name: .toggleDashboard, object: nil)
+    }
+
+    @objc private func openChangelog() {
+        Task { @MainActor in
+            DashboardWindowController.shared.showChangelog()
+        }
     }
 
     @objc private func openSystemMonitor() {

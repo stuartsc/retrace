@@ -182,6 +182,16 @@ public class DashboardWindowController: NSObject {
         show()
         NotificationCenter.default.post(name: .toggleSettings, object: nil)
     }
+
+    /// Navigate to changelog view within the dashboard
+    public func showChangelog() {
+        show()
+        NotificationCenter.default.post(
+            name: .openDashboard,
+            object: nil,
+            userInfo: ["target": "changelog"]
+        )
+    }
 }
 
 // MARK: - NSWindowDelegate
@@ -283,34 +293,7 @@ struct DashboardContentView: View {
                     Color.retraceBackground
                         .ignoresSafeArea()
 
-                    Group {
-                        switch selectedView {
-                        case .dashboard:
-                            DashboardView(
-                                viewModel: dashboardViewModel,
-                                coordinator: coordinator,
-                                launchOnLoginReminderManager: launchOnLoginReminderManager,
-                                milestoneCelebrationManager: milestoneCelebrationManager,
-                                hasLoadedInitialData: $hasLoadedDashboard
-                            )
-
-                        case .settings:
-                            SettingsView(
-                                initialTab: initialSettingsTab,
-                                initialScrollTargetID: initialSettingsScrollTargetID
-                            )
-                                .environmentObject(coordinatorWrapper)
-                                .onDisappear {
-                                    // Clear the initial tab when leaving settings
-                                    initialSettingsTab = nil
-                                    initialSettingsScrollTargetID = nil
-                                }
-
-                        case .monitor:
-                            SystemMonitorView(coordinator: coordinator)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        }
-                    }
+                    selectedContent
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .animation(.easeInOut(duration: 0.2), value: selectedView)
                 }
@@ -327,9 +310,10 @@ struct DashboardContentView: View {
         .onAppear {
             updateDashboardWindowTitle()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openDashboard)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .openDashboard)) { notification in
+            let target = notification.userInfo?["target"] as? String
             withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .dashboard
+                selectedView = target == "changelog" ? .changelog : .dashboard
             }
             updateDashboardWindowTitle()
         }
@@ -463,6 +447,40 @@ struct DashboardContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var selectedContent: some View {
+        switch selectedView {
+        case .dashboard:
+            DashboardView(
+                viewModel: dashboardViewModel,
+                coordinator: coordinator,
+                launchOnLoginReminderManager: launchOnLoginReminderManager,
+                milestoneCelebrationManager: milestoneCelebrationManager,
+                hasLoadedInitialData: $hasLoadedDashboard
+            )
+
+        case .settings:
+            SettingsView(
+                initialTab: initialSettingsTab,
+                initialScrollTargetID: initialSettingsScrollTargetID
+            )
+            .environmentObject(coordinatorWrapper)
+            .onDisappear {
+                // Clear the initial tab when leaving settings
+                initialSettingsTab = nil
+                initialSettingsScrollTargetID = nil
+            }
+
+        case .changelog:
+            ChangelogView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        case .monitor:
+            SystemMonitorView(coordinator: coordinator)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     private func checkOnboarding() async {
         let shouldShow = await coordinator.onboardingManager.shouldShowOnboarding()
         await MainActor.run {
@@ -477,6 +495,8 @@ struct DashboardContentView: View {
             title = "Dashboard"
         case .settings:
             title = "Settings - \(currentSettingsTabTitle)"
+        case .changelog:
+            title = "Changelog"
         case .monitor:
             title = "System Monitor"
         }
@@ -490,6 +510,7 @@ struct DashboardContentView: View {
 enum DashboardSelectedView {
     case dashboard
     case settings
+    case changelog
     case monitor
 }
 

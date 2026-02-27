@@ -22,6 +22,7 @@ UI/
 │   │   └── SearchFilterBar.swift        # Search filters and controls
 │   ├── Dashboard/
 │   │   ├── DashboardView.swift          # Main dashboard
+│   │   ├── ChangelogView.swift          # Appcast-powered release notes view
 │   │   ├── AnalyticsCard.swift          # Stats widgets
 │   │   ├── MigrationPanel.swift         # Import UI
 │   │   └── SupportLink.swift            # Twitter/support

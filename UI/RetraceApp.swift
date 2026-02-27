@@ -74,6 +74,10 @@ struct RetraceApp: App {
             // Note: Global hotkey is registered via HotkeyManager from saved settings
             // Don't add a static .keyboardShortcut here as it would conflict
 
+            Button("Open Changelog") {
+                DashboardWindowController.shared.showChangelog()
+            }
+
             Button("Open Timeline") {
                 TimelineWindowController.shared.toggle()
             }
@@ -88,6 +92,11 @@ struct RetraceApp: App {
                 DashboardWindowController.shared.show()
             }
             .keyboardShortcut("1", modifiers: .command)
+
+            Button("Changelog") {
+                DashboardWindowController.shared.showChangelog()
+            }
+            .keyboardShortcut("2", modifiers: .command)
 
             Button("Timeline") {
                 // Open fullscreen timeline overlay
