@@ -1032,7 +1032,6 @@ class SystemMonitorViewModel: ObservableObject {
     @Published var powerSource: PowerStateMonitor.PowerSource = .unknown
     @Published var ocrProcessingLevel: Int = 3
     @Published var isRecordingActive: Bool = false
-    @Published var captureIntervalSeconds: Double = 2.0
 
     // Chart data
     @Published var processingHistory: [ProcessingDataPoint] = []
@@ -1048,8 +1047,12 @@ class SystemMonitorViewModel: ObservableObject {
     // Track frames processed per minute using minute key (minutes since epoch)
     // Using Int key instead of Date to avoid timezone/rounding issues at minute boundaries
     private var minuteProcessingCounts: [Int: Int] = [:]
+    private var queueDepthSamples: [(timestamp: Date, depth: Int)] = []
     private var previousTotalProcessed: Int = 0
     private let backlogNudgeThreshold = 100
+    private let queueDepthSampleWindowSeconds: TimeInterval = 45
+    private let minimumQueueTrendWindowSeconds: TimeInterval = 12
+    private let queueDepthGrowthEpsilonPerMinute: Double = 0.5
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -1111,26 +1114,36 @@ class SystemMonitorViewModel: ObservableObject {
         return Double(recentProcessed) / Double(minutesOfData)
     }
 
-    private var configuredCaptureRateFramesPerMinute: Double {
-        let safeInterval = max(captureIntervalSeconds, 0.1)
-        return 60.0 / safeInterval
+    private var recentQueueDepthChangePerMinute: Double? {
+        Self.queueDepthChangePerMinute(
+            samples: queueDepthSamples,
+            minimumObservationWindow: minimumQueueTrendWindowSeconds
+        )
     }
 
     private var effectiveDrainRateFramesPerMinute: Double? {
         guard let processingRate = recentProcessingRateFramesPerMinute else { return nil }
-        if isRecordingActive {
-            return processingRate - configuredCaptureRateFramesPerMinute
+        guard isRecordingActive else {
+            return processingRate
         }
+
+        // When recording is active, infer net drain from actual queue behavior instead of
+        // configured capture interval. Dedup/app filters can make theoretical capture rate wrong.
+        if let queueDepthChange = recentQueueDepthChangePerMinute {
+            return -queueDepthChange
+        }
+
+        // Not enough queue-depth samples yet; fall back to processing rate temporarily.
         return processingRate
     }
 
     var isBacklogGrowingAtCurrentRates: Bool {
         guard queueDepth > 0,
               isRecordingActive,
-              let drainRate = effectiveDrainRateFramesPerMinute else {
+              let queueDepthChange = recentQueueDepthChangePerMinute else {
             return false
         }
-        return drainRate <= 0
+        return queueDepthChange > queueDepthGrowthEpsilonPerMinute
     }
 
     var etaText: String {
@@ -1241,6 +1254,7 @@ class SystemMonitorViewModel: ObservableObject {
         #if DEBUG
         applyDebugQueueOverrides(defaults: defaults)
         #endif
+        recordQueueDepthSample(queueDepth)
 
         // Get power state
         let powerState = coordinator.getCurrentPowerState()
@@ -1252,11 +1266,6 @@ class SystemMonitorViewModel: ObservableObject {
         isRecordingActive = coordinator.statusHolder.status.isRunning
         let processingLevel = (defaults.object(forKey: "ocrProcessingLevel") as? NSNumber)?.intValue ?? 3
         ocrProcessingLevel = min(max(processingLevel, 1), 5)
-        if let captureIntervalNumber = defaults.object(forKey: "captureIntervalSeconds") as? NSNumber {
-            captureIntervalSeconds = max(captureIntervalNumber.doubleValue, 0.1)
-        } else {
-            captureIntervalSeconds = 2.0
-        }
     }
 
     #if DEBUG
@@ -1298,5 +1307,29 @@ class SystemMonitorViewModel: ObservableObject {
         // Clean up old entries (older than 31 minutes)
         let cutoffKey = nowKey - 31
         minuteProcessingCounts = minuteProcessingCounts.filter { $0.key > cutoffKey }
+    }
+
+    private func recordQueueDepthSample(_ depth: Int, at timestamp: Date = Date()) {
+        queueDepthSamples.append((timestamp: timestamp, depth: max(depth, 0)))
+        let cutoff = timestamp.addingTimeInterval(-queueDepthSampleWindowSeconds)
+        queueDepthSamples.removeAll { $0.timestamp < cutoff }
+    }
+
+    static func queueDepthChangePerMinute(
+        samples: [(timestamp: Date, depth: Int)],
+        minimumObservationWindow: TimeInterval = 12
+    ) -> Double? {
+        guard let oldestSample = samples.first,
+              let newestSample = samples.last else {
+            return nil
+        }
+
+        let elapsedSeconds = newestSample.timestamp.timeIntervalSince(oldestSample.timestamp)
+        guard elapsedSeconds >= minimumObservationWindow else {
+            return nil
+        }
+
+        let depthDelta = Double(newestSample.depth - oldestSample.depth)
+        return depthDelta / (elapsedSeconds / 60.0)
     }
 }
