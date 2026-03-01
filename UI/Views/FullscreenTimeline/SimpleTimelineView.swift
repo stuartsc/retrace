@@ -4243,7 +4243,7 @@ struct ScrollOrientationHintBanner: View {
                 .font(.retraceCaptionMedium)
                 .foregroundColor(.white.opacity(0.9))
 
-            Text(isHorizontal ? "Timeline is set to Left/Right" : "Timeline is set to Up/Down")
+            Text(isHorizontal ? "Timeline scrolling is set to Left/Right" : "Timeline scrolling is set to Up/Down")
                 .font(.retraceCaption)
                 .foregroundColor(.white.opacity(0.7))
 
