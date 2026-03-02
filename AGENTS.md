@@ -51,7 +51,8 @@ retrace/
 │   ├── release.sh               # End-to-end release automation
 │   ├── create-release.sh        # Release build + packaging helper
 │   ├── check_no_nanoseconds_sleep.sh # Guardrail for Task.sleep(nanoseconds:)
-│   └── validate_sleep_wake_stability.sh # Sleep/wake soak validation workflow
+│   ├── validate_sleep_wake_stability.sh # Sleep/wake soak validation workflow
+│   └── validate_darkwake_watchdog.sh # Automated darkwake watchdog regression validation
 │
 ├── Shared/                      # CRITICAL: Shared types and protocols
 │   ├── Logging.swift            # Central log utility (Log.debug/info/warning/error)

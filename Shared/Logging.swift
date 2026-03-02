@@ -512,11 +512,31 @@ public final class MainThreadWatchdog: @unchecked Sendable {
     /// Threshold where the app is considered frozen long enough to auto-quit.
     private let autoQuitThreshold: TimeInterval = 10.0
 
+    /// Require repeated failed probes before triggering auto-quit.
+    /// This avoids one-off false positives during power/display transitions.
+    private let requiredConsecutiveFailedProbes = 5
+
+    /// How often to emit suppression logs while auto-quit is suspended.
+    private let suppressionLogInterval: TimeInterval = 5.0
+
     /// Number of times we've detected blocking
     private var blockingCount = 0
 
     /// Ensures auto-quit is only triggered once per freeze event.
     private var autoQuitTriggered = false
+
+    /// Number of consecutive failed auto-quit probes once threshold is reached.
+    private var consecutiveFailedAutoQuitProbes = 0
+
+    /// Monotonic uptime timestamp until which auto-quit is suspended.
+    /// `UInt64.max` means indefinite suspension.
+    private var autoQuitSuppressedUntilUptimeNanos: UInt64?
+
+    /// Human-readable reason for current suspension state.
+    private var autoQuitSuppressionReason: String?
+
+    /// Last time we logged suppression in the watchdog loop.
+    private var lastSuppressionLogUptimeNanos: UInt64 = 0
 
     /// Callback invoked when the auto-quit threshold is reached.
     private var autoQuitHandler: (@Sendable (_ blockedSeconds: TimeInterval) -> Void)?
@@ -529,6 +549,65 @@ public final class MainThreadWatchdog: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         autoQuitHandler = handler
+    }
+
+    /// Suspend watchdog-triggered auto-quit indefinitely.
+    public func suspendAutoQuit(reason: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        autoQuitSuppressedUntilUptimeNanos = UInt64.max
+        autoQuitSuppressionReason = reason
+        autoQuitTriggered = false
+        consecutiveFailedAutoQuitProbes = 0
+        lastSuppressionLogUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        Log.info("[Watchdog] Auto-quit suspended indefinitely (\(reason))", category: .ui)
+    }
+
+    /// Suspend watchdog-triggered auto-quit for a bounded grace period.
+    public func suspendAutoQuit(for duration: TimeInterval, reason: String) {
+        guard duration > 0 else {
+            resumeAutoQuit(reason: "\(reason) (duration elapsed)")
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = DispatchTime.now().uptimeNanoseconds
+        let durationNanos = UInt64(duration * 1_000_000_000)
+        let suppressedUntil = durationNanos > (UInt64.max - now) ? UInt64.max : now + durationNanos
+
+        autoQuitSuppressedUntilUptimeNanos = suppressedUntil
+        autoQuitSuppressionReason = reason
+        autoQuitTriggered = false
+        consecutiveFailedAutoQuitProbes = 0
+        lastSuppressionLogUptimeNanos = now
+        Log.info(
+            "[Watchdog] Auto-quit suspended for \(String(format: "%.1f", duration))s (\(reason))",
+            category: .ui
+        )
+    }
+
+    /// Resume watchdog-triggered auto-quit immediately.
+    public func resumeAutoQuit(reason: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        autoQuitSuppressedUntilUptimeNanos = nil
+        autoQuitSuppressionReason = nil
+        consecutiveFailedAutoQuitProbes = 0
+        lastSuppressionLogUptimeNanos = 0
+        Log.info("[Watchdog] Auto-quit resumed (\(reason))", category: .ui)
+    }
+
+    /// Resume watchdog-triggered auto-quit after a bounded grace period.
+    public func resumeAutoQuit(after delay: TimeInterval, reason: String) {
+        guard delay > 0 else {
+            resumeAutoQuit(reason: reason)
+            return
+        }
+        suspendAutoQuit(for: delay, reason: "\(reason) grace")
     }
 
     /// Start the watchdog - call this once at app startup
@@ -579,14 +658,37 @@ public final class MainThreadWatchdog: @unchecked Sendable {
         defer { lock.unlock() }
         lastHeartbeatUptimeNanos = DispatchTime.now().uptimeNanoseconds
         autoQuitTriggered = false
+        consecutiveFailedAutoQuitProbes = 0
     }
 
     private func checkHeartbeat() {
         guard isRunningSnapshot() else { return }
 
         lock.lock()
-        let elapsed = elapsedSecondsSinceLastHeartbeatLocked()
+        let nowUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        let elapsed = elapsedSecondsSinceLastHeartbeatLocked(nowUptimeNanos: nowUptimeNanos)
+        let suppression = autoQuitSuppressionStatusLocked(nowUptimeNanos: nowUptimeNanos)
+        let shouldLogSuppression = shouldLogSuppressionLocked(
+            nowUptimeNanos: nowUptimeNanos,
+            isSuppressed: suppression.isSuppressed,
+            elapsed: elapsed
+        )
+        if suppression.isSuppressed {
+            autoQuitTriggered = false
+            consecutiveFailedAutoQuitProbes = 0
+        }
         lock.unlock()
+
+        if suppression.isSuppressed {
+            if shouldLogSuppression {
+                let reason = suppression.reason ?? "unspecified reason"
+                Log.info(
+                    "[Watchdog] Auto-quit suppressed (\(reason)); main-thread delay currently \(String(format: "%.1f", elapsed))s",
+                    category: .ui
+                )
+            }
+            return
+        }
 
         var didBlock = false
         if elapsed > criticalThreshold {
@@ -618,12 +720,26 @@ public final class MainThreadWatchdog: @unchecked Sendable {
             return
         }
 
+        lock.lock()
+        consecutiveFailedAutoQuitProbes += 1
+        let failedProbeCount = consecutiveFailedAutoQuitProbes
+        lock.unlock()
+
+        guard failedProbeCount >= requiredConsecutiveFailedProbes else {
+            Log.warning(
+                "[Watchdog] Auto-quit probe failed (\(failedProbeCount)/\(requiredConsecutiveFailedProbes)) after \(String(format: "%.1f", elapsed))s blocked; waiting for confirmation.",
+                category: .ui
+            )
+            return
+        }
+
         let handler: (@Sendable (_ blockedSeconds: TimeInterval) -> Void)?
         lock.lock()
         if autoQuitTriggered {
             handler = nil
         } else {
             autoQuitTriggered = true
+            consecutiveFailedAutoQuitProbes = 0
             handler = autoQuitHandler
         }
         lock.unlock()
@@ -635,17 +751,59 @@ public final class MainThreadWatchdog: @unchecked Sendable {
     public var statistics: (blockingCount: Int, isHealthy: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        let elapsed = elapsedSecondsSinceLastHeartbeatLocked()
+        let elapsed = elapsedSecondsSinceLastHeartbeatLocked(nowUptimeNanos: DispatchTime.now().uptimeNanoseconds)
         return (blockingCount, elapsed < warningThreshold)
     }
 
-    private func elapsedSecondsSinceLastHeartbeatLocked() -> TimeInterval {
-        let now = DispatchTime.now().uptimeNanoseconds
-        guard now >= lastHeartbeatUptimeNanos else {
+    private func elapsedSecondsSinceLastHeartbeatLocked(nowUptimeNanos: UInt64) -> TimeInterval {
+        guard nowUptimeNanos >= lastHeartbeatUptimeNanos else {
             return 0
         }
 
-        return TimeInterval(now - lastHeartbeatUptimeNanos) / 1_000_000_000
+        return TimeInterval(nowUptimeNanos - lastHeartbeatUptimeNanos) / 1_000_000_000
+    }
+
+    private func autoQuitSuppressionStatusLocked(nowUptimeNanos: UInt64) -> (isSuppressed: Bool, reason: String?) {
+        guard let suppressedUntil = autoQuitSuppressedUntilUptimeNanos else {
+            return (false, nil)
+        }
+
+        if suppressedUntil == UInt64.max || nowUptimeNanos < suppressedUntil {
+            return (true, autoQuitSuppressionReason)
+        }
+
+        autoQuitSuppressedUntilUptimeNanos = nil
+        autoQuitSuppressionReason = nil
+        lastSuppressionLogUptimeNanos = 0
+        return (false, nil)
+    }
+
+    private func shouldLogSuppressionLocked(
+        nowUptimeNanos: UInt64,
+        isSuppressed: Bool,
+        elapsed: TimeInterval
+    ) -> Bool {
+        guard isSuppressed, elapsed >= warningThreshold else {
+            return false
+        }
+
+        if lastSuppressionLogUptimeNanos == 0 {
+            lastSuppressionLogUptimeNanos = nowUptimeNanos
+            return true
+        }
+
+        guard nowUptimeNanos >= lastSuppressionLogUptimeNanos else {
+            lastSuppressionLogUptimeNanos = nowUptimeNanos
+            return true
+        }
+
+        let sinceLast = TimeInterval(nowUptimeNanos - lastSuppressionLogUptimeNanos) / 1_000_000_000
+        guard sinceLast >= suppressionLogInterval else {
+            return false
+        }
+
+        lastSuppressionLogUptimeNanos = nowUptimeNanos
+        return true
     }
 
     private func mainThreadRespondedToProbe(timeout: TimeInterval) -> Bool {

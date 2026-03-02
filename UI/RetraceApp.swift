@@ -161,6 +161,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let quitConfirmationPreferenceKey = "quitConfirmationPreference"
     private static let canonicalBundleIdentifier = "io.retrace.app"
     private static let singleInstanceLockPath = "/tmp/io.retrace.app.instance.lock"
+    nonisolated private static let watchdogWakeGracePeriodSeconds: TimeInterval = 60
 
     private enum QuitTerminationPreference: String {
         case ask
@@ -299,6 +300,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureWatchdogAutoQuit() {
         MainThreadWatchdog.shared.setAutoQuitHandler { blockedSeconds in
             let blockedFor = String(format: "%.1f", blockedSeconds)
+
+            let displayCount = Self.activeDisplayCount()
+            if displayCount == 0 {
+                Log.warning(
+                    "[Watchdog] Auto-quit suppressed: active displays are 0 (darkwake/sleep transition). blocked=\(blockedFor)s",
+                    category: .ui
+                )
+                MainThreadWatchdog.shared.suspendAutoQuit(
+                    for: Self.watchdogWakeGracePeriodSeconds,
+                    reason: "active displays 0 (darkwake/sleep transition)"
+                )
+                EmergencyDiagnostics.capture(trigger: "watchdog_auto_quit_suppressed_no_display")
+                return
+            }
+
             Log.critical("[Watchdog] Auto-quit threshold reached (\(blockedFor)s). Capturing diagnostics and attempting automatic relaunch.", category: .ui)
             EmergencyDiagnostics.capture(trigger: "watchdog_auto_quit")
 
@@ -320,6 +336,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Reuse the same restart path as Settings so watchdog quits auto-recover.
             AppRelaunch.relaunch()
         }
+    }
+
+    nonisolated private static func activeDisplayCount() -> Int {
+        var displayCount: UInt32 = 0
+        let result = CGGetActiveDisplayList(0, nil, &displayCount)
+        guard result == .success else {
+            return -1
+        }
+        return Int(displayCount)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -805,6 +830,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         sleepWakeObservers.append(sleepObserver)
 
+        let screensSleepObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.handleScreensSleep()
+            }
+        }
+        sleepWakeObservers.append(screensSleepObserver)
+
         let wakeObserver = workspaceCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -815,6 +851,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         sleepWakeObservers.append(wakeObserver)
+
+        let screensWakeObserver = workspaceCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.handleScreensWake()
+            }
+        }
+        sleepWakeObservers.append(screensWakeObserver)
 
         // Power source change detection - coalesced with sleep/wake observers
         // NSWorkspace doesn't have a direct power change notification, but we can:
@@ -950,6 +997,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleSystemSleep() async {
+        MainThreadWatchdog.shared.suspendAutoQuit(reason: "system will sleep")
+
         guard let wrapper = coordinatorWrapper else { return }
         guard !isHandlingSystemSleep else { return }
         isHandlingSystemSleep = true
@@ -969,6 +1018,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleSystemWake() async {
+        MainThreadWatchdog.shared.resumeAutoQuit(
+            after: Self.watchdogWakeGracePeriodSeconds,
+            reason: "system did wake"
+        )
+
         guard let wrapper = coordinatorWrapper else { return }
         guard !isHandlingSystemWake else { return }
         guard wasRecordingBeforeSleep else { return }
@@ -988,6 +1042,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.error("[AppDelegate] Failed to resume pipeline on wake: \(error)", category: .app)
         }
+    }
+
+    @MainActor
+    private func handleScreensSleep() async {
+        MainThreadWatchdog.shared.suspendAutoQuit(reason: "screens did sleep")
+    }
+
+    @MainActor
+    private func handleScreensWake() async {
+        MainThreadWatchdog.shared.resumeAutoQuit(
+            after: Self.watchdogWakeGracePeriodSeconds,
+            reason: "screens did wake"
+        )
     }
 
     // MARK: - Recording Control
