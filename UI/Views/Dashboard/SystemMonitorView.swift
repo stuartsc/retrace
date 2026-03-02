@@ -767,47 +767,44 @@ struct ProcessingBarChart: View {
             VStack(spacing: 0) {
                 HStack(alignment: .bottom, spacing: 0) {
                     // Main chart area
-                    VStack {
-                        Spacer()
-                        HStack(alignment: .bottom, spacing: spacing) {
-                            ForEach(Array(dataPoints.enumerated()), id: \.offset) { index, point in
-                                let isHovered = hoveredIndex == index
-                                let isLive = index == lastIndex
+                    HStack(alignment: .bottom, spacing: spacing) {
+                        ForEach(Array(dataPoints.enumerated()), id: \.offset) { index, point in
+                            let isHovered = hoveredIndex == index
+                            let isLive = index == lastIndex
 
-                                if isLive {
-                                    // Live bar: blue (processed) + green (processing) stacked
-                                    liveBarView(
-                                        processedCount: point.count,
-                                        processingCount: processingCount,
-                                        maxValue: maxValue,
-                                        barWidth: barWidth,
-                                        height: chartHeight,
-                                        isHovered: isHovered,
-                                        index: index
-                                    )
-                                } else {
-                                    // Historical bar (blue)
-                                    let normalizedHeight = CGFloat(point.count) / CGFloat(maxValue)
-                                    let barHeight = chartHeight * normalizedHeight
+                            if isLive {
+                                // Live bar: blue (processed) + green (processing) stacked
+                                liveBarView(
+                                    processedCount: point.count,
+                                    processingCount: processingCount,
+                                    maxValue: maxValue,
+                                    barWidth: barWidth,
+                                    height: chartHeight,
+                                    isHovered: isHovered,
+                                    index: index
+                                )
+                            } else {
+                                // Historical bar (blue)
+                                let normalizedHeight = CGFloat(point.count) / CGFloat(maxValue)
+                                let barHeight = chartHeight * normalizedHeight
 
-                                    UnevenRoundedRectangle(
-                                        topLeadingRadius: 2,
-                                        bottomLeadingRadius: 0,
-                                        bottomTrailingRadius: 0,
-                                        topTrailingRadius: 2
-                                    )
-                                    .fill(Color.retraceAccent.opacity(isHovered ? 0.9 : 0.6))
-                                    .frame(width: barWidth, height: max(barHeight, point.count > 0 ? 3 : 1))
-                                    .animation(.easeOut(duration: 0.15), value: isHovered)
-                                    .contentShape(Rectangle().size(width: barWidth, height: chartHeight))
-                                    .onHover { hovering in
-                                        hoveredIndex = hovering ? index : nil
-                                    }
+                                UnevenRoundedRectangle(
+                                    topLeadingRadius: 2,
+                                    bottomLeadingRadius: 0,
+                                    bottomTrailingRadius: 0,
+                                    topTrailingRadius: 2
+                                )
+                                .fill(Color.retraceAccent.opacity(isHovered ? 0.9 : 0.6))
+                                .frame(width: barWidth, height: max(barHeight, point.count > 0 ? 3 : 1))
+                                .animation(.easeOut(duration: 0.15), value: isHovered)
+                                .contentShape(Rectangle().size(width: barWidth, height: chartHeight))
+                                .onHover { hovering in
+                                    hoveredIndex = hovering ? index : nil
                                 }
                             }
                         }
                     }
-                    .frame(width: chartWidth, height: chartHeight)
+                    .frame(width: chartWidth, height: chartHeight, alignment: .bottom)
                     .overlay(alignment: .top) {
                         // Tooltip for main chart (index >= 0 excludes backlog hover which uses -1)
                         if let index = hoveredIndex, index >= 0, index < dataPoints.count {
@@ -909,31 +906,34 @@ struct ProcessingBarChart: View {
         let processedHeight = height * processedNormalized
         let processingHeight = height * processingNormalized
 
-        return VStack(spacing: 0) {
-            // Processing portion (green) - on top
-            if processingCount > 0 {
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 2,
-                    bottomLeadingRadius: 0,
-                    bottomTrailingRadius: 0,
-                    topTrailingRadius: 2
-                )
-                .fill(Color.green.opacity(isHovered ? 1.0 : 0.8))
-                .frame(width: barWidth, height: max(processingHeight, 3))
-            }
+        return ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                // Processing portion (green) - on top
+                if processingCount > 0 {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 2,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: 2
+                    )
+                    .fill(Color.green.opacity(isHovered ? 1.0 : 0.8))
+                    .frame(width: barWidth, height: max(processingHeight, 3))
+                }
 
-            // Processed portion (blue) - on bottom
-            if processedCount > 0 || processingCount == 0 {
-                UnevenRoundedRectangle(
-                    topLeadingRadius: processingCount > 0 ? 0 : 2,
-                    bottomLeadingRadius: 0,
-                    bottomTrailingRadius: 0,
-                    topTrailingRadius: processingCount > 0 ? 0 : 2
-                )
-                .fill(Color.retraceAccent.opacity(isHovered ? 0.9 : 0.6))
-                .frame(width: barWidth, height: max(processedHeight, processedCount > 0 ? 3 : 1))
+                // Processed portion (blue) - on bottom
+                if processedCount > 0 || processingCount == 0 {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: processingCount > 0 ? 0 : 2,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: processingCount > 0 ? 0 : 2
+                    )
+                    .fill(Color.retraceAccent.opacity(isHovered ? 0.9 : 0.6))
+                    .frame(width: barWidth, height: max(processedHeight, processedCount > 0 ? 3 : 1))
+                }
             }
         }
+        .frame(width: barWidth, height: height, alignment: .bottom)
         .animation(.easeOut(duration: 0.15), value: isHovered)
         .contentShape(Rectangle().size(width: barWidth, height: height))
         .onHover { hovering in
