@@ -66,8 +66,8 @@ public actor SearchManager: SearchProtocol {
 
         // Build FTS query
         let ftsQuery = parsed.toFTSQuery()
-        let textOnlyFTSQuery = scopeToTextColumn(ftsQuery)
-        Log.debug("[SearchManager] Raw query: '\(query.text)' → FTS query: '\(textOnlyFTSQuery)' | terms: \(parsed.searchTerms) | phrases: \(parsed.phrases)", category: .search)
+        let searchableColumnsFTSQuery = scopeToSearchableColumns(ftsQuery)
+        Log.debug("[SearchManager] Raw query: '\(query.text)' → FTS query: '\(searchableColumnsFTSQuery)' | terms: \(parsed.searchTerms) | phrases: \(parsed.phrases)", category: .search)
 
         // Build filters
         var filters = query.filters
@@ -101,14 +101,14 @@ public actor SearchManager: SearchProtocol {
 
         // Execute FTS search
         let ftsMatches = try await ftsEngine.search(
-            query: textOnlyFTSQuery,
+            query: searchableColumnsFTSQuery,
             filters: filters,
             limit: query.limit,
             offset: query.offset
         )
 
         // Get total count for pagination
-        let totalCount = try await ftsEngine.getMatchCount(query: textOnlyFTSQuery, filters: filters)
+        let totalCount = try await ftsEngine.getMatchCount(query: searchableColumnsFTSQuery, filters: filters)
 
         // Convert FTS matches to SearchResults
         var results: [SearchResult] = []
@@ -173,7 +173,7 @@ public actor SearchManager: SearchProtocol {
 
         // Use prefix search to find matching terms
         // Search for "prefix*" to get documents containing words starting with prefix
-        let prefixQuery = scopeToTextColumn("\(prefix)*")
+        let prefixQuery = scopeToSearchableColumns("\(prefix)*")
 
         do {
             let results = try await ftsEngine.search(
@@ -293,9 +293,11 @@ public actor SearchManager: SearchProtocol {
         return -bm25Rank / (1.0 + abs(bm25Rank))
     }
 
-    /// Scope FTS query to the OCR text column only.
-    /// This prevents matches from window title/browser URL columns.
-    private func scopeToTextColumn(_ query: String) -> String {
-        "text:(\(query))"
+    /// Scope FTS query to OCR columns only (`text` + `otherText`), excluding `title`.
+    /// This prevents metadata-only title matches from appearing in result sets.
+    private func scopeToSearchableColumns(_ query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return query }
+        return "((text:(\(trimmed))) OR (otherText:(\(trimmed))))"
     }
 }

@@ -134,7 +134,6 @@ public class AppNameResolver {
 
     /// Get all currently installed apps from /Applications (instant, no DB query needed)
     /// Returns array of AppInfo with bundleID and name
-    /// Also pre-warms the icon cache for instant popover display
     public func getInstalledApps() -> [AppInfo] {
         let startTime = CFAbsoluteTimeGetCurrent()
         var apps: [AppInfo] = []
@@ -177,8 +176,6 @@ public class AppNameResolver {
                 cache[bundleID] = name
                 lock.unlock()
 
-                // Pre-warm icon cache using the app URL we already have
-                AppIconProvider.shared.preloadIcon(for: bundleID, appURL: appURL)
             }
         }
 

@@ -103,6 +103,88 @@ final class TimelineBlockNavigationTests: XCTestCase {
 }
 
 @MainActor
+final class TimelineRefreshTrimRegressionTests: XCTestCase {
+    func testRefreshFrameDataTrimPreservesNewestIndexAfterAppend() async {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        viewModel.frames = (0..<100).map { offset in
+            makeTimelineFrame(
+                id: Int64(offset + 1),
+                timestamp: baseDate.addingTimeInterval(TimeInterval(offset)),
+                frameIndex: offset,
+                processingStatus: 4
+            )
+        }
+        viewModel.currentIndex = 95
+
+        viewModel.test_refreshFrameDataHooks.getMostRecentFramesWithVideoInfo = { limit, _ in
+            XCTAssertEqual(limit, 50)
+            return (100..<112).reversed().map { offset in
+                let timestamp = baseDate.addingTimeInterval(TimeInterval(offset))
+                return self.makeFrameWithVideoInfo(
+                    id: Int64(offset + 1),
+                    timestamp: timestamp,
+                    frameIndex: offset,
+                    processingStatus: 4
+                )
+            }
+        }
+
+        await viewModel.refreshFrameData(navigateToNewest: true)
+
+        XCTAssertEqual(viewModel.frames.count, 100)
+        XCTAssertEqual(viewModel.currentIndex, 99)
+        XCTAssertEqual(
+            viewModel.currentTimelineFrame?.frame.timestamp,
+            baseDate.addingTimeInterval(111)
+        )
+    }
+
+    private func makeTimelineFrame(
+        id: Int64,
+        timestamp: Date,
+        frameIndex: Int,
+        processingStatus: Int
+    ) -> TimelineFrame {
+        let frame = FrameReference(
+            id: FrameID(value: id),
+            timestamp: timestamp,
+            segmentID: AppSegmentID(value: id),
+            frameIndexInSegment: frameIndex,
+            metadata: FrameMetadata(
+                appBundleID: "test.app",
+                appName: "Test App",
+                displayID: 1
+            )
+        )
+
+        return TimelineFrame(frame: frame, videoInfo: nil, processingStatus: processingStatus)
+    }
+
+    private func makeFrameWithVideoInfo(
+        id: Int64,
+        timestamp: Date,
+        frameIndex: Int,
+        processingStatus: Int
+    ) -> FrameWithVideoInfo {
+        let frame = FrameReference(
+            id: FrameID(value: id),
+            timestamp: timestamp,
+            segmentID: AppSegmentID(value: id),
+            frameIndexInSegment: frameIndex,
+            metadata: FrameMetadata(
+                appBundleID: "test.app",
+                appName: "Test App",
+                displayID: 1
+            )
+        )
+
+        return FrameWithVideoInfo(frame: frame, videoInfo: nil, processingStatus: processingStatus)
+    }
+}
+
+@MainActor
 final class DeeplinkHandlerTests: XCTestCase {
 
     func testSearchRouteParsesCanonicalTimestampAndApp() {
@@ -569,12 +651,135 @@ final class SearchHighlightQueryParsingTests: XCTestCase {
         XCTAssertEqual(matches.map(\.node.id), [1, 2])
     }
 
-    private func makeNode(id: Int, text: String) -> OCRNodeWithText {
+    func testHighlightedSearchTextLinesGroupsByVisualLine() {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.ocrNodes = [
+            makeNode(id: 1, text: "Error", x: 0.10, y: 0.10),
+            makeNode(id: 2, text: "message", x: 0.24, y: 0.11),
+            makeNode(id: 3, text: "Error", x: 0.10, y: 0.22),
+            makeNode(id: 4, text: "handler", x: 0.24, y: 0.23)
+        ]
+        viewModel.searchHighlightQuery = "error message handler"
+        viewModel.isShowingSearchHighlight = true
+
+        let lines = viewModel.highlightedSearchTextLines()
+
+        XCTAssertEqual(lines, ["Error message", "Error handler"])
+    }
+
+    private func makeNode(id: Int, text: String, x: CGFloat = 0.1, y: CGFloat = 0.1) -> OCRNodeWithText {
         OCRNodeWithText(
             id: id,
             frameId: 1,
-            x: 0.1,
-            y: 0.1,
+            x: x,
+            y: y,
+            width: 0.3,
+            height: 0.1,
+            text: text
+        )
+    }
+}
+
+@MainActor
+final class InFrameSearchTests: XCTestCase {
+    func testSetInFrameSearchQueryAppliesHighlightAfterDebounce() async {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.ocrNodes = [
+            makeNode(id: 1, text: "Error in handler")
+        ]
+
+        viewModel.openInFrameSearch()
+        viewModel.setInFrameSearchQuery("error")
+
+        XCTAssertTrue(viewModel.isInFrameSearchVisible)
+        XCTAssertNil(viewModel.searchHighlightQuery)
+        XCTAssertFalse(viewModel.isShowingSearchHighlight)
+
+        try? await Task.sleep(for: .milliseconds(350), clock: .continuous)
+
+        XCTAssertEqual(viewModel.searchHighlightQuery, "error")
+        XCTAssertTrue(viewModel.isShowingSearchHighlight)
+        XCTAssertEqual(viewModel.searchHighlightNodes.map(\.node.id), [1])
+    }
+
+    func testCloseInFrameSearchClearsQueryAndHighlight() async {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.ocrNodes = [
+            makeNode(id: 1, text: "Error in handler")
+        ]
+
+        viewModel.openInFrameSearch()
+        viewModel.setInFrameSearchQuery("error")
+        viewModel.closeInFrameSearch(clearQuery: true)
+        try? await Task.sleep(for: .milliseconds(350), clock: .continuous)
+
+        XCTAssertFalse(viewModel.isInFrameSearchVisible)
+        XCTAssertEqual(viewModel.inFrameSearchQuery, "")
+        XCTAssertFalse(viewModel.isShowingSearchHighlight)
+        XCTAssertNil(viewModel.searchHighlightQuery)
+    }
+
+    func testToggleInFrameSearchClosesWhenAlreadyVisible() async {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.ocrNodes = [
+            makeNode(id: 1, text: "Error in handler")
+        ]
+
+        viewModel.toggleInFrameSearch()
+        viewModel.setInFrameSearchQuery("error")
+        try? await Task.sleep(for: .milliseconds(350), clock: .continuous)
+        XCTAssertTrue(viewModel.isInFrameSearchVisible)
+        XCTAssertTrue(viewModel.isShowingSearchHighlight)
+
+        viewModel.toggleInFrameSearch()
+
+        XCTAssertFalse(viewModel.isInFrameSearchVisible)
+        XCTAssertEqual(viewModel.inFrameSearchQuery, "")
+        XCTAssertFalse(viewModel.isShowingSearchHighlight)
+        XCTAssertNil(viewModel.searchHighlightQuery)
+    }
+
+    func testNavigateToFrameKeepsHighlightWhenInFrameSearchIsActive() async {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        viewModel.frames = [
+            makeTimelineFrame(id: 1, frameIndex: 0, bundleID: "com.apple.Safari"),
+            makeTimelineFrame(id: 2, frameIndex: 1, bundleID: "com.apple.Safari")
+        ]
+        viewModel.currentIndex = 0
+
+        viewModel.openInFrameSearch()
+        viewModel.setInFrameSearchQuery("error")
+        try? await Task.sleep(for: .milliseconds(350), clock: .continuous)
+        viewModel.navigateToFrame(1)
+
+        XCTAssertEqual(viewModel.currentIndex, 1)
+        XCTAssertTrue(viewModel.isShowingSearchHighlight)
+        XCTAssertEqual(viewModel.searchHighlightQuery, "error")
+    }
+
+    private func makeTimelineFrame(id: Int64, frameIndex: Int, bundleID: String) -> TimelineFrame {
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let frame = FrameReference(
+            id: FrameID(value: id),
+            timestamp: baseDate.addingTimeInterval(TimeInterval(frameIndex)),
+            segmentID: AppSegmentID(value: id),
+            frameIndexInSegment: frameIndex,
+            metadata: FrameMetadata(
+                appBundleID: bundleID,
+                appName: "Test App",
+                displayID: 1
+            )
+        )
+
+        return TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2)
+    }
+
+    private func makeNode(id: Int, text: String, x: CGFloat = 0.1, y: CGFloat = 0.1) -> OCRNodeWithText {
+        OCRNodeWithText(
+            id: id,
+            frameId: 1,
+            x: x,
+            y: y,
             width: 0.3,
             height: 0.1,
             text: text

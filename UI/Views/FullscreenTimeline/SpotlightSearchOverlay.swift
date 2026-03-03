@@ -6,7 +6,7 @@ import AppKit
 private let searchLog = "[SpotlightSearch]"
 
 /// Spotlight-style search overlay that appears center-screen
-/// Triggered by Cmd+F or search icon click
+/// Triggered by Cmd+K or search icon click
 public struct SpotlightSearchOverlay: View {
 
     // MARK: - Properties
@@ -25,16 +25,44 @@ public struct SpotlightSearchOverlay: View {
     @State private var keyboardSelectedResultIndex: Int?
     @State private var isResultKeyboardNavigationActive = false
     @State private var shouldFocusFirstResultAfterSubmit = false
+    @State private var isRecentEntriesPopoverVisible = false
+    @State private var isRecentEntriesDismissedByUser = false
+    @State private var suppressRecentEntriesForCurrentPresentation = false
+    @State private var highlightedRecentEntryIndex = 0
+    @State private var rankedRecentEntries: [SearchViewModel.RecentSearchEntry] = []
+    @State private var recentEntryTagByID: [Int64: Tag] = [:]
+    @State private var recentEntryAppNamesByBundleID: [String: String] = [:]
+    @State private var recentEntriesRevealBlockedUntil: Date?
+    @State private var recentEntriesRevealTask: Task<Void, Never>?
     @State private var keyEventMonitor: Any?
     @State private var overlayOpenStartTime: CFAbsoluteTime?
     @State private var didRecordOpenLatency = false
     @State private var isDismissing = false
+    @State private var overlaySessionID = "unknown"
+    @State private var isSearchFieldFocused = false
 
     private let panelWidth: CGFloat = 1000
     private let collapsedWidth: CGFloat = 450
     private let maxResultsHeight: CGFloat = 550
     private let dismissAnimationDuration: TimeInterval = 0.15
     private let thumbnailSize = CGSize(width: 280, height: 175)
+    private let recentEntryLimit = 15
+    private let recentEntryVisibleCount = 5
+    private let recentEntryRowHeight: CGFloat = 54
+    private let recentEntryRowSpacing: CGFloat = 0
+    private let recentEntryListVerticalPadding: CGFloat = 6
+    private let recentEntryAppIconSize: CGFloat = 16
+    private static let recentEntryMediumDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+    private static let recentEntryShortDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter
+    }()
     private let gridColumns = [
         GridItem(.flexible(), spacing: 16),
         GridItem(.flexible(), spacing: 16),
@@ -123,6 +151,13 @@ public struct SpotlightSearchOverlay: View {
                         .stroke(Color.white.opacity(0.15), lineWidth: 1)
                 )
                 .shadow(color: Color.black.opacity(0.5), radius: 20, y: 10)
+                .overlay(alignment: .top) {
+                    recentEntriesPopover
+                        .offset(y: isRecentEntriesPopoverVisible ? 58 : 50)
+                        .opacity(isRecentEntriesPopoverVisible ? 1 : 0)
+                        .allowsHitTesting(isRecentEntriesPopoverVisible)
+                        .zIndex(20)
+                }
 
                 // Filter bar overlay (NOT clipped, so dropdowns can extend beyond panel)
                 if isExpanded {
@@ -137,11 +172,15 @@ public struct SpotlightSearchOverlay: View {
             .scaleEffect(isVisible ? 1.0 : 0.95)
             .opacity(isVisible ? 1.0 : 0)
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
+            .animation(.easeOut(duration: 0.15), value: isRecentEntriesPopoverVisible)
         }
         .onAppear {
+            overlaySessionID = String(UUID().uuidString.prefix(8))
             Log.debug("\(searchLog) Search overlay opened", category: .ui)
             overlayOpenStartTime = CFAbsoluteTimeGetCurrent()
             didRecordOpenLatency = false
+            viewModel.isRecentEntriesPopoverVisible = false
+            logRecentEntriesState(context: "onAppear:beforeOpenAnimation")
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                 isVisible = true
                 // If there are existing results, expand to show them
@@ -154,15 +193,42 @@ public struct SpotlightSearchOverlay: View {
             if !viewModel.visibleResults.isEmpty {
                 reserveExpandedResultsHeight()
             }
+            isRecentEntriesDismissedByUser = false
+            configureRecentEntriesRevealDelay()
+            refreshRankedRecentEntries()
+            refreshRecentEntryTagMap()
+            refreshRecentEntryAppNameMap()
+            refreshRecentEntriesPopoverVisibility()
+            logRecentEntriesState(context: "onAppear:afterRefresh")
         }
         .onDisappear {
+            recentEntriesRevealTask?.cancel()
+            recentEntriesRevealTask = nil
             removeKeyEventMonitor()
             clearResultKeyboardNavigation()
             overlayOpenStartTime = nil
             didRecordOpenLatency = false
+            isRecentEntriesPopoverVisible = false
+            isRecentEntriesDismissedByUser = false
+            suppressRecentEntriesForCurrentPresentation = false
+            highlightedRecentEntryIndex = 0
+            isSearchFieldFocused = false
+            rankedRecentEntries = []
+            recentEntryTagByID = [:]
+            recentEntryAppNamesByBundleID = [:]
+            recentEntriesRevealBlockedUntil = nil
+            viewModel.isRecentEntriesPopoverVisible = false
+            logRecentEntriesState(context: "onDisappear")
         }
         .onExitCommand {
             Log.debug("\(searchLog) Exit command received, isDropdownOpen=\(viewModel.isDropdownOpen), searchQuery='\(viewModel.searchQuery)'", category: .ui)
+            if isRecentEntriesPopoverVisible {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    isRecentEntriesPopoverVisible = false
+                }
+                highlightedRecentEntryIndex = 0
+                return
+            }
             // If a dropdown is open, close it instead of dismissing the entire overlay
             if viewModel.isDropdownOpen {
                 viewModel.closeDropdownsSignal += 1
@@ -176,9 +242,12 @@ public struct SpotlightSearchOverlay: View {
             if newValue != viewModel.committedSearchQuery {
                 clearResultKeyboardNavigation()
             }
+            highlightedRecentEntryIndex = 0
             if newValue.isEmpty {
                 resultsHeight = 0
             }
+            refreshRankedRecentEntries()
+            refreshRecentEntriesPopoverVisibility()
         }
         .onChange(of: viewModel.isSearching) { isSearching in
             Log.debug("\(searchLog) isSearching: \(isSearching)", category: .ui)
@@ -196,6 +265,7 @@ public struct SpotlightSearchOverlay: View {
                     focusFirstResultIfAvailable()
                 }
             }
+            refreshRecentEntriesPopoverVisibility()
         }
         .onChange(of: viewModel.visibleResults.count) { _ in
             Log.info(
@@ -213,6 +283,9 @@ public struct SpotlightSearchOverlay: View {
                 category: .ui
             )
         }
+        .onChange(of: isExpanded) { _ in
+            refreshRecentEntriesPopoverVisibility()
+        }
         .onChange(of: viewModel.openFilterSignal.id) { _ in
             // When Tab cycles back to search field (index 0), trigger refocus
             if viewModel.openFilterSignal.index == 0 {
@@ -225,9 +298,30 @@ public struct SpotlightSearchOverlay: View {
             if !isOpen {
                 refocusSearchField = UUID()
             }
+            if isOpen {
+                isRecentEntriesPopoverVisible = false
+            } else {
+                refreshRecentEntriesPopoverVisibility()
+            }
         }
         .onChange(of: viewModel.dismissOverlaySignal.id) { _ in
             dismissOverlay(clearSearchState: viewModel.dismissOverlaySignal.clearSearchState)
+        }
+        .onChange(of: viewModel.dismissRecentEntriesPopoverSignal) { _ in
+            dismissRecentEntriesPopoverByUser()
+        }
+        .onChange(of: viewModel.recentSearchEntries) { _ in
+            refreshRankedRecentEntries()
+            refreshRecentEntriesPopoverVisibility()
+        }
+        .onChange(of: viewModel.availableTags.map { "\($0.id.value)|\($0.name)" }) { _ in
+            refreshRecentEntryTagMap()
+        }
+        .onChange(of: viewModel.availableApps.map { "\($0.bundleID)|\($0.name)" }) { _ in
+            refreshRecentEntryAppNameMap()
+        }
+        .onChange(of: isRecentEntriesPopoverVisible) { isVisible in
+            viewModel.isRecentEntriesPopoverVisible = isVisible
         }
         .onPreferenceChange(ResultsAreaHeightPreferenceKey.self) { height in
             guard height > 0 else { return }
@@ -240,6 +334,10 @@ public struct SpotlightSearchOverlay: View {
 
     // MARK: - Search Bar
 
+    private var isSpotlightSearchGlowActive: Bool {
+        isSearchFieldFocused || !viewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var searchBar: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
@@ -249,6 +347,10 @@ public struct SpotlightSearchOverlay: View {
             SpotlightSearchField(
                 text: $viewModel.searchQuery,
                 onSubmit: {
+                    if isRecentEntriesPopoverVisible {
+                        selectHighlightedRecentEntry()
+                        return
+                    }
                     if !viewModel.searchQuery.isEmpty {
                         Log.debug("\(searchLog) Submit pressed, triggering search", category: .ui)
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -259,6 +361,13 @@ public struct SpotlightSearchOverlay: View {
                     }
                 },
                 onEscape: {
+                    if isRecentEntriesPopoverVisible {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            isRecentEntriesPopoverVisible = false
+                        }
+                        highlightedRecentEntryIndex = 0
+                        return
+                    }
                     if viewModel.isDropdownOpen {
                         viewModel.closeDropdownsSignal += 1
                     } else {
@@ -269,6 +378,7 @@ public struct SpotlightSearchOverlay: View {
                 onTab: {
                     // Tab from search field opens search-order dropdown (first filter)
                     Log.debug("\(searchLog) Tab pressed, opening Relevance/Newest/Oldest filter", category: .ui)
+                    isRecentEntriesPopoverVisible = false
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         isExpanded = true
                     }
@@ -278,19 +388,36 @@ public struct SpotlightSearchOverlay: View {
                 onBackTab: {
                     // Shift+Tab from search field opens Advanced filter (last filter)
                     Log.debug("\(searchLog) Shift+Tab pressed, opening Advanced filter", category: .ui)
+                    isRecentEntriesPopoverVisible = false
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                         isExpanded = true
                     }
                     viewModel.openFilterSignal = (6, UUID())
                 },
                 onFocus: {
+                    Log.info("\(searchLog)[\(overlaySessionID)] search field focused", category: .ui)
+                    isSearchFieldFocused = true
                     clearResultKeyboardNavigation()
                     // Close any open dropdowns when search field gains focus
                     if viewModel.isDropdownOpen {
                         viewModel.closeDropdownsSignal += 1
                     }
+                    refreshRecentEntriesPopoverVisibility()
                 },
-                placeholder: "Search your screen history...",
+                onBlur: {
+                    isSearchFieldFocused = false
+                },
+                onArrowDown: {
+                    guard isRecentEntriesPopoverVisible else { return false }
+                    guard !rankedRecentEntries.isEmpty else { return false }
+                    highlightedRecentEntryIndex = min(highlightedRecentEntryIndex + 1, rankedRecentEntries.count - 1)
+                    return true
+                },
+                onArrowUp: {
+                    guard isRecentEntriesPopoverVisible else { return false }
+                    highlightedRecentEntryIndex = max(highlightedRecentEntryIndex - 1, 0)
+                    return true
+                },
                 refocusTrigger: refocusSearchField
             )
             .frame(height: 24)
@@ -347,6 +474,483 @@ public struct SpotlightSearchOverlay: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    Color.white.opacity(isSpotlightSearchGlowActive ? 0.60 : 0.28),
+                    lineWidth: isSpotlightSearchGlowActive ? 1.8 : 1.0
+                )
+        )
+        .shadow(
+            color: Color.white.opacity(isSpotlightSearchGlowActive ? 0.28 : 0.10),
+            radius: isSpotlightSearchGlowActive ? 14 : 7,
+            x: 0,
+            y: 0
+        )
+        .shadow(
+            color: Color.black.opacity(isSpotlightSearchGlowActive ? 0.32 : 0.14),
+            radius: isSpotlightSearchGlowActive ? 22 : 10,
+            x: 0,
+            y: 0
+        )
+        .animation(.easeOut(duration: 0.18), value: isSpotlightSearchGlowActive)
+    }
+
+    // MARK: - Recent Entries
+
+    private func refreshRankedRecentEntries() {
+        rankedRecentEntries = viewModel.rankedRecentSearchEntries(for: viewModel.searchQuery, limit: recentEntryLimit)
+    }
+
+    private func refreshRecentEntryTagMap() {
+        recentEntryTagByID = Dictionary(uniqueKeysWithValues: viewModel.availableTags.map { ($0.id.value, $0) })
+    }
+
+    private func refreshRecentEntryAppNameMap() {
+        recentEntryAppNamesByBundleID = Dictionary(uniqueKeysWithValues: viewModel.availableApps.map { ($0.bundleID, $0.name) })
+    }
+
+    private var rankedRecentEntriesCount: Int {
+        rankedRecentEntries.count
+    }
+
+    private var shouldShowRecentEntriesPopover: Bool {
+        guard isVisible else { return false }
+        guard !isRecentEntriesDismissedByUser else { return false }
+        let isQueryEmpty = viewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if suppressRecentEntriesForCurrentPresentation && isQueryEmpty {
+            return false
+        }
+        if let blockedUntil = recentEntriesRevealBlockedUntil, Date() < blockedUntil {
+            return false
+        }
+        guard !viewModel.isDropdownOpen else { return false }
+        guard !viewModel.isSearching else { return false }
+        guard !isResultKeyboardNavigationActive else { return false }
+        guard !isExpanded else { return false }
+        guard viewModel.results == nil else { return false }
+        return rankedRecentEntriesCount > 0
+    }
+
+    private func configureRecentEntriesRevealDelay() {
+        recentEntriesRevealTask?.cancel()
+        recentEntriesRevealTask = nil
+
+        suppressRecentEntriesForCurrentPresentation = viewModel.consumeSuppressRecentEntriesForNextOverlayOpen()
+        let revealDelay = viewModel.consumeNextRecentEntriesRevealDelay()
+        Log.info(
+            "\(searchLog)[\(overlaySessionID)] configureRecentEntriesRevealDelay suppressForPresentation=\(suppressRecentEntriesForCurrentPresentation) revealDelay=\(String(format: "%.3f", revealDelay))",
+            category: .ui
+        )
+        guard revealDelay > 0 else {
+            recentEntriesRevealBlockedUntil = nil
+            return
+        }
+
+        recentEntriesRevealBlockedUntil = Date().addingTimeInterval(revealDelay)
+        recentEntriesRevealTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(revealDelay), clock: .continuous)
+            guard !Task.isCancelled else { return }
+            recentEntriesRevealBlockedUntil = nil
+            Log.info("\(searchLog)[\(overlaySessionID)] revealDelay elapsed; reevaluating popover visibility", category: .ui)
+            refreshRecentEntriesPopoverVisibility()
+        }
+    }
+
+    private func refreshRecentEntriesPopoverVisibility() {
+        let shouldShow = shouldShowRecentEntriesPopover
+        if shouldShow != isRecentEntriesPopoverVisible {
+            Log.info(
+                "\(searchLog)[\(overlaySessionID)] popover visibility \(isRecentEntriesPopoverVisible) -> \(shouldShow)",
+                category: .ui
+            )
+            withAnimation(.easeOut(duration: 0.15)) {
+                isRecentEntriesPopoverVisible = shouldShow
+            }
+        }
+
+        if isRecentEntriesPopoverVisible {
+            highlightedRecentEntryIndex = min(highlightedRecentEntryIndex, max(rankedRecentEntries.count - 1, 0))
+        } else {
+            highlightedRecentEntryIndex = 0
+        }
+        logRecentEntriesState(context: "refreshRecentEntriesPopoverVisibility")
+    }
+
+    private func selectHighlightedRecentEntry() {
+        let entries = rankedRecentEntries
+        guard !entries.isEmpty else { return }
+        let selectedIndex = min(highlightedRecentEntryIndex, entries.count - 1)
+        selectRecentEntry(entries[selectedIndex])
+    }
+
+    private func selectRecentEntry(_ entry: SearchViewModel.RecentSearchEntry) {
+        viewModel.submitRecentSearchEntry(entry)
+        isRecentEntriesPopoverVisible = false
+        highlightedRecentEntryIndex = 0
+
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            isExpanded = true
+        }
+
+        prepareResultKeyboardNavigationAfterSubmit()
+    }
+
+    private func dismissRecentEntriesPopoverByUser() {
+        isRecentEntriesDismissedByUser = true
+        Log.info("\(searchLog)[\(overlaySessionID)] user dismissed recent entries popover via header x", category: .ui)
+        withAnimation(.easeOut(duration: 0.15)) {
+            isRecentEntriesPopoverVisible = false
+        }
+        highlightedRecentEntryIndex = 0
+    }
+
+    private func logRecentEntriesState(context: String) {
+        let isQueryEmpty = viewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let blockedUntilActive: Bool = {
+            if let blockedUntil = recentEntriesRevealBlockedUntil {
+                return Date() < blockedUntil
+            }
+            return false
+        }()
+        let hasResults = viewModel.results != nil
+        let rankedCount = rankedRecentEntriesCount
+        let shouldShow = shouldShowRecentEntriesPopover
+        Log.info(
+            "\(searchLog)[\(overlaySessionID)] \(context) visible=\(isVisible) expanded=\(isExpanded) queryEmpty=\(isQueryEmpty) hasResults=\(hasResults) rankedCount=\(rankedCount) dismissedByUser=\(isRecentEntriesDismissedByUser) suppressForPresentation=\(suppressRecentEntriesForCurrentPresentation) blockedUntilActive=\(blockedUntilActive) dropdownOpen=\(viewModel.isDropdownOpen) searching=\(viewModel.isSearching) resultNavActive=\(isResultKeyboardNavigationActive) popoverVisible=\(isRecentEntriesPopoverVisible) shouldShow=\(shouldShow)",
+            category: .ui
+        )
+    }
+
+    private var recentEntriesViewportHeight: CGFloat {
+        let visibleCount = max(1, min(recentEntryVisibleCount, rankedRecentEntriesCount))
+        let rowsHeight = CGFloat(visibleCount) * recentEntryRowHeight
+        let spacingHeight = CGFloat(max(0, visibleCount - 1)) * recentEntryRowSpacing
+        return rowsHeight + spacingHeight + (recentEntryListVerticalPadding * 2)
+    }
+
+    private var recentEntriesPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(RetraceMenuStyle.textColorMuted)
+                Text("Recent Entries")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(RetraceMenuStyle.textColorMuted)
+                Spacer(minLength: 8)
+                Button(action: {
+                    dismissRecentEntriesPopoverByUser()
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(RetraceMenuStyle.textColorMuted)
+                        .frame(width: 16, height: 16)
+                        .background(
+                            Circle()
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Hide recent entries")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            ScrollView(.vertical, showsIndicators: rankedRecentEntriesCount > recentEntryVisibleCount) {
+                VStack(spacing: recentEntryRowSpacing) {
+                    ForEach(Array(rankedRecentEntries.enumerated()), id: \.element.key) { index, entry in
+                        Button {
+                            selectRecentEntry(entry)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    Text(entry.query)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(RetraceMenuStyle.textColor)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                    Spacer(minLength: 6)
+                                    Text(recentEntryRelativeTimeText(for: entry))
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(RetraceMenuStyle.textColorMuted)
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                }
+
+                                recentEntryFilterSummaryRow(for: entry.filters)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: recentEntryRowHeight, maxHeight: recentEntryRowHeight, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                                    .fill(index == highlightedRecentEntryIndex ? RetraceMenuStyle.itemHoverColor : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                                    .stroke(
+                                        index == highlightedRecentEntryIndex
+                                            ? RetraceMenuStyle.filterStrokeMedium
+                                            : Color.clear,
+                                        lineWidth: 1
+                                    )
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .id(entry.key)
+                        .onHover { hovering in
+                            guard hovering else { return }
+                            highlightedRecentEntryIndex = index
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, recentEntryListVerticalPadding)
+            }
+            .frame(height: recentEntriesViewportHeight)
+            .padding(.bottom, 10)
+        }
+        .frame(width: collapsedWidth - 8, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.4))
+                .background(.ultraThinMaterial)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.5), radius: 20, y: 10)
+    }
+
+    private func recentEntryRelativeTimeText(for entry: SearchViewModel.RecentSearchEntry) -> String {
+        let now = Date()
+        let usedDate = Date(timeIntervalSince1970: entry.lastUsedAt)
+        let elapsedSeconds = max(0, Int(now.timeIntervalSince(usedDate)))
+        let calendar = Calendar.current
+
+        if elapsedSeconds < 60 {
+            return "just now"
+        }
+        if elapsedSeconds < 3600 {
+            let minutes = elapsedSeconds / 60
+            return "\(minutes) min ago"
+        }
+        if elapsedSeconds < 86_400 {
+            let hours = elapsedSeconds / 3600
+            let minutes = (elapsedSeconds % 3600) / 60
+            if minutes == 0 {
+                return "\(hours) hour\(hours == 1 ? "" : "s") ago"
+            }
+            return "\(hours) hour\(hours == 1 ? "" : "s") \(minutes) min ago"
+        }
+        if calendar.isDateInYesterday(usedDate) {
+            return "yesterday"
+        }
+        if elapsedSeconds < 7 * 86_400 {
+            let days = elapsedSeconds / 86_400
+            return "\(days) day\(days == 1 ? "" : "s") ago"
+        }
+
+        return Self.recentEntryMediumDateFormatter.string(from: usedDate)
+    }
+
+    @ViewBuilder
+    private func recentEntryFilterSummaryRow(for filters: SearchViewModel.RecentSearchFilters) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+            if !filters.appBundleIDs.isEmpty {
+                recentEntryAppSummary(for: filters)
+            }
+
+            if !filters.tagIDs.isEmpty {
+                if filters.tagFilterMode == .exclude {
+                    recentEntryMetadataToken(icon: "minus.circle.fill", text: "Tags", tint: .orange.opacity(0.9))
+                }
+                ForEach(recentEntryTags(for: filters), id: \.id.value) { tag in
+                    recentEntryTagBadge(tag)
+                }
+            }
+
+            if let dateLabel = recentEntryDateLabel(for: filters) {
+                recentEntryMetadataToken(icon: "calendar", text: dateLabel)
+            }
+
+            if filters.hiddenFilter != .hide {
+                recentEntryMetadataToken(
+                    icon: visibilityIcon(for: filters.hiddenFilter),
+                    text: visibilityLabel(for: filters.hiddenFilter)
+                )
+            }
+
+            if filters.commentFilter != .allFrames {
+                recentEntryMetadataToken(
+                    icon: commentIcon(for: filters.commentFilter),
+                    text: commentLabel(for: filters.commentFilter)
+                )
+            }
+
+            if filters.windowNameFilter?.isEmpty == false {
+                recentEntryMetadataToken(icon: "rectangle.and.text.magnifyingglass", text: "Title")
+            }
+
+            if filters.browserUrlFilter?.isEmpty == false {
+                recentEntryMetadataToken(icon: "link", text: "URL")
+            }
+
+            if !hasRecentEntryFilterMetadata(filters) {
+                recentEntryMetadataToken(icon: "slider.horizontal.3", text: "No filters")
+            }
+        }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func recentEntryAppSummary(for filters: SearchViewModel.RecentSearchFilters) -> some View {
+        let bundleIDs = filters.appBundleIDs
+
+        return HStack(spacing: 4) {
+            if filters.appFilterMode == .exclude {
+                Image(systemName: "minus.circle.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.orange.opacity(0.95))
+            }
+
+            if bundleIDs.count == 1, let bundleID = bundleIDs.first {
+                HStack(spacing: 5) {
+                    AppIconView(bundleID: bundleID, size: recentEntryAppIconSize)
+                        .frame(width: recentEntryAppIconSize, height: recentEntryAppIconSize)
+                        .clipShape(RoundedRectangle(cornerRadius: 3.5))
+                    Text(recentEntryAppName(for: bundleID))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(RetraceMenuStyle.textColorMuted)
+                        .lineLimit(1)
+                }
+            } else {
+                HStack(spacing: -4) {
+                    ForEach(Array(bundleIDs.prefix(8)), id: \.self) { bundleID in
+                        AppIconView(bundleID: bundleID, size: recentEntryAppIconSize)
+                            .frame(width: recentEntryAppIconSize, height: recentEntryAppIconSize)
+                            .clipShape(RoundedRectangle(cornerRadius: 3.5))
+                    }
+                }
+            }
+        }
+    }
+
+    private func recentEntryAppName(for bundleID: String) -> String {
+        if let appName = recentEntryAppNamesByBundleID[bundleID] {
+            return appName
+        }
+        let fallback = bundleID
+            .split(separator: ".")
+            .last
+            .map(String.init) ?? bundleID
+        return fallback
+    }
+
+    private func recentEntryMetadataToken(icon: String, text: String, tint: Color = RetraceMenuStyle.textColorMuted) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon)
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(tint)
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(tint)
+                .lineLimit(1)
+        }
+    }
+
+    private func recentEntryTagBadge(_ tag: Tag) -> some View {
+        let tint = TagColorStore.color(for: tag)
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(tint)
+                .frame(width: 5, height: 5)
+            Text(tag.name)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(tint.opacity(0.95))
+                .lineLimit(1)
+        }
+    }
+
+    private func recentEntryTags(for filters: SearchViewModel.RecentSearchFilters) -> [Tag] {
+        return filters.tagIDs.map { tagID in
+            recentEntryTagByID[tagID] ?? Tag(id: TagID(value: tagID), name: "#\(tagID)")
+        }
+    }
+
+    private func hasRecentEntryFilterMetadata(_ filters: SearchViewModel.RecentSearchFilters) -> Bool {
+        !filters.appBundleIDs.isEmpty ||
+        !filters.tagIDs.isEmpty ||
+        filters.hiddenFilter != .hide ||
+        filters.commentFilter != .allFrames ||
+        filters.startDate != nil ||
+        filters.endDate != nil ||
+        (filters.windowNameFilter?.isEmpty == false) ||
+        (filters.browserUrlFilter?.isEmpty == false)
+    }
+
+    private func recentEntryDateLabel(for filters: SearchViewModel.RecentSearchFilters) -> String? {
+        if let startDate = filters.startDate, let endDate = filters.endDate {
+            return "\(Self.recentEntryShortDateFormatter.string(from: startDate)) - \(Self.recentEntryShortDateFormatter.string(from: endDate))"
+        }
+        if let startDate = filters.startDate {
+            return "From \(Self.recentEntryShortDateFormatter.string(from: startDate))"
+        }
+        if let endDate = filters.endDate {
+            return "Until \(Self.recentEntryShortDateFormatter.string(from: endDate))"
+        }
+        return nil
+    }
+
+    private func visibilityIcon(for filter: HiddenFilter) -> String {
+        switch filter {
+        case .hide:
+            return "eye"
+        case .onlyHidden:
+            return "eye.slash"
+        case .showAll:
+            return "eye.circle"
+        }
+    }
+
+    private func visibilityLabel(for filter: HiddenFilter) -> String {
+        switch filter {
+        case .hide:
+            return "Visible"
+        case .onlyHidden:
+            return "Hidden"
+        case .showAll:
+            return "All"
+        }
+    }
+
+    private func commentIcon(for filter: CommentFilter) -> String {
+        switch filter {
+        case .allFrames:
+            return "text.bubble"
+        case .commentsOnly:
+            return "text.bubble.fill"
+        case .noComments:
+            return "text.bubble.slash"
+        }
+    }
+
+    private func commentLabel(for filter: CommentFilter) -> String {
+        switch filter {
+        case .allFrames:
+            return "All"
+        case .commentsOnly:
+            return "Comments"
+        case .noComments:
+            return "No Comments"
+        }
     }
 
     // MARK: - Results Area
@@ -929,6 +1533,9 @@ public struct SpotlightSearchOverlay: View {
         // Cancel any in-flight search tasks to prevent blocking while the overlay fades out.
         viewModel.cancelSearch()
         clearResultKeyboardNavigation()
+        isRecentEntriesPopoverVisible = false
+        highlightedRecentEntryIndex = 0
+        rankedRecentEntries = []
 
         withAnimation(.easeOut(duration: dismissAnimationDuration)) {
             isVisible = false
@@ -956,6 +1563,7 @@ public struct SpotlightSearchOverlay: View {
         shouldFocusFirstResultAfterSubmit = true
         isResultKeyboardNavigationActive = true
         keyboardSelectedResultIndex = nil
+        isRecentEntriesPopoverVisible = false
         resignSearchFieldFocus()
     }
 
@@ -998,6 +1606,7 @@ public struct SpotlightSearchOverlay: View {
         shouldFocusFirstResultAfterSubmit = false
         isResultKeyboardNavigationActive = false
         keyboardSelectedResultIndex = nil
+        refreshRecentEntriesPopoverVisibility()
     }
 
     private func resignSearchFieldFocus() {
@@ -1220,7 +1829,10 @@ struct SpotlightSearchField: NSViewRepresentable {
     var onTab: (() -> Void)? = nil
     var onBackTab: (() -> Void)? = nil
     var onFocus: (() -> Void)? = nil
-    var placeholder: String = "Search your screen history..."
+    var onBlur: (() -> Void)? = nil
+    var onArrowDown: (() -> Bool)? = nil
+    var onArrowUp: (() -> Bool)? = nil
+    var placeholder: String = "Search anything you have seen..."
     var refocusTrigger: UUID = UUID()  // Change this to trigger refocus
 
     func makeNSView(context: Context) -> FocusableTextField {
@@ -1253,6 +1865,7 @@ struct SpotlightSearchField: NSViewRepresentable {
         }
 
         // Focus the text field with retry logic for external monitors
+        Log.info("\(searchLog)[FieldFocus] makeNSView scheduling initial focus", category: .ui)
         focusTextField(textField, attempt: 1)
 
         return textField
@@ -1279,6 +1892,10 @@ struct SpotlightSearchField: NSViewRepresentable {
 
         let schedule = {
             guard let window = textField.window else {
+                Log.debug(
+                    "\(searchLog)[FieldFocus] focus attempt=\(attempt) window=nil retry=\(attempt < maxAttempts)",
+                    category: .ui
+                )
                 if attempt < maxAttempts {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         self.focusTextField(textField, attempt: attempt + 1)
@@ -1286,6 +1903,10 @@ struct SpotlightSearchField: NSViewRepresentable {
                 }
                 return
             }
+            Log.debug(
+                "\(searchLog)[FieldFocus] focus attempt=\(attempt) windowFound isKey=\(window.isKeyWindow)",
+                category: .ui
+            )
             self.performFocus(textField, in: window, attempt: attempt)
         }
 
@@ -1307,6 +1928,10 @@ struct SpotlightSearchField: NSViewRepresentable {
         window.makeKeyAndOrderFront(nil)
         let isKeyAfterMakeKey = window.isKeyWindow
         let success = window.makeFirstResponder(textField)
+        Log.info(
+            "\(searchLog)[FieldFocus] performFocus attempt=\(attempt) isKeyAfterMakeKey=\(isKeyAfterMakeKey) makeFirstResponderSuccess=\(success)",
+            category: .ui
+        )
 
         // Ensure field editor exists for caret to appear
         if window.fieldEditor(false, for: textField) == nil {
@@ -1333,7 +1958,17 @@ struct SpotlightSearchField: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onSubmit: onSubmit, onEscape: onEscape, onTab: onTab, onBackTab: onBackTab, onFocus: onFocus)
+        Coordinator(
+            text: $text,
+            onSubmit: onSubmit,
+            onEscape: onEscape,
+            onTab: onTab,
+            onBackTab: onBackTab,
+            onFocus: onFocus,
+            onBlur: onBlur,
+            onArrowDown: onArrowDown,
+            onArrowUp: onArrowUp
+        )
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
@@ -1343,19 +1978,41 @@ struct SpotlightSearchField: NSViewRepresentable {
         let onTab: (() -> Void)?
         let onBackTab: (() -> Void)?
         let onFocus: (() -> Void)?
+        let onBlur: (() -> Void)?
+        let onArrowDown: (() -> Bool)?
+        let onArrowUp: (() -> Bool)?
         var lastRefocusTrigger: UUID = UUID()
 
-        init(text: Binding<String>, onSubmit: @escaping () -> Void, onEscape: @escaping () -> Void, onTab: (() -> Void)?, onBackTab: (() -> Void)?, onFocus: (() -> Void)?) {
+        init(
+            text: Binding<String>,
+            onSubmit: @escaping () -> Void,
+            onEscape: @escaping () -> Void,
+            onTab: (() -> Void)?,
+            onBackTab: (() -> Void)?,
+            onFocus: (() -> Void)?,
+            onBlur: (() -> Void)?,
+            onArrowDown: (() -> Bool)?,
+            onArrowUp: (() -> Bool)?
+        ) {
             self._text = text
             self.onSubmit = onSubmit
             self.onEscape = onEscape
             self.onTab = onTab
             self.onBackTab = onBackTab
             self.onFocus = onFocus
+            self.onBlur = onBlur
+            self.onArrowDown = onArrowDown
+            self.onArrowUp = onArrowUp
         }
 
         func controlTextDidBeginEditing(_ notification: Notification) {
+            Log.debug("\(searchLog)[FieldFocus] controlTextDidBeginEditing", category: .ui)
             onFocus?()
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            Log.debug("\(searchLog)[FieldFocus] controlTextDidEndEditing", category: .ui)
+            onBlur?()
         }
 
         func controlTextDidChange(_ notification: Notification) {
@@ -1377,6 +2034,10 @@ struct SpotlightSearchField: NSViewRepresentable {
             } else if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
                 onBackTab?()
                 return true
+            } else if commandSelector == #selector(NSResponder.moveDown(_:)) {
+                return onArrowDown?() ?? false
+            } else if commandSelector == #selector(NSResponder.moveUp(_:)) {
+                return onArrowUp?() ?? false
             }
             return false
         }

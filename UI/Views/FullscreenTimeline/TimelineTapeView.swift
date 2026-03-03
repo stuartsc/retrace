@@ -1314,7 +1314,7 @@ struct FilterButton: View {
                 }
             }
         }
-        .instantTooltip(viewModel.activeFilterCount > 0 && isBadgeHovering ? "Clear filters" : "Filter (⌥F)", isVisible: .constant(isHovering || isBadgeHovering))
+        .instantTooltip(viewModel.activeFilterCount > 0 && isBadgeHovering ? "Clear filters" : "Filter (⌘⇧F)", isVisible: .constant(isHovering || isBadgeHovering))
     }
 }
 
@@ -1450,13 +1450,10 @@ struct SearchButton: View {
     var body: some View {
         Button(action: {
             viewModel.dismissContextMenu()
-            // Set overlay visible immediately, clear highlight asynchronously to avoid blocking
-            viewModel.isSearchOverlayVisible = true
+            Log.info("[TimelineShortcut] Search button clicked", category: .ui)
+            viewModel.openSearchOverlay(recentEntriesRevealDelay: 0.3)
             // Record search dialog open metric
             DashboardViewModel.recordSearchDialogOpen(coordinator: coordinatorWrapper.coordinator)
-            Task { @MainActor in
-                viewModel.clearSearchHighlight()
-            }
         }) {
             HStack(spacing: TimelineScaleFactor.iconSpacing) {
                 Image(systemName: "magnifyingglass")

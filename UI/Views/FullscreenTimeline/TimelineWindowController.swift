@@ -496,6 +496,10 @@ public class TimelineWindowController: NSObject {
         guard !isVisible, let coordinator = coordinator else {
             return
         }
+        Log.info(
+            "[TimelineToggle] show requested isVisible=\(isVisible) searchOverlayVisible=\(timelineViewModel?.isSearchOverlayVisible ?? false)",
+            category: .ui
+        )
         let showStartTime = CFAbsoluteTimeGetCurrent()
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
@@ -765,6 +769,10 @@ public class TimelineWindowController: NSObject {
     /// Hide the timeline overlay
     public func hide(restorePreviousFocus: Bool = true) {
         guard isVisible, let window = window, !isHiding else { return }
+        Log.info(
+            "[TimelineToggle] hide requested restorePreviousFocus=\(restorePreviousFocus) searchOverlayVisible=\(timelineViewModel?.isSearchOverlayVisible ?? false)",
+            category: .ui
+        )
         isHiding = true
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
@@ -814,6 +822,21 @@ public class TimelineWindowController: NSObject {
             }
             if viewModel.isDateSearchActive {
                 viewModel.closeDateSearch()
+            }
+            if viewModel.isSearchOverlayVisible {
+                // Keep the search overlay/search bar state across timeline toggle.
+                // Simulate clicking the recent-entries header "x" on toggle-off, then
+                // suppress recent entries on next overlay presentation.
+                Log.info(
+                    "[TimelineToggle] hide preserving search overlay state; simulating recent-entry popover x-dismiss",
+                    category: .ui
+                )
+                viewModel.searchViewModel.requestDismissRecentEntriesPopoverByUser()
+                viewModel.searchViewModel.suppressRecentEntriesForNextOverlayOpen()
+            }
+            if viewModel.isInFrameSearchVisible ||
+                !viewModel.inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                viewModel.closeInFrameSearch(clearQuery: true)
             }
         }
 
@@ -1110,6 +1133,10 @@ public class TimelineWindowController: NSObject {
 
     /// Toggle timeline visibility
     public func toggle() {
+        Log.info(
+            "[TimelineToggle] toggle invoked currentlyVisible=\(isVisible) searchOverlayVisible=\(timelineViewModel?.isSearchOverlayVisible ?? false)",
+            category: .ui
+        )
         if isVisible {
             hide()
         } else {
@@ -1197,11 +1224,11 @@ public class TimelineWindowController: NSObject {
     }
 
     /// Resolve quick app filter trigger key from an NSEvent.
-    /// Supports Cmd+F.
+    /// Supports Option+F.
     private func quickAppFilterTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        if modifiers == [.command] && (key == "f" || event.keyCode == 3) {
-            return "Cmd+F"
+        if modifiers == [.option] && (key == "f" || event.keyCode == 3) {
+            return "Option+F"
         }
         return nil
     }
@@ -1237,7 +1264,8 @@ public class TimelineWindowController: NSObject {
             return
         }
 
-        recordShortcut("cmd+f")
+        let shortcutMetric = trigger == "Option+F" ? "opt+f" : "cmd+f"
+        recordShortcut(shortcutMetric)
 
         guard let currentFrame = viewModel.currentTimelineFrame else {
             return
@@ -1757,9 +1785,10 @@ public class TimelineWindowController: NSObject {
                 }
                 self?.handleKeyEvent(event)
             } else if event.type == .scrollWheel {
-                // Don't handle scroll events when search overlay, filter dropdown, or tag submenu is open
+                // Don't handle scroll events when the recent-entries popover, filter dropdown,
+                // or tag submenu is open.
                 if let viewModel = self?.timelineViewModel,
-                   (viewModel.isSearchOverlayVisible || viewModel.isFilterDropdownOpen || viewModel.showTagSubmenu) {
+                   (viewModel.searchViewModel.isRecentEntriesPopoverVisible || viewModel.isFilterDropdownOpen || viewModel.showTagSubmenu) {
                     return // Let SwiftUI handle it
                 }
                 self?.handleScrollEvent(event, source: "GLOBAL")
@@ -1789,6 +1818,25 @@ public class TimelineWindowController: NSObject {
                     return event
                 }
 
+                // Cmd+F toggles in-frame search even when the in-frame text field is focused.
+                if event.keyCode == 3 && modifiers == [.command] { // Cmd+F
+                    _ = self?.handleKeyEvent(event)
+                    return nil // Always consume the event to prevent propagation
+                }
+
+                // When in-frame search text field is focused, let AppKit own other key handling
+                // (selection, clipboard, caret movement, etc.) so timeline shortcuts don't fire.
+                let isInFrameSearchFieldActive: Bool = {
+                    guard isTextFieldActive,
+                          let viewModel = self?.timelineViewModel else {
+                        return false
+                    }
+                    return viewModel.isInFrameSearchVisible
+                }()
+                if isInFrameSearchFieldActive {
+                    return event
+                }
+
                 // Cmd+K to toggle search overlay
                 if event.keyCode == 40 && modifiers == [.command] { // Cmd+K
                     if let viewModel = self?.timelineViewModel,
@@ -1813,14 +1861,14 @@ public class TimelineWindowController: NSObject {
                     return nil // Always consume the event to prevent propagation
                 }
 
-                // Cmd+F to quick-filter by the app at playhead
+                // Option+F to quick-filter by the app at playhead
                 if self?.quickAppFilterTrigger(for: event, modifiers: modifiers) != nil {
                     _ = self?.handleKeyEvent(event)
                     return nil // Always consume the event to prevent propagation
                 }
 
-                // Option+F to toggle filter panel
-                if event.keyCode == 3 && modifiers == [.option] { // Option+F
+                // Cmd+Shift+F to toggle filter panel
+                if event.keyCode == 3 && modifiers == [.command, .shift] { // Cmd+Shift+F
                     _ = self?.handleKeyEvent(event)
                     return nil // Always consume the event to prevent propagation
                 }
@@ -1938,10 +1986,8 @@ public class TimelineWindowController: NSObject {
                     if viewModel.showTagSubmenu {
                         return event
                     }
-                    // Search overlay dropdowns/results should own wheel events.
-                    if viewModel.isSearchOverlayVisible &&
-                        (viewModel.searchViewModel.isDropdownOpen ||
-                         !viewModel.searchViewModel.searchQuery.isEmpty) {
+                    // The recent-entry popover should own wheel events while open.
+                    if viewModel.searchViewModel.isRecentEntriesPopoverVisible {
                         return event
                     }
                 }
@@ -2062,6 +2108,11 @@ public class TimelineWindowController: NSObject {
                     viewModel.closeDateSearch()
                     return true
                 }
+                // If recent entries popover is open, hide it before dismissing search overlay.
+                if viewModel.isSearchOverlayVisible && viewModel.searchViewModel.isRecentEntriesPopoverVisible {
+                    viewModel.searchViewModel.requestDismissRecentEntriesPopoverByUser()
+                    return true
+                }
                 // If search overlay is visible and a filter dropdown is open, close the dropdown first.
                 if viewModel.isSearchOverlayVisible && viewModel.searchViewModel.isDropdownOpen {
                     // When date popover calendar is open, let the popover consume Escape first
@@ -2075,6 +2126,11 @@ public class TimelineWindowController: NSObject {
                 // If search overlay is showing, close it
                 if viewModel.isSearchOverlayVisible {
                     viewModel.searchViewModel.requestOverlayDismiss(clearSearchState: true)
+                    return true
+                }
+                // If in-frame search is active, close it before falling through to timeline close.
+                if viewModel.isInFrameSearchVisible || !viewModel.inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    viewModel.closeInFrameSearch(clearQuery: true)
                     return true
                 }
                 // If search highlight is showing, clear it and return to search results if available
@@ -2141,6 +2197,15 @@ public class TimelineWindowController: NSObject {
             return true
         }
 
+        // Cmd+F to toggle in-frame search
+        if event.keyCode == 3 && modifiers == [.command] { // F key with Command
+            recordShortcut("cmd+f")
+            if let viewModel = timelineViewModel {
+                viewModel.toggleInFrameSearch()
+            }
+            return true
+        }
+
         // Cmd+G to toggle date search panel ("Go to" date)
         if event.keyCode == 5 && modifiers == [.command] { // G key with Command
             recordShortcut("cmd+g")
@@ -2155,7 +2220,11 @@ public class TimelineWindowController: NSObject {
             recordShortcut("cmd+k")
             if let viewModel = timelineViewModel {
                 let wasVisible = viewModel.isSearchOverlayVisible
-                viewModel.toggleSearchOverlay()
+                Log.info(
+                    "[TimelineShortcut] Cmd+K wasVisible=\(wasVisible) queryEmpty=\(viewModel.searchViewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+                    category: .ui
+                )
+                viewModel.toggleSearchOverlay(recentEntriesRevealDelayOnOpen: 0.3)
                 // Record search dialog open metric when opening
                 if !wasVisible {
                     if let coordinator = coordinator {
@@ -2187,15 +2256,15 @@ public class TimelineWindowController: NSObject {
             return true
         }
 
-        // Cmd+F to toggle app filter for the current playhead frame
+        // Option+F to toggle app filter for the current playhead frame
         if let trigger = quickAppFilterTrigger(for: event, modifiers: modifiers) {
             togglePlayheadAppFilter(trigger: trigger)
             return true
         }
 
-        // Option+F to toggle filter panel
-        if event.keyCode == 3 && modifiers == [.option] { // F key with Option
-            recordShortcut("opt+f")
+        // Cmd+Shift+F to toggle filter panel
+        if event.keyCode == 3 && modifiers == [.command, .shift] { // F key with Command+Shift
+            recordShortcut("cmd+shift+f")
             if let viewModel = timelineViewModel {
                 if viewModel.isFilterPanelVisible {
                     withAnimation(.easeOut(duration: 0.15)) {

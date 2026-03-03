@@ -15,6 +15,86 @@ private struct CachedAppInfo: Codable {
 @MainActor
 public class SearchViewModel: ObservableObject {
 
+    // MARK: - Recent Search Entry
+
+    public struct RecentSearchFilters: Codable, Hashable {
+        public var appBundleIDs: [String]
+        public var appFilterMode: AppFilterMode
+        public var tagIDs: [Int64]
+        public var tagFilterMode: TagFilterMode
+        public var hiddenFilter: HiddenFilter
+        public var commentFilter: CommentFilter
+        public var startDate: Date?
+        public var endDate: Date?
+        public var windowNameFilter: String?
+        public var browserUrlFilter: String?
+
+        public init(
+            appBundleIDs: [String] = [],
+            appFilterMode: AppFilterMode = .include,
+            tagIDs: [Int64] = [],
+            tagFilterMode: TagFilterMode = .include,
+            hiddenFilter: HiddenFilter = .hide,
+            commentFilter: CommentFilter = .allFrames,
+            startDate: Date? = nil,
+            endDate: Date? = nil,
+            windowNameFilter: String? = nil,
+            browserUrlFilter: String? = nil
+        ) {
+            self.appBundleIDs = appBundleIDs
+            self.appFilterMode = appFilterMode
+            self.tagIDs = tagIDs
+            self.tagFilterMode = tagFilterMode
+            self.hiddenFilter = hiddenFilter
+            self.commentFilter = commentFilter
+            self.startDate = startDate
+            self.endDate = endDate
+            self.windowNameFilter = windowNameFilter
+            self.browserUrlFilter = browserUrlFilter
+        }
+    }
+
+    public struct RecentSearchEntry: Codable, Hashable, Identifiable {
+        public let key: String
+        public var query: String
+        public var usageCount: Int
+        public var lastUsedAt: TimeInterval
+        public var filters: RecentSearchFilters
+
+        public var id: String { key }
+
+        private enum CodingKeys: String, CodingKey {
+            case key
+            case query
+            case usageCount
+            case lastUsedAt
+            case filters
+        }
+
+        public init(
+            key: String,
+            query: String,
+            usageCount: Int,
+            lastUsedAt: TimeInterval,
+            filters: RecentSearchFilters
+        ) {
+            self.key = key
+            self.query = query
+            self.usageCount = usageCount
+            self.lastUsedAt = lastUsedAt
+            self.filters = filters
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            key = try container.decode(String.self, forKey: .key)
+            query = try container.decode(String.self, forKey: .query)
+            usageCount = try container.decode(Int.self, forKey: .usageCount)
+            lastUsedAt = try container.decode(TimeInterval.self, forKey: .lastUsedAt)
+            filters = try container.decodeIfPresent(RecentSearchFilters.self, forKey: .filters) ?? RecentSearchFilters()
+        }
+    }
+
     // MARK: - Published State
 
     @Published public var searchQuery: String = "" {
@@ -100,6 +180,10 @@ public class SearchViewModel: ObservableObject {
     // Used by parent views to handle Escape key properly (dismiss dropdown first, then overlay)
     @Published public var isDropdownOpen = false
 
+    /// Whether the recent-entries popover is currently visible in the search overlay.
+    /// Used by timeline controller to decide when wheel events should be blocked.
+    @Published public var isRecentEntriesPopoverVisible = false
+
     // Whether the DateFilterPopover is actively handling keyboard events (Tab/Enter/arrows)
     // When true, SearchFilterBar's tab monitor and TimelineWindowController's arrow key handler skip processing
     public var isDatePopoverHandlingKeys = false
@@ -114,6 +198,18 @@ public class SearchViewModel: ObservableObject {
     // Signal to dismiss the search overlay from parent-level handlers (e.g. global Escape).
     // clearSearchState=true clears query/results/filters after the overlay fade-out completes.
     @Published public var dismissOverlaySignal: (clearSearchState: Bool, id: UUID) = (false, UUID())
+
+    // Signal to dismiss the recent-entries popover as if the user clicked the header "x".
+    @Published public var dismissRecentEntriesPopoverSignal: UUID = UUID()
+
+    /// Recent submitted search queries used by spotlight "Recent Entries" popover.
+    @Published public private(set) var recentSearchEntries: [RecentSearchEntry] = []
+
+    /// One-shot delay for showing the "Recent Entries" popover on next overlay open.
+    private var nextRecentEntriesRevealDelay: TimeInterval = 0
+
+    /// One-shot suppression for the "Recent Entries" popover on next overlay open.
+    private var suppressRecentEntriesOnNextOverlayOpen = false
 
     // Flag to prevent re-search during cache restore
     private var isRestoringFromCache = false
@@ -154,6 +250,8 @@ public class SearchViewModel: ObservableObject {
     private let maxInMemoryThumbnailCount = 60
     private static let thumbnailDiskCacheMaxBytes: Int64 = 512 * 1024 * 1024
     private static let thumbnailDiskCacheMaxAge: TimeInterval = 7 * 24 * 60 * 60
+    private static let maxRecentSearchEntryCount = 80
+    private static let recentSearchEntriesKey = "search.recentEntries.v1"
 
     // MARK: - Search Results Cache (for restoring on app reopen)
 
@@ -191,9 +289,9 @@ public class SearchViewModel: ObservableObject {
     // MARK: - Other Apps Cache (for uninstalled apps from DB)
 
     /// Key for storing when the other apps cache was last refreshed
-    private static let otherAppsCacheSavedAtKey = "search.otherAppsCacheSavedAt"
+    private nonisolated static let otherAppsCacheSavedAtKey = "search.otherAppsCacheSavedAt"
     /// How long the other apps cache remains valid (24 hours)
-    private static let otherAppsCacheExpirationSeconds: TimeInterval = 24 * 60 * 60
+    private nonisolated static let otherAppsCacheExpirationSeconds: TimeInterval = 24 * 60 * 60
 
     /// File path for cached other apps data
     private static nonisolated var cachedOtherAppsPath: URL {
@@ -217,6 +315,7 @@ public class SearchViewModel: ObservableObject {
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
+        loadRecentSearchEntries()
         setupBindings()
         startMemoryReporting()
         prepareThumbnailDiskCache()
@@ -535,10 +634,266 @@ public class SearchViewModel: ObservableObject {
         visibleResults = allResults
     }
 
+    // MARK: - Recent Search Entries
+
+    public func rankedRecentSearchEntries(for query: String, limit: Int = 8) -> [RecentSearchEntry] {
+        guard limit > 0 else { return [] }
+        let sourceEntries = recentSearchEntries
+        guard !sourceEntries.isEmpty else { return [] }
+
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedQuery.isEmpty {
+            return sourceEntries
+                .enumerated()
+                .sorted { lhs, rhs in
+                    if lhs.element.lastUsedAt != rhs.element.lastUsedAt {
+                        return lhs.element.lastUsedAt > rhs.element.lastUsedAt
+                    }
+                    if lhs.element.usageCount != rhs.element.usageCount {
+                        return lhs.element.usageCount > rhs.element.usageCount
+                    }
+                    return lhs.offset < rhs.offset
+                }
+                .prefix(limit)
+                .map(\.element)
+        }
+
+        return sourceEntries
+            .enumerated()
+            .map { index, entry -> (entry: RecentSearchEntry, fuzzyScore: Int, index: Int)? in
+                let fuzzyResult = Self.fuzzyMatch(query: trimmedQuery, text: entry.query)
+                guard fuzzyResult.matches else { return nil }
+                return (entry: entry, fuzzyScore: fuzzyResult.score, index: index)
+            }
+            .compactMap { $0 }
+            .sorted { lhs, rhs in
+                // While typing, prioritize frequently used queries.
+                if lhs.entry.usageCount != rhs.entry.usageCount {
+                    return lhs.entry.usageCount > rhs.entry.usageCount
+                }
+                if lhs.fuzzyScore != rhs.fuzzyScore {
+                    return lhs.fuzzyScore > rhs.fuzzyScore
+                }
+                if lhs.entry.lastUsedAt != rhs.entry.lastUsedAt {
+                    return lhs.entry.lastUsedAt > rhs.entry.lastUsedAt
+                }
+                return lhs.index < rhs.index
+            }
+            .prefix(limit)
+            .map(\.entry)
+    }
+
+    public func submitRecentSearchEntry(_ entry: RecentSearchEntry) {
+        applyRecentSearchFilters(entry.filters)
+        searchQuery = entry.query
+        submitSearch(trigger: "recent-entry")
+    }
+
+    public func applyRecentSearchFilters(_ filters: RecentSearchFilters) {
+        selectedAppFilters = filters.appBundleIDs.isEmpty ? nil : Set(filters.appBundleIDs)
+        appFilterMode = filters.appFilterMode
+        selectedTags = filters.tagIDs.isEmpty ? nil : Set(filters.tagIDs)
+        tagFilterMode = filters.tagFilterMode
+        hiddenFilter = filters.hiddenFilter
+        commentFilter = filters.commentFilter
+        startDate = filters.startDate
+        endDate = filters.endDate
+        windowNameFilter = filters.windowNameFilter
+        browserUrlFilter = filters.browserUrlFilter
+    }
+
+    public func recordRecentSearchEntry(_ query: String) {
+        let sanitizedQuery = Self.sanitizedRecentSearchQuery(query)
+        guard !sanitizedQuery.isEmpty else { return }
+
+        let filters = currentRecentSearchFilters()
+        let key = Self.recentSearchKey(for: sanitizedQuery, filters: filters)
+        let now = Date().timeIntervalSince1970
+
+        var entries = recentSearchEntries
+        if let existingIndex = entries.firstIndex(where: { $0.key == key }) {
+            var existingEntry = entries.remove(at: existingIndex)
+            existingEntry.query = sanitizedQuery
+            existingEntry.usageCount += 1
+            existingEntry.lastUsedAt = now
+            existingEntry.filters = filters
+            entries.insert(existingEntry, at: 0)
+        } else {
+            let newEntry = RecentSearchEntry(
+                key: key,
+                query: sanitizedQuery,
+                usageCount: 1,
+                lastUsedAt: now,
+                filters: filters
+            )
+            entries.insert(newEntry, at: 0)
+        }
+
+        if entries.count > Self.maxRecentSearchEntryCount {
+            entries.removeLast(entries.count - Self.maxRecentSearchEntryCount)
+        }
+
+        recentSearchEntries = entries
+        saveRecentSearchEntries()
+    }
+
+    private func currentRecentSearchFilters() -> RecentSearchFilters {
+        let appBundleIDs = (selectedAppFilters ?? []).sorted()
+        let tagIDs = (selectedTags ?? []).sorted()
+        let normalizedWindowName = windowNameFilter?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedBrowserUrl = browserUrlFilter?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return RecentSearchFilters(
+            appBundleIDs: appBundleIDs,
+            appFilterMode: appFilterMode,
+            tagIDs: tagIDs,
+            tagFilterMode: tagFilterMode,
+            hiddenFilter: hiddenFilter,
+            commentFilter: commentFilter,
+            startDate: startDate,
+            endDate: endDate,
+            windowNameFilter: normalizedWindowName?.isEmpty == false ? normalizedWindowName : nil,
+            browserUrlFilter: normalizedBrowserUrl?.isEmpty == false ? normalizedBrowserUrl : nil
+        )
+    }
+
+    private func loadRecentSearchEntries() {
+        guard let data = UserDefaults.standard.data(forKey: Self.recentSearchEntriesKey) else { return }
+        do {
+            let entries = try JSONDecoder().decode([RecentSearchEntry].self, from: data)
+            recentSearchEntries = entries
+        } catch {
+            recentSearchEntries = []
+            UserDefaults.standard.removeObject(forKey: Self.recentSearchEntriesKey)
+            Log.warning("[SearchViewModel] Failed to decode recent search entries: \(error)", category: .ui)
+        }
+    }
+
+    private func saveRecentSearchEntries() {
+        do {
+            let encoded = try JSONEncoder().encode(recentSearchEntries)
+            UserDefaults.standard.set(encoded, forKey: Self.recentSearchEntriesKey)
+        } catch {
+            Log.warning("[SearchViewModel] Failed to save recent search entries: \(error)", category: .ui)
+        }
+    }
+
+    private static func recentSearchKey(for query: String, filters: RecentSearchFilters) -> String {
+        let normalizedQuery = normalizedRecentSearchQuery(query)
+        let filterFingerprint = recentSearchFilterFingerprint(filters)
+        let rawKey = "\(normalizedQuery)|\(filterFingerprint)"
+        return sha256(rawKey)
+    }
+
+    private static func sanitizedRecentSearchQuery(_ query: String) -> String {
+        query.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private static func normalizedRecentSearchQuery(_ query: String) -> String {
+        sanitizedRecentSearchQuery(query).lowercased()
+    }
+
+    private static func recentSearchFilterFingerprint(_ filters: RecentSearchFilters) -> String {
+        [
+            "apps=\(filters.appFilterMode.rawValue):\(filters.appBundleIDs.joined(separator: ","))",
+            "tags=\(filters.tagFilterMode.rawValue):\(filters.tagIDs.map(String.init).joined(separator: ","))",
+            "visibility=\(filters.hiddenFilter.rawValue)",
+            "comments=\(filters.commentFilter.rawValue)",
+            "start=\(filters.startDate?.timeIntervalSince1970 ?? 0)",
+            "end=\(filters.endDate?.timeIntervalSince1970 ?? 0)",
+            "window=\(filters.windowNameFilter ?? "")",
+            "url=\(filters.browserUrlFilter ?? "")"
+        ]
+        .joined(separator: "|")
+    }
+
+    private static func sha256(_ value: String) -> String {
+        let digest = SHA256.hash(data: Data(value.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func fuzzyMatch(query: String, text: String) -> (matches: Bool, score: Int) {
+        if query.isEmpty { return (true, 0) }
+
+        let queryLower = query.lowercased()
+        let textLower = text.lowercased()
+
+        var queryIndex = queryLower.startIndex
+        var score = 0
+        var lastMatchOffset: Int? = nil
+
+        for (offset, character) in textLower.enumerated() {
+            guard queryIndex < queryLower.endIndex else { break }
+            guard character == queryLower[queryIndex] else { continue }
+
+            let previousCharacter = offset > 0 ? textLower[textLower.index(textLower.startIndex, offsetBy: offset - 1)] : nil
+            let isWordStart = previousCharacter == nil || previousCharacter == " " || previousCharacter == "-"
+            score += isWordStart ? 5 : 1
+
+            if let lastMatchOffset, lastMatchOffset == offset - 1 {
+                score += 5
+            }
+
+            lastMatchOffset = offset
+            queryIndex = queryLower.index(after: queryIndex)
+        }
+
+        let didMatch = queryIndex == queryLower.endIndex
+        return (didMatch, didMatch ? score : 0)
+    }
+
     /// Ask the overlay view to run its own dismiss animation.
     /// - Parameter clearSearchState: Whether to clear query/results/filters after fade-out.
     public func requestOverlayDismiss(clearSearchState: Bool = true) {
+        Log.info(
+            "[SearchOverlayState] requestOverlayDismiss clearSearchState=\(clearSearchState) queryEmpty=\(searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) hasResults=\(results != nil)",
+            category: .ui
+        )
         dismissOverlaySignal = (clearSearchState, UUID())
+    }
+
+    /// Set a one-shot delay for the next "Recent Entries" popover reveal.
+    public func setNextRecentEntriesRevealDelay(_ delay: TimeInterval) {
+        let normalizedDelay = max(0, delay)
+        Log.debug(
+            "[SearchOverlayState] setNextRecentEntriesRevealDelay delay=\(String(format: "%.3f", normalizedDelay)) prev=\(String(format: "%.3f", nextRecentEntriesRevealDelay))",
+            category: .ui
+        )
+        nextRecentEntriesRevealDelay = normalizedDelay
+    }
+
+    /// Returns and clears any queued "Recent Entries" reveal delay.
+    public func consumeNextRecentEntriesRevealDelay() -> TimeInterval {
+        let delay = nextRecentEntriesRevealDelay
+        nextRecentEntriesRevealDelay = 0
+        Log.debug(
+            "[SearchOverlayState] consumeNextRecentEntriesRevealDelay consumed=\(String(format: "%.3f", delay))",
+            category: .ui
+        )
+        return delay
+    }
+
+    /// Suppress recent entries for the next overlay presentation.
+    public func suppressRecentEntriesForNextOverlayOpen() {
+        Log.info("[SearchOverlayState] suppressRecentEntriesForNextOverlayOpen set=true", category: .ui)
+        suppressRecentEntriesOnNextOverlayOpen = true
+    }
+
+    /// Returns and clears one-shot suppression for recent entries on overlay presentation.
+    public func consumeSuppressRecentEntriesForNextOverlayOpen() -> Bool {
+        let shouldSuppress = suppressRecentEntriesOnNextOverlayOpen
+        suppressRecentEntriesOnNextOverlayOpen = false
+        Log.info(
+            "[SearchOverlayState] consumeSuppressRecentEntriesForNextOverlayOpen consumed=\(shouldSuppress)",
+            category: .ui
+        )
+        return shouldSuppress
+    }
+
+    /// Request the overlay to dismiss the recent-entries popover via its user-dismiss handler path.
+    public func requestDismissRecentEntriesPopoverByUser() {
+        Log.info("[SearchOverlayState] requestDismissRecentEntriesPopoverByUser", category: .ui)
+        dismissRecentEntriesPopoverSignal = UUID()
     }
 
     // MARK: - Search
@@ -553,13 +908,14 @@ public class SearchViewModel: ObservableObject {
 
         // Deeplink flow updates filters + query, then submits immediately.
         // Debounced filter observers can otherwise trigger a second redundant search.
-        if trigger.hasPrefix("deeplink:") {
+        if trigger.hasPrefix("deeplink:") || trigger == "recent-entry" {
             armFilterAutoSearchSuppression()
         }
 
         // Track search event only on explicit submit (Enter key)
         let query = searchQuery
         if !query.isEmpty {
+            recordRecentSearchEntry(query)
             DashboardViewModel.recordSearch(coordinator: coordinator, query: query)
 
             // Track filtered search if any filters are active
@@ -889,9 +1245,17 @@ public class SearchViewModel: ObservableObject {
 
     // MARK: - Filters
 
-    /// Load available apps for the filter dropdown
-    /// Phase 1: Instantly load installed apps from /Applications (synchronous)
-    /// Phase 2: Load "other" apps from cache (instant) or DB if cache expired
+    private struct AvailableAppsLoadSnapshot {
+        let installedApps: [AppInfo]
+        let installedBundleIDs: Set<String>
+        let cachedOtherApps: [AppInfo]
+        let cacheIsStale: Bool
+        let installedPhaseMs: Int
+        let cachePhaseMs: Int
+    }
+
+    /// Load available apps for the filter dropdown.
+    /// Heavy filesystem/system discovery runs off-main; only state publication stays on main.
     public func loadAvailableApps() async {
         guard !isLoadingApps else {
             Log.debug("[SearchViewModel] loadAvailableApps skipped - already loading", category: .ui)
@@ -905,40 +1269,60 @@ public class SearchViewModel: ObservableObject {
         }
 
         isLoadingApps = true
+        defer { isLoadingApps = false }
+
         let startTime = CFAbsoluteTimeGetCurrent()
+        let snapshot = await Task.detached(priority: .utility) {
+            let installedStart = CFAbsoluteTimeGetCurrent()
+            let installed = AppNameResolver.shared.getInstalledApps()
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let installedBundleIDs = Set(installed.map { $0.bundleID })
+            let installedPhaseMs = Int((CFAbsoluteTimeGetCurrent() - installedStart) * 1000)
 
-        // Phase 1: Instant - get installed apps from /Applications folder
-        let installed = AppNameResolver.shared.getInstalledApps()
-        let installedBundleIDs = Set(installed.map { $0.bundleID })
-        installedApps = installed.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        Log.info("[SearchViewModel] Phase 1: Loaded \(installedApps.count) installed apps in \(Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000))ms", category: .ui)
+            let cacheStart = CFAbsoluteTimeGetCurrent()
+            let cacheResult = Self.loadOtherAppsFromCache(installedBundleIDs: installedBundleIDs)
+            let cachePhaseMs = Int((CFAbsoluteTimeGetCurrent() - cacheStart) * 1000)
 
-        // Phase 2: Load "other apps" from cache first (instant), refresh from DB if stale
-        let cacheStartTime = CFAbsoluteTimeGetCurrent()
-        let (cachedApps, cacheIsStale) = loadOtherAppsFromCache(installedBundleIDs: installedBundleIDs)
+            return AvailableAppsLoadSnapshot(
+                installedApps: installed,
+                installedBundleIDs: installedBundleIDs,
+                cachedOtherApps: cacheResult.apps,
+                cacheIsStale: cacheResult.isStale,
+                installedPhaseMs: installedPhaseMs,
+                cachePhaseMs: cachePhaseMs
+            )
+        }.value
 
-        if !cachedApps.isEmpty {
-            otherApps = cachedApps
-            Log.info("[SearchViewModel] Phase 2: Loaded \(otherApps.count) other apps from cache in \(Int((CFAbsoluteTimeGetCurrent() - cacheStartTime) * 1000))ms (stale: \(cacheIsStale))", category: .ui)
+        installedApps = snapshot.installedApps
+        Log.info(
+            "[SearchViewModel] Phase 1: Loaded \(installedApps.count) installed apps in \(snapshot.installedPhaseMs)ms (background)",
+            category: .ui
+        )
+
+        if !snapshot.cachedOtherApps.isEmpty {
+            otherApps = snapshot.cachedOtherApps
+            Log.info(
+                "[SearchViewModel] Phase 2: Loaded \(otherApps.count) other apps from cache in \(snapshot.cachePhaseMs)ms (stale: \(snapshot.cacheIsStale), background)",
+                category: .ui
+            )
         }
 
-        // If cache is stale or empty, refresh from DB in background
-        if cacheIsStale || cachedApps.isEmpty {
+        // If cache is stale or empty, refresh from DB in background.
+        if snapshot.cacheIsStale || snapshot.cachedOtherApps.isEmpty {
             Task.detached { [weak self] in
-                await self?.refreshOtherAppsFromDB(installedBundleIDs: installedBundleIDs)
+                await self?.refreshOtherAppsFromDB(installedBundleIDs: snapshot.installedBundleIDs)
             }
         }
 
         let totalTime = CFAbsoluteTimeGetCurrent() - startTime
         Log.info("[SearchViewModel] Total: \(installedApps.count) installed + \(otherApps.count) other apps in \(Int(totalTime * 1000))ms", category: .ui)
-        isLoadingApps = false
     }
 
     // MARK: - Other Apps Cache
 
     /// Load other apps from disk cache
     /// Returns (apps, isStale) - apps may be empty if no cache exists
-    private func loadOtherAppsFromCache(installedBundleIDs: Set<String>) -> ([AppInfo], Bool) {
+    nonisolated private static func loadOtherAppsFromCache(installedBundleIDs: Set<String>) -> (apps: [AppInfo], isStale: Bool) {
         // Check if cache exists and is not expired
         let savedAt = UserDefaults.standard.double(forKey: Self.otherAppsCacheSavedAtKey)
         let now = Date().timeIntervalSince1970

@@ -2862,7 +2862,8 @@ public actor DataAdapter {
         hiddenTagId: Int64?
     ) throws -> SearchResults {
         let startTime = Date()
-        let ftsQuery = buildFTSQuery(query.text)
+        let rawFTSQuery = buildFTSQuery(query.text)
+        let ftsQuery = scopeToSearchableTextColumns(rawFTSQuery)
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         let redactionReasonColumn = source == .rewind ? "NULL as redaction_reason" : "f.redactionReason as redaction_reason"
         let normalizedOffset = max(0, query.offset)
@@ -2871,7 +2872,7 @@ public actor DataAdapter {
         let batchOffset: Int? = rankCursor == nil ? normalizedOffset : nil
 
         Log.info(
-            "[DataAdapter.searchRelevant] Starting: ftsQuery='\(ftsQuery)', source=\(source), appFilter=\(query.filters.appBundleIDs ?? []), windowNameFilter=\(query.filters.windowNameFilter ?? "nil"), browserUrlFilter=\(query.filters.browserUrlFilter ?? "nil"), hasCursor=\(rankCursor != nil)",
+            "[DataAdapter.searchRelevant] Starting: rawFTSQuery='\(rawFTSQuery)', scopedFTSQuery='\(ftsQuery)', source=\(source), appFilter=\(query.filters.appBundleIDs ?? []), windowNameFilter=\(query.filters.windowNameFilter ?? "nil"), browserUrlFilter=\(query.filters.browserUrlFilter ?? "nil"), hasCursor=\(rankCursor != nil)",
             category: .app
         )
 
@@ -3370,7 +3371,8 @@ public actor DataAdapter {
         hiddenTagId: Int64?
     ) throws -> SearchResults {
         let startTime = Date()
-        let ftsQuery = buildFTSQuery(query.text)
+        let rawFTSQuery = buildFTSQuery(query.text)
+        let ftsQuery = scopeToSearchableTextColumns(rawFTSQuery)
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         let redactionReasonColumn = source == .rewind ? "NULL as redaction_reason" : "f.redactionReason as redaction_reason"
         let normalizedOffset = max(0, query.offset)
@@ -4042,6 +4044,13 @@ public actor DataAdapter {
         }
 
         return parts.joined(separator: " ")
+    }
+
+    /// Restrict FTS MATCH to content columns only (exclude window title metadata).
+    private static func scopeToSearchableTextColumns(_ query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return query }
+        return "((text:(\(trimmed))) OR (otherText:(\(trimmed))))"
     }
 
     /// Remove characters that have special meaning in FTS query syntax.

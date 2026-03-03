@@ -616,6 +616,18 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Whether the search overlay is visible
     @Published public var isSearchOverlayVisible: Bool = false
 
+    /// Whether the in-frame search bar is visible.
+    @Published public var isInFrameSearchVisible: Bool = false
+
+    /// Current in-frame search query for highlighting OCR nodes on the active frame.
+    @Published public var inFrameSearchQuery: String = ""
+
+    /// Incremented to request keyboard focus for the in-frame search field.
+    @Published public var focusInFrameSearchFieldSignal: Int = 0
+
+    private static let inFrameSearchDebounceNanoseconds: UInt64 = 300_000_000
+    private var inFrameSearchDebounceTask: Task<Void, Never>?
+
     /// Persistent SearchViewModel that survives overlay open/close
     /// This allows search results to be preserved when clicking on a result
     public lazy var searchViewModel: SearchViewModel = {
@@ -819,6 +831,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Timer to auto-dismiss search highlight
     private var searchHighlightTimer: Timer?
+
+    private var hasActiveInFrameSearchQuery: Bool {
+        !inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     /// Timer for periodic processing status refresh while timeline is open
     private var statusRefreshTimer: Timer?
@@ -1576,7 +1592,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         let frameIndex: Int
     }
 
-    /// Cmd+F quick-filter latency trace payload carried across async reload/boundary paths.
+    /// App quick-filter latency trace payload carried across async reload/boundary paths.
     private struct CmdFQuickFilterLatencyTrace: Sendable {
         let id: String
         let startedAt: CFAbsoluteTime
@@ -1586,7 +1602,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         let source: FrameSource
     }
 
-    /// Pending Cmd+F trace, consumed by the next filter-triggered reload call.
+    /// Pending app quick-filter trace, consumed by the next filter-triggered reload call.
     private var pendingCmdFQuickFilterLatencyTrace: CmdFQuickFilterLatencyTrace?
 
     /// Preferred index to apply atomically with the next full-frame-window replacement.
@@ -1696,7 +1712,13 @@ public class SimpleTimelineViewModel: ObservableObject {
         var getFrameWithVideoInfoByID: ((FrameID) async throws -> FrameWithVideoInfo?)?
     }
 
+    // Test-only hooks for deterministic refreshFrameData coverage.
+    struct RefreshFrameDataTestHooks {
+        var getMostRecentFramesWithVideoInfo: ((Int, FilterCriteria) async throws -> [FrameWithVideoInfo])?
+    }
+
     var test_refreshProcessingStatusesHooks = RefreshProcessingStatusesTestHooks()
+    var test_refreshFrameDataHooks = RefreshFrameDataTestHooks()
 #endif
 
     // MARK: - Initialization
@@ -1712,6 +1734,19 @@ public class SimpleTimelineViewModel: ObservableObject {
             UserDefaults.standard.set(true, forKey: "searchOverlayVisible")
         } else {
             self.isSearchOverlayVisible = UserDefaults.standard.bool(forKey: "searchOverlayVisible")
+        }
+        Log.info(
+            "[SearchOverlayState] init restored isSearchOverlayVisible=\(isSearchOverlayVisible)",
+            category: .ui
+        )
+        if isSearchOverlayVisible {
+            // On startup with overlay already visible, keep the search bar front-and-center
+            // without opening the recent-entries popover by default.
+            searchViewModel.suppressRecentEntriesForNextOverlayOpen()
+            Log.info(
+                "[SearchOverlayState] init suppressing recent entries for first overlay presentation",
+                category: .ui
+            )
         }
 
         // Listen for data source changes (e.g., Rewind data toggled)
@@ -1760,6 +1795,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         $isSearchOverlayVisible
             .dropFirst() // Skip initial value from restoration
             .sink { isVisible in
+                Log.debug(
+                    "[SearchOverlayState] persistence write isSearchOverlayVisible=\(isVisible)",
+                    category: .ui
+                )
                 UserDefaults.standard.set(isVisible, forKey: "searchOverlayVisible")
             }
             .store(in: &cancellables)
@@ -2243,7 +2282,16 @@ public class SimpleTimelineViewModel: ObservableObject {
         )
 
         do {
-            let framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            let framesWithVideoInfo: [FrameWithVideoInfo]
+#if DEBUG
+            if let override = test_refreshFrameDataHooks.getMostRecentFramesWithVideoInfo {
+                framesWithVideoInfo = try await override(limit, filters)
+            } else {
+                framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            }
+#else
+            framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+#endif
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
             Log.recordLatency(
                 "timeline.fetch.most_recent_frames_ms",
@@ -2319,7 +2367,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.debug("[DataSourceChange] invalidateCachesAndReload() completed", category: .ui)
     }
 
-    /// Reload frames around a specific timestamp (used after data source changes and Cmd+F quick filter)
+    /// Reload frames around a specific timestamp (used after data source changes and app quick filter)
     private func reloadFramesAroundTimestamp(_ timestamp: Date, cmdFTrace: CmdFQuickFilterLatencyTrace? = nil) async {
         let reloadStart = CFAbsoluteTimeGetCurrent()
         Log.debug("[DataSourceChange] reloadFramesAroundTimestamp() starting for timestamp: \(timestamp)", category: .ui)
@@ -4207,7 +4255,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     // MARK: - Filter Operations
 
     /// Apply or clear a single-app quick filter for the app in the selected timeline context-menu segment.
-    /// Mirrors the Cmd+F quick-filter behavior: first press applies app-only filter, second clears it.
+    /// Mirrors app quick-filter behavior: first press applies app-only filter, second clears it.
     public func toggleQuickAppFilterForSelectedTimelineSegment() {
         guard let index = timelineContextMenuSegmentIndex,
               index >= 0,
@@ -4517,7 +4565,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.debug("[Filter] Set date range to \(String(describing: start)) - \(String(describing: end)) (pending)", category: .ui)
     }
 
-    /// Starts a latency trace for Cmd+F quick-filter execution.
+    /// Starts a latency trace for app quick-filter execution.
     /// The trace is consumed by the next filter reload path.
     public func beginCmdFQuickFilterLatencyTrace(
         bundleID: String,
@@ -4948,6 +4996,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             isSearchOverlayVisible = false
         }
 
+        // Dismiss in-frame search
+        if except != .inFrameSearch && isInFrameSearchVisible {
+            closeInFrameSearch(clearQuery: true)
+        }
+
         // Always dismiss context menus
         dismissContextMenu()
         dismissTimelineContextMenu()
@@ -4955,9 +5008,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Dialog types for mutual exclusion
     public enum DialogType {
-        case filter      // Option+F - Filter panel
+        case filter      // Cmd+Shift+F - Filter panel
         case dateSearch  // Cmd+G - Date search
         case search      // Cmd+K - Search overlay
+        case inFrameSearch // Cmd+F - In-frame OCR search
     }
 
     /// Dismiss filter panel (resets pending to match applied)
@@ -5125,10 +5179,93 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
+    // MARK: - In-Frame Search
+
+    /// Toggle in-frame OCR search visibility.
+    /// When active, toggling closes and clears the in-frame query.
+    public func toggleInFrameSearch(clearQueryOnClose: Bool = true) {
+        let hasQuery = !inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if isInFrameSearchVisible || hasQuery {
+            closeInFrameSearch(clearQuery: clearQueryOnClose)
+        } else {
+            openInFrameSearch()
+        }
+    }
+
+    /// Open in-frame OCR search and focus the top-right search field.
+    public func openInFrameSearch() {
+        dismissOtherDialogs(except: .inFrameSearch)
+        if areControlsHidden {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                areControlsHidden = false
+            }
+        }
+        inFrameSearchDebounceTask?.cancel()
+        inFrameSearchDebounceTask = nil
+        isInFrameSearchVisible = true
+        focusInFrameSearchFieldSignal &+= 1
+        applyInFrameSearchHighlighting()
+    }
+
+    /// Close in-frame search. Optionally clears the query and highlight state.
+    public func closeInFrameSearch(clearQuery: Bool) {
+        isInFrameSearchVisible = false
+        inFrameSearchDebounceTask?.cancel()
+        inFrameSearchDebounceTask = nil
+        if clearQuery {
+            inFrameSearchQuery = ""
+            clearSearchHighlightImmediately()
+        }
+    }
+
+    /// Update in-frame query and refresh highlight state with a short debounce.
+    public func setInFrameSearchQuery(_ query: String) {
+        inFrameSearchQuery = query
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        inFrameSearchDebounceTask?.cancel()
+
+        guard !normalizedQuery.isEmpty else {
+            inFrameSearchDebounceTask = nil
+            clearSearchHighlightImmediately()
+            return
+        }
+
+        inFrameSearchDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                for: .nanoseconds(Int64(Self.inFrameSearchDebounceNanoseconds)),
+                clock: .continuous
+            )
+            guard !Task.isCancelled, let self else { return }
+            guard self.inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedQuery else {
+                return
+            }
+            self.applyInFrameSearchHighlighting()
+        }
+    }
+
+    private func applyInFrameSearchHighlighting() {
+        let normalizedQuery = inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedQuery.isEmpty else {
+            clearSearchHighlightImmediately()
+            return
+        }
+
+        searchHighlightTimer?.invalidate()
+        searchHighlightTimer = nil
+        searchHighlightQuery = normalizedQuery
+        isShowingSearchHighlight = true
+    }
+
     // MARK: - Search Overlay
 
-    /// Open the search overlay and dismiss other dialogs
-    public func openSearchOverlay() {
+    /// Open the search overlay and dismiss other dialogs.
+    /// - Parameter recentEntriesRevealDelay: One-shot delay before showing recent entries popover.
+    public func openSearchOverlay(recentEntriesRevealDelay: TimeInterval = 0) {
+        let trimmedQuery = searchViewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        Log.info(
+            "[SearchOverlayState] openSearchOverlay beforeVisible=\(isSearchOverlayVisible) delay=\(String(format: "%.3f", recentEntriesRevealDelay)) queryEmpty=\(trimmedQuery.isEmpty) hasResults=\(searchViewModel.results != nil)",
+            category: .ui
+        )
         // Dismiss other dialogs first
         dismissOtherDialogs(except: .search)
         // Show controls if hidden (user expects to see the search overlay)
@@ -5137,6 +5274,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 areControlsHidden = false
             }
         }
+        searchViewModel.setNextRecentEntriesRevealDelay(recentEntriesRevealDelay)
         isSearchOverlayVisible = true
         // Clear any existing search highlight
         Task { @MainActor in
@@ -5146,15 +5284,25 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Close the search overlay
     public func closeSearchOverlay() {
+        Log.info(
+            "[SearchOverlayState] closeSearchOverlay beforeVisible=\(isSearchOverlayVisible)",
+            category: .ui
+        )
+        searchViewModel.setNextRecentEntriesRevealDelay(0)
         isSearchOverlayVisible = false
     }
 
-    /// Toggle the search overlay
-    public func toggleSearchOverlay() {
+    /// Toggle the search overlay.
+    /// - Parameter recentEntriesRevealDelayOnOpen: One-shot delay applied only when opening.
+    public func toggleSearchOverlay(recentEntriesRevealDelayOnOpen: TimeInterval = 0) {
+        Log.info(
+            "[SearchOverlayState] toggleSearchOverlay currentVisible=\(isSearchOverlayVisible) openDelay=\(String(format: "%.3f", recentEntriesRevealDelayOnOpen))",
+            category: .ui
+        )
         if isSearchOverlayVisible {
             closeSearchOverlay()
         } else {
-            openSearchOverlay()
+            openSearchOverlay(recentEntriesRevealDelay: recentEntriesRevealDelayOnOpen)
         }
     }
 
@@ -5719,8 +5867,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         guard clampedIndex != currentIndex else { return }
         let previousIndex = currentIndex
 
-        // Clear search highlight when manually navigating
-        if isShowingSearchHighlight {
+        // Clear transient search-result highlight when manually navigating.
+        if isShowingSearchHighlight && !hasActiveInFrameSearchQuery {
             clearSearchHighlight()
         }
         // Only dismiss search overlay if there's no active search query
@@ -6086,14 +6234,25 @@ public class SimpleTimelineViewModel: ObservableObject {
         searchHighlightTimer?.invalidate()
         searchHighlightTimer = nil
 
+        let previousQuery = searchHighlightQuery
         withAnimation(.easeOut(duration: 0.3)) {
             isShowingSearchHighlight = false
         }
 
         // Clear the query after animation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.searchHighlightQuery = nil
+            guard let self else { return }
+            guard !self.isShowingSearchHighlight else { return }
+            guard self.searchHighlightQuery == previousQuery else { return }
+            self.searchHighlightQuery = nil
         }
+    }
+
+    private func clearSearchHighlightImmediately() {
+        searchHighlightTimer?.invalidate()
+        searchHighlightTimer = nil
+        isShowingSearchHighlight = false
+        searchHighlightQuery = nil
     }
 
     /// Toggle visibility of timeline controls (tape, playhead, buttons)
@@ -6147,6 +6306,82 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         return matchingNodes
+    }
+
+    private static let searchHighlightLineTolerance: CGFloat = 0.02
+
+    /// Build line-based text from highlighted OCR matches.
+    /// Nodes are grouped by vertical proximity and joined left-to-right per line.
+    func highlightedSearchTextLines(
+        from matches: [(node: OCRNodeWithText, ranges: [Range<String.Index>])]? = nil
+    ) -> [String] {
+        let sourceMatches = matches ?? searchHighlightNodes
+        guard !sourceMatches.isEmpty else { return [] }
+
+        var seenNodeIDs = Set<Int>()
+        let uniqueNodes = sourceMatches.compactMap { match -> OCRNodeWithText? in
+            guard seenNodeIDs.insert(match.node.id).inserted else { return nil }
+            return match.node
+        }
+        guard !uniqueNodes.isEmpty else { return [] }
+
+        let sortedNodes = uniqueNodes.sorted { lhs, rhs in
+            if abs(lhs.y - rhs.y) > Self.searchHighlightLineTolerance {
+                return lhs.y < rhs.y
+            }
+            return lhs.x < rhs.x
+        }
+
+        var groupedLines: [[OCRNodeWithText]] = []
+        var currentLine: [OCRNodeWithText] = []
+        var currentLineAverageY: CGFloat?
+
+        for node in sortedNodes {
+            if let lineY = currentLineAverageY,
+               abs(node.y - lineY) <= Self.searchHighlightLineTolerance {
+                currentLine.append(node)
+                let lineCount = CGFloat(currentLine.count)
+                currentLineAverageY = ((lineY * (lineCount - 1)) + node.y) / lineCount
+            } else {
+                if !currentLine.isEmpty {
+                    groupedLines.append(currentLine)
+                }
+                currentLine = [node]
+                currentLineAverageY = node.y
+            }
+        }
+
+        if !currentLine.isEmpty {
+            groupedLines.append(currentLine)
+        }
+
+        return groupedLines.compactMap { lineNodes in
+            let lineText = lineNodes
+                .sorted { $0.x < $1.x }
+                .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            return lineText.isEmpty ? nil : lineText
+        }
+    }
+
+    /// Copy highlighted search text to clipboard, grouped by highlighted line.
+    func copySearchHighlightedTextByLine(
+        from matches: [(node: OCRNodeWithText, ranges: [Range<String.Index>])]? = nil
+    ) {
+        let lines = highlightedSearchTextLines(from: matches)
+        guard !lines.isEmpty else {
+            showToast("No highlighted text to copy", icon: "exclamationmark.circle.fill")
+            return
+        }
+
+        let textToCopy = lines.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(textToCopy, forType: .string)
+        showToast("Highlighted text copied", icon: "doc.on.doc.fill")
+        DashboardViewModel.recordTextCopy(coordinator: coordinator, text: textToCopy)
     }
 
     private static let searchHighlightExactMatchStopwords: Set<String> = [
@@ -8367,8 +8602,8 @@ public class SimpleTimelineViewModel: ObservableObject {
             }
         }
 
-        // Clear search highlight when user manually scrolls
-        if isShowingSearchHighlight {
+        // Clear transient search-result highlight when user manually scrolls.
+        if isShowingSearchHighlight && !hasActiveInFrameSearchQuery {
             clearSearchHighlight()
         }
 
@@ -10256,9 +10491,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         case .newer:
             // User is scrolling toward newer, trim older frames from start
             Log.info("[Memory] TRIMMING \(excessCount) older frames from START (preserving newer)", category: .ui)
+            let oldIndex = currentIndex
+            let targetIndexAfterTrim = max(0, oldIndex - excessCount)
+            pendingCurrentIndexAfterFrameReplacement = targetIndexAfterTrim
             frames = Array(frames.dropFirst(excessCount))
-            // Adjust currentIndex
-            currentIndex = max(0, currentIndex - excessCount)
             // We just discarded older frames from memory, so backward pagination is available again.
             hasMoreOlder = true
             hasReachedAbsoluteStart = false

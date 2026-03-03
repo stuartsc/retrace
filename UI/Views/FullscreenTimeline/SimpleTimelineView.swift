@@ -19,6 +19,7 @@ public struct SimpleTimelineView: View {
     /// Keep comment submenu mounted during fade-out so dismissal is visibly animated.
     @State private var isCommentSubmenuMounted = false
     @State private var commentSubmenuVisibility: Double = 0
+    @FocusState private var isInFrameSearchFieldFocused: Bool
 
     let coordinator: AppCoordinator
     let onClose: () -> Void
@@ -211,17 +212,18 @@ public struct SimpleTimelineView: View {
                     .animation(.spring(response: 0.28, dampingFraction: 0.82), value: redactionContext.reason)
                 }
 
-                // Close button (top-right) - always visible
+                // Top-right controls (in-frame search + close)
                 VStack {
                     HStack {
                         Spacer()
                             .allowsHitTesting(false)
-                        closeButton
+                        topRightControls
                     }
                     Spacer()
                         .allowsHitTesting(false)
                 }
                 .padding(.spacingL)
+                .padding(.top, 12) // Match ResetZoomButton vertical row alignment
                 .zIndex(100)
 
 
@@ -456,7 +458,18 @@ public struct SimpleTimelineView: View {
                 }
             }
             .animation(.easeOut(duration: 0.16), value: viewModel.showCommentSubmenu)
-            // Note: Keyboard shortcuts (Option+F, Cmd+F, Escape) are handled by TimelineWindowController
+            .onChange(of: viewModel.focusInFrameSearchFieldSignal) { _ in
+                guard viewModel.isInFrameSearchVisible else { return }
+                DispatchQueue.main.async {
+                    isInFrameSearchFieldFocused = true
+                }
+            }
+            .onChange(of: viewModel.isInFrameSearchVisible) { isVisible in
+                if !isVisible {
+                    isInFrameSearchFieldFocused = false
+                }
+            }
+            // Note: Keyboard shortcuts (Cmd+F, Option+F, Cmd+Shift+F, Escape) are handled by TimelineWindowController
             // at the window level for more reliable event handling
         }
     }
@@ -801,9 +814,103 @@ public struct SimpleTimelineView: View {
 	        }
 	    }
 
-    // MARK: - Close Button
+    // MARK: - Top Right Controls
 
     @State private var isCloseButtonHovering = false
+
+    private var topRightControls: some View {
+        let scale = TimelineScaleFactor.current
+        return HStack(spacing: 10 * scale) {
+            if viewModel.isInFrameSearchVisible {
+                inFrameSearchBar
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+            closeButton
+        }
+        .animation(.easeOut(duration: 0.15), value: viewModel.isInFrameSearchVisible)
+    }
+
+    private var inFrameSearchBinding: Binding<String> {
+        Binding(
+            get: { viewModel.inFrameSearchQuery },
+            set: { viewModel.setInFrameSearchQuery($0) }
+        )
+    }
+
+    private var isInFrameSearchGlowActive: Bool {
+        isInFrameSearchFieldFocused || !viewModel.inFrameSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var inFrameSearchBar: some View {
+        let scale = TimelineScaleFactor.current
+        let height = 44 * scale
+
+        return HStack(spacing: 8 * scale) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13 * scale, weight: .semibold))
+                .foregroundColor(.white.opacity(0.72))
+
+            TextField("Search this frame", text: inFrameSearchBinding)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14 * scale, weight: .medium))
+                .foregroundColor(.white)
+                .focused($isInFrameSearchFieldFocused)
+                .submitLabel(.search)
+
+            if !viewModel.inFrameSearchQuery.isEmpty {
+                Button {
+                    viewModel.setInFrameSearchQuery("")
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12 * scale, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+
+            Button {
+                viewModel.closeInFrameSearch(clearQuery: true)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12 * scale, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.78))
+            }
+            .buttonStyle(.plain)
+            .help("Close in-frame search (Esc)")
+        }
+        .padding(.leading, 14 * scale)
+        .padding(.trailing, 12 * scale)
+        .frame(width: 340 * scale, height: height)
+        .retraceMenuContainer(addPadding: false)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14 * scale)
+                .stroke(
+                    Color.white.opacity(isInFrameSearchGlowActive ? 0.46 : 0.24),
+                    lineWidth: isInFrameSearchGlowActive ? 1.2 : 0.8
+                )
+        )
+        .shadow(
+            color: Color.white.opacity(isInFrameSearchGlowActive ? 0.20 : 0.08),
+            radius: (isInFrameSearchGlowActive ? 9 : 5) * scale,
+            x: 0,
+            y: 0
+        )
+        .shadow(
+            color: Color.black.opacity(isInFrameSearchGlowActive ? 0.20 : 0.10),
+            radius: (isInFrameSearchGlowActive ? 15 : 8) * scale,
+            x: 0,
+            y: 0
+        )
+        .animation(.easeOut(duration: 0.18), value: isInFrameSearchGlowActive)
+        .onAppear {
+            DispatchQueue.main.async {
+                isInFrameSearchFieldFocused = true
+            }
+        }
+    }
+
+    // MARK: - Close Button
 
     private var closeButton: some View {
         let scale = TimelineScaleFactor.current
@@ -3580,7 +3687,7 @@ struct DeleteConfirmationDialog: View {
 // MARK: - Search Highlight Overlay
 
 /// Overlay that highlights search matches on the current frame
-/// Darkens everything except the matched lines for a spotlight effect
+/// Darkens everything except the matched nodes for a spotlight effect
 struct SearchHighlightOverlay: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
     let containerSize: CGSize
@@ -3588,59 +3695,329 @@ struct SearchHighlightOverlay: View {
 
     @State private var highlightScale: CGFloat = 0.3
 
-    // Cache the highlight nodes on appear to prevent re-renders from changing them
-    @State private var cachedNodes: [(node: OCRNodeWithText, ranges: [Range<String.Index>])] = []
+    @State private var tooltipAnchorPoint: CGPoint?
+    @State private var tooltipSourceRect: CGRect?
+    @State private var isHoveringHighlightedNode = false
+    @State private var isHoveringTooltipButton = false
+    @State private var hasPushedTooltipCursor = false
+    @State private var tooltipHideWorkItem: DispatchWorkItem?
+
+    private let tooltipSize = CGSize(width: 210, height: 34)
+    private let tooltipInset: CGFloat = 12
+    private let tooltipGap: CGFloat = 8
+
+    private var liveMatches: [(node: OCRNodeWithText, ranges: [Range<String.Index>])] {
+        viewModel.searchHighlightNodes
+    }
 
     var body: some View {
-        ZStack {
-            // Dark overlay
-            Color.black.opacity(0.25)
+        ZStack(alignment: .topLeading) {
+            highlightLayer
+                .allowsHitTesting(false)
 
-            // Cutout holes for highlights - use compositingGroup for blend mode to work
-            ForEach(Array(cachedNodes.enumerated()), id: \.offset) { _, match in
-                let node = match.node
-                let screenX = actualFrameRect.origin.x + (node.x * actualFrameRect.width)
-                let screenY = actualFrameRect.origin.y + (node.y * actualFrameRect.height)
-                let screenWidth = node.width * actualFrameRect.width
-                let screenHeight = node.height * actualFrameRect.height
+            SearchHighlightHoverTracker(
+                highlightedRects: highlightedRects,
+                onHoverLocationChanged: handleHoverLocationChanged
+            )
+            .frame(width: containerSize.width, height: containerSize.height)
 
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.white)
-                    .frame(width: screenWidth, height: screenHeight)
-                    .scaleEffect(highlightScale)
-                    .position(x: screenX + screenWidth / 2, y: screenY + screenHeight / 2)
-                    .blendMode(.destinationOut)
-            }
-        }
-        .compositingGroup()
-        // Yellow borders drawn on top (outside the compositing group)
-        .overlay(
-            ZStack {
-                ForEach(Array(cachedNodes.enumerated()), id: \.offset) { _, match in
-                    let node = match.node
-                    let screenX = actualFrameRect.origin.x + (node.x * actualFrameRect.width)
-                    let screenY = actualFrameRect.origin.y + (node.y * actualFrameRect.height)
-                    let screenWidth = node.width * actualFrameRect.width
-                    let screenHeight = node.height * actualFrameRect.height
-
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(Color.yellow.opacity(0.9), lineWidth: 2)
-                        .frame(width: screenWidth, height: screenHeight)
-                        .scaleEffect(highlightScale)
-                        .position(x: screenX + screenWidth / 2, y: screenY + screenHeight / 2)
+            if let tooltipPosition = tooltipPosition {
+                Button {
+                    viewModel.copySearchHighlightedTextByLine(from: liveMatches)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.on.doc.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Copy ALL highlighted text")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(width: tooltipSize.width, height: tooltipSize.height)
+                    .background(
+                        Capsule()
+                            .fill(isHoveringTooltipButton ? Color.blue.opacity(0.90) : Color.black.opacity(0.72))
+                            .overlay(
+                                Capsule()
+                                    .stroke(isHoveringTooltipButton ? Color.white.opacity(0.55) : Color.white.opacity(0.25), lineWidth: 1)
+                            )
+                    )
+                    .shadow(color: .black.opacity(isHoveringTooltipButton ? 0.45 : 0.35), radius: isHoveringTooltipButton ? 14 : 10, y: 6)
+                    .scaleEffect(isHoveringTooltipButton ? 1.03 : 1.0)
+                    .animation(.easeOut(duration: 0.12), value: isHoveringTooltipButton)
+                }
+                .buttonStyle(.plain)
+                .help("Copy ALL highlighted text")
+                .offset(x: tooltipPosition.x, y: tooltipPosition.y)
+                .onHover { isHovering in
+                    isHoveringTooltipButton = isHovering
+                    updateTooltipCursor(isHovering: isHovering)
+                    if isHovering {
+                        cancelTooltipHide()
+                    } else if !isHoveringHighlightedNode {
+                        scheduleTooltipHide(after: 0.20)
+                    }
                 }
             }
-        )
-        .allowsHitTesting(false)
+        }
         .onAppear {
-            // Cache the nodes immediately to prevent re-render issues
-            cachedNodes = viewModel.searchHighlightNodes
+            tooltipAnchorPoint = nil
+            tooltipSourceRect = nil
+            isHoveringHighlightedNode = false
+            isHoveringTooltipButton = false
+            updateTooltipCursor(isHovering: false)
+            cancelTooltipHide()
 
             // Animate the scale from 0.3 to 1.0 with spring
             withAnimation(.spring(response: 0.4, dampingFraction: 0.7, blendDuration: 0)) {
                 highlightScale = 1.0
             }
         }
+        .onDisappear {
+            cancelTooltipHide()
+            tooltipAnchorPoint = nil
+            tooltipSourceRect = nil
+            isHoveringHighlightedNode = false
+            isHoveringTooltipButton = false
+            updateTooltipCursor(isHovering: false)
+        }
+    }
+
+    private var highlightLayer: some View {
+        Group {
+            if highlightedRects.isEmpty {
+                Color.clear
+            } else {
+                ZStack {
+                    // Dark overlay
+                    Color.black.opacity(0.25)
+
+                    // Cutout holes for highlights - use compositingGroup for blend mode to work
+                    ForEach(Array(highlightedRects.enumerated()), id: \.offset) { _, rect in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color.white)
+                            .frame(width: rect.width, height: rect.height)
+                            .scaleEffect(highlightScale)
+                            .position(x: rect.midX, y: rect.midY)
+                            .blendMode(.destinationOut)
+                    }
+                }
+                .compositingGroup()
+                // Yellow borders drawn on top (outside the compositing group)
+                .overlay(
+                    ZStack {
+                        ForEach(Array(highlightedRects.enumerated()), id: \.offset) { _, rect in
+                            RoundedRectangle(cornerRadius: 3)
+                                .stroke(Color.yellow.opacity(0.9), lineWidth: 2)
+                                .frame(width: rect.width, height: rect.height)
+                                .scaleEffect(highlightScale)
+                                .position(x: rect.midX, y: rect.midY)
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private var tooltipPosition: CGPoint? {
+        guard let anchor = tooltipAnchorPoint else { return nil }
+
+        let maxX = max(tooltipInset, containerSize.width - tooltipSize.width - tooltipInset)
+        let preferredX = anchor.x - (tooltipSize.width / 2)
+        let clampedX = min(max(preferredX, tooltipInset), maxX)
+
+        let preferredAboveY = anchor.y - tooltipSize.height - tooltipGap
+        let maxY = max(tooltipInset, containerSize.height - tooltipSize.height - tooltipInset)
+        let y: CGFloat
+        if preferredAboveY >= tooltipInset {
+            y = preferredAboveY
+        } else {
+            y = min(maxY, anchor.y + tooltipGap)
+        }
+
+        return CGPoint(x: clampedX, y: y)
+    }
+
+    private var highlightedRects: [CGRect] {
+        var seenNodeIDs = Set<Int>()
+        return liveMatches.compactMap { match -> CGRect? in
+            guard seenNodeIDs.insert(match.node.id).inserted else { return nil }
+            let rect = screenRect(for: match.node)
+            return rect.isEmpty ? nil : rect
+        }
+    }
+
+    private var tooltipFrame: CGRect? {
+        guard let tooltipPosition else { return nil }
+        return CGRect(origin: tooltipPosition, size: tooltipSize)
+    }
+
+    private var tooltipInteractionSafeZone: CGRect? {
+        guard let tooltipFrame else { return nil }
+
+        var safeZone = tooltipFrame.insetBy(dx: -20, dy: -16)
+
+        if let sourceRect = tooltipSourceRect {
+            safeZone = safeZone.union(sourceRect.insetBy(dx: -20, dy: -20))
+
+            let bridgeCenterX = (sourceRect.midX + tooltipFrame.midX) / 2
+            let bridgeWidth = abs(sourceRect.midX - tooltipFrame.midX) + 44
+            let bridgeMinY = min(sourceRect.minY, tooltipFrame.minY) - 16
+            let bridgeMaxY = max(sourceRect.maxY, tooltipFrame.maxY) + 16
+            let bridgeRect = CGRect(
+                x: bridgeCenterX - (bridgeWidth / 2),
+                y: bridgeMinY,
+                width: bridgeWidth,
+                height: max(bridgeMaxY - bridgeMinY, 1)
+            )
+            safeZone = safeZone.union(bridgeRect)
+        }
+
+        return safeZone
+    }
+
+    private func handleHoverLocationChanged(_ location: CGPoint?) {
+        guard let location else {
+            isHoveringHighlightedNode = false
+            if !isHoveringTooltipButton {
+                scheduleTooltipHide(after: 0.55)
+            }
+            return
+        }
+
+        if let hoveredRect = highlightedRects.first(where: { $0.contains(location) }) {
+            isHoveringHighlightedNode = true
+            cancelTooltipHide()
+            tooltipAnchorPoint = CGPoint(x: hoveredRect.midX, y: hoveredRect.minY)
+            tooltipSourceRect = hoveredRect
+            return
+        }
+
+        isHoveringHighlightedNode = false
+
+        if let tooltipInteractionSafeZone,
+           tooltipInteractionSafeZone.contains(location) {
+            cancelTooltipHide()
+            return
+        }
+
+        if !isHoveringTooltipButton {
+            scheduleTooltipHide(after: 0.55)
+        }
+    }
+
+    private func scheduleTooltipHide(after delay: TimeInterval) {
+        cancelTooltipHide()
+        let workItem = DispatchWorkItem {
+            tooltipAnchorPoint = nil
+            tooltipSourceRect = nil
+        }
+        tooltipHideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func cancelTooltipHide() {
+        tooltipHideWorkItem?.cancel()
+        tooltipHideWorkItem = nil
+    }
+
+    private func updateTooltipCursor(isHovering: Bool) {
+        if isHovering {
+            guard !hasPushedTooltipCursor else { return }
+            NSCursor.pointingHand.push()
+            hasPushedTooltipCursor = true
+        } else {
+            guard hasPushedTooltipCursor else { return }
+            NSCursor.pop()
+            hasPushedTooltipCursor = false
+        }
+    }
+
+    private func screenRect(for node: OCRNodeWithText) -> CGRect {
+        CGRect(
+            x: actualFrameRect.origin.x + (node.x * actualFrameRect.width),
+            y: actualFrameRect.origin.y + (node.y * actualFrameRect.height),
+            width: node.width * actualFrameRect.width,
+            height: node.height * actualFrameRect.height
+        )
+    }
+}
+
+private struct SearchHighlightHoverTracker: NSViewRepresentable {
+    let highlightedRects: [CGRect]
+    let onHoverLocationChanged: (CGPoint?) -> Void
+
+    func makeNSView(context: Context) -> SearchHighlightHoverTrackingView {
+        let view = SearchHighlightHoverTrackingView()
+        view.onHoverLocationChanged = onHoverLocationChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: SearchHighlightHoverTrackingView, context: Context) {
+        let didRectsChange = nsView.highlightedRects != highlightedRects
+        nsView.highlightedRects = highlightedRects
+        nsView.onHoverLocationChanged = onHoverLocationChanged
+        if didRectsChange || !nsView.hasPerformedInitialHoverSync {
+            nsView.refreshHoverStateForCurrentMouseLocation()
+            nsView.hasPerformedInitialHoverSync = true
+        }
+    }
+}
+
+private final class SearchHighlightHoverTrackingView: NSView {
+    var highlightedRects: [CGRect] = []
+    var onHoverLocationChanged: ((CGPoint?) -> Void)?
+    var hasPerformedInitialHoverSync = false
+
+    private var trackingArea: NSTrackingArea?
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        hasPerformedInitialHoverSync = false
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let options: NSTrackingArea.Options = [
+            .activeInKeyWindow,
+            .mouseEnteredAndExited,
+            .mouseMoved,
+            .inVisibleRect
+        ]
+        let trackingArea = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
+        self.trackingArea = trackingArea
+        addTrackingArea(trackingArea)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        onHoverLocationChanged?(location)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        onHoverLocationChanged?(location)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverLocationChanged?(nil)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func refreshHoverStateForCurrentMouseLocation() {
+        guard let window else { return }
+        let location = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        onHoverLocationChanged?(location)
     }
 }
 
@@ -4645,7 +5022,7 @@ struct TimelineSegmentContextMenu: View {
                 TimelineMenuButton(
                     icon: "line.3.horizontal.decrease",
                     title: "Filter App",
-                    shortcut: "⌘F",
+                    shortcut: "⌥F",
                     onHoverChanged: { isHovering in
                         // Close submenus when hovering over other items
                         if isHovering && (viewModel.showTagSubmenu || viewModel.showCommentSubmenu) {
@@ -4834,7 +5211,7 @@ struct TimelineTagMenuButton: View {
 
                     Spacer(minLength: 0)
 
-                    Text("⌘T")
+                    Text("⌥T")
                         .font(RetraceMenuStyle.shortcutFont)
                         .foregroundColor(shortcutColor)
                         .lineLimit(1)
