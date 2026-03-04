@@ -5,7 +5,7 @@ import Shared
 /// Parses search queries with support for:
 /// - Basic keywords: "error message"
 /// - Exact phrases: "exact phrase"
-/// - Exclusions: -excluded
+/// - Exclusions: -excluded or -"exact phrase"
 /// - App filter: app:Chrome
 /// - Date filters: after:2024-01-01 before:2024-12-31
 public struct QueryParser: QueryParserProtocol {
@@ -30,15 +30,26 @@ public struct QueryParser: QueryParserProtocol {
         let tokens = tokenize(rawQuery)
 
         for token in tokens {
-            if token.hasPrefix("\"") && token.hasSuffix("\"") && token.count > 1 {
+            if token == "-" {
+                continue
+            }
+            if token.hasPrefix("-") && token.count > 1 {
+                // Excluded term or excluded phrase
+                let rawExcluded = String(token.dropFirst())
+                if rawExcluded.hasPrefix("\"") && rawExcluded.hasSuffix("\"") && rawExcluded.count > 1 {
+                    let phrase = String(rawExcluded.dropFirst().dropLast())
+                    if !phrase.isEmpty {
+                        excludedTerms.append(phrase)
+                    }
+                } else if !rawExcluded.isEmpty {
+                    excludedTerms.append(rawExcluded)
+                }
+            } else if token.hasPrefix("\"") && token.hasSuffix("\"") && token.count > 1 {
                 // Exact phrase
                 let phrase = String(token.dropFirst().dropLast())
                 if !phrase.isEmpty {
                     phrases.append(phrase)
                 }
-            } else if token.hasPrefix("-") && token.count > 1 {
-                // Excluded term
-                excludedTerms.append(String(token.dropFirst()))
             } else if token.lowercased().hasPrefix("app:") {
                 // App filter
                 let appValue = String(token.dropFirst(4))
@@ -66,6 +77,9 @@ public struct QueryParser: QueryParserProtocol {
         // Validate that we have at least some search criteria
         if searchTerms.isEmpty && phrases.isEmpty && excludedTerms.isEmpty {
             throw SearchError.invalidQuery(reason: "No search terms provided")
+        }
+        if searchTerms.isEmpty && phrases.isEmpty && !excludedTerms.isEmpty {
+            throw SearchError.invalidQuery(reason: "Exclusions require at least one search term")
         }
 
         return ParsedQuery(
@@ -99,10 +113,11 @@ public struct QueryParser: QueryParserProtocol {
             errors.append(QueryValidationError(message: "Offset cannot be negative"))
         }
 
-        // Check date range makes sense
-        if let start = query.filters.startDate, let end = query.filters.endDate {
-            if start > end {
+        // Check date range(s) make sense
+        for range in query.filters.effectiveDateRanges {
+            if let start = range.start, let end = range.end, start > end {
                 errors.append(QueryValidationError(message: "Start date must be before end date"))
+                break
             }
         }
 
@@ -127,6 +142,12 @@ public struct QueryParser: QueryParserProtocol {
                     inQuotes = false
                 } else {
                     // Starting quote
+                    if current == "-" {
+                        // Keep leading minus with quoted exclusion: -"phrase"
+                        current.append(char)
+                        inQuotes = true
+                        continue
+                    }
                     if !current.isEmpty {
                         tokens.append(current)
                         current = ""
@@ -215,7 +236,11 @@ extension ParsedQuery {
         // Excluded terms
         for term in excludedTerms {
             let escaped = escapeFTSSpecialChars(term)
-            parts.append("NOT \(escaped)")
+            if term.contains(where: \.isWhitespace) {
+                parts.append("NOT \"\(escaped)\"")
+            } else {
+                parts.append("NOT \(escaped)")
+            }
         }
 
         return parts.joined(separator: " ")

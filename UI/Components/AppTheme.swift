@@ -135,7 +135,6 @@ public class AppNameResolver {
     /// Get all currently installed apps from /Applications (instant, no DB query needed)
     /// Returns array of AppInfo with bundleID and name
     public func getInstalledApps() -> [AppInfo] {
-        let startTime = CFAbsoluteTimeGetCurrent()
         var apps: [AppInfo] = []
         let fm = FileManager.default
 
@@ -178,11 +177,6 @@ public class AppNameResolver {
 
             }
         }
-
-        let elapsed = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
-        #if DEBUG
-        print("[AppNameResolver] getInstalledApps: found \(apps.count) apps in \(elapsed)ms, icon cache size: \(AppIconProvider.shared.cacheCount)")
-        #endif
 
         return apps
     }
@@ -260,9 +254,6 @@ public class AppNameResolver {
         // Clear the timestamp so it will be refreshed
         UserDefaults.standard.removeObject(forKey: "search.otherAppsCacheSavedAt")
 
-        #if DEBUG
-        print("[AppNameResolver] Cache cleared (\(entriesCleared) entries)")
-        #endif
         return entriesCleared
     }
 }
@@ -288,22 +279,12 @@ public class AppIconProvider {
             return cached
         }
 
-        // Cache miss - need to resolve (this is slow!)
-        let startTime = CFAbsoluteTimeGetCurrent()
-
         // Try to get the icon from the system
         if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let icon = NSWorkspace.shared.icon(forFile: appURL.path)
             cache[bundleID] = icon
-            #if DEBUG
-            print("[AppIconProvider] CACHE MISS for \(bundleID) - resolved in \(Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000))ms")
-            #endif
             return icon
         }
-
-        #if DEBUG
-        print("[AppIconProvider] CACHE MISS for \(bundleID) - not found, took \(Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000))ms")
-        #endif
         return nil
     }
 
@@ -2227,6 +2208,7 @@ public struct RetraceMenuSearchField: View {
     @Binding var text: String
     var placeholder: String
     var onSubmit: (() -> Void)? = nil
+    @FocusState private var isFocused: Bool
 
     public init(text: Binding<String>, placeholder: String = "Search...", onSubmit: (() -> Void)? = nil) {
         self._text = text
@@ -2244,6 +2226,7 @@ public struct RetraceMenuSearchField: View {
                 .textFieldStyle(.plain)
                 .font(RetraceMenuStyle.font)
                 .foregroundColor(.white)
+                .focused($isFocused)
                 .onSubmit {
                     onSubmit?()
                 }
@@ -2263,6 +2246,10 @@ public struct RetraceMenuSearchField: View {
             RoundedRectangle(cornerRadius: RetraceMenuStyle.searchFieldCornerRadius)
                 .fill(RetraceMenuStyle.searchFieldBackground)
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isFocused = true
+        }
     }
 }
 

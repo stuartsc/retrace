@@ -155,6 +155,57 @@ public actor DataAdapter {
         filters.commentFilter == .commentsOnly
     }
 
+    private static func buildDateRangeUnionClause(
+        ranges: [DateRangeCriterion],
+        columnName: String
+    ) -> (clause: String?, bindValues: [Date]) {
+        guard !ranges.isEmpty else {
+            return (nil, [])
+        }
+
+        var dateClauses: [String] = []
+        var bindValues: [Date] = []
+
+        for range in ranges where range.hasBounds {
+            switch (range.start, range.end) {
+            case let (.some(start), .some(end)):
+                if end < start {
+                    dateClauses.append("(\(columnName) >= ? AND \(columnName) <= ?)")
+                    bindValues.append(end)
+                    bindValues.append(start)
+                    continue
+                }
+                dateClauses.append("(\(columnName) >= ? AND \(columnName) <= ?)")
+                bindValues.append(start)
+                bindValues.append(end)
+            case let (.some(start), .none):
+                dateClauses.append("(\(columnName) >= ?)")
+                bindValues.append(start)
+            case let (.none, .some(end)):
+                dateClauses.append("(\(columnName) <= ?)")
+                bindValues.append(end)
+            case (.none, .none):
+                continue
+            }
+        }
+
+        guard !dateClauses.isEmpty else {
+            return (nil, [])
+        }
+
+        return ("(" + dateClauses.joined(separator: " OR ") + ")", bindValues)
+    }
+
+    private func hasDateRangeIntersectingRewind(_ ranges: [DateRangeCriterion]) -> Bool {
+        guard let cutoffDate else { return true }
+        guard !ranges.isEmpty else { return true }
+
+        return ranges.contains { range in
+            let rangeStart = range.start ?? .distantPast
+            return rangeStart < cutoffDate
+        }
+    }
+
     // MARK: - Frame Retrieval
 
     /// Get frames with video info in a time range (optimized - single query with JOINs)
@@ -336,10 +387,11 @@ public actor DataAdapter {
 
         // Step 2: If we don't have enough frames, query Rewind (unless excluded)
         // Note: Skip Rewind if tag filters are active (Rewind doesn't have segment_tag table)
-        // Also skip if the filter's startDate is after the cutoff date (no Rewind data exists after cutoff)
+        // Also skip if effective date filters cannot match data before cutoff.
         let hasRetraceOnlyFilters = requiresRetraceOnly(filters)
-        let startDateAfterCutoff = cutoffDate != nil && filters.startDate != nil && filters.startDate! >= cutoffDate!
-        if remaining > 0, !excludeRewind, !hasRetraceOnlyFilters, !startDateAfterCutoff, let rewind = rewindConnection, let config = rewindConfig {
+        let effectiveDateRanges = filters.effectiveDateRanges
+        let hasRewindDateOverlap = hasDateRangeIntersectingRewind(effectiveDateRanges)
+        if remaining > 0, !excludeRewind, !hasRetraceOnlyFilters, hasRewindDateOverlap, let rewind = rewindConnection, let config = rewindConfig {
             let rewindFrames = try queryMostRecentFramesWithFiltersOptimized(
                 limit: remaining,
                 connection: rewind,
@@ -349,8 +401,8 @@ public actor DataAdapter {
             )
             allFrames.append(contentsOf: rewindFrames)
             Log.debug("[Filter] Got \(rewindFrames.count) frames from Rewind", category: .database)
-        } else if startDateAfterCutoff {
-            Log.debug("[Filter] Skipping Rewind query - startDate \(filters.startDate!) is after cutoff \(cutoffDate!)", category: .database)
+        } else if !hasRewindDateOverlap, let cutoffDate {
+            Log.debug("[Filter] Skipping Rewind query - date ranges do not overlap pre-cutoff data (cutoff=\(cutoffDate), ranges=\(effectiveDateRanges))", category: .database)
         }
 
         // Sort by timestamp descending (newest first)
@@ -843,7 +895,10 @@ public actor DataAdapter {
             throw DataAdapterError.notInitialized
         }
 
-        Log.info("[DataAdapter] Search started: query='\(query.text)', mode=\(query.mode), limit=\(query.limit), appFilter=\(query.filters.appBundleIDs ?? []), startDate=\(String(describing: query.filters.startDate)), endDate=\(String(describing: query.filters.endDate))", category: .app)
+        Log.info(
+            "[DataAdapter] Search started: query='\(query.text)', mode=\(query.mode), limit=\(query.limit), appFilter=\(query.filters.appBundleIDs ?? []), startDate=\(String(describing: query.filters.startDate)), endDate=\(String(describing: query.filters.endDate)), dateRanges=\(query.filters.effectiveDateRanges)",
+            category: .app
+        )
 
         let startTime = Date()
         let hiddenTagId = cachedHiddenTagId
@@ -1305,11 +1360,14 @@ public actor DataAdapter {
             }
         }
 
-        // Window name filter - uses direct LIKE on segment.windowName (faster than FTS)
-        let hasWindowNameFilter = filters.windowNameFilter != nil && !filters.windowNameFilter!.isEmpty
+        // Window/browser metadata filters support encoded include/exclude term sets.
+        let windowNameFilter = Self.decodeMetadataStringFilter(filters.windowNameFilter)
+        let browserUrlFilter = Self.decodeMetadataStringFilter(filters.browserUrlFilter)
+        let hasWindowNameFilter = windowNameFilter.hasActiveFilters
         let hasSelectedTagFilters = filters.selectedTags != nil && !filters.selectedTags!.isEmpty
-        let hasBrowserUrlFilter = filters.browserUrlFilter != nil && !filters.browserUrlFilter!.isEmpty
+        let hasBrowserUrlFilter = browserUrlFilter.hasActiveFilters
         let hasSegmentMetadataFilter = hasBrowserUrlFilter || hasWindowNameFilter
+        var metadataBindValues: [Any] = []
 
         // Sparse metadata filters are often selective; use a segment-first query shape so SQLite doesn't
         // scan the full frame table just to satisfy ORDER BY createdAt LIMIT N.
@@ -1359,23 +1417,25 @@ public actor DataAdapter {
             whereClauses.append(buildAppFilterClause(apps: apps, mode: filters.appFilterMode))
         }
 
-        // Browser URL filter - partial string match
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let urlFilter = buildBrowserUrlFilterClause(urlPattern: browserUrlPattern)
-            whereClauses.append(urlFilter.clause)
-        }
+        Self.appendMetadataStringFilter(
+            columnName: "s.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
+        Self.appendMetadataStringFilter(
+            columnName: "s.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
 
-        // Window name filter - direct LIKE on segment.windowName (much faster than FTS)
-        if hasWindowNameFilter {
-            whereClauses.append("s.windowName LIKE ?")
-        }
-
-        // Date range filter
-        if filters.startDate != nil {
-            whereClauses.append("f.createdAt >= ?")
-        }
-        if filters.endDate != nil {
-            whereClauses.append("f.createdAt <= ?")
+        let dateRangeFilter = Self.buildDateRangeUnionClause(
+            ranges: filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = dateRangeFilter.clause {
+            whereClauses.append(dateRangeClause)
         }
 
         // Tag exclude filter: Exclude segments that have any of the selected tags
@@ -1392,7 +1452,7 @@ public actor DataAdapter {
 
         // Hidden filter: Exclude segments with hidden tag (when .hide mode)
         // Only apply for Retrace database (Rewind doesn't have segment_tag)
-        if shouldApplyTagFilters && filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId {
+        if shouldApplyTagFilters && filters.hiddenFilter == .hide, cachedHiddenTagId != nil {
             whereClauses.append("""
                 NOT EXISTS (
                     SELECT 1 FROM segment_tag st_hidden
@@ -1443,7 +1503,7 @@ public actor DataAdapter {
         Log.debug("[Filter] Hidden filter: \(filters.hiddenFilter.rawValue), cachedHiddenTagId: \(String(describing: cachedHiddenTagId))", category: .database)
         Log.debug("[Filter] Window name filter: \(filters.windowNameFilter ?? "nil")", category: .database)
         Log.debug("[Filter] Browser URL filter: \(filters.browserUrlFilter ?? "nil")", category: .database)
-        Log.debug("[Filter] Date range: \(String(describing: filters.startDate)) - \(String(describing: filters.endDate))", category: .database)
+        Log.debug("[Filter] Date ranges: \(filters.effectiveDateRanges)", category: .database)
 
         let statement: OpaquePointer?
         do {
@@ -1479,31 +1539,18 @@ public actor DataAdapter {
             bindIndex += apps.count
         }
 
-        // Bind browser URL pattern
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let pattern = "%\(browserUrlPattern)%"
-            Log.debug("[Filter] Binding browser URL pattern '\(pattern)' at index \(bindIndex)", category: .database)
-            sqlite3_bind_text(stmt, Int32(bindIndex), (pattern as NSString).utf8String, -1, nil)
-            bindIndex += 1
+        for metadataValue in metadataBindValues {
+            if let stringValue = metadataValue as? String {
+                Log.debug("[Filter] Binding metadata pattern '\(stringValue)' at index \(bindIndex)", category: .database)
+                sqlite3_bind_text(stmt, Int32(bindIndex), (stringValue as NSString).utf8String, -1, nil)
+                bindIndex += 1
+            }
         }
 
-        // Bind window name pattern (LIKE query on segment.windowName)
-        if hasWindowNameFilter, let windowName = filters.windowNameFilter {
-            let pattern = "%\(windowName)%"
-            Log.debug("[Filter] Binding window name pattern '\(pattern)' at index \(bindIndex)", category: .database)
-            sqlite3_bind_text(stmt, Int32(bindIndex), (pattern as NSString).utf8String, -1, nil)
-            bindIndex += 1
-        }
-
-        // Bind date range
-        if let startDate = filters.startDate {
-            Log.debug("[Filter] Binding startDate at index \(bindIndex)", category: .database)
-            config.bindDate(startDate, to: stmt, at: Int32(bindIndex))
-            bindIndex += 1
-        }
-        if let endDate = filters.endDate {
-            Log.debug("[Filter] Binding endDate at index \(bindIndex)", category: .database)
-            config.bindDate(endDate, to: stmt, at: Int32(bindIndex))
+        // Bind date range union
+        for date in dateRangeFilter.bindValues {
+            Log.debug("[Filter] Binding date bound at index \(bindIndex)", category: .database)
+            config.bindDate(date, to: stmt, at: Int32(bindIndex))
             bindIndex += 1
         }
 
@@ -1559,31 +1606,34 @@ public actor DataAdapter {
         filters: FilterCriteria,
         isRewindDatabase: Bool
     ) throws -> [FrameWithVideoInfo] {
-        let browserUrlPattern = filters.browserUrlFilter?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let windowNamePattern = filters.windowNameFilter?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasBrowserUrlFilter = browserUrlPattern != nil && !(browserUrlPattern?.isEmpty ?? true)
-        let hasWindowNameFilter = windowNamePattern != nil && !(windowNamePattern?.isEmpty ?? true)
+        let windowNameFilter = Self.decodeMetadataStringFilter(filters.windowNameFilter)
+        let browserUrlFilter = Self.decodeMetadataStringFilter(filters.browserUrlFilter)
+        let hasBrowserUrlFilter = browserUrlFilter.hasActiveFilters
+        let hasWindowNameFilter = windowNameFilter.hasActiveFilters
         guard hasBrowserUrlFilter || hasWindowNameFilter else {
             return []
         }
 
         var segmentWhereClauses: [String] = []
         var whereClauses: [String] = []
+        var segmentMetadataBindValues: [Any] = []
 
         if let apps = filters.selectedApps, !apps.isEmpty {
             segmentWhereClauses.append(buildAppFilterClause(apps: apps, mode: filters.appFilterMode, tableAlias: "s2"))
         }
 
-        let urlFilter = hasBrowserUrlFilter
-            ? buildBrowserUrlFilterClause(urlPattern: browserUrlPattern!, tableAlias: "s2")
-            : nil
-        if let urlFilter {
-            segmentWhereClauses.append(urlFilter.clause)
-        }
-
-        if hasWindowNameFilter {
-            segmentWhereClauses.append("s2.windowName LIKE ?")
-        }
+        Self.appendMetadataStringFilter(
+            columnName: "s2.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &segmentWhereClauses,
+            bindValues: &segmentMetadataBindValues
+        )
+        Self.appendMetadataStringFilter(
+            columnName: "s2.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &segmentWhereClauses,
+            bindValues: &segmentMetadataBindValues
+        )
 
         let segmentWhereClause = segmentWhereClauses.joined(separator: " AND ")
         whereClauses.append("""
@@ -1594,11 +1644,12 @@ public actor DataAdapter {
             )
             """)
 
-        if filters.startDate != nil {
-            whereClauses.append("f.createdAt >= ?")
-        }
-        if filters.endDate != nil {
-            whereClauses.append("f.createdAt <= ?")
+        let dateRangeFilter = Self.buildDateRangeUnionClause(
+            ranges: filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = dateRangeFilter.clause {
+            whereClauses.append(dateRangeClause)
         }
 
         // Rewind database doesn't have segment_tag; hidden filter only applies on Retrace.
@@ -1653,23 +1704,15 @@ public actor DataAdapter {
             bindIndex += apps.count
         }
 
-        if let urlFilter {
-            sqlite3_bind_text(statement, Int32(bindIndex), (urlFilter.pattern as NSString).utf8String, -1, nil)
-            bindIndex += 1
+        for metadataValue in segmentMetadataBindValues {
+            if let stringValue = metadataValue as? String {
+                sqlite3_bind_text(statement, Int32(bindIndex), (stringValue as NSString).utf8String, -1, nil)
+                bindIndex += 1
+            }
         }
 
-        if hasWindowNameFilter, let windowName = windowNamePattern {
-            let pattern = "%\(windowName)%"
-            sqlite3_bind_text(statement, Int32(bindIndex), (pattern as NSString).utf8String, -1, nil)
-            bindIndex += 1
-        }
-
-        if let startDate = filters.startDate {
-            config.bindDate(startDate, to: statement, at: Int32(bindIndex))
-            bindIndex += 1
-        }
-        if let endDate = filters.endDate {
-            config.bindDate(endDate, to: statement, at: Int32(bindIndex))
+        for date in dateRangeFilter.bindValues {
+            config.bindDate(date, to: statement, at: Int32(bindIndex))
             bindIndex += 1
         }
 
@@ -1728,8 +1771,9 @@ public actor DataAdapter {
             }
         }
 
-        // Window name filter - uses direct LIKE on segment.windowName (faster than FTS)
-        let hasWindowNameFilter = filters.windowNameFilter != nil && !filters.windowNameFilter!.isEmpty
+        let windowNameFilter = Self.decodeMetadataStringFilter(filters.windowNameFilter)
+        let browserUrlFilter = Self.decodeMetadataStringFilter(filters.browserUrlFilter)
+        var metadataBindValues: [Any] = []
 
         // Build CTE for tag filtering (filter tags first in subquery, then join to frames)
         let tagCTE: String
@@ -1772,23 +1816,25 @@ public actor DataAdapter {
             whereClauses.append(buildAppFilterClause(apps: apps, mode: filters.appFilterMode))
         }
 
-        // Browser URL filter - partial string match
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let urlFilter = buildBrowserUrlFilterClause(urlPattern: browserUrlPattern)
-            whereClauses.append(urlFilter.clause)
-        }
+        Self.appendMetadataStringFilter(
+            columnName: "s.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
+        Self.appendMetadataStringFilter(
+            columnName: "s.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
 
-        // Window name filter - direct LIKE on segment.windowName (much faster than FTS)
-        if hasWindowNameFilter {
-            whereClauses.append("s.windowName LIKE ?")
-        }
-
-        // Date range filter - additional constraints beyond the timestamp
-        if filters.startDate != nil {
-            whereClauses.append("f.createdAt >= ?")
-        }
-        if filters.endDate != nil {
-            whereClauses.append("f.createdAt <= ?")
+        let dateRangeFilter = Self.buildDateRangeUnionClause(
+            ranges: filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = dateRangeFilter.clause {
+            whereClauses.append(dateRangeClause)
         }
 
         // Tag exclude filter: Exclude segments that have any of the selected tags
@@ -1805,7 +1851,7 @@ public actor DataAdapter {
 
         // Hidden filter: Exclude segments with hidden tag (when .hide mode)
         // Only apply for Retrace database (Rewind doesn't have segment_tag)
-        if shouldApplyTagFilters && filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId {
+        if shouldApplyTagFilters && filters.hiddenFilter == .hide, cachedHiddenTagId != nil {
             whereClauses.append("""
                 NOT EXISTS (
                     SELECT 1 FROM segment_tag st_hidden
@@ -1874,27 +1920,16 @@ public actor DataAdapter {
             currentBindIndex += apps.count
         }
 
-        // Bind browser URL pattern
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let pattern = "%\(browserUrlPattern)%"
-            sqlite3_bind_text(statement, Int32(currentBindIndex), (pattern as NSString).utf8String, -1, nil)
-            currentBindIndex += 1
+        for metadataValue in metadataBindValues {
+            if let stringValue = metadataValue as? String {
+                sqlite3_bind_text(statement, Int32(currentBindIndex), (stringValue as NSString).utf8String, -1, nil)
+                currentBindIndex += 1
+            }
         }
 
-        // Bind window name pattern (LIKE query on segment.windowName)
-        if hasWindowNameFilter, let windowName = filters.windowNameFilter {
-            let pattern = "%\(windowName)%"
-            sqlite3_bind_text(statement, Int32(currentBindIndex), (pattern as NSString).utf8String, -1, nil)
-            currentBindIndex += 1
-        }
-
-        // Bind date range
-        if let startDate = filters.startDate {
-            config.bindDate(startDate, to: statement, at: Int32(currentBindIndex))
-            currentBindIndex += 1
-        }
-        if let endDate = filters.endDate {
-            config.bindDate(endDate, to: statement, at: Int32(currentBindIndex))
+        // Bind date range union
+        for date in dateRangeFilter.bindValues {
+            config.bindDate(date, to: statement, at: Int32(currentBindIndex))
             currentBindIndex += 1
         }
 
@@ -1959,8 +1994,9 @@ public actor DataAdapter {
             }
         }
 
-        // Window name filter - uses direct LIKE on segment.windowName (faster than FTS)
-        let hasWindowNameFilter = filters.windowNameFilter != nil && !filters.windowNameFilter!.isEmpty
+        let windowNameFilter = Self.decodeMetadataStringFilter(filters.windowNameFilter)
+        let browserUrlFilter = Self.decodeMetadataStringFilter(filters.browserUrlFilter)
+        var metadataBindValues: [Any] = []
 
         // Build CTE for tag filtering (filter tags first in subquery, then join to frames)
         let tagCTE: String
@@ -2002,23 +2038,25 @@ public actor DataAdapter {
             whereClauses.append(buildAppFilterClause(apps: apps, mode: filters.appFilterMode))
         }
 
-        // Browser URL filter - partial string match
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let urlFilter = buildBrowserUrlFilterClause(urlPattern: browserUrlPattern)
-            whereClauses.append(urlFilter.clause)
-        }
+        Self.appendMetadataStringFilter(
+            columnName: "s.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
+        Self.appendMetadataStringFilter(
+            columnName: "s.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
 
-        // Window name filter - direct LIKE on segment.windowName (much faster than FTS)
-        if hasWindowNameFilter {
-            whereClauses.append("s.windowName LIKE ?")
-        }
-
-        // Date range filter - additional constraints beyond the timestamp
-        if filters.startDate != nil {
-            whereClauses.append("f.createdAt >= ?")
-        }
-        if filters.endDate != nil {
-            whereClauses.append("f.createdAt <= ?")
+        let dateRangeFilter = Self.buildDateRangeUnionClause(
+            ranges: filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = dateRangeFilter.clause {
+            whereClauses.append(dateRangeClause)
         }
 
         // Tag exclude filter: Exclude segments that have any of the selected tags
@@ -2035,7 +2073,7 @@ public actor DataAdapter {
 
         // Hidden filter: Exclude segments with hidden tag (when .hide mode)
         // Only apply for Retrace database (Rewind doesn't have segment_tag)
-        if shouldApplyTagFilters && filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId {
+        if shouldApplyTagFilters && filters.hiddenFilter == .hide, cachedHiddenTagId != nil {
             whereClauses.append("""
                 NOT EXISTS (
                     SELECT 1 FROM segment_tag st_hidden
@@ -2104,27 +2142,16 @@ public actor DataAdapter {
             currentBindIndex += apps.count
         }
 
-        // Bind browser URL pattern
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let pattern = "%\(browserUrlPattern)%"
-            sqlite3_bind_text(statement, Int32(currentBindIndex), (pattern as NSString).utf8String, -1, nil)
-            currentBindIndex += 1
+        for metadataValue in metadataBindValues {
+            if let stringValue = metadataValue as? String {
+                sqlite3_bind_text(statement, Int32(currentBindIndex), (stringValue as NSString).utf8String, -1, nil)
+                currentBindIndex += 1
+            }
         }
 
-        // Bind window name pattern (LIKE query on segment.windowName)
-        if hasWindowNameFilter, let windowName = filters.windowNameFilter {
-            let pattern = "%\(windowName)%"
-            sqlite3_bind_text(statement, Int32(currentBindIndex), (pattern as NSString).utf8String, -1, nil)
-            currentBindIndex += 1
-        }
-
-        // Bind date range
-        if let startDate = filters.startDate {
-            config.bindDate(startDate, to: statement, at: Int32(currentBindIndex))
-            currentBindIndex += 1
-        }
-        if let endDate = filters.endDate {
-            config.bindDate(endDate, to: statement, at: Int32(currentBindIndex))
+        // Bind date range union
+        for date in dateRangeFilter.bindValues {
+            config.bindDate(date, to: statement, at: Int32(currentBindIndex))
             currentBindIndex += 1
         }
 
@@ -2191,8 +2218,9 @@ public actor DataAdapter {
             }
         }
 
-        // Window name filter - uses direct LIKE on segment.windowName (faster than FTS)
-        let hasWindowNameFilter = filters.windowNameFilter != nil && !filters.windowNameFilter!.isEmpty
+        let windowNameFilter = Self.decodeMetadataStringFilter(filters.windowNameFilter)
+        let browserUrlFilter = Self.decodeMetadataStringFilter(filters.browserUrlFilter)
+        var metadataBindValues: [Any] = []
 
         // Build CTE for tag filtering (filter tags first in subquery, then join to frames)
         let tagCTE: String
@@ -2234,15 +2262,25 @@ public actor DataAdapter {
             whereClauses.append(buildAppFilterClause(apps: apps, mode: filters.appFilterMode))
         }
 
-        // Browser URL filter - partial string match
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let urlFilter = buildBrowserUrlFilterClause(urlPattern: browserUrlPattern)
-            whereClauses.append(urlFilter.clause)
-        }
+        Self.appendMetadataStringFilter(
+            columnName: "s.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
+        Self.appendMetadataStringFilter(
+            columnName: "s.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &whereClauses,
+            bindValues: &metadataBindValues
+        )
 
-        // Window name filter - direct LIKE on segment.windowName (much faster than FTS)
-        if hasWindowNameFilter {
-            whereClauses.append("s.windowName LIKE ?")
+        let dateRangeFilter = Self.buildDateRangeUnionClause(
+            ranges: filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = dateRangeFilter.clause {
+            whereClauses.append(dateRangeClause)
         }
 
         // Tag exclude filter: Exclude segments that have any of the selected tags
@@ -2259,7 +2297,7 @@ public actor DataAdapter {
 
         // Hidden filter: Exclude segments with hidden tag (when .hide mode)
         // Skip for Rewind database - it doesn't have segment_tag table
-        if shouldApplyTagFilters && filters.hiddenFilter == .hide, let hiddenTagId = cachedHiddenTagId {
+        if shouldApplyTagFilters && filters.hiddenFilter == .hide, cachedHiddenTagId != nil {
             whereClauses.append("""
                 NOT EXISTS (
                     SELECT 1 FROM segment_tag st_hidden
@@ -2332,17 +2370,15 @@ public actor DataAdapter {
             currentBindIndex += apps.count
         }
 
-        // Bind browser URL pattern
-        if let browserUrlPattern = filters.browserUrlFilter, !browserUrlPattern.isEmpty {
-            let pattern = "%\(browserUrlPattern)%"
-            sqlite3_bind_text(statement, Int32(currentBindIndex), (pattern as NSString).utf8String, -1, nil)
-            currentBindIndex += 1
+        for metadataValue in metadataBindValues {
+            if let stringValue = metadataValue as? String {
+                sqlite3_bind_text(statement, Int32(currentBindIndex), (stringValue as NSString).utf8String, -1, nil)
+                currentBindIndex += 1
+            }
         }
 
-        // Bind window name pattern (LIKE query on segment.windowName)
-        if hasWindowNameFilter, let windowName = filters.windowNameFilter {
-            let pattern = "%\(windowName)%"
-            sqlite3_bind_text(statement, Int32(currentBindIndex), (pattern as NSString).utf8String, -1, nil)
+        for date in dateRangeFilter.bindValues {
+            config.bindDate(date, to: statement, at: Int32(currentBindIndex))
             currentBindIndex += 1
         }
 
@@ -2739,6 +2775,8 @@ public actor DataAdapter {
         guard let browserUrlPtr = sqlite3_column_text(frameStmt, 1) else { return nil }
         let browserUrl = String(cString: browserUrlPtr)
         guard !browserUrl.isEmpty else { return nil }
+        let matchTerms = urlBoundingBoxMatchTerms(for: browserUrl)
+        guard !matchTerms.isEmpty else { return nil }
 
         // Get FTS content
         let ftsSQL = """
@@ -2759,6 +2797,7 @@ public actor DataAdapter {
         let c0Text = sqlite3_column_text(ftsStmt, 0).map { String(cString: $0) } ?? ""
         let c1Text = sqlite3_column_text(ftsStmt, 1).map { String(cString: $0) } ?? ""
         let ocrText = c0Text + c1Text
+        let c0Length = c0Text.count
 
         // Get nodes
         let nodesSQL = """
@@ -2773,8 +2812,8 @@ public actor DataAdapter {
 
         sqlite3_bind_int64(nodesStmt, 1, frameId)
 
-        let domain = URL(string: browserUrl)?.host ?? browserUrl
         var bestMatch: (x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, score: Int)?
+        var bestPathFallback: (x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, score: Int)?
 
         while sqlite3_step(nodesStmt) == SQLITE_ROW {
             let textOffset = Int(sqlite3_column_int(nodesStmt, 1))
@@ -2783,6 +2822,7 @@ public actor DataAdapter {
             let topY = CGFloat(sqlite3_column_double(nodesStmt, 4))
             let width = CGFloat(sqlite3_column_double(nodesStmt, 5))
             let height = CGFloat(sqlite3_column_double(nodesStmt, 6))
+            let isOtherTextNode = textOffset >= c0Length
 
             let startIndex = ocrText.index(ocrText.startIndex, offsetBy: min(textOffset, ocrText.count), limitedBy: ocrText.endIndex) ?? ocrText.endIndex
             let endIndex = ocrText.index(startIndex, offsetBy: min(textLength, ocrText.count - textOffset), limitedBy: ocrText.endIndex) ?? ocrText.endIndex
@@ -2790,21 +2830,66 @@ public actor DataAdapter {
             guard startIndex < endIndex else { continue }
 
             let nodeText = String(ocrText[startIndex..<endIndex])
-            guard nodeText.lowercased().contains(domain.lowercased()) else { continue }
+            let normalizedNodeText = nodeText.lowercased()
+            let hasPathLikeText = nodeText.contains("/") || nodeText.contains("?") || nodeText.contains("&") || nodeText.contains("=")
+            if hasPathLikeText {
+                // Fallback path for OCR cases where host text is missing but the address bar path is present.
+                // Keep this conservative: top-of-frame, non-trivial width, and URL-like text.
+                var fallbackScore = 0
+                if topY <= 0.06 { fallbackScore += 95 }
+                else if topY <= 0.11 { fallbackScore += 80 }
+                else if topY <= 0.15 { fallbackScore += 55 }
+                else if topY <= 0.20 { fallbackScore += 20 }
+
+                let topBiasBonus = max(0, Int((0.22 - Double(topY)) * 200.0))
+                fallbackScore += topBiasBonus
+                if !nodeText.contains(" ") { fallbackScore += 60 }
+                if width >= 0.05 { fallbackScore += 20 }
+                if width >= 0.12 { fallbackScore += 20 }
+                if isOtherTextNode { fallbackScore += 65 }
+
+                if let current = bestPathFallback {
+                    if fallbackScore > current.score || (fallbackScore == current.score && topY < current.y) {
+                        bestPathFallback = (x: leftX, y: topY, width: width, height: height, score: fallbackScore)
+                    }
+                } else {
+                    bestPathFallback = (x: leftX, y: topY, width: width, height: height, score: fallbackScore)
+                }
+            }
+
+            let matchingTerm = matchTerms
+                .filter { normalizedNodeText.contains($0) }
+                .max(by: { $0.count < $1.count })
+            guard let matchingTerm else { continue }
 
             var score = 0
-            let urlRatio = Double(domain.count) / Double(nodeText.count)
-            if urlRatio > 0.6 { score += 100 }
-            else if urlRatio > 0.3 { score += 50 }
-            else { score += 10 }
+            let matchRatio = Double(matchingTerm.count) / Double(max(nodeText.count, 1))
+            if matchRatio > 0.6 { score += 40 }
+            else if matchRatio > 0.3 { score += 28 }
+            else { score += 14 }
 
-            if topY > 0.07 && topY < 0.15 { score += 50 }
-            else if topY < 0.07 { score += 20 }
+            // Prefer higher text candidates; URL bars are consistently near the top.
+            if topY <= 0.06 { score += 95 }
+            else if topY <= 0.11 { score += 80 }
+            else if topY <= 0.15 { score += 55 }
+            else if topY <= 0.20 { score += 25 }
 
-            if nodeText.contains("/") && !nodeText.contains(" ") { score += 30 }
+            let topBiasBonus = max(0, Int((0.22 - Double(topY)) * 260.0))
+            score += topBiasBonus
+
+            // Strongly prefer path/query-like URL text over bare hostnames.
+            if hasPathLikeText && !nodeText.contains(" ") {
+                score += 95
+            } else if hasPathLikeText {
+                score += 45
+            }
+            if isOtherTextNode {
+                // `c1` / `otherText` is short chrome-like text; prioritize it for URL bar targeting.
+                score += 85
+            }
 
             if let current = bestMatch {
-                if score > current.score {
+                if score > current.score || (score == current.score && topY < current.y) {
                     bestMatch = (x: leftX, y: topY, width: width, height: height, score: score)
                 }
             } else {
@@ -2812,7 +2897,7 @@ public actor DataAdapter {
             }
         }
 
-        guard let bounds = bestMatch else { return nil }
+        guard let bounds = bestMatch ?? bestPathFallback else { return nil }
 
         return URLBoundingBox(
             x: bounds.x,
@@ -2821,6 +2906,47 @@ public actor DataAdapter {
             height: bounds.height,
             url: browserUrl
         )
+    }
+
+    private func urlBoundingBoxMatchTerms(for browserURL: String) -> [String] {
+        var terms: [String] = []
+        var seen = Set<String>()
+
+        func appendHostVariants(_ rawHost: String?) {
+            guard let rawHost else { return }
+            let host = rawHost.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !host.isEmpty else { return }
+            if seen.insert(host).inserted { terms.append(host) }
+
+            if host.hasPrefix("www.") {
+                let withoutWWW = String(host.dropFirst(4))
+                if !withoutWWW.isEmpty, seen.insert(withoutWWW).inserted {
+                    terms.append(withoutWWW)
+                }
+            }
+        }
+
+        if let url = URL(string: browserURL) {
+            appendHostVariants(url.host)
+
+            // Handle redirect wrappers like google.com/url?q=https://target...
+            let redirectQueryKeys: Set<String> = ["q", "url", "u", "target", "dest", "destination", "to"]
+            if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                for item in components.queryItems ?? [] {
+                    guard redirectQueryKeys.contains(item.name.lowercased()),
+                          let value = item.value,
+                          !value.isEmpty else {
+                        continue
+                    }
+                    let decoded = value.removingPercentEncoding ?? value
+                    appendHostVariants(URL(string: decoded)?.host)
+                }
+            }
+        } else {
+            appendHostVariants(browserURL)
+        }
+
+        return terms
     }
 
     private static func searchConnection(
@@ -2862,8 +2988,9 @@ public actor DataAdapter {
         hiddenTagId: Int64?
     ) throws -> SearchResults {
         let startTime = Date()
-        let rawFTSQuery = buildFTSQuery(query.text)
-        let ftsQuery = scopeToSearchableTextColumns(rawFTSQuery)
+        let ftsQueryComponents = parseFTSQueryComponents(query.text)
+        let rawFTSQuery = buildFTSQuery(ftsQueryComponents)
+        let ftsQuery = scopeToSearchableTextColumns(ftsQueryComponents)
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         let redactionReasonColumn = source == .rewind ? "NULL as redaction_reason" : "f.redactionReason as redaction_reason"
         let normalizedOffset = max(0, query.offset)
@@ -2885,13 +3012,13 @@ public actor DataAdapter {
             outerBindValues.append(config.formatDate(cutoffDate))
         }
 
-        if let startDate = query.filters.startDate {
-            outerWhereConditions.append("f.createdAt >= ?")
-            outerBindValues.append(config.formatDate(startDate))
-        }
-        if let endDate = query.filters.endDate {
-            outerWhereConditions.append("f.createdAt <= ?")
-            outerBindValues.append(config.formatDate(endDate))
+        let outerDateRangeFilter = buildDateRangeUnionClause(
+            ranges: query.filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = outerDateRangeFilter.clause {
+            outerWhereConditions.append(dateRangeClause)
+            outerBindValues.append(contentsOf: outerDateRangeFilter.bindValues.map(config.formatDate))
         }
 
         // App include filter
@@ -2908,19 +3035,22 @@ public actor DataAdapter {
             outerBindValues.append(contentsOf: excludedAppBundleIDs)
         }
 
-        // Window name filter (partial match)
-        if let windowNameFilter = query.filters.windowNameFilter?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !windowNameFilter.isEmpty {
-            outerWhereConditions.append("s.windowName LIKE ?")
-            outerBindValues.append("%\(windowNameFilter)%")
-        }
+        // Advanced metadata filters (single-value legacy and encoded multi-value include/exclude).
+        let windowNameFilter = decodeMetadataStringFilter(query.filters.windowNameFilter)
+        Self.appendMetadataStringFilter(
+            columnName: "s.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &outerWhereConditions,
+            bindValues: &outerBindValues
+        )
 
-        // Browser URL filter (partial match)
-        if let browserUrlFilter = query.filters.browserUrlFilter?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !browserUrlFilter.isEmpty {
-            outerWhereConditions.append("s.browserUrl LIKE ?")
-            outerBindValues.append("%\(browserUrlFilter)%")
-        }
+        let browserUrlFilter = decodeMetadataStringFilter(query.filters.browserUrlFilter)
+        Self.appendMetadataStringFilter(
+            columnName: "s.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &outerWhereConditions,
+            bindValues: &outerBindValues
+        )
 
         // Tag include filter - use INNER JOIN (more efficient than EXISTS subquery)
         // Note: Skip tag filters for Rewind database (it doesn't have segment_tag table)
@@ -3371,8 +3501,9 @@ public actor DataAdapter {
         hiddenTagId: Int64?
     ) throws -> SearchResults {
         let startTime = Date()
-        let rawFTSQuery = buildFTSQuery(query.text)
-        let ftsQuery = scopeToSearchableTextColumns(rawFTSQuery)
+        let ftsQueryComponents = parseFTSQueryComponents(query.text)
+        let rawFTSQuery = buildFTSQuery(ftsQueryComponents)
+        let ftsQuery = scopeToSearchableTextColumns(ftsQueryComponents)
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         let redactionReasonColumn = source == .rewind ? "NULL as redaction_reason" : "f.redactionReason as redaction_reason"
         let normalizedOffset = max(0, query.offset)
@@ -3385,13 +3516,13 @@ public actor DataAdapter {
             whereConditions.append("f.createdAt < ?")
             bindValues.append(config.formatDate(cutoffDate))
         }
-        if let startDate = query.filters.startDate {
-            whereConditions.append("f.createdAt >= ?")
-            bindValues.append(config.formatDate(startDate))
-        }
-        if let endDate = query.filters.endDate {
-            whereConditions.append("f.createdAt <= ?")
-            bindValues.append(config.formatDate(endDate))
+        let whereDateRangeFilter = buildDateRangeUnionClause(
+            ranges: query.filters.effectiveDateRanges,
+            columnName: "f.createdAt"
+        )
+        if let dateRangeClause = whereDateRangeFilter.clause {
+            whereConditions.append(dateRangeClause)
+            bindValues.append(contentsOf: whereDateRangeFilter.bindValues.map(config.formatDate))
         }
 
         // App include filter
@@ -3421,19 +3552,22 @@ public actor DataAdapter {
             }
         }
 
-        // Window name filter (partial match)
-        if let windowNameFilter = query.filters.windowNameFilter?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !windowNameFilter.isEmpty {
-            whereConditions.append("s.windowName LIKE ?")
-            bindValues.append("%\(windowNameFilter)%")
-        }
+        // Advanced metadata filters (single-value legacy and encoded multi-value include/exclude).
+        let windowNameFilter = decodeMetadataStringFilter(query.filters.windowNameFilter)
+        Self.appendMetadataStringFilter(
+            columnName: "s.windowName",
+            parsedFilter: windowNameFilter,
+            whereConditions: &whereConditions,
+            bindValues: &bindValues
+        )
 
-        // Browser URL filter (partial match)
-        if let browserUrlFilter = query.filters.browserUrlFilter?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !browserUrlFilter.isEmpty {
-            whereConditions.append("s.browserUrl LIKE ?")
-            bindValues.append("%\(browserUrlFilter)%")
-        }
+        let browserUrlFilter = decodeMetadataStringFilter(query.filters.browserUrlFilter)
+        Self.appendMetadataStringFilter(
+            columnName: "s.browserUrl",
+            parsedFilter: browserUrlFilter,
+            whereConditions: &whereConditions,
+            bindValues: &bindValues
+        )
 
         // Tag include filter - use INNER JOIN (more efficient than EXISTS subquery)
         // Note: Skip tag filters for Rewind database (it doesn't have segment_tag table)
@@ -3508,9 +3642,7 @@ public actor DataAdapter {
         let hasTagFilters = hasTagIncludeFilter ||
             (!isRewind && query.filters.excludedTagIds != nil && !query.filters.excludedTagIds!.isEmpty) ||
             (!isRewind && query.filters.hiddenFilter != .showAll)
-        let hasMetadataFilters =
-            (query.filters.windowNameFilter?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ||
-            (query.filters.browserUrlFilter?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+        let hasMetadataFilters = windowNameFilter.hasActiveFilters || browserUrlFilter.hasActiveFilters
 
         let useRewindDocIDFastPath =
             source == .rewind &&
@@ -3985,44 +4117,97 @@ public actor DataAdapter {
         return SearchResults(query: query, results: results, totalCount: effectiveTotalCount, searchTimeMs: elapsed, nextCursor: nextCursor)
     }
 
+    private struct FTSQueryComponents {
+        let includeParts: [String]
+        let excludeTerms: [String]
+    }
+
+    private static func parseFTSQueryComponents(_ text: String) -> FTSQueryComponents {
+        let tokens = tokenizeSearchQuery(text)
+        var includeParts: [String] = []
+        var excludeTerms: [String] = []
+
+        for token in tokens {
+            if token == "-" {
+                continue
+            }
+
+            if token.hasPrefix("-") && token.count > 1 {
+                let rawExcluded = String(token.dropFirst())
+                if rawExcluded.hasPrefix("\""), rawExcluded.hasSuffix("\""), rawExcluded.count > 1 {
+                    let phrase = sanitizeFTSTerm(String(rawExcluded.dropFirst().dropLast()))
+                    if !phrase.isEmpty {
+                        excludeTerms.append("\"\(phrase)\"")
+                    }
+                } else {
+                    let term = sanitizeFTSTerm(rawExcluded)
+                    if !term.isEmpty {
+                        excludeTerms.append("\"\(term)\"")
+                    }
+                }
+                continue
+            }
+
+            if token.hasPrefix("\""), token.hasSuffix("\""), token.count > 1 {
+                let phrase = sanitizeFTSTerm(String(token.dropFirst().dropLast()))
+                if !phrase.isEmpty {
+                    includeParts.append("\"\(phrase)\"")
+                }
+            } else {
+                let term = sanitizeFTSTerm(token)
+                if !term.isEmpty {
+                    includeParts.append(formatUnquotedTerm(term))
+                }
+            }
+        }
+
+        return FTSQueryComponents(includeParts: includeParts, excludeTerms: excludeTerms)
+    }
+
     private static func buildFTSQuery(_ text: String) -> String {
-        var parts: [String] = []
+        buildFTSQuery(parseFTSQueryComponents(text))
+    }
+
+    private static func buildFTSQuery(_ components: FTSQueryComponents) -> String {
+        // Exclusion-only queries are invalid in FTS syntax (`NOT x` cannot stand alone).
+        // Keep this path deterministic and return no rows.
+        guard !components.includeParts.isEmpty else {
+            return "\"__retrace_no_match__\""
+        }
+
+        let excludeParts = components.excludeTerms.map { "NOT \($0)" }
+        return (components.includeParts + excludeParts).joined(separator: " ")
+    }
+
+    /// Tokenize query while preserving quoted phrases and handling `-"phrase"` as one token.
+    private static func tokenizeSearchQuery(_ query: String) -> [String] {
+        var tokens: [String] = []
         var current = ""
         var inQuotes = false
 
-        // Tokenize while preserving quoted phrases
-        for char in text {
+        for char in query {
             if char == "\"" {
                 if inQuotes {
-                    // End of quoted phrase
-                    if !current.isEmpty {
-                        // Phrase search: wrap in quotes, no prefix matching
-                        let escaped = sanitizeFTSTerm(current)
-                        if !escaped.isEmpty {
-                            parts.append("\"\(escaped)\"")
-                        }
-                    }
+                    current.append(char)
+                    tokens.append(current)
                     current = ""
                     inQuotes = false
                 } else {
-                    // Start of quoted phrase - save any pending word first
-                    if !current.trimmingCharacters(in: .whitespaces).isEmpty {
-                        let word = current.trimmingCharacters(in: .whitespaces)
-                        let escaped = sanitizeFTSTerm(word)
-                        if !escaped.isEmpty {
-                            parts.append(formatUnquotedTerm(escaped))
-                        }
+                    if current == "-" {
+                        current.append(char)
+                        inQuotes = true
+                        continue
                     }
-                    current = ""
+                    if !current.isEmpty {
+                        tokens.append(current)
+                        current = ""
+                    }
+                    current.append(char)
                     inQuotes = true
                 }
             } else if char.isWhitespace && !inQuotes {
-                // Word boundary outside quotes
                 if !current.isEmpty {
-                    let escaped = sanitizeFTSTerm(current)
-                    if !escaped.isEmpty {
-                        parts.append(formatUnquotedTerm(escaped))
-                    }
+                    tokens.append(current)
                     current = ""
                 }
             } else {
@@ -4030,27 +4215,178 @@ public actor DataAdapter {
             }
         }
 
-        // Handle remaining content
         if !current.isEmpty {
-            let escaped = sanitizeFTSTerm(current)
-            if !escaped.isEmpty {
-                if inQuotes {
-                    // Unclosed quote - treat as phrase anyway
-                    parts.append("\"\(escaped)\"")
-                } else {
-                    parts.append(formatUnquotedTerm(escaped))
-                }
-            }
+            tokens.append(current)
         }
 
-        return parts.joined(separator: " ")
+        return tokens
     }
 
     /// Restrict FTS MATCH to content columns only (exclude window title metadata).
-    private static func scopeToSearchableTextColumns(_ query: String) -> String {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return query }
-        return "((text:(\(trimmed))) OR (otherText:(\(trimmed))))"
+    private static func scopeToSearchableTextColumns(_ components: FTSQueryComponents) -> String {
+        guard !components.includeParts.isEmpty else {
+            return "\"__retrace_no_match__\""
+        }
+
+        let includeClause = components.includeParts.joined(separator: " ")
+        var parts = ["((text:(\(includeClause))) OR (otherText:(\(includeClause))))"]
+        for excludedTerm in components.excludeTerms {
+            parts.append("NOT text:(\(excludedTerm))")
+            parts.append("NOT otherText:(\(excludedTerm))")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private static let encodedMetadataFilterPrefix = "__retrace_meta_filter_v1__"
+
+    private struct EncodedMetadataFilterPayload: Codable {
+        let includeTerms: [String]?
+        let excludeTerms: [String]?
+        // Legacy fields for backward compatibility.
+        let mode: AppFilterMode?
+        let terms: [String]?
+    }
+
+    private struct ParsedMetadataStringFilter {
+        let includeTerms: [String]
+        let excludeTerms: [String]
+
+        var hasActiveFilters: Bool {
+            !includeTerms.isEmpty || !excludeTerms.isEmpty
+        }
+    }
+
+    private static func decodeMetadataStringFilter(_ rawValue: String?) -> ParsedMetadataStringFilter {
+        guard let rawValue else {
+            return ParsedMetadataStringFilter(includeTerms: [], excludeTerms: [])
+        }
+
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ParsedMetadataStringFilter(includeTerms: [], excludeTerms: [])
+        }
+
+        guard trimmed.hasPrefix(encodedMetadataFilterPrefix) else {
+            let normalized = normalizedMetadataStringFilterTerms([trimmed])
+            return ParsedMetadataStringFilter(includeTerms: normalized, excludeTerms: [])
+        }
+
+        let encodedPayload = String(trimmed.dropFirst(encodedMetadataFilterPrefix.count))
+        guard let data = Data(base64Encoded: encodedPayload),
+              let payload = try? JSONDecoder().decode(EncodedMetadataFilterPayload.self, from: data) else {
+            return ParsedMetadataStringFilter(includeTerms: [], excludeTerms: [])
+        }
+
+        let normalizedIncludeTerms = normalizedMetadataStringFilterTerms(payload.includeTerms ?? [])
+        var normalizedExcludeTerms = normalizedMetadataStringFilterTerms(payload.excludeTerms ?? [])
+        if !normalizedIncludeTerms.isEmpty || !normalizedExcludeTerms.isEmpty {
+            let includeKeys = Set(normalizedIncludeTerms.map { $0.lowercased() })
+            normalizedExcludeTerms.removeAll { includeKeys.contains($0.lowercased()) }
+            return ParsedMetadataStringFilter(
+                includeTerms: normalizedIncludeTerms,
+                excludeTerms: normalizedExcludeTerms
+            )
+        }
+
+        let normalizedLegacyTerms = normalizedMetadataStringFilterTerms(payload.terms ?? [])
+        if payload.mode == .exclude {
+            return ParsedMetadataStringFilter(includeTerms: [], excludeTerms: normalizedLegacyTerms)
+        }
+        return ParsedMetadataStringFilter(includeTerms: normalizedLegacyTerms, excludeTerms: [])
+    }
+
+    private static func appendMetadataStringFilter(
+        columnName: String,
+        parsedFilter: ParsedMetadataStringFilter,
+        whereConditions: inout [String],
+        bindValues: inout [Any]
+    ) {
+        for term in parsedFilter.includeTerms {
+            guard let predicate = metadataStringFilterPredicate(columnName: columnName, term: term, negate: false) else {
+                continue
+            }
+            whereConditions.append("(\(predicate.clause))")
+            bindValues.append(contentsOf: predicate.bindValues)
+        }
+
+        for term in parsedFilter.excludeTerms {
+            guard let predicate = metadataStringFilterPredicate(columnName: columnName, term: term, negate: true) else {
+                continue
+            }
+            whereConditions.append("(\(predicate.clause))")
+            bindValues.append(contentsOf: predicate.bindValues)
+        }
+    }
+
+    private static func metadataStringFilterPredicate(
+        columnName: String,
+        term: String,
+        negate: Bool
+    ) -> (clause: String, bindValues: [String])? {
+        guard let parsed = parsedMetadataStringFilterTerm(term) else { return nil }
+
+        let op = negate ? "NOT LIKE" : "LIKE"
+        switch parsed {
+        case .exactPhrase(let phrase):
+            return (
+                clause: "COALESCE(\(columnName), '') \(op) ?",
+                bindValues: ["%\(phrase)%"]
+            )
+        case .tokens(let tokens):
+            let tokenJoiner = negate ? " OR " : " OR "
+            let clause = tokens.map { _ in
+                "COALESCE(\(columnName), '') \(op) ?"
+            }.joined(separator: tokenJoiner)
+            let bindValues = tokens.map { "%\($0)%" }
+            return (clause: clause, bindValues: bindValues)
+        }
+    }
+
+    private enum ParsedMetadataStringFilterTerm {
+        case exactPhrase(String)
+        case tokens([String])
+    }
+
+    private static func parsedMetadataStringFilterTerm(_ term: String) -> ParsedMetadataStringFilterTerm? {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("\""), trimmed.hasSuffix("\""), trimmed.count >= 2 {
+            let phrase = String(trimmed.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !phrase.isEmpty else { return nil }
+            return .exactPhrase(phrase)
+        }
+
+        let tokens = trimmed
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return nil }
+        return .tokens(tokens)
+    }
+
+    private static func normalizedMetadataStringFilterTerms(_ terms: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalizedTerms: [String] = []
+
+        for term in terms {
+            guard let normalized = normalizedMetadataStringFilterTerm(term) else { continue }
+            let key = normalized.lowercased()
+            if seen.insert(key).inserted {
+                normalizedTerms.append(normalized)
+            }
+        }
+
+        return normalizedTerms
+    }
+
+    private static func normalizedMetadataStringFilterTerm(_ term: String) -> String? {
+        let collapsed = term
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? nil : collapsed
     }
 
     /// Remove characters that have special meaning in FTS query syntax.
@@ -4128,8 +4464,6 @@ public actor DataAdapter {
 
         var tokens: [SearchDedupeToken] = []
         var seenKeys = Set<String>()
-        var current = ""
-        var inQuotes = false
 
         func appendToken(_ token: SearchDedupeToken) {
             if seenKeys.insert(token.dedupeKey).inserted {
@@ -4137,44 +4471,30 @@ public actor DataAdapter {
             }
         }
 
-        func flushCurrentToken() {
-            let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else {
-                current = ""
-                return
+        for token in tokenizeSearchQuery(normalizedQuery) {
+            if token == "-" {
+                continue
             }
 
-            if inQuotes {
-                let phrase = sanitizeFTSTerm(value)
+            if token.hasPrefix("-"), token.count > 1 {
+                // Excluded query terms should not drive highlight matching / dedupe anchors.
+                continue
+            }
+
+            if token.hasPrefix("\""), token.hasSuffix("\""), token.count > 1 {
+                let phrase = sanitizeFTSTerm(String(token.dropFirst().dropLast()))
                 if !phrase.isEmpty {
                     appendToken(.phrase(phrase))
                 }
-            } else {
-                let terms = value
-                    .components(separatedBy: .whitespacesAndNewlines)
-                    .filter { !$0.isEmpty }
-
-                for rawTerm in terms {
-                    let term = sanitizeFTSTerm(rawTerm)
-                    guard !term.isEmpty else { continue }
-                    let mode: SearchDedupeTermMatchMode = shouldUseExactMatch(term) ? .exactWord : .wordPrefix
-                    appendToken(.term(term, mode: mode))
-                }
-            }
-
-            current = ""
-        }
-
-        for character in normalizedQuery {
-            if character == "\"" {
-                flushCurrentToken()
-                inQuotes.toggle()
                 continue
             }
-            current.append(character)
+
+            let term = sanitizeFTSTerm(token)
+            guard !term.isEmpty else { continue }
+            let mode: SearchDedupeTermMatchMode = shouldUseExactMatch(term) ? .exactWord : .wordPrefix
+            appendToken(.term(term, mode: mode))
         }
 
-        flushCurrentToken()
         return tokens
     }
 
@@ -4297,14 +4617,6 @@ public actor DataAdapter {
         let placeholders = apps.map { _ in "?" }.joined(separator: ", ")
         let operator_ = mode == .include ? "IN" : "NOT IN"
         return "\(tableAlias).bundleID \(operator_) (\(placeholders))"
-    }
-
-    /// Build SQL clause for browser URL partial string matching
-    /// Returns the SQL clause like "s.browserUrl LIKE ?" and the pattern to bind
-    private func buildBrowserUrlFilterClause(urlPattern: String, tableAlias: String = "s") -> (clause: String, pattern: String) {
-        // Use LIKE with wildcards for partial matching
-        let pattern = "%\(urlPattern)%"
-        return (clause: "\(tableAlias).browserUrl LIKE ?", pattern: pattern)
     }
 
     /// Build SQL clause for comment-presence filtering.

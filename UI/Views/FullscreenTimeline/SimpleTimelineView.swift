@@ -19,6 +19,8 @@ public struct SimpleTimelineView: View {
     /// Keep comment submenu mounted during fade-out so dismissal is visibly animated.
     @State private var isCommentSubmenuMounted = false
     @State private var commentSubmenuVisibility: Double = 0
+    @State private var isSearchHighlightControlsHintDismissed = false
+    @State private var browserURLDebugWindowPosition = CGSize(width: 320, height: 16)
     @FocusState private var isInFrameSearchFieldFocused: Bool
 
     let coordinator: AppCoordinator
@@ -33,6 +35,15 @@ public struct SimpleTimelineView: View {
         self.onClose = onClose
     }
 
+    private var currentBrowserURLForDebugWindow: String? {
+        guard let rawURL = viewModel.currentFrame?.metadata.browserURL?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawURL.isEmpty else {
+            return nil
+        }
+        return rawURL
+    }
+
     // MARK: - Body
 
     public var body: some View {
@@ -41,11 +52,20 @@ public struct SimpleTimelineView: View {
             let actualFrameRect = calculateActualDisplayedFrameRectForView(
                 containerSize: geometry.size
             )
+            let shouldShowSearchHighlightControlsHint = shouldShowSearchHighlightControlsHint(
+                containerSize: geometry.size,
+                actualFrameRect: actualFrameRect
+            )
+            let shouldRenderSearchHighlightControlsHint =
+                shouldShowSearchHighlightControlsHint && !isSearchHighlightControlsHintDismissed
 
             ZStack {
                 // Full screen frame display
                 frameDisplay
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Search-result highlights should sit above the frame, but below timeline controls/tape.
+                searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
 
                 // Bottom blur + gradient backdrop (behind timeline controls)
                 VStack {
@@ -164,6 +184,19 @@ public struct SimpleTimelineView: View {
                 .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
                 .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
 
+                #if DEBUG
+                if viewModel.showBrowserURLDebugWindow {
+                    DebugBrowserURLWindow(
+                        browserURL: currentBrowserURLForDebugWindow,
+                        panelPosition: $browserURLDebugWindowPosition,
+                        isPresented: $viewModel.showBrowserURLDebugWindow
+                    )
+                    .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
+                    .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
+                    .zIndex(110)
+                }
+                #endif
+
                 // Reset zoom button (top center)
                 if viewModel.isFrameZoomed {
                     VStack {
@@ -256,9 +289,6 @@ public struct SimpleTimelineView: View {
                 // Search overlay (Cmd+K) - uses persistent searchViewModel to preserve results
                 searchOverlay
 
-                // Search highlight overlay
-                searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
-
                 // OCR debug overlay (dev setting)
                 ocrDebugOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
 
@@ -281,6 +311,25 @@ public struct SimpleTimelineView: View {
                     .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.showTextSelectionHint)
                 }
 
+                // Search-highlight/timeline-controls hint toast (top center)
+                if shouldRenderSearchHighlightControlsHint {
+                    VStack {
+                        SearchHighlightControlsHintBanner(
+                            onDismiss: {
+                                isSearchHighlightControlsHintDismissed = true
+                            }
+                        )
+                            .fixedSize()
+                            .padding(.top, viewModel.showTextSelectionHint ? 118 : 60)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                        Spacer()
+                    }
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: shouldRenderSearchHighlightControlsHint)
+                }
+
                 // Scroll orientation hint toast (top center)
                 if viewModel.showScrollOrientationHintBanner {
                     VStack {
@@ -290,7 +339,10 @@ public struct SimpleTimelineView: View {
                             onDismiss: { viewModel.dismissScrollOrientationHint() }
                         )
                         .fixedSize()
-                        .padding(.top, 60)
+                        .padding(
+                            .top,
+                            60 + (viewModel.showTextSelectionHint ? 58 : 0) + (shouldRenderSearchHighlightControlsHint ? 58 : 0)
+                        )
                         .transition(.asymmetric(
                             insertion: .move(edge: .top).combined(with: .opacity),
                             removal: .opacity
@@ -469,6 +521,14 @@ public struct SimpleTimelineView: View {
                     isInFrameSearchFieldFocused = false
                 }
             }
+            .onChange(of: shouldShowSearchHighlightControlsHint) { isVisible in
+                if !isVisible {
+                    isSearchHighlightControlsHintDismissed = false
+                }
+            }
+            .onChange(of: viewModel.searchHighlightQuery) { _ in
+                isSearchHighlightControlsHintDismissed = false
+            }
             // Note: Keyboard shortcuts (Cmd+F, Option+F, Cmd+Shift+F, Escape) are handled by TimelineWindowController
             // at the window level for more reliable event handling
         }
@@ -578,6 +638,35 @@ public struct SimpleTimelineView: View {
 
     private var frameCanvasBackgroundColor: Color {
         isAwaitingLiveScreenshot ? .clear : .black
+    }
+
+    private func shouldShowSearchHighlightControlsHint(
+        containerSize: CGSize,
+        actualFrameRect: CGRect
+    ) -> Bool {
+        guard viewModel.isShowingSearchHighlight else { return false }
+        guard !viewModel.areControlsHidden else { return false }
+        guard !viewModel.isInFrameSearchVisible else { return false }
+
+        let highlightCutoffY = containerSize.height * 0.75
+        var seenNodeIDs = Set<Int>()
+        for match in viewModel.searchHighlightNodes {
+            guard seenNodeIDs.insert(match.node.id).inserted else { continue }
+
+            let rect = CGRect(
+                x: actualFrameRect.origin.x + (match.node.x * actualFrameRect.width),
+                y: actualFrameRect.origin.y + (match.node.y * actualFrameRect.height),
+                width: match.node.width * actualFrameRect.width,
+                height: match.node.height * actualFrameRect.height
+            )
+
+            guard !rect.isEmpty else { continue }
+            if rect.maxY >= highlightCutoffY {
+                return true
+            }
+        }
+
+        return false
     }
 
     // MARK: - Search Overlay
@@ -902,6 +991,10 @@ public struct SimpleTimelineView: View {
             x: 0,
             y: 0
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isInFrameSearchFieldFocused = true
+        }
         .animation(.easeOut(duration: 0.18), value: isInFrameSearchGlowActive)
         .onAppear {
             DispatchQueue.main.async {
@@ -1688,6 +1781,10 @@ struct FrameWithURLOverlay<Content: View>: View {
                 containerSize: geometry.size,
                 viewModel: viewModel
             )
+            let shouldGuideHideControlsInContextMenu = shouldGuideHideControlsRow(
+                containerSize: geometry.size,
+                actualFrameRect: actualFrameRect
+            )
 
             ZStack {
                 // The actual frame content (always present as base layer)
@@ -1812,7 +1909,8 @@ struct FrameWithURLOverlay<Content: View>: View {
                             viewModel: viewModel,
                             isPresented: $viewModel.showContextMenu,
                             location: viewModel.contextMenuLocation,
-                            containerSize: geometry.size
+                            containerSize: geometry.size,
+                            highlightHideControlsRow: shouldGuideHideControlsInContextMenu
                         )
                     }
                 }
@@ -1881,6 +1979,34 @@ struct FrameWithURLOverlay<Content: View>: View {
         }
 
         return CGRect(origin: offset, size: displayedSize)
+    }
+
+    /// Keep menu guidance behavior aligned with the top hint shown when highlighted OCR sits near the tape.
+    private func shouldGuideHideControlsRow(containerSize: CGSize, actualFrameRect: CGRect) -> Bool {
+        guard viewModel.isShowingSearchHighlight else { return false }
+        guard !viewModel.areControlsHidden else { return false }
+        guard !viewModel.isInFrameSearchVisible else { return false }
+
+        let highlightCutoffY = containerSize.height * 0.75
+        var seenNodeIDs = Set<Int>()
+
+        for match in viewModel.searchHighlightNodes {
+            guard seenNodeIDs.insert(match.node.id).inserted else { continue }
+
+            let rect = CGRect(
+                x: actualFrameRect.origin.x + (match.node.x * actualFrameRect.width),
+                y: actualFrameRect.origin.y + (match.node.y * actualFrameRect.height),
+                width: match.node.width * actualFrameRect.width,
+                height: match.node.height * actualFrameRect.height
+            )
+
+            guard !rect.isEmpty else { continue }
+            if rect.maxY >= highlightCutoffY {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
@@ -2093,13 +2219,17 @@ struct ZoomUnifiedOverlay<Content: View>: View {
                 }
             }
         } else {
-            // Historical mode: only render the extractor-backed snapshot (not currentImage).
+            // Historical mode prefers extractor-backed snapshots for frame accuracy.
+            // Fall back to content() when extraction misses so we don't render a black pane.
             ZStack {
                 Color.black
                 if let snapshot = frozenZoomSnapshot {
                     Image(nsImage: snapshot)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        .transition(.identity)
+                } else {
+                    content()
                         .transition(.identity)
                 }
             }
@@ -2381,24 +2511,12 @@ struct ZoomActionMenu: View {
     private func shareZoomedImage() {
         getZoomedImage { image in
             guard let image = image else {
-                #if DEBUG
-                print("[Share] No image to share")
-                #endif
                 return
             }
 
-            #if DEBUG
-            print("[Share] Got image, creating picker")
-            #endif
             let picker = NSSharingServicePicker(items: [image])
             if let window = NSApp.keyWindow,
                let contentView = window.contentView {
-                #if DEBUG
-                print("[Share] Showing picker, window level: \(window.level.rawValue)")
-                #endif
-
-                let windowCountBefore = NSApp.windows.count
-
                 // Show share picker near the right side of the window where the action menu is
                 // Position it roughly where the Share button would be (right side, upper-middle area)
                 let menuRect = CGRect(
@@ -2412,12 +2530,8 @@ struct ZoomActionMenu: View {
                 // Check multiple times for the picker window to appear
                 for delay in [0.05, 0.1, 0.2, 0.5] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        #if DEBUG
-                        print("[Share] Checking windows after \(delay)s, count: \(NSApp.windows.count) (was \(windowCountBefore))")
                         for appWindow in NSApp.windows {
                             let className = String(describing: type(of: appWindow))
-                            let objcClassName = appWindow.className
-                            print("[Share] Window: \(className) / \(objcClassName), level: \(appWindow.level.rawValue), visible: \(appWindow.isVisible)")
 
                             // Raise any window that's not our main windows and is below screenSaver level
                             // Exclude: status bar, timeline (KeyableWindow), and dashboard (NSWindow at level 0)
@@ -2430,17 +2544,11 @@ struct ZoomActionMenu: View {
                                !isStatusBar &&
                                !isTimeline &&
                                !isDashboard {
-                                print("[Share] Raising window level for: \(className)")
                                 appWindow.level = .screenSaver + 1
                             }
                         }
-                        #endif
                     }
                 }
-            } else {
-                #if DEBUG
-                print("[Share] No key window or content view")
-                #endif
             }
         }
     }
@@ -4316,6 +4424,7 @@ struct DebugFrameIDBadge: View {
                             .font(.retraceMonoSmall)
                             .foregroundColor(status == -1 ? .blue.opacity(0.8) : status == 4 ? .red.opacity(0.8) : status == 2 ? .green.opacity(0.8) : .yellow.opacity(0.8))
                     }
+
                 }
             }
             .padding(.horizontal, 10)
@@ -4339,6 +4448,139 @@ struct DebugFrameIDBadge: View {
             }
         }
         .help("Click to copy frame ID")
+    }
+}
+
+// MARK: - Debug Browser URL Window
+
+/// Draggable debug panel for inspecting full browser URLs while scrubbing.
+/// Wraps URL text every 100 characters to keep very long URLs readable.
+struct DebugBrowserURLWindow: View {
+    let browserURL: String?
+    @Binding var panelPosition: CGSize
+    @Binding var isPresented: Bool
+
+    @GestureState private var dragOffset: CGSize = .zero
+    @State private var isDraggingHeader = false
+    @State private var isCloseHovered = false
+
+    private var wrappedURLText: String {
+        guard let browserURL else {
+            return "No browser URL on this frame"
+        }
+        return Self.wrapText(browserURL, maxCharactersPerLine: 100)
+    }
+
+    private var hasURL: Bool {
+        browserURL != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.cyan.opacity(0.9))
+
+                Text("Browser URL")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.88))
+
+                Spacer()
+
+                Button(action: {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        isPresented = false
+                    }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(isCloseHovered ? .white.opacity(0.9) : .white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    isCloseHovered = hovering
+                    if hovering {
+                        NSCursor.pointingHand.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(Color.white.opacity(0.06))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .updating($dragOffset) { value, state, _ in
+                        state = value.translation
+                    }
+                    .onChanged { _ in
+                        if !isDraggingHeader {
+                            isDraggingHeader = true
+                        }
+                    }
+                    .onEnded { value in
+                        panelPosition.width += value.translation.width
+                        panelPosition.height += value.translation.height
+                        isDraggingHeader = false
+                    }
+            )
+            .onHover { hovering in
+                if hovering && !isDraggingHeader {
+                    NSCursor.openHand.push()
+                } else if !hovering {
+                    NSCursor.pop()
+                }
+            }
+
+            Divider()
+                .overlay(Color.white.opacity(0.08))
+
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(wrappedURLText)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundColor(hasURL ? .cyan.opacity(0.95) : .white.opacity(0.6))
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(maxHeight: 170)
+        }
+        .frame(width: 720, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(white: 0.1).opacity(0.95))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.2), lineWidth: 0.8)
+        )
+        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+        .offset(
+            x: panelPosition.width + dragOffset.width,
+            y: panelPosition.height + dragOffset.height
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.spacingL)
+    }
+
+    private static func wrapText(_ text: String, maxCharactersPerLine: Int) -> String {
+        guard maxCharactersPerLine > 0, !text.isEmpty else { return text }
+
+        var lines: [String] = []
+        var currentStart = text.startIndex
+
+        while currentStart < text.endIndex {
+            let nextEnd = text.index(currentStart, offsetBy: maxCharactersPerLine, limitedBy: text.endIndex) ?? text.endIndex
+            lines.append(String(text[currentStart..<nextEnd]))
+            currentStart = nextEnd
+        }
+
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -4417,7 +4659,7 @@ struct OCRStatusIndicator: View {
 // MARK: - Developer Actions Menu
 
 #if DEBUG
-/// Developer actions menu with OCR refresh and video boundary visualization options
+/// Developer actions menu with OCR refresh and timeline debug visualization options
 /// Only visible in DEBUG builds, positioned in top-left corner beside the frame ID badge
 struct DeveloperActionsMenu: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
@@ -4464,6 +4706,30 @@ struct DeveloperActionsMenu: View {
                 Label(
                     viewModel.showVideoBoundaries ? "Hide Video Placements" : "Show Video Placements",
                     systemImage: "film"
+                )
+            }
+
+            // Show/Hide Segment Placements toggle
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.showSegmentBoundaries.toggle()
+                }
+            }) {
+                Label(
+                    viewModel.showSegmentBoundaries ? "Hide Segment Placements" : "Show Segment Placements",
+                    systemImage: "square.stack.3d.down.forward"
+                )
+            }
+
+            // Show/Hide Browser URL debug window toggle
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    viewModel.showBrowserURLDebugWindow.toggle()
+                }
+            }) {
+                Label(
+                    viewModel.showBrowserURLDebugWindow ? "Hide Browser URL Window" : "Show Browser URL Window",
+                    systemImage: "link"
                 )
             }
 
@@ -4630,6 +4896,55 @@ struct TextSelectionHintBanner: View {
     }
 }
 
+/// Banner shown when highlighted OCR text is near the timeline tape region.
+/// Suggests hiding controls or opening the context menu for better visibility/actions.
+struct SearchHighlightControlsHintBanner: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "lightbulb.fill")
+                .font(.retraceHeadline)
+                .foregroundColor(.white.opacity(0.9))
+
+            Text("Highlighted text is under timeline controls.")
+                .font(.retraceCaptionMedium)
+                .foregroundColor(.white.opacity(0.9))
+
+            Text("Press")
+                .font(.retraceCaption)
+                .foregroundColor(.white.opacity(0.7))
+
+            KeyboardBadge(symbol: "⌘ H")
+
+            Text("to hide/show controls, or right-click.")
+                .font(.retraceCaption)
+                .foregroundColor(.white.opacity(0.7))
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.retraceCaption2Bold)
+                    .foregroundColor(.white.opacity(0.6))
+                    .frame(width: 24, height: 24)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(white: 0.2).opacity(0.95))
+                .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+        )
+    }
+}
+
 /// Banner suggesting the user switch scroll orientation when scrolling the wrong axis.
 struct ScrollOrientationHintBanner: View {
     let currentOrientation: String
@@ -4637,6 +4952,7 @@ struct ScrollOrientationHintBanner: View {
     let onDismiss: () -> Void
 
     private var isHorizontal: Bool { currentOrientation == "horizontal" }
+    @State private var isSwitchHovered = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -4646,11 +4962,11 @@ struct ScrollOrientationHintBanner: View {
                 .foregroundColor(.white.opacity(0.9))
 
             // Message
-            Text(isHorizontal ? "Scrolling up/down?" : "Scrolling left/right?")
+            Text(isHorizontal ? "Vertical scrolling detected." : "Horizontal scrolling detected.")
                 .font(.retraceCaptionMedium)
                 .foregroundColor(.white.opacity(0.9))
 
-            Text(isHorizontal ? "Timeline scrolling is set to Left/Right" : "Timeline scrolling is set to Up/Down")
+            Text(isHorizontal ? "Timeline is currently set to Left/Right." : "Timeline is currently set to Up/Down.")
                 .font(.retraceCaption)
                 .foregroundColor(.white.opacity(0.7))
 
@@ -4658,9 +4974,27 @@ struct ScrollOrientationHintBanner: View {
             Button(action: onSwitch) {
                 Text(isHorizontal ? "Switch to Up/Down" : "Switch to Left/Right")
                     .font(.retraceCaptionMedium)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(Color.retraceSubmitAccent.opacity(isSwitchHovered ? 0.42 : 0.32))
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(isSwitchHovered ? 0.45 : 0.3), lineWidth: 1)
+                            )
+                    )
             }
             .buttonStyle(.plain)
+            .onHover { hovering in
+                isSwitchHovered = hovering
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
 
             // Dismiss button
             Button(action: onDismiss) {
@@ -4870,6 +5204,7 @@ struct FloatingContextMenu: View {
     @Binding var isPresented: Bool
     let location: CGPoint
     let containerSize: CGSize
+    let highlightHideControlsRow: Bool
 
     // Menu dimensions (approximate)
     private let menuWidth: CGFloat = 200
@@ -4888,7 +5223,11 @@ struct FloatingContextMenu: View {
                 }
 
             // Menu content - uses shared ContextMenuContent from UI/Components
-            ContextMenuContent(viewModel: viewModel, showMenu: $isPresented)
+            ContextMenuContent(
+                viewModel: viewModel,
+                showMenu: $isPresented,
+                highlightHideControlsRow: highlightHideControlsRow
+            )
                 .retraceMenuContainer()
                 .fixedSize()
                 .position(adjustedPosition)
@@ -5381,6 +5720,10 @@ struct TagSubmenu: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.white.opacity(0.08))
             )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isSearchFocused = true
+            }
             .padding(.horizontal, 8)
             .padding(.top, 4)
             .padding(.bottom, 6)
@@ -6062,6 +6405,10 @@ struct CommentSubmenu: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isAllCommentsSearchFieldFocused = true
+        }
     }
 
     @ViewBuilder
@@ -6629,6 +6976,10 @@ struct CommentSubmenu: View {
                         .stroke(Color.white.opacity(0.12), lineWidth: 1)
                 )
                 .focused($isLinkFieldFocused)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    isLinkFieldFocused = true
+                }
                 .onSubmit { insertLinkFromPopover() }
 
             HStack(spacing: 8) {
@@ -8043,8 +8394,13 @@ struct FilterPanel: View {
 
     /// Label for date range filter
     private var dateRangeLabel: String {
-        let startDate = viewModel.pendingFilterCriteria.startDate
-        let endDate = viewModel.pendingFilterCriteria.endDate
+        let ranges = viewModel.pendingFilterCriteria.effectiveDateRanges
+        if ranges.count > 1 {
+            return "\(ranges.count) date ranges"
+        }
+
+        let startDate = ranges.first?.start ?? viewModel.pendingFilterCriteria.startDate
+        let endDate = ranges.first?.end ?? viewModel.pendingFilterCriteria.endDate
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d"
 
@@ -8248,7 +8604,7 @@ struct FilterPanel: View {
                     label: "DATE",
                     value: dateRangeLabel,
                     icon: "calendar",
-                    isActive: viewModel.pendingFilterCriteria.startDate != nil || viewModel.pendingFilterCriteria.endDate != nil,
+                    isActive: !viewModel.pendingFilterCriteria.effectiveDateRanges.isEmpty,
                     isOpen: viewModel.activeFilterDropdown == .dateRange,
                     onTap: { frame in
                         withAnimation(.easeOut(duration: 0.15)) {
@@ -8661,10 +9017,6 @@ struct FilterPanel: View {
                 // If no frame is stored, the dropdown won't position correctly, but will still open
                 let nextAnchorFrame = viewModel.filterAnchorFrames[nextDropdown] ?? .zero
 
-                #if DEBUG
-                print("[FilterPanel] Tab cycling to \(nextDropdown), anchorFrame=\(nextAnchorFrame), storedFrames=\(viewModel.filterAnchorFrames.keys)")
-                #endif
-
                 // Open the next dropdown at its correct position
                 withAnimation(.easeOut(duration: 0.15)) {
                     viewModel.showFilterDropdown(nextDropdown, anchorFrame: nextAnchorFrame)
@@ -8719,12 +9071,50 @@ struct AdvancedFiltersSection: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
     @State private var isExpanded: Bool = false
     @State private var isHeaderHovered = false
+    @State private var isWindowHovered = false
+    @State private var isBrowserHovered = false
+    @State private var windowInputText = ""
+    @State private var browserInputText = ""
+    @State private var windowNameIncludeTerms: [String] = []
+    @State private var windowNameExcludeTerms: [String] = []
+    @State private var windowNameFilterMode: AppFilterMode = .include
+    @State private var browserUrlIncludeTerms: [String] = []
+    @State private var browserUrlExcludeTerms: [String] = []
+    @State private var browserUrlFilterMode: AppFilterMode = .include
 
     private enum AdvancedField: Hashable {
         case windowName
         case browserUrl
     }
     @FocusState private var focusedField: AdvancedField?
+
+    private static let metadataFilterPrefix = "__retrace_meta_filter_v1__"
+
+    private struct EncodedMetadataFilterPayload: Codable {
+        let includeTerms: [String]?
+        let excludeTerms: [String]?
+        // Legacy fields for backward compatibility.
+        let mode: AppFilterMode?
+        let terms: [String]?
+    }
+
+    private struct DecodedMetadataFilter: Equatable {
+        let includeTerms: [String]
+        let excludeTerms: [String]
+        let mode: AppFilterMode
+
+        static let empty = DecodedMetadataFilter(includeTerms: [], excludeTerms: [], mode: .include)
+
+        var hasActiveFilters: Bool {
+            !includeTerms.isEmpty || !excludeTerms.isEmpty
+        }
+    }
+
+    private struct MetadataChipTerm: Identifiable {
+        let term: String
+        let mode: AppFilterMode
+        var id: String { "\(mode.rawValue):\(term.lowercased())" }
+    }
 
     /// Whether any advanced filter is active
     private var hasActiveAdvancedFilters: Bool {
@@ -8739,6 +9129,183 @@ struct AdvancedFiltersSection: View {
     /// Keyboard highlight when tab focus is on the Advanced header row.
     private var isHeaderKeyboardHighlighted: Bool {
         isAdvancedActive && viewModel.advancedFocusedFieldIndex == 0
+    }
+
+    private func addWindowNameTermFromInput() {
+        let candidate = windowInputText
+        windowInputText = ""
+        guard let normalized = Self.normalizedTerm(candidate) else { return }
+        if windowNameFilterMode == .include {
+            windowNameIncludeTerms = Self.deduplicatedTerms(windowNameIncludeTerms + [normalized])
+            windowNameExcludeTerms.removeAll { $0.caseInsensitiveCompare(normalized) == .orderedSame }
+        } else {
+            windowNameExcludeTerms = Self.deduplicatedTerms(windowNameExcludeTerms + [normalized])
+            windowNameIncludeTerms.removeAll { $0.caseInsensitiveCompare(normalized) == .orderedSame }
+        }
+    }
+
+    private func addBrowserUrlTermFromInput() {
+        let candidate = browserInputText
+        browserInputText = ""
+        guard let normalized = Self.normalizedTerm(candidate) else { return }
+        if browserUrlFilterMode == .include {
+            browserUrlIncludeTerms = Self.deduplicatedTerms(browserUrlIncludeTerms + [normalized])
+            browserUrlExcludeTerms.removeAll { $0.caseInsensitiveCompare(normalized) == .orderedSame }
+        } else {
+            browserUrlExcludeTerms = Self.deduplicatedTerms(browserUrlExcludeTerms + [normalized])
+            browserUrlIncludeTerms.removeAll { $0.caseInsensitiveCompare(normalized) == .orderedSame }
+        }
+    }
+
+    private func removeWindowNameTerm(_ term: String, mode: AppFilterMode) {
+        let needle = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return }
+        if mode == .include {
+            windowNameIncludeTerms.removeAll { existing in
+                existing.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+            }
+        } else {
+            windowNameExcludeTerms.removeAll { existing in
+                existing.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+            }
+        }
+    }
+
+    private func removeBrowserUrlTerm(_ term: String, mode: AppFilterMode) {
+        let needle = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return }
+        if mode == .include {
+            browserUrlIncludeTerms.removeAll { existing in
+                existing.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+            }
+        } else {
+            browserUrlExcludeTerms.removeAll { existing in
+                existing.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+            }
+        }
+    }
+
+    private var windowNameChips: [MetadataChipTerm] {
+        Self.deduplicatedTerms(windowNameIncludeTerms).map { MetadataChipTerm(term: $0, mode: .include) } +
+        Self.deduplicatedTerms(windowNameExcludeTerms).map { MetadataChipTerm(term: $0, mode: .exclude) }
+    }
+
+    private var browserUrlChips: [MetadataChipTerm] {
+        Self.deduplicatedTerms(browserUrlIncludeTerms).map { MetadataChipTerm(term: $0, mode: .include) } +
+        Self.deduplicatedTerms(browserUrlExcludeTerms).map { MetadataChipTerm(term: $0, mode: .exclude) }
+    }
+
+    private func syncStateFromPendingFilters() {
+        let decodedWindowFilter = Self.decodeMetadataFilter(viewModel.pendingFilterCriteria.windowNameFilter)
+        if windowNameIncludeTerms != decodedWindowFilter.includeTerms {
+            windowNameIncludeTerms = decodedWindowFilter.includeTerms
+        }
+        if windowNameExcludeTerms != decodedWindowFilter.excludeTerms {
+            windowNameExcludeTerms = decodedWindowFilter.excludeTerms
+        }
+        if windowNameFilterMode != decodedWindowFilter.mode {
+            windowNameFilterMode = decodedWindowFilter.mode
+        }
+
+        let decodedBrowserFilter = Self.decodeMetadataFilter(viewModel.pendingFilterCriteria.browserUrlFilter)
+        if browserUrlIncludeTerms != decodedBrowserFilter.includeTerms {
+            browserUrlIncludeTerms = decodedBrowserFilter.includeTerms
+        }
+        if browserUrlExcludeTerms != decodedBrowserFilter.excludeTerms {
+            browserUrlExcludeTerms = decodedBrowserFilter.excludeTerms
+        }
+        if browserUrlFilterMode != decodedBrowserFilter.mode {
+            browserUrlFilterMode = decodedBrowserFilter.mode
+        }
+    }
+
+    private func updatePendingWindowFilter() {
+        let encoded = Self.encodedMetadataFilter(includeTerms: windowNameIncludeTerms, excludeTerms: windowNameExcludeTerms)
+        if viewModel.pendingFilterCriteria.windowNameFilter != encoded {
+            viewModel.pendingFilterCriteria.windowNameFilter = encoded
+        }
+    }
+
+    private func updatePendingBrowserFilter() {
+        let encoded = Self.encodedMetadataFilter(includeTerms: browserUrlIncludeTerms, excludeTerms: browserUrlExcludeTerms)
+        if viewModel.pendingFilterCriteria.browserUrlFilter != encoded {
+            viewModel.pendingFilterCriteria.browserUrlFilter = encoded
+        }
+    }
+
+    private static func encodedMetadataFilter(includeTerms: [String], excludeTerms: [String]) -> String? {
+        let normalizedIncludeTerms = deduplicatedTerms(includeTerms)
+        let includeKeys = Set(normalizedIncludeTerms.map { $0.lowercased() })
+        let normalizedExcludeTerms = deduplicatedTerms(excludeTerms).filter { !includeKeys.contains($0.lowercased()) }
+        guard !normalizedIncludeTerms.isEmpty || !normalizedExcludeTerms.isEmpty else { return nil }
+
+        let payload = EncodedMetadataFilterPayload(
+            includeTerms: normalizedIncludeTerms,
+            excludeTerms: normalizedExcludeTerms,
+            mode: nil,
+            terms: nil
+        )
+        guard let data = try? JSONEncoder().encode(payload) else { return nil }
+        return metadataFilterPrefix + data.base64EncodedString()
+    }
+
+    private static func decodeMetadataFilter(_ rawValue: String?) -> DecodedMetadataFilter {
+        guard let rawValue else { return .empty }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .empty }
+
+        guard trimmed.hasPrefix(metadataFilterPrefix) else {
+            let normalizedTerms = deduplicatedTerms([trimmed])
+            return DecodedMetadataFilter(includeTerms: normalizedTerms, excludeTerms: [], mode: .include)
+        }
+
+        let encodedPayload = String(trimmed.dropFirst(metadataFilterPrefix.count))
+        guard let data = Data(base64Encoded: encodedPayload),
+              let payload = try? JSONDecoder().decode(EncodedMetadataFilterPayload.self, from: data) else {
+            return .empty
+        }
+
+        let normalizedIncludeTerms = deduplicatedTerms(payload.includeTerms ?? [])
+        let includeKeys = Set(normalizedIncludeTerms.map { $0.lowercased() })
+        let normalizedExcludeTerms = deduplicatedTerms(payload.excludeTerms ?? []).filter { !includeKeys.contains($0.lowercased()) }
+        if !normalizedIncludeTerms.isEmpty || !normalizedExcludeTerms.isEmpty {
+            let preferredMode: AppFilterMode = normalizedIncludeTerms.isEmpty && !normalizedExcludeTerms.isEmpty ? .exclude : .include
+            return DecodedMetadataFilter(
+                includeTerms: normalizedIncludeTerms,
+                excludeTerms: normalizedExcludeTerms,
+                mode: preferredMode
+            )
+        }
+
+        let normalizedLegacyTerms = deduplicatedTerms(payload.terms ?? [])
+        if payload.mode == .exclude {
+            return DecodedMetadataFilter(includeTerms: [], excludeTerms: normalizedLegacyTerms, mode: .exclude)
+        }
+        return DecodedMetadataFilter(includeTerms: normalizedLegacyTerms, excludeTerms: [], mode: .include)
+    }
+
+    private static func deduplicatedTerms(_ terms: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalizedTerms: [String] = []
+
+        for term in terms {
+            guard let normalized = normalizedTerm(term) else { continue }
+            let key = normalized.lowercased()
+            if seen.insert(key).inserted {
+                normalizedTerms.append(normalized)
+            }
+        }
+
+        return normalizedTerms
+    }
+
+    private static func normalizedTerm(_ term: String) -> String? {
+        let collapsed = term
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? nil : collapsed
     }
 
     var body: some View {
@@ -8809,16 +9376,21 @@ struct AdvancedFiltersSection: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.6))
 
-                        TextField("Search titles...", text: Binding(
-                            get: { viewModel.pendingFilterCriteria.windowNameFilter ?? "" },
-                            set: { viewModel.pendingFilterCriteria.windowNameFilter = $0.isEmpty ? nil : $0 }
-                        ))
-                        .focused($focusedField, equals: .windowName)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 9)
+                        HStack(spacing: 10) {
+                            TextField("Search titles...", text: $windowInputText)
+                                .focused($focusedField, equals: .windowName)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13))
+                                .foregroundColor(.white)
+                                .onSubmit {
+                                    addWindowNameTermFromInput()
+                                }
+
+                            IncludeExcludeModeToggle(mode: $windowNameFilterMode)
+                                .frame(width: 138)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 7)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(Color.white.opacity(0.08))
@@ -8828,14 +9400,31 @@ struct AdvancedFiltersSection: View {
                                 .stroke(
                                     focusedField == .windowName
                                         ? RetraceMenuStyle.filterStrokeStrong
-                                        : (viewModel.pendingFilterCriteria.windowNameFilter != nil && !viewModel.pendingFilterCriteria.windowNameFilter!.isEmpty
+                                        : (!windowNameChips.isEmpty
                                             ? RetraceMenuStyle.filterStrokeMedium
-                                            : RetraceMenuStyle.filterStrokeSubtle),
+                                            : (isWindowHovered ? Color.white.opacity(0.65) : RetraceMenuStyle.filterStrokeSubtle)),
                                     lineWidth: 1
                                 )
                         )
-                        .onSubmit {
-                            viewModel.applyFilters()
+                        .onHover { hovering in
+                            isWindowHovered = hovering
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            focusedField = .windowName
+                        }
+
+                        if !windowNameChips.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(windowNameChips) { chip in
+                                        TimelineMetadataTermChip(term: chip.term, mode: chip.mode) {
+                                            removeWindowNameTerm(chip.term, mode: chip.mode)
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
                         }
                     }
 
@@ -8845,16 +9434,21 @@ struct AdvancedFiltersSection: View {
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.6))
 
-                        TextField("Search URLs...", text: Binding(
-                            get: { viewModel.pendingFilterCriteria.browserUrlFilter ?? "" },
-                            set: { viewModel.pendingFilterCriteria.browserUrlFilter = $0.isEmpty ? nil : $0 }
-                        ))
-                        .focused($focusedField, equals: .browserUrl)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 9)
+                        HStack(spacing: 10) {
+                            TextField("Search URLs...", text: $browserInputText)
+                                .focused($focusedField, equals: .browserUrl)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13))
+                                .foregroundColor(.white)
+                                .onSubmit {
+                                    addBrowserUrlTermFromInput()
+                                }
+
+                            IncludeExcludeModeToggle(mode: $browserUrlFilterMode)
+                                .frame(width: 138)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 7)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(Color.white.opacity(0.08))
@@ -8864,14 +9458,31 @@ struct AdvancedFiltersSection: View {
                                 .stroke(
                                     focusedField == .browserUrl
                                         ? RetraceMenuStyle.filterStrokeStrong
-                                        : (viewModel.pendingFilterCriteria.browserUrlFilter != nil && !viewModel.pendingFilterCriteria.browserUrlFilter!.isEmpty
+                                        : (!browserUrlChips.isEmpty
                                             ? RetraceMenuStyle.filterStrokeMedium
-                                            : RetraceMenuStyle.filterStrokeSubtle),
+                                            : (isBrowserHovered ? Color.white.opacity(0.65) : RetraceMenuStyle.filterStrokeSubtle)),
                                     lineWidth: 1
                                 )
                         )
-                        .onSubmit {
-                            viewModel.applyFilters()
+                        .onHover { hovering in
+                            isBrowserHovered = hovering
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            focusedField = .browserUrl
+                        }
+
+                        if !browserUrlChips.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(browserUrlChips) { chip in
+                                        TimelineMetadataTermChip(term: chip.term, mode: chip.mode) {
+                                            removeBrowserUrlTerm(chip.term, mode: chip.mode)
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
                         }
                     }
                 }
@@ -8880,10 +9491,29 @@ struct AdvancedFiltersSection: View {
             }
         }
         .onAppear {
+            syncStateFromPendingFilters()
             // Auto-expand if there are active advanced filters
             if hasActiveAdvancedFilters {
                 isExpanded = true
             }
+        }
+        .onChange(of: windowNameIncludeTerms) { _ in
+            updatePendingWindowFilter()
+        }
+        .onChange(of: windowNameExcludeTerms) { _ in
+            updatePendingWindowFilter()
+        }
+        .onChange(of: browserUrlIncludeTerms) { _ in
+            updatePendingBrowserFilter()
+        }
+        .onChange(of: browserUrlExcludeTerms) { _ in
+            updatePendingBrowserFilter()
+        }
+        .onChange(of: viewModel.pendingFilterCriteria.windowNameFilter) { _ in
+            syncStateFromPendingFilters()
+        }
+        .onChange(of: viewModel.pendingFilterCriteria.browserUrlFilter) { _ in
+            syncStateFromPendingFilters()
         }
         .onChange(of: viewModel.activeFilterDropdown) { newValue in
             if newValue != .advanced {
@@ -8942,6 +9572,58 @@ struct AdvancedFiltersSection: View {
                     viewModel.advancedFocusedFieldIndex = 0
                 }
             }
+        }
+    }
+}
+
+private struct TimelineMetadataTermChip: View {
+    let term: String
+    let mode: AppFilterMode
+    let onRemove: () -> Void
+
+    @State private var isHovered = false
+
+    private var iconName: String {
+        mode == .include ? "plus.circle.fill" : "minus.circle.fill"
+    }
+
+    private var iconTint: Color {
+        mode == .include ? .blue.opacity(0.88) : .orange.opacity(0.9)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: iconName)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(iconTint)
+
+            Text(term)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(isHovered ? 0.2 : 0.14))
+        )
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(isHovered ? 0.35 : 0.2), lineWidth: 0.8)
+        )
+        .onHover { hovering in
+            isHovered = hovering
         }
     }
 }
@@ -9226,9 +9908,6 @@ struct FilterDropdownOverlay: View {
                     let fallbackSize = estimatedDropdownSize(for: viewModel.activeFilterDropdown)
                     let dropdownSize = resolvedDropdownSize(fallback: fallbackSize)
                     let origin = dropdownOrigin(containerSize: proxy.size, anchor: anchor, dropdownSize: dropdownSize)
-                    #if DEBUG
-                    let _ = print("[FilterDropdownOverlay] Rendering dropdown=\(viewModel.activeFilterDropdown), anchor=\(anchor), size=\(dropdownSize), origin=\(origin)")
-                    #endif
 
                     ZStack(alignment: .topLeading) {
                         // Full-screen dismiss layer (below dropdown)
@@ -9382,13 +10061,7 @@ struct FilterDropdownOverlay: View {
                     if let bundleID = bundleID {
                         viewModel.toggleAppFilter(bundleID)
                     } else {
-                        #if DEBUG
-                        print("[Filter] All Apps selected - clearing pendingFilterCriteria.selectedApps (was: \(String(describing: viewModel.pendingFilterCriteria.selectedApps)))")
-                        #endif
                         viewModel.pendingFilterCriteria.selectedApps = nil
-                        #if DEBUG
-                        print("[Filter] After clearing: pendingFilterCriteria.selectedApps = \(String(describing: viewModel.pendingFilterCriteria.selectedApps))")
-                        #endif
                     }
                 },
                 onFilterModeChange: { mode in
@@ -9450,13 +10123,12 @@ struct FilterDropdownOverlay: View {
             )
         case .dateRange:
             DateRangeFilterPopover(
-                startDate: viewModel.pendingFilterCriteria.startDate,
-                endDate: viewModel.pendingFilterCriteria.endDate,
-                onApply: { start, end in
-                    viewModel.setDateRange(start: start, end: end)
+                dateRanges: viewModel.pendingFilterCriteria.effectiveDateRanges,
+                onApply: { ranges in
+                    viewModel.setDateRanges(ranges)
                 },
                 onClear: {
-                    viewModel.setDateRange(start: nil, end: nil)
+                    viewModel.setDateRanges([])
                 },
                 enableKeyboardNavigation: true,
                 onMoveToNextFilter: {

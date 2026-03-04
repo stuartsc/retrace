@@ -65,9 +65,8 @@ public actor SearchManager: SearchProtocol {
         let parsed = try queryParser.parse(rawQuery: query.text)
 
         // Build FTS query
-        let ftsQuery = parsed.toFTSQuery()
-        let searchableColumnsFTSQuery = scopeToSearchableColumns(ftsQuery)
-        Log.debug("[SearchManager] Raw query: '\(query.text)' → FTS query: '\(searchableColumnsFTSQuery)' | terms: \(parsed.searchTerms) | phrases: \(parsed.phrases)", category: .search)
+        let searchableColumnsFTSQuery = Self.buildScopedFTSQuery(for: parsed)
+        Log.debug("[SearchManager] Raw query: '\(query.text)' → FTS query: '\(searchableColumnsFTSQuery)' | terms: \(parsed.searchTerms) | phrases: \(parsed.phrases) | excluded: \(parsed.excludedTerms)", category: .search)
 
         // Build filters
         var filters = query.filters
@@ -75,6 +74,7 @@ public actor SearchManager: SearchProtocol {
             filters = SearchFilters(
                 startDate: filters.startDate ?? parsed.dateRange.start,
                 endDate: filters.endDate ?? parsed.dateRange.end,
+                dateRanges: filters.dateRanges,
                 appBundleIDs: [appFilter],
                 excludedAppBundleIDs: filters.excludedAppBundleIDs,
                 selectedTagIds: filters.selectedTagIds,
@@ -88,6 +88,7 @@ public actor SearchManager: SearchProtocol {
             filters = SearchFilters(
                 startDate: filters.startDate ?? parsed.dateRange.start,
                 endDate: filters.endDate ?? parsed.dateRange.end,
+                dateRanges: filters.dateRanges,
                 appBundleIDs: filters.appBundleIDs,
                 excludedAppBundleIDs: filters.excludedAppBundleIDs,
                 selectedTagIds: filters.selectedTagIds,
@@ -293,11 +294,55 @@ public actor SearchManager: SearchProtocol {
         return -bm25Rank / (1.0 + abs(bm25Rank))
     }
 
-    /// Scope FTS query to OCR columns only (`text` + `otherText`), excluding `title`.
-    /// This prevents metadata-only title matches from appearing in result sets.
+    /// Scope a plain FTS query to OCR columns only (`text` + `otherText`), excluding `title`.
+    /// This is used for include-only helper queries (e.g. suggestions).
     private func scopeToSearchableColumns(_ query: String) -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return query }
         return "((text:(\(trimmed))) OR (otherText:(\(trimmed))))"
+    }
+
+    /// Build an FTS query that searches OCR columns and applies exclusions globally.
+    /// Example: `haseab -wave` becomes:
+    /// `((text:(haseab*)) OR (otherText:(haseab*))) NOT ((text:(wave)) OR (otherText:(wave)))`
+    static func buildScopedFTSQuery(for parsed: ParsedQuery) -> String {
+        let includeQuery = buildIncludeFTSQuery(for: parsed)
+        let trimmedInclude = includeQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInclude.isEmpty else { return includeQuery }
+
+        var query = "((text:(\(trimmedInclude))) OR (otherText:(\(trimmedInclude))))"
+        for excluded in parsed.excludedTerms {
+            let escaped = escapeFTSSpecialChars(excluded)
+            let excludedToken = excluded.contains(where: \.isWhitespace) ? "\"\(escaped)\"" : escaped
+            let excludedScope = "((text:(\(excludedToken))) OR (otherText:(\(excludedToken))))"
+            query = "(\(query) NOT \(excludedScope))"
+        }
+
+        return query
+    }
+
+    private static func buildIncludeFTSQuery(for parsed: ParsedQuery) -> String {
+        var parts: [String] = []
+
+        for term in parsed.searchTerms {
+            let escaped = escapeFTSSpecialChars(term)
+            parts.append("\(escaped)*")
+        }
+
+        for phrase in parsed.phrases {
+            let escaped = escapeFTSSpecialChars(phrase)
+            parts.append("\"\(escaped)\"")
+        }
+
+        return parts.joined(separator: " ")
+    }
+
+    private static func escapeFTSSpecialChars(_ text: String) -> String {
+        var escaped = text
+        let specialChars = ["\""]
+        for char in specialChars {
+            escaped = escaped.replacingOccurrences(of: char, with: "")
+        }
+        return escaped
     }
 }

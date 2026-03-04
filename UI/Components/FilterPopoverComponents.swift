@@ -220,9 +220,6 @@ public struct FilterPopoverContainer<Content: View>: View {
     }
 
     public var body: some View {
-        #if DEBUG
-        let _ = print("[FilterPopoverContainer] Rendering with width=\(width)")
-        #endif
         VStack(spacing: 0) {
             content
         }
@@ -272,6 +269,10 @@ public struct FilterSearchField: View {
             RoundedRectangle(cornerRadius: RetraceMenuStyle.searchFieldCornerRadius)
                 .fill(RetraceMenuStyle.searchFieldBackground)
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isFocused?.wrappedValue = true
+        }
     }
 
     @ViewBuilder
@@ -650,6 +651,7 @@ private struct FilterModeButton: View {
         .buttonStyle(.plain)
         .onHover { hovering in
             isHovered = hovering
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }
 }
@@ -961,64 +963,230 @@ public struct TagsFilterPopover: View {
 
 // MARK: - Visibility Filter Popover (Reusable)
 
-/// Popover for advanced search metadata filters (window name + browser URL)
+/// Popover for advanced search filters (query exclusions + metadata)
 public struct AdvancedSearchFilterPopover: View {
-    @Binding var windowNameFilter: String?
-    @Binding var browserUrlFilter: String?
+    @Binding var windowNameIncludeTerms: [String]
+    @Binding var windowNameExcludeTerms: [String]
+    @Binding var windowNameFilterMode: AppFilterMode
+    @Binding var browserUrlIncludeTerms: [String]
+    @Binding var browserUrlExcludeTerms: [String]
+    @Binding var browserUrlFilterMode: AppFilterMode
+    @Binding var excludedSearchTerms: [String]
+
     @FocusState private var focusedField: Field?
+    @State private var excludedInputText = ""
+    @State private var windowInputText = ""
+    @State private var browserInputText = ""
+    @State private var isExcludeHovered = false
     @State private var isWindowHovered = false
     @State private var isBrowserHovered = false
     @State private var arrowKeyMonitor: Any?
 
     private enum Field: Hashable {
-        case windowName
-        case browserUrl
+        case excludeTerms
+        case windowNameInput
+        case browserUrlInput
     }
 
     public init(
-        windowNameFilter: Binding<String?>,
-        browserUrlFilter: Binding<String?>
+        windowNameIncludeTerms: Binding<[String]>,
+        windowNameExcludeTerms: Binding<[String]>,
+        windowNameFilterMode: Binding<AppFilterMode>,
+        browserUrlIncludeTerms: Binding<[String]>,
+        browserUrlExcludeTerms: Binding<[String]>,
+        browserUrlFilterMode: Binding<AppFilterMode>,
+        excludedSearchTerms: Binding<[String]>
     ) {
-        self._windowNameFilter = windowNameFilter
-        self._browserUrlFilter = browserUrlFilter
+        self._windowNameIncludeTerms = windowNameIncludeTerms
+        self._windowNameExcludeTerms = windowNameExcludeTerms
+        self._windowNameFilterMode = windowNameFilterMode
+        self._browserUrlIncludeTerms = browserUrlIncludeTerms
+        self._browserUrlExcludeTerms = browserUrlExcludeTerms
+        self._browserUrlFilterMode = browserUrlFilterMode
+        self._excludedSearchTerms = excludedSearchTerms
+    }
+
+    private var normalizedExcludedTerms: [String] {
+        deduplicatedTerms(excludedSearchTerms)
+    }
+
+    private var normalizedWindowNameIncludeTerms: [String] {
+        deduplicatedTerms(windowNameIncludeTerms)
+    }
+
+    private var normalizedWindowNameExcludeTerms: [String] {
+        deduplicatedTerms(windowNameExcludeTerms)
+            .filter { excludeTerm in
+                !normalizedWindowNameIncludeTerms.contains { $0.caseInsensitiveCompare(excludeTerm) == .orderedSame }
+            }
+    }
+
+    private var normalizedBrowserUrlIncludeTerms: [String] {
+        deduplicatedTerms(browserUrlIncludeTerms)
+    }
+
+    private var normalizedBrowserUrlExcludeTerms: [String] {
+        deduplicatedTerms(browserUrlExcludeTerms)
+            .filter { excludeTerm in
+                !normalizedBrowserUrlIncludeTerms.contains { $0.caseInsensitiveCompare(excludeTerm) == .orderedSame }
+            }
     }
 
     private var hasActiveFilters: Bool {
-        (windowNameFilter?.isEmpty == false) ||
-        (browserUrlFilter?.isEmpty == false)
+        !normalizedExcludedTerms.isEmpty ||
+        !normalizedWindowNameIncludeTerms.isEmpty ||
+        !normalizedWindowNameExcludeTerms.isEmpty ||
+        !normalizedBrowserUrlIncludeTerms.isEmpty ||
+        !normalizedBrowserUrlExcludeTerms.isEmpty
     }
 
-    private var windowNameTextBinding: Binding<String> {
-        Binding(
-            get: { windowNameFilter ?? "" },
-            set: { newValue in
-                let normalized = newValue.isEmpty ? nil : newValue
-                guard normalized != windowNameFilter else { return }
-                windowNameFilter = normalized
-            }
-        )
+    private func addExcludedTermFromInput() {
+        let candidate = excludedInputText
+        excludedInputText = ""
+        guard let normalized = Self.normalizedTerm(candidate) else { return }
+
+        var updated = normalizedExcludedTerms
+        updated.append(normalized)
+        setExcludedTerms(updated)
     }
 
-    private var browserUrlTextBinding: Binding<String> {
-        Binding(
-            get: { browserUrlFilter ?? "" },
-            set: { newValue in
-                let normalized = newValue.isEmpty ? nil : newValue
-                guard normalized != browserUrlFilter else { return }
-                browserUrlFilter = normalized
+    private func addWindowNameTermFromInput() {
+        let candidate = windowInputText
+        windowInputText = ""
+        guard let normalized = Self.normalizedTerm(candidate) else { return }
+
+        if windowNameFilterMode == .include {
+            var updatedInclude = normalizedWindowNameIncludeTerms
+            updatedInclude.append(normalized)
+            let filteredExclude = normalizedWindowNameExcludeTerms.filter { $0.caseInsensitiveCompare(normalized) != .orderedSame }
+            setWindowNameIncludeTerms(updatedInclude)
+            setWindowNameExcludeTerms(filteredExclude)
+        } else {
+            var updatedExclude = normalizedWindowNameExcludeTerms
+            updatedExclude.append(normalized)
+            let filteredInclude = normalizedWindowNameIncludeTerms.filter { $0.caseInsensitiveCompare(normalized) != .orderedSame }
+            setWindowNameIncludeTerms(filteredInclude)
+            setWindowNameExcludeTerms(updatedExclude)
+        }
+    }
+
+    private func addBrowserUrlTermFromInput() {
+        let candidate = browserInputText
+        browserInputText = ""
+        guard let normalized = Self.normalizedTerm(candidate) else { return }
+
+        if browserUrlFilterMode == .include {
+            var updatedInclude = normalizedBrowserUrlIncludeTerms
+            updatedInclude.append(normalized)
+            let filteredExclude = normalizedBrowserUrlExcludeTerms.filter { $0.caseInsensitiveCompare(normalized) != .orderedSame }
+            setBrowserUrlIncludeTerms(updatedInclude)
+            setBrowserUrlExcludeTerms(filteredExclude)
+        } else {
+            var updatedExclude = normalizedBrowserUrlExcludeTerms
+            updatedExclude.append(normalized)
+            let filteredInclude = normalizedBrowserUrlIncludeTerms.filter { $0.caseInsensitiveCompare(normalized) != .orderedSame }
+            setBrowserUrlIncludeTerms(filteredInclude)
+            setBrowserUrlExcludeTerms(updatedExclude)
+        }
+    }
+
+    private func removeTerm(_ term: String, from sourceTerms: [String], setTerms: ([String]) -> Void) {
+        let needle = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return }
+        let filtered = sourceTerms.filter { existing in
+            existing.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != needle
+        }
+        setTerms(filtered)
+    }
+
+    private func setExcludedTerms(_ terms: [String]) {
+        let normalized = deduplicatedTerms(terms)
+        guard normalized != excludedSearchTerms else { return }
+        excludedSearchTerms = normalized
+    }
+
+    private func setWindowNameIncludeTerms(_ terms: [String]) {
+        let normalized = deduplicatedTerms(terms)
+        guard normalized != windowNameIncludeTerms else { return }
+        windowNameIncludeTerms = normalized
+    }
+
+    private func setWindowNameExcludeTerms(_ terms: [String]) {
+        let normalized = deduplicatedTerms(terms)
+        guard normalized != windowNameExcludeTerms else { return }
+        windowNameExcludeTerms = normalized
+    }
+
+    private func setBrowserUrlIncludeTerms(_ terms: [String]) {
+        let normalized = deduplicatedTerms(terms)
+        guard normalized != browserUrlIncludeTerms else { return }
+        browserUrlIncludeTerms = normalized
+    }
+
+    private func setBrowserUrlExcludeTerms(_ terms: [String]) {
+        let normalized = deduplicatedTerms(terms)
+        guard normalized != browserUrlExcludeTerms else { return }
+        browserUrlExcludeTerms = normalized
+    }
+
+    private struct MetadataChipTerm: Identifiable {
+        let term: String
+        let mode: AppFilterMode
+        var id: String { "\(mode.rawValue):\(term.lowercased())" }
+    }
+
+    private var windowNameChips: [MetadataChipTerm] {
+        normalizedWindowNameIncludeTerms.map { MetadataChipTerm(term: $0, mode: .include) } +
+        normalizedWindowNameExcludeTerms.map { MetadataChipTerm(term: $0, mode: .exclude) }
+    }
+
+    private var browserUrlChips: [MetadataChipTerm] {
+        normalizedBrowserUrlIncludeTerms.map { MetadataChipTerm(term: $0, mode: .include) } +
+        normalizedBrowserUrlExcludeTerms.map { MetadataChipTerm(term: $0, mode: .exclude) }
+    }
+
+    private func deduplicatedTerms(_ terms: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalizedTerms: [String] = []
+
+        for term in terms {
+            guard let cleaned = Self.normalizedTerm(term) else { continue }
+            let key = cleaned.lowercased()
+            if seen.insert(key).inserted {
+                normalizedTerms.append(cleaned)
             }
-        )
+        }
+        return normalizedTerms
+    }
+
+    private static func normalizedTerm(_ term: String) -> String? {
+        let collapsed = term
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? nil : collapsed
     }
 
     private func moveFocusDown() {
-        if focusedField == .windowName {
-            focusedField = .browserUrl
+        switch focusedField {
+        case .excludeTerms:
+            focusedField = .windowNameInput
+        case .windowNameInput:
+            focusedField = .browserUrlInput
+        default:
+            break
         }
     }
 
     private func moveFocusUp() {
-        if focusedField == .browserUrl {
-            focusedField = .windowName
+        switch focusedField {
+        case .browserUrlInput:
+            focusedField = .windowNameInput
+        case .windowNameInput:
+            focusedField = .excludeTerms
+        default:
+            break
         }
     }
 
@@ -1026,7 +1194,6 @@ public struct AdvancedSearchFilterPopover: View {
         guard arrowKeyMonitor == nil else { return }
 
         arrowKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Ignore modified arrow commands (cmd/opt/ctrl).
             if event.modifierFlags.contains(.command) ||
                 event.modifierFlags.contains(.option) ||
                 event.modifierFlags.contains(.control) {
@@ -1055,7 +1222,7 @@ public struct AdvancedSearchFilterPopover: View {
     }
 
     public var body: some View {
-        FilterPopoverContainer(width: 300) {
+        FilterPopoverContainer(width: 340) {
             HStack {
                 Text("Advanced Filters")
                     .font(.system(size: 14, weight: .semibold))
@@ -1065,8 +1232,16 @@ public struct AdvancedSearchFilterPopover: View {
 
                 if hasActiveFilters {
                     Button("Clear") {
-                        windowNameFilter = nil
-                        browserUrlFilter = nil
+                        excludedSearchTerms = []
+                        windowNameIncludeTerms = []
+                        windowNameExcludeTerms = []
+                        browserUrlIncludeTerms = []
+                        browserUrlExcludeTerms = []
+                        windowNameFilterMode = .include
+                        browserUrlFilterMode = .include
+                        excludedInputText = ""
+                        windowInputText = ""
+                        browserInputText = ""
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 11, weight: .medium))
@@ -1081,12 +1256,12 @@ public struct AdvancedSearchFilterPopover: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Window Name")
+                    Text("Exclude Frames With Words")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.65))
 
-                    TextField("Search titles...", text: windowNameTextBinding)
-                        .focused($focusedField, equals: .windowName)
+                    TextField("Type a word or phrase, then press Return", text: $excludedInputText)
+                        .focused($focusedField, equals: .excludeTerms)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .foregroundColor(.white)
@@ -1099,17 +1274,98 @@ public struct AdvancedSearchFilterPopover: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: 6)
                                 .stroke(
-                                    focusedField == .windowName
+                                    focusedField == .excludeTerms
                                         ? RetraceMenuStyle.filterStrokeStrong
-                                        : (isWindowHovered
+                                        : (isExcludeHovered
                                             ? Color.white.opacity(0.65)
                                             : RetraceMenuStyle.filterStrokeSubtle),
                                     lineWidth: 1
                                 )
                         )
                         .onHover { hovering in
-                            isWindowHovered = hovering
+                            isExcludeHovered = hovering
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            focusedField = .excludeTerms
+                        }
+                        .onSubmit {
+                            addExcludedTermFromInput()
+                        }
+
+                    if !normalizedExcludedTerms.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(normalizedExcludedTerms, id: \.self) { term in
+                                    MetadataTermChip(term: term, mode: .exclude) {
+                                        removeTerm(term, from: normalizedExcludedTerms, setTerms: setExcludedTerms)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Window Name")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.65))
+
+                    HStack(spacing: 10) {
+                        TextField("Search titles...", text: $windowInputText)
+                            .focused($focusedField, equals: .windowNameInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .onSubmit {
+                                addWindowNameTermFromInput()
+                            }
+
+                        IncludeExcludeModeToggle(mode: $windowNameFilterMode)
+                            .frame(width: 138)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(
+                                focusedField == .windowNameInput
+                                    ? RetraceMenuStyle.filterStrokeStrong
+                                    : (isWindowHovered
+                                        ? Color.white.opacity(0.65)
+                                        : RetraceMenuStyle.filterStrokeSubtle),
+                                lineWidth: 1
+                            )
+                    )
+                    .onHover { hovering in
+                        isWindowHovered = hovering
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        focusedField = .windowNameInput
+                    }
+
+                    if !windowNameChips.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(windowNameChips) { chip in
+                                    MetadataTermChip(term: chip.term, mode: chip.mode) {
+                                        if chip.mode == .include {
+                                            removeTerm(chip.term, from: normalizedWindowNameIncludeTerms, setTerms: setWindowNameIncludeTerms)
+                                        } else {
+                                            removeTerm(chip.term, from: normalizedWindowNameExcludeTerms, setTerms: setWindowNameExcludeTerms)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -1117,31 +1373,60 @@ public struct AdvancedSearchFilterPopover: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.65))
 
-                    TextField("Search URLs...", text: browserUrlTextBinding)
-                        .focused($focusedField, equals: .browserUrl)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(
-                                    focusedField == .browserUrl
-                                        ? RetraceMenuStyle.filterStrokeStrong
-                                        : (isBrowserHovered
-                                            ? Color.white.opacity(0.65)
-                                            : RetraceMenuStyle.filterStrokeSubtle),
-                                    lineWidth: 1
-                                )
-                        )
-                        .onHover { hovering in
-                            isBrowserHovered = hovering
+                    HStack(spacing: 10) {
+                        TextField("Search URLs...", text: $browserInputText)
+                            .focused($focusedField, equals: .browserUrlInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .onSubmit {
+                                addBrowserUrlTermFromInput()
+                            }
+
+                        IncludeExcludeModeToggle(mode: $browserUrlFilterMode)
+                            .frame(width: 138)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(
+                                focusedField == .browserUrlInput
+                                    ? RetraceMenuStyle.filterStrokeStrong
+                                    : (isBrowserHovered
+                                        ? Color.white.opacity(0.65)
+                                        : RetraceMenuStyle.filterStrokeSubtle),
+                                lineWidth: 1
+                            )
+                    )
+                    .onHover { hovering in
+                        isBrowserHovered = hovering
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        focusedField = .browserUrlInput
+                    }
+
+                    if !browserUrlChips.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(browserUrlChips) { chip in
+                                    MetadataTermChip(term: chip.term, mode: chip.mode) {
+                                        if chip.mode == .include {
+                                            removeTerm(chip.term, from: normalizedBrowserUrlIncludeTerms, setTerms: setBrowserUrlIncludeTerms)
+                                        } else {
+                                            removeTerm(chip.term, from: normalizedBrowserUrlExcludeTerms, setTerms: setBrowserUrlExcludeTerms)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
                         }
+                    }
                 }
             }
             .padding(.horizontal, 14)
@@ -1149,13 +1434,132 @@ public struct AdvancedSearchFilterPopover: View {
             .padding(.bottom, 12)
         }
         .onAppear {
+            setExcludedTerms(excludedSearchTerms)
+            setWindowNameIncludeTerms(windowNameIncludeTerms)
+            setWindowNameExcludeTerms(windowNameExcludeTerms)
+            setBrowserUrlIncludeTerms(browserUrlIncludeTerms)
+            setBrowserUrlExcludeTerms(browserUrlExcludeTerms)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                focusedField = .windowName
+                focusedField = .excludeTerms
             }
             setupArrowKeyMonitor()
         }
         .onDisappear {
             removeArrowKeyMonitor()
+        }
+    }
+}
+
+struct IncludeExcludeModeToggle: View {
+    @Binding var mode: AppFilterMode
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TogglePillButton(
+                title: "Include",
+                isSelected: mode == .include
+            ) {
+                mode = .include
+            }
+
+            TogglePillButton(
+                title: "Exclude",
+                isSelected: mode == .exclude
+            ) {
+                mode = .exclude
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.white.opacity(0.05))
+        )
+    }
+}
+
+private struct TogglePillButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isSelected ? .white : RetraceMenuStyle.textColorMuted)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(
+                            isSelected
+                                ? RetraceMenuStyle.actionBlue
+                                : (isHovered ? Color.white.opacity(0.08) : Color.clear)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+}
+
+private struct MetadataTermChip: View {
+    let term: String
+    let mode: AppFilterMode
+    let onRemove: () -> Void
+
+    @State private var isHovered = false
+
+    private var iconName: String {
+        mode == .include ? "plus.circle.fill" : "minus.circle.fill"
+    }
+
+    private var iconTint: Color {
+        mode == .include ? .blue.opacity(0.88) : .orange.opacity(0.9)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: iconName)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(iconTint)
+
+            Text(term)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(isHovered ? 0.2 : 0.14))
+        )
+        .overlay(
+            Capsule()
+                .stroke(
+                    isHovered ? Color.white.opacity(0.6) : RetraceMenuStyle.filterStrokeSubtle,
+                    lineWidth: 1
+                )
+        )
+        .onHover { hovering in
+            isHovered = hovering
         }
     }
 }
@@ -1409,26 +1813,14 @@ public struct DropdownOverlayModifier<DropdownContent: View>: ViewModifier {
     }
 
     public func body(content: Content) -> some View {
-        #if DEBUG
-        let _ = print("[DropdownOverlay] Rendering, isPresented=\(isPresented), opensUpward=\(opensUpward), yOffset=\(yOffset)")
-        #endif
         content
             .background(GeometryReader { geo in
                 Color.clear.onAppear {
-                    #if DEBUG
-                    print("[DropdownOverlay] Anchor content frame: \(geo.frame(in: .global))")
-                    #endif
                 }.onChange(of: isPresented) { _ in
-                    #if DEBUG
-                    print("[DropdownOverlay] Anchor content frame (on change): \(geo.frame(in: .global))")
-                    #endif
                 }
             })
             .overlay(alignment: opensUpward ? .bottomLeading : .topLeading) {
                 if isPresented {
-                    #if DEBUG
-                    let _ = print("[DropdownOverlay] Showing dropdown content with zIndex=1000")
-                    #endif
                     // Wrap content in a background container to ensure solid background
                     ZStack {
                         // Solid background layer
@@ -1450,9 +1842,6 @@ public struct DropdownOverlayModifier<DropdownContent: View>: ViewModifier {
                     .zIndex(1000)
                     .background(GeometryReader { geo in
                         Color.clear.onAppear {
-                            #if DEBUG
-                            print("[DropdownOverlay] Dropdown content frame: \(geo.frame(in: .global))")
-                            #endif
                         }
                     })
                 }
@@ -1475,11 +1864,10 @@ public extension View {
 
 // MARK: - Date Range Filter Popover
 
-/// Popover for selecting date range filter with natural-language input and a single range calendar
+/// Popover for selecting up to five date ranges with natural-language input and calendar support.
 public struct DateRangeFilterPopover: View {
-    let startDate: Date?
-    let endDate: Date?
-    let onApply: (Date?, Date?) -> Void
+    let dateRanges: [DateRangeCriterion]
+    let onApply: ([DateRangeCriterion]) -> Void
     let onClear: () -> Void
     let width: CGFloat
     let enableKeyboardNavigation: Bool
@@ -1491,12 +1879,19 @@ public struct DateRangeFilterPopover: View {
     @State private var localEndDate: Date
     @State private var rangeInputText: String = ""
     @State private var parseError: String?
+    @State private var hasCommittedPrimaryRange = false
+    @State private var additionalRangeInputTexts: [String] = []
+    @State private var additionalParseErrors: [String?] = []
+    @State private var additionalParsedRanges: [DateRangeCriterion?] = []
     @State private var isCalendarVisible = false
     @State private var activeCalendarBoundary: CalendarBoundary = .start
+    @State private var activeCalendarTarget: CalendarTarget = .primary
+    @State private var lastFocusedCalendarTarget: CalendarTarget = .primary
     @State private var displayedMonth: Date = Date()
     @State private var focusedItem: Int = 0
     @State private var keyboardMonitor: Any?
     @FocusState private var isRangeInputFocused: Bool
+    @FocusState private var focusedAdditionalRangeIndex: Int?
 
     private let calendar = Calendar.current
     private let weekdaySymbols = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
@@ -1514,10 +1909,33 @@ public struct DateRangeFilterPopover: View {
         case lastMonth
     }
 
+    private enum CalendarTarget: Equatable {
+        case primary
+        case additional(Int)
+    }
+
+    private var canAddAnotherRange: Bool {
+        let additionalCommittedCount = additionalParsedRanges.compactMap { range in
+            range?.hasBounds == true ? range : nil
+        }.count
+        return (hasCommittedPrimaryRange || additionalCommittedCount > 0) && additionalRangeInputTexts.count < 4
+    }
+
+    private var activeRangeCount: Int {
+        let primaryCount = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+        let additionalCount = additionalRangeInputTexts.filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+        return primaryCount + additionalCount
+    }
+
+    private var isAnyRangeInputFocused: Bool {
+        isRangeInputFocused || focusedAdditionalRangeIndex != nil
+    }
+
     public init(
-        startDate: Date?,
-        endDate: Date?,
-        onApply: @escaping (Date?, Date?) -> Void,
+        dateRanges: [DateRangeCriterion] = [],
+        onApply: @escaping ([DateRangeCriterion]) -> Void,
         onClear: @escaping () -> Void,
         width: CGFloat = 300,
         enableKeyboardNavigation: Bool = false,
@@ -1525,8 +1943,7 @@ public struct DateRangeFilterPopover: View {
         onCalendarEditingChange: ((Bool) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil
     ) {
-        self.startDate = startDate
-        self.endDate = endDate
+        self.dateRanges = Array(dateRanges.filter(\.hasBounds).prefix(5))
         self.onApply = onApply
         self.onClear = onClear
         self.width = width
@@ -1536,9 +1953,12 @@ public struct DateRangeFilterPopover: View {
         self.onDismiss = onDismiss
 
         let now = Date()
-        _localStartDate = State(initialValue: startDate ?? calendar.date(byAdding: .day, value: -7, to: now)!)
-        _localEndDate = State(initialValue: endDate ?? now)
-        _displayedMonth = State(initialValue: endDate ?? now)
+        let primaryRange = self.dateRanges.first
+        let primaryStart = primaryRange?.start ?? primaryRange?.end ?? calendar.date(byAdding: .day, value: -7, to: now)!
+        let primaryEnd = primaryRange?.end ?? primaryRange?.start ?? now
+        _localStartDate = State(initialValue: primaryStart)
+        _localEndDate = State(initialValue: primaryEnd)
+        _displayedMonth = State(initialValue: primaryEnd)
     }
 
     public var body: some View {
@@ -1551,10 +1971,16 @@ public struct DateRangeFilterPopover: View {
 
                 Spacer()
 
-                if startDate != nil || endDate != nil {
+                if activeRangeCount > 0 {
                     Button("Clear") {
                         rangeInputText = ""
                         parseError = nil
+                        hasCommittedPrimaryRange = false
+                        additionalRangeInputTexts.removeAll()
+                        additionalParseErrors.removeAll()
+                        additionalParsedRanges.removeAll()
+                        activeCalendarTarget = .primary
+                        lastFocusedCalendarTarget = .primary
                         onClear()
                         onDismiss?()
                     }
@@ -1570,7 +1996,7 @@ public struct DateRangeFilterPopover: View {
                 .background(Color.white.opacity(0.1))
 
             // Natural language range input
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 11, weight: .medium))
@@ -1585,12 +2011,16 @@ public struct DateRangeFilterPopover: View {
                         .onChange(of: isRangeInputFocused) { isFocused in
                             if isFocused {
                                 focusedItem = -1  // Clear keyboard navigation highlight when text field is focused
+                                lastFocusedCalendarTarget = .primary
+                                if isCalendarVisible {
+                                    synchronizeCalendarStateFromTarget(.primary)
+                                }
                             } else {
                                 canonicalizeInputTextIfPossible()
                             }
                         }
                         .onSubmit {
-                            applyCurrentSelection(moveToNextDropdown: true)
+                            applyCurrentSelection(moveToNextDropdown: false)
                         }
                         .onChange(of: rangeInputText) { _ in
                             parseError = nil
@@ -1600,7 +2030,8 @@ public struct DateRangeFilterPopover: View {
                         Button(action: {
                             rangeInputText = ""
                             parseError = nil
-                            onClear()
+                            hasCommittedPrimaryRange = false
+                            applyAllRanges(moveToNextDropdown: false)
                         }) {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.system(size: 12, weight: .medium))
@@ -1619,12 +2050,100 @@ public struct DateRangeFilterPopover: View {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(isRangeInputFocused ? RetraceMenuStyle.filterStrokeMedium : Color.clear, lineWidth: 1)
                 )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    focusedAdditionalRangeIndex = nil
+                    isRangeInputFocused = true
+                }
 
                 if let parseError {
                     Text(parseError)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.orange.opacity(0.9))
                         .padding(.horizontal, 2)
+                }
+
+                ForEach(additionalRangeInputTexts.indices, id: \.self) { index in
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.3))
+
+                        TextField(
+                            "Additional range #\(index + 2)",
+                            text: additionalRangeBinding(for: index)
+                        )
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(.white)
+                        .focused($focusedAdditionalRangeIndex, equals: index)
+                        .modifier(FocusEffectDisabledModifier())
+                        .onSubmit {
+                            applyAdditionalRangeInput(at: index)
+                        }
+
+                        Button(action: {
+                            removeAdditionalRange(at: index)
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.white.opacity(0.35))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(
+                                focusedAdditionalRangeIndex == index ? RetraceMenuStyle.filterStrokeMedium : Color.clear,
+                                lineWidth: 1
+                            )
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        isRangeInputFocused = false
+                        focusedAdditionalRangeIndex = index
+                    }
+
+                    if let additionalError = additionalParseErrorMessage(at: index) {
+                        Text(additionalError)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.orange.opacity(0.9))
+                            .padding(.horizontal, 2)
+                    }
+                }
+
+                if canAddAnotherRange {
+                    Button(action: {
+                        addAdditionalRangeInput()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Add another date range")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundColor(.white.opacity(0.78))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.white.opacity(0.09))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -1638,9 +2157,9 @@ public struct DateRangeFilterPopover: View {
                 withAnimation(.easeOut(duration: 0.15)) {
                     isCalendarVisible.toggle()
                     if isCalendarVisible {
-                        displayedMonth = localEndDate
-                        activeCalendarBoundary = .start
+                        synchronizeCalendarStateFromTarget(lastFocusedCalendarTarget)
                         isRangeInputFocused = false
+                        focusedAdditionalRangeIndex = nil
                     }
                 }
             }) {
@@ -1724,6 +2243,16 @@ public struct DateRangeFilterPopover: View {
         }
         .onChange(of: isCalendarVisible) { isVisible in
             onCalendarEditingChange?(isVisible)
+        }
+        .onChange(of: focusedAdditionalRangeIndex) { index in
+            if let index {
+                focusedItem = -1
+                isRangeInputFocused = false
+                lastFocusedCalendarTarget = .additional(index)
+                if isCalendarVisible {
+                    synchronizeCalendarStateFromTarget(.additional(index))
+                }
+            }
         }
     }
 
@@ -1889,9 +2418,13 @@ public struct DateRangeFilterPopover: View {
     private func configureInitialState() {
         let now = Date()
         let fallbackStart = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        let normalizedRanges = Array(dateRanges.filter(\.hasBounds).prefix(5))
+        let primaryRange = normalizedRanges.first
+        let primaryStart = primaryRange?.start ?? primaryRange?.end ?? fallbackStart
+        let primaryEnd = primaryRange?.end ?? primaryRange?.start ?? now
 
-        localStartDate = calendar.startOfDay(for: startDate ?? fallbackStart)
-        localEndDate = calendar.startOfDay(for: endDate ?? now)
+        localStartDate = calendar.startOfDay(for: primaryStart)
+        localEndDate = calendar.startOfDay(for: primaryEnd)
 
         if localEndDate < localStartDate {
             swap(&localStartDate, &localEndDate)
@@ -1902,11 +2435,19 @@ public struct DateRangeFilterPopover: View {
         isCalendarVisible = false
         parseError = nil
 
-        if startDate != nil || endDate != nil {
+        if primaryRange != nil {
             rangeInputText = formatRangeInput(start: localStartDate, end: localEndDate)
+            hasCommittedPrimaryRange = true
         } else {
             rangeInputText = ""
+            hasCommittedPrimaryRange = false
         }
+
+        let extras = normalizedRanges.dropFirst()
+        additionalRangeInputTexts = extras.map { formatRangeInputText(for: $0) }
+        additionalParseErrors = Array(repeating: nil, count: extras.count)
+        additionalParsedRanges = Array(extras)
+        normalizeAdditionalRangeState()
     }
 
     private func changeMonth(by value: Int) {
@@ -1940,6 +2481,100 @@ public struct DateRangeFilterPopover: View {
         return day >= normalizedStart && day <= normalizedEnd
     }
 
+    private func resolvedCalendarTarget(_ target: CalendarTarget) -> CalendarTarget {
+        switch target {
+        case .primary:
+            return .primary
+        case .additional(let index):
+            return additionalRangeInputTexts.indices.contains(index) ? .additional(index) : .primary
+        }
+    }
+
+    private func parsedRange(for target: CalendarTarget) -> (start: Date, end: Date)? {
+        switch resolvedCalendarTarget(target) {
+        case .primary:
+            let trimmed = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let parsed = parseDateRangeInput(trimmed) else { return nil }
+            return parsed
+
+        case .additional(let index):
+            guard additionalRangeInputTexts.indices.contains(index) else { return nil }
+
+            if additionalParsedRanges.indices.contains(index),
+               let parsed = additionalParsedRanges[index],
+               parsed.hasBounds,
+               let start = parsed.start,
+               let end = parsed.end {
+                return (calendar.startOfDay(for: start), calendar.startOfDay(for: end))
+            }
+
+            let trimmed = additionalRangeInputTexts[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let parsed = parseDateRangeInput(trimmed) else { return nil }
+            return parsed
+        }
+    }
+
+    private func synchronizeCalendarStateFromTarget(_ target: CalendarTarget) {
+        let resolvedTarget = resolvedCalendarTarget(target)
+        activeCalendarTarget = resolvedTarget
+
+        let now = Date()
+        let fallbackStart = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        let requestedRange = parsedRange(for: resolvedTarget)
+        let primaryRange = parsedRange(for: .primary)
+        let sourceRange: (start: Date, end: Date)?
+        switch resolvedTarget {
+        case .primary:
+            sourceRange = requestedRange ?? primaryRange
+        case .additional:
+            // Keep additional inputs independent: if empty/unparseable, do not inherit primary range.
+            sourceRange = requestedRange
+        }
+
+        localStartDate = calendar.startOfDay(for: sourceRange?.start ?? fallbackStart)
+        localEndDate = calendar.startOfDay(for: sourceRange?.end ?? now)
+        if localEndDate < localStartDate {
+            swap(&localStartDate, &localEndDate)
+        }
+
+        displayedMonth = localEndDate
+        activeCalendarBoundary = .start
+    }
+
+    private func applyCalendarSelectionToActiveTarget(applyImmediately: Bool, moveToNextDropdown: Bool = false) {
+        let startDay = calendar.startOfDay(for: localStartDate)
+        let endDay = calendar.startOfDay(for: localEndDate)
+        localStartDate = min(startDay, endDay)
+        localEndDate = max(startDay, endDay)
+        let formatted = formatRangeInput(start: localStartDate, end: localEndDate)
+
+        switch resolvedCalendarTarget(activeCalendarTarget) {
+        case .primary:
+            rangeInputText = formatted
+            parseError = nil
+            if applyImmediately {
+                let end = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: localEndDate) ?? localEndDate
+                applyAllRanges(
+                    primaryOverride: DateRangeCriterion(start: localStartDate, end: end),
+                    moveToNextDropdown: moveToNextDropdown
+                )
+            }
+
+        case .additional(let index):
+            guard additionalRangeInputTexts.indices.contains(index),
+                  additionalParseErrors.indices.contains(index),
+                  additionalParsedRanges.indices.contains(index) else {
+                return
+            }
+            additionalRangeInputTexts[index] = formatted
+            additionalParseErrors[index] = nil
+            additionalParsedRanges[index] = normalizedFilterRange(start: localStartDate, end: localEndDate)
+            if applyImmediately {
+                applyAllRanges(moveToNextDropdown: moveToNextDropdown)
+            }
+        }
+    }
+
     private func selectDay(_ day: Date) {
         if activeCalendarBoundary == .start {
             localStartDate = day
@@ -1953,22 +2588,20 @@ public struct DateRangeFilterPopover: View {
                 localEndDate = day
             }
             activeCalendarBoundary = .start
-            rangeInputText = formatRangeInput(start: localStartDate, end: localEndDate)
-            parseError = nil
-            applyCustomRange(moveToNextDropdown: false)
+            applyCalendarSelectionToActiveTarget(applyImmediately: true)
             return
         }
 
-        rangeInputText = formatRangeInput(start: localStartDate, end: localEndDate)
-        parseError = nil
+        applyCalendarSelectionToActiveTarget(applyImmediately: false)
     }
 
     @discardableResult
     private func applyInputTextToLocalRange(applyImmediately: Bool) -> Bool {
         let trimmed = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            parseError = "Enter a range like \"Dec 5, 2025 to Dec 8, 2025\"."
-            return false
+            parseError = nil
+            hasCommittedPrimaryRange = false
+            return true
         }
 
         guard let parsedRange = parseDateRangeInput(trimmed) else {
@@ -1981,35 +2614,24 @@ public struct DateRangeFilterPopover: View {
         displayedMonth = parsedRange.end
         rangeInputText = formatRangeInput(start: parsedRange.start, end: parsedRange.end)
         parseError = nil
+        hasCommittedPrimaryRange = true
         activeCalendarBoundary = .start
 
         if applyImmediately {
-            applyCustomRange(moveToNextDropdown: false)
+            applyAllRanges(moveToNextDropdown: false)
         }
 
         return true
     }
 
     private func applyCurrentSelection(moveToNextDropdown: Bool = false) {
-        let trimmed = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmed.isEmpty {
-            onClear()
-            onDismiss?()
-            if moveToNextDropdown {
-                onMoveToNextFilter?()
-            }
-            return
-        }
-
         guard applyInputTextToLocalRange(applyImmediately: false) else {
             if moveToNextDropdown {
-                onDismiss?()
                 onMoveToNextFilter?()
             }
             return
         }
-        applyCustomRange(moveToNextDropdown: moveToNextDropdown)
+        applyAllRanges(moveToNextDropdown: moveToNextDropdown)
     }
 
     private func applyCustomRange(moveToNextDropdown: Bool = false) {
@@ -2019,18 +2641,10 @@ public struct DateRangeFilterPopover: View {
         // Use bySettingHour to preserve the date's timezone instead of reconstructing with components
         let end = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: localEndDate) ?? localEndDate
 
-        // Log the final search range
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d, yyyy HH:mm:ss"
-        formatter.timeZone = TimeZone.current
-        Log.debug("[DateParse] ⏰ SEARCH RANGE (local time): \(formatter.string(from: start)) to \(formatter.string(from: end))", category: .ui)
-
-        onApply(start, end)
-        onDismiss?()
-
-        if moveToNextDropdown {
-            onMoveToNextFilter?()
-        }
+        applyAllRanges(
+            primaryOverride: DateRangeCriterion(start: start, end: end),
+            moveToNextDropdown: moveToNextDropdown
+        )
     }
 
     private func applyPreset(_ preset: DatePreset) {
@@ -2039,8 +2653,12 @@ public struct DateRangeFilterPopover: View {
         case .anytime:
             rangeInputText = ""
             parseError = nil
+            hasCommittedPrimaryRange = false
+            additionalRangeInputTexts.removeAll()
+            additionalParseErrors.removeAll()
+            additionalParsedRanges.removeAll()
+            normalizeAdditionalRangeState()
             onClear()
-            onDismiss?()
 
         case .today:
             let today = calendar.startOfDay(for: now)
@@ -2070,6 +2688,201 @@ public struct DateRangeFilterPopover: View {
         }
     }
 
+    private func addAdditionalRangeInput() {
+        guard additionalRangeInputTexts.count < 4 else { return }
+        additionalRangeInputTexts.append("")
+        additionalParseErrors.append(nil)
+        additionalParsedRanges.append(nil)
+        normalizeAdditionalRangeState()
+        let newIndex = additionalRangeInputTexts.count - 1
+        DispatchQueue.main.async {
+            focusedAdditionalRangeIndex = newIndex
+            isRangeInputFocused = false
+        }
+    }
+
+    private func removeAdditionalRange(at index: Int) {
+        guard additionalRangeInputTexts.indices.contains(index),
+              additionalParseErrors.indices.contains(index),
+              additionalParsedRanges.indices.contains(index) else {
+            return
+        }
+
+        additionalRangeInputTexts.remove(at: index)
+        additionalParseErrors.remove(at: index)
+        additionalParsedRanges.remove(at: index)
+        normalizeAdditionalRangeState()
+        if isCalendarVisible {
+            synchronizeCalendarStateFromTarget(activeCalendarTarget)
+        }
+        applyAllRanges(moveToNextDropdown: false)
+    }
+
+    private func applyAdditionalRangeInput(at index: Int) {
+        guard additionalRangeInputTexts.indices.contains(index),
+              additionalParseErrors.indices.contains(index),
+              additionalParsedRanges.indices.contains(index) else {
+            return
+        }
+
+        let trimmed = additionalRangeInputTexts[index].trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            additionalParsedRanges[index] = nil
+            additionalParseErrors[index] = nil
+            applyAllRanges(moveToNextDropdown: false)
+            return
+        }
+
+        guard let parsedRange = parseDateRangeInput(trimmed) else {
+            additionalParseErrors[index] = "Couldn’t parse that date range."
+            return
+        }
+
+        let normalizedRange = normalizedFilterRange(start: parsedRange.start, end: parsedRange.end)
+        additionalParsedRanges[index] = normalizedRange
+        additionalParseErrors[index] = nil
+        additionalRangeInputTexts[index] = formatRangeInput(start: parsedRange.start, end: parsedRange.end)
+        applyAllRanges(moveToNextDropdown: false)
+    }
+
+    private func applyAllRanges(
+        primaryOverride: DateRangeCriterion? = nil,
+        moveToNextDropdown: Bool
+    ) {
+        normalizeAdditionalRangeState()
+        var collected: [DateRangeCriterion] = []
+
+        if let primaryOverride {
+            collected.append(primaryOverride)
+            hasCommittedPrimaryRange = true
+            if let start = primaryOverride.start, let end = primaryOverride.end {
+                rangeInputText = formatRangeInput(start: start, end: end)
+            }
+            parseError = nil
+        } else {
+            let trimmedPrimary = rangeInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedPrimary.isEmpty {
+                guard let parsedRange = parseDateRangeInput(trimmedPrimary) else {
+                    parseError = "Couldn’t parse that date range."
+                    return
+                }
+                rangeInputText = formatRangeInput(start: parsedRange.start, end: parsedRange.end)
+                parseError = nil
+                hasCommittedPrimaryRange = true
+                collected.append(normalizedFilterRange(start: parsedRange.start, end: parsedRange.end))
+            } else {
+                parseError = nil
+                hasCommittedPrimaryRange = false
+            }
+        }
+
+        for index in additionalRangeInputTexts.indices {
+            guard additionalParseErrors.indices.contains(index),
+                  additionalParsedRanges.indices.contains(index) else {
+                continue
+            }
+
+            let trimmed = additionalRangeInputTexts[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                additionalParsedRanges[index] = nil
+                additionalParseErrors[index] = nil
+                continue
+            }
+
+            if let parsedRange = parseDateRangeInput(trimmed) {
+                let normalizedRange = normalizedFilterRange(start: parsedRange.start, end: parsedRange.end)
+                additionalParsedRanges[index] = normalizedRange
+                additionalParseErrors[index] = nil
+                additionalRangeInputTexts[index] = formatRangeInput(start: parsedRange.start, end: parsedRange.end)
+                collected.append(normalizedRange)
+            } else if let parsed = additionalParsedRanges[index], parsed.hasBounds {
+                collected.append(parsed)
+            } else {
+                additionalParseErrors[index] = "Couldn’t parse that date range."
+                return
+            }
+        }
+
+        let limited = Array(collected.prefix(5))
+        if limited.isEmpty {
+            onClear()
+        } else {
+            onApply(limited)
+        }
+
+        if moveToNextDropdown {
+            onDismiss?()
+            onMoveToNextFilter?()
+        }
+    }
+
+    private func additionalRangeBinding(for index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                guard additionalRangeInputTexts.indices.contains(index) else { return "" }
+                return additionalRangeInputTexts[index]
+            },
+            set: { newValue in
+                guard additionalRangeInputTexts.indices.contains(index) else { return }
+                additionalRangeInputTexts[index] = newValue
+                if additionalParseErrors.indices.contains(index) {
+                    additionalParseErrors[index] = nil
+                }
+            }
+        )
+    }
+
+    private func additionalParseErrorMessage(at index: Int) -> String? {
+        guard additionalParseErrors.indices.contains(index) else { return nil }
+        return additionalParseErrors[index]
+    }
+
+    private func normalizeAdditionalRangeState() {
+        let targetCount = additionalRangeInputTexts.count
+
+        if additionalParseErrors.count < targetCount {
+            additionalParseErrors.append(
+                contentsOf: Array(repeating: nil, count: targetCount - additionalParseErrors.count)
+            )
+        } else if additionalParseErrors.count > targetCount {
+            additionalParseErrors.removeLast(additionalParseErrors.count - targetCount)
+        }
+
+        if additionalParsedRanges.count < targetCount {
+            additionalParsedRanges.append(
+                contentsOf: Array(repeating: nil, count: targetCount - additionalParsedRanges.count)
+            )
+        } else if additionalParsedRanges.count > targetCount {
+            additionalParsedRanges.removeLast(additionalParsedRanges.count - targetCount)
+        }
+
+        if let focusedIndex = focusedAdditionalRangeIndex,
+           !additionalRangeInputTexts.indices.contains(focusedIndex) {
+            focusedAdditionalRangeIndex = nil
+        }
+
+        if case .additional(let index) = activeCalendarTarget,
+           !additionalRangeInputTexts.indices.contains(index) {
+            activeCalendarTarget = .primary
+        }
+
+        if case .additional(let index) = lastFocusedCalendarTarget,
+           !additionalRangeInputTexts.indices.contains(index) {
+            lastFocusedCalendarTarget = .primary
+        }
+    }
+
+    private func normalizedFilterRange(start: Date, end: Date) -> DateRangeCriterion {
+        let startDay = calendar.startOfDay(for: start)
+        let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: end) ?? end
+        if endOfDay < startDay {
+            let swappedStart = calendar.startOfDay(for: end)
+            let swappedEnd = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: start) ?? start
+            return DateRangeCriterion(start: swappedStart, end: swappedEnd)
+        }
+        return DateRangeCriterion(start: startDay, end: endOfDay)
+    }
+
     private func formatRangeInput(start: Date, end: Date) -> String {
         let startDay = calendar.startOfDay(for: start)
         let endDay = calendar.startOfDay(for: end)
@@ -2082,6 +2895,22 @@ public struct DateRangeFilterPopover: View {
         }
 
         return "\(fullDateFormatter.string(from: startDay)) to \(fullDateFormatter.string(from: endDay))"
+    }
+
+    private func formatRangeInputText(for range: DateRangeCriterion) -> String {
+        let fullDateFormatter = DateFormatter()
+        fullDateFormatter.dateFormat = "MMM d, yyyy"
+
+        if let start = range.start, let end = range.end {
+            return formatRangeInput(start: start, end: end)
+        }
+        if let start = range.start {
+            return "From \(fullDateFormatter.string(from: start))"
+        }
+        if let end = range.end {
+            return "Until \(fullDateFormatter.string(from: end))"
+        }
+        return ""
     }
 
     /// Normalize freeform user text to the canonical full-year display format without applying filters yet.
@@ -2396,12 +3225,16 @@ public struct DateRangeFilterPopover: View {
                     applyCurrentSelection(moveToNextDropdown: true)
                     return nil
                 }
+                if let additionalIndex = focusedAdditionalRangeIndex {
+                    applyAdditionalRangeInput(at: additionalIndex)
+                    return nil
+                }
 
                 if isCalendarVisible {
                     if activeCalendarBoundary == .start {
                         activeCalendarBoundary = .end
                     } else {
-                        applyCustomRange(moveToNextDropdown: false)
+                        applyCalendarSelectionToActiveTarget(applyImmediately: true)
                     }
                     return nil
                 }
@@ -2410,11 +3243,12 @@ public struct DateRangeFilterPopover: View {
                 return nil
 
             case 126: // Up arrow
-                if isRangeInputFocused {
+                if isAnyRangeInputFocused {
                     withAnimation(.easeOut(duration: 0.1)) {
                         focusedItem = 0
                     }
                     isRangeInputFocused = false
+                    focusedAdditionalRangeIndex = nil
                     return nil
                 }
                 if isCalendarVisible {
@@ -2425,11 +3259,12 @@ public struct DateRangeFilterPopover: View {
                 return nil
 
             case 125: // Down arrow
-                if isRangeInputFocused {
+                if isAnyRangeInputFocused {
                     withAnimation(.easeOut(duration: 0.1)) {
                         focusedItem = 0
                     }
                     isRangeInputFocused = false
+                    focusedAdditionalRangeIndex = nil
                     return nil
                 }
                 if isCalendarVisible {
@@ -2440,7 +3275,7 @@ public struct DateRangeFilterPopover: View {
                 return nil
 
             case 123: // Left arrow
-                if isRangeInputFocused && !isCalendarVisible { return event }
+                if isAnyRangeInputFocused && !isCalendarVisible { return event }
                 if isCalendarVisible {
                     navigateCalendar(byDays: -1)
                 } else {
@@ -2449,7 +3284,7 @@ public struct DateRangeFilterPopover: View {
                 return nil
 
             case 124: // Right arrow
-                if isRangeInputFocused && !isCalendarVisible { return event }
+                if isAnyRangeInputFocused && !isCalendarVisible { return event }
                 if isCalendarVisible {
                     navigateCalendar(byDays: 1)
                 } else {
@@ -2476,8 +3311,7 @@ public struct DateRangeFilterPopover: View {
             withAnimation(.easeOut(duration: 0.15)) {
                 isCalendarVisible.toggle()
                 if isCalendarVisible {
-                    displayedMonth = localEndDate
-                    activeCalendarBoundary = .start
+                    synchronizeCalendarStateFromTarget(lastFocusedCalendarTarget)
                 }
             }
         case 1: applyPreset(.anytime)
@@ -2492,6 +3326,7 @@ public struct DateRangeFilterPopover: View {
         withAnimation(.easeOut(duration: 0.1)) {
             focusedItem = max(0, min(itemCount - 1, focusedItem + offset))
             isRangeInputFocused = false
+            focusedAdditionalRangeIndex = nil
         }
     }
 
@@ -2524,6 +3359,7 @@ public struct DateRangeFilterPopover: View {
             case 126: // Up
                 if focusedItem == 0 {
                     isRangeInputFocused = true
+                    focusedAdditionalRangeIndex = nil
                     return
                 } else if (1...4).contains(focusedItem) {
                     focusedItem = 0
@@ -2536,6 +3372,7 @@ public struct DateRangeFilterPopover: View {
             }
 
             isRangeInputFocused = false
+            focusedAdditionalRangeIndex = nil
         }
     }
 
@@ -2557,8 +3394,7 @@ public struct DateRangeFilterPopover: View {
             }
         }
 
-        rangeInputText = formatRangeInput(start: localStartDate, end: localEndDate)
-        parseError = nil
+        applyCalendarSelectionToActiveTarget(applyImmediately: false)
 
         if !calendar.isDate(normalizedDate, equalTo: displayedMonth, toGranularity: .month) {
             withAnimation(.easeInOut(duration: 0.15)) {

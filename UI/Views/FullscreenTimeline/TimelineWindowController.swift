@@ -31,6 +31,7 @@ public class TimelineWindowController: NSObject {
     private var mouseEventMonitor: Any?  // Debug monitor for shift-drag investigation
     private var timelineViewModel: SimpleTimelineViewModel?
     private var hostingView: NSView?
+    private var deferredHostingViewDetachTask: Task<Void, Never>?
     private var tapeShowAnimationTask: Task<Void, Never>?
     private var liveModeCaptureTask: Task<Void, Never>?
     private var isHiding = false
@@ -71,6 +72,8 @@ public class TimelineWindowController: NSObject {
     private static let nearLiveReopenFrameThreshold: Int = 50
     /// Reopen policy: hidden duration required before near-live positions auto-advance to newest.
     private static let nearLiveReopenExpirationSeconds: TimeInterval = 10
+    /// Delay before detaching hosting view after hide to keep rapid reopen seamless.
+    private static let hostingViewDetachDelay: Duration = .milliseconds(350)
 
     /// Monotonic counter for deeplink search invocations (debug tracing).
     private var deeplinkSearchInvocationCounter = 0
@@ -153,6 +156,25 @@ public class TimelineWindowController: NSObject {
     ) -> Bool {
         guard requestedRestore, !isHidingToShowDashboard, let targetProcessID else { return false }
         return targetProcessID != currentProcessID
+    }
+
+    nonisolated static func shouldHandleTimelineKeyboardShortcuts(
+        isTimelineVisible: Bool,
+        frontmostProcessID: pid_t?,
+        currentProcessID: pid_t
+    ) -> Bool {
+        guard isTimelineVisible, let frontmostProcessID else { return false }
+        return frontmostProcessID == currentProcessID
+    }
+
+    private func shouldHandleTimelineKeyboardShortcuts() -> Bool {
+        let currentProcessID = ProcessInfo.processInfo.processIdentifier
+        let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return Self.shouldHandleTimelineKeyboardShortcuts(
+            isTimelineVisible: isVisible,
+            frontmostProcessID: frontmostProcessID,
+            currentProcessID: currentProcessID
+        )
     }
 
     private func captureFocusRestoreTarget() {
@@ -479,7 +501,9 @@ public class TimelineWindowController: NSObject {
     // MARK: - Show/Hide
 
 	    /// Show the timeline overlay on the current screen
-	    public func show() {
+    public func show() {
+        cancelDeferredHostingViewDetach()
+
         // If we're in the middle of hiding, cancel the animation and snap back to visible
         if isHiding, let window = window {
             isHiding = false
@@ -519,6 +543,7 @@ public class TimelineWindowController: NSObject {
             let hasActiveFilters = viewModel.filterCriteria.hasActiveFilters
             let shouldAutoAdvanceNearLive = !hasActiveFilters && (instantEligible || (nearEligible && nearLiveExpiryElapsed))
             let shouldSnapToNewestOnShow = cacheExpired || shouldAutoAdvanceNearLive
+            let shouldClearSearchForReopenPolicy = shouldSnapToNewestOnShow
             let hiddenLabel = hiddenElapsedSeconds.isFinite ? String(format: "%.1f", hiddenElapsedSeconds) : "inf"
 
             let snapReason: String
@@ -530,6 +555,17 @@ public class TimelineWindowController: NSObject {
                 snapReason = "near_live_expired"
             } else {
                 snapReason = "none"
+            }
+
+            if shouldClearSearchForReopenPolicy {
+                let searchViewModel = viewModel.searchViewModel
+                if searchViewModel.hasResults || !searchViewModel.searchQuery.isEmpty {
+                    Log.info(
+                        "[TIMELINE-REOPEN] Clearing search state before show (reason=\(snapReason))",
+                        category: .ui
+                    )
+                    searchViewModel.clearSearchResults()
+                }
             }
 
             if shouldSnapToNewestOnShow, !viewModel.frames.isEmpty {
@@ -661,7 +697,8 @@ public class TimelineWindowController: NSObject {
         if let hostingView = hostingView, hostingView.superview == nil {
             hostingView.frame = window.contentView?.bounds ?? .zero
             window.contentView?.addSubview(hostingView)
-            hostingView.layoutSubtreeIfNeeded()
+            hostingView.needsLayout = true
+            window.contentView?.needsLayout = true
         }
 
         timelineViewModel?.isTapeHidden = true
@@ -711,6 +748,11 @@ public class TimelineWindowController: NSObject {
         Self.isTimelineVisible = true  // For emergency escape tap
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        if let hostingView = hostingView {
+            DispatchQueue.main.async { [weak hostingView] in
+                hostingView?.layoutSubtreeIfNeeded()
+            }
+        }
         let openElapsedMs = (CFAbsoluteTimeGetCurrent() - showStartTime) * 1000
         Log.recordLatency(
             "timeline.open.window_visible_ms",
@@ -827,10 +869,6 @@ public class TimelineWindowController: NSObject {
                 // Keep the search overlay/search bar state across timeline toggle.
                 // Simulate clicking the recent-entries header "x" on toggle-off, then
                 // suppress recent entries on next overlay presentation.
-                Log.info(
-                    "[TimelineToggle] hide preserving search overlay state; simulating recent-entry popover x-dismiss",
-                    category: .ui
-                )
                 viewModel.searchViewModel.requestDismissRecentEntriesPopoverByUser()
                 viewModel.searchViewModel.suppressRecentEntriesForNextOverlayOpen()
             }
@@ -869,10 +907,8 @@ public class TimelineWindowController: NSObject {
                 // CRITICAL: Ignore mouse events while hidden to prevent blocking clicks on other windows
                 window.ignoresMouseEvents = true
                 window.orderOut(nil)
-                // CRITICAL: Detach SwiftUI view from window to stop display cycle updates
-                // The hosting view stays in memory but is no longer in the view hierarchy,
-                // so AppKit won't trigger layout passes on it (saving significant CPU)
-                self?.hostingView?.removeFromSuperview()
+                // Detach is deferred so quick reopen avoids remount/layout hitch.
+                self?.scheduleDeferredHostingViewDetach()
                 self?.isVisible = false
                 Self.isTimelineVisible = false  // For emergency escape tap
                 self?.lastHiddenAt = Date()
@@ -1085,13 +1121,17 @@ public class TimelineWindowController: NSObject {
                 let nearLiveExpiryElapsed = hiddenElapsedSeconds >= Self.nearLiveReopenExpirationSeconds
                 let shouldAutoAdvanceNearLive = shouldAdvanceImmediately || (isNearLive && nearLiveExpiryElapsed)
                 let shouldNavigateToNewest = cacheExpired || shouldAutoAdvanceNearLive
+                let shouldClearSearchForReopenPolicy = shouldNavigateToNewest
 
-                // Expire hidden-state caches together so reopen returns to fresh timeline/search state.
+                // Filters still expire only with the 60s hidden-state cache boundary.
                 if cacheExpired {
                     if viewModel.filterCriteria.hasActiveFilters {
                         viewModel.clearFiltersWithoutReload()
                     }
+                }
 
+                // Keep search invalidation aligned with timeline reopen policy (near-live + cache expiry).
+                if shouldClearSearchForReopenPolicy {
                     let searchViewModel = viewModel.searchViewModel
                     if searchViewModel.hasResults || !searchViewModel.searchQuery.isEmpty {
                         searchViewModel.clearSearchResults()
@@ -1120,6 +1160,7 @@ public class TimelineWindowController: NSObject {
         Log.info("[TIMELINE-PRERENDER] 🗑️ destroyPreparedWindow() called", category: .ui)
         // Save state before destroying for cross-session persistence
         timelineViewModel?.saveState()
+        cancelDeferredHostingViewDetach()
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
 
@@ -1129,6 +1170,20 @@ public class TimelineWindowController: NSObject {
         hostingView = nil
         timelineViewModel = nil
         isPrepared = false
+    }
+
+    private func scheduleDeferredHostingViewDetach() {
+        cancelDeferredHostingViewDetach()
+        deferredHostingViewDetachTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.hostingViewDetachDelay, clock: .continuous)
+            guard let self, !self.isVisible else { return }
+            self.hostingView?.removeFromSuperview()
+        }
+    }
+
+    private func cancelDeferredHostingViewDetach() {
+        deferredHostingViewDetachTask?.cancel()
+        deferredHostingViewDetachTask = nil
     }
 
     /// Toggle timeline visibility
@@ -1219,8 +1274,7 @@ public class TimelineWindowController: NSObject {
             criteria.tagFilterMode == .include &&
             hasNoWindowFilter &&
             hasNoBrowserFilter &&
-            criteria.startDate == nil &&
-            criteria.endDate == nil
+            criteria.effectiveDateRanges.isEmpty
     }
 
     /// Resolve quick app filter trigger key from an NSEvent.
@@ -1255,6 +1309,22 @@ public class TimelineWindowController: NSObject {
             return "Option+C"
         }
         return nil
+    }
+
+    /// Resolve open-link shortcut key from an NSEvent.
+    /// Supports Cmd+L with both keycode and character fallback.
+    private func openLinkShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
+        let matchesLKey = event.keyCode == 37 || event.charactersIgnoringModifiers?.lowercased() == "l"
+        guard matchesLKey else { return nil }
+        return modifiers == [.command] ? "Cmd+L" : nil
+    }
+
+    /// Resolve copy-link shortcut key from an NSEvent.
+    /// Supports Cmd+Shift+L with both keycode and character fallback.
+    private func copyLinkShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
+        let matchesLKey = event.keyCode == 37 || event.charactersIgnoringModifiers?.lowercased() == "l"
+        guard matchesLKey else { return nil }
+        return modifiers == [.command, .shift] ? "Cmd+Shift+L" : nil
     }
 
     /// Toggle quick app filter for the app at the current playhead.
@@ -1431,6 +1501,9 @@ public class TimelineWindowController: NSObject {
         Task { @MainActor in
             guard let viewModel = timelineViewModel, let coordinator = coordinator else { return }
 
+            // Dashboard-driven timeline opens should not carry stale search highlight overlays.
+            viewModel.resetSearchHighlightState()
+
             // Apply the filter criteria to viewModel
             viewModel.filterCriteria = criteria
             viewModel.pendingFilterCriteria = criteria
@@ -1472,7 +1545,8 @@ public class TimelineWindowController: NSObject {
             if let hostingView = hostingView, hostingView.superview == nil {
                 hostingView.frame = window.contentView?.bounds ?? .zero
                 window.contentView?.addSubview(hostingView)
-                hostingView.layoutSubtreeIfNeeded()
+                hostingView.needsLayout = true
+                window.contentView?.needsLayout = true
             }
             // Move window to target screen if needed
             if window.frame != targetScreen.frame {
@@ -1522,7 +1596,8 @@ public class TimelineWindowController: NSObject {
         if let hostingView = hostingView, hostingView.superview == nil {
             hostingView.frame = window.contentView?.bounds ?? .zero
             window.contentView?.addSubview(hostingView)
-            hostingView.layoutSubtreeIfNeeded()
+            hostingView.needsLayout = true
+            window.contentView?.needsLayout = true
         }
 
         // Ensure tape starts hidden and cancel any pending animation
@@ -1549,6 +1624,11 @@ public class TimelineWindowController: NSObject {
         Self.isTimelineVisible = true
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        if let hostingView = hostingView {
+            DispatchQueue.main.async { [weak hostingView] in
+                hostingView?.layoutSubtreeIfNeeded()
+            }
+        }
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.35
@@ -1673,14 +1753,6 @@ public class TimelineWindowController: NSObject {
                         // Check if we've moved far enough to be a drag (not a click)
                         if totalDistance >= Self.tapeDragMinDistance {
                             self.tapeDragDidExceedThreshold = true
-                            if self.tapeDragStartedNearPlaybackControls {
-                                Log.info(
-                                    "[PLAY-CLICK] dragThresholdExceeded start=\(self.formattedPoint(self.tapeDragStartPoint)) " +
-                                    "current=\(self.formattedPoint(event.locationInWindow)) distance=\(String(format: "%.2f", totalDistance)) " +
-                                    "=> converting click to tape drag",
-                                    category: .ui
-                                )
-                            }
                             NSCursor.closedHand.push()
                             // Defer heavy operations during drag
                             if let viewModel = self.timelineViewModel {
@@ -1725,13 +1797,6 @@ public class TimelineWindowController: NSObject {
                     self.tapeDragDidExceedThreshold = false
 
                     if wasDragging {
-                        if self.tapeDragStartedNearPlaybackControls {
-                            Log.info(
-                                "[PLAY-CLICK] mouseUp consumed by tape drag at \(self.formattedPoint(event.locationInWindow)); " +
-                                "play button action will not fire",
-                                category: .ui
-                            )
-                        }
                         NSCursor.pop()
 
                         // Calculate release velocity from recent samples
@@ -1777,23 +1842,38 @@ public class TimelineWindowController: NSObject {
 
         // Monitor for all key events globally (when timeline is visible but not key window)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .scrollWheel, .magnify]) { [weak self] event in
+            guard let self else { return }
+
             if event.type == .keyDown {
-                let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-                // Keep Option+C local to the timeline window; do not react globally.
-                if self?.addCommentShortcutTrigger(for: event, modifiers: modifiers) != nil {
+                // Ignore timeline keyboard shortcuts while another app is frontmost.
+                guard self.shouldHandleTimelineKeyboardShortcuts() else {
                     return
                 }
-                self?.handleKeyEvent(event)
+                let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                let openLinkTrigger = self.openLinkShortcutTrigger(for: event, modifiers: modifiers)
+                let copyLinkTrigger = self.copyLinkShortcutTrigger(for: event, modifiers: modifiers)
+                // Keep Option+C local to the timeline window; do not react globally.
+                if self.addCommentShortcutTrigger(for: event, modifiers: modifiers) != nil {
+                    return
+                }
+                if openLinkTrigger != nil || copyLinkTrigger != nil {
+                    self.handleKeyEvent(event)
+                    return
+                }
+                self.handleKeyEvent(event)
             } else if event.type == .scrollWheel {
-                // Don't handle scroll events when the recent-entries popover, filter dropdown,
-                // or tag submenu is open.
-                if let viewModel = self?.timelineViewModel,
-                   (viewModel.searchViewModel.isRecentEntriesPopoverVisible || viewModel.isFilterDropdownOpen || viewModel.showTagSubmenu) {
+                // Don't handle scroll events when search UI, filter dropdown, or tag submenu should own wheel input.
+                if let viewModel = self.timelineViewModel,
+                   (viewModel.searchViewModel.isRecentEntriesPopoverVisible ||
+                    (viewModel.isSearchOverlayVisible &&
+                     (viewModel.searchViewModel.isDropdownOpen || viewModel.searchViewModel.isSearchOverlayExpanded)) ||
+                    viewModel.isFilterDropdownOpen ||
+                    viewModel.showTagSubmenu) {
                     return // Let SwiftUI handle it
                 }
-                self?.handleScrollEvent(event, source: "GLOBAL")
+                self.handleScrollEvent(event, source: "GLOBAL")
             } else if event.type == .magnify {
-                self?.handleMagnifyEvent(event)
+                self.handleMagnifyEvent(event)
             }
         }
 
@@ -1810,6 +1890,8 @@ public class TimelineWindowController: NSObject {
 
                 // Always handle certain shortcuts even when text field is active
                 let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                let openLinkTrigger = self?.openLinkShortcutTrigger(for: event, modifiers: modifiers)
+                let copyLinkTrigger = self?.copyLinkShortcutTrigger(for: event, modifiers: modifiers)
                 if event.keyCode == 53 { // Escape
                     if self?.handleKeyEvent(event) == true {
                         return nil // Always consume when handled
@@ -1834,7 +1916,9 @@ public class TimelineWindowController: NSObject {
                     return viewModel.isInFrameSearchVisible
                 }()
                 if isInFrameSearchFieldActive {
-                    return event
+                    if openLinkTrigger == nil && copyLinkTrigger == nil {
+                        return event
+                    }
                 }
 
                 // Cmd+K to toggle search overlay
@@ -1927,16 +2011,10 @@ public class TimelineWindowController: NSObject {
                     return nil // Always consume the event to prevent propagation
                 }
 
-                // Cmd+L to open current browser link (handle before system can intercept)
-                if event.charactersIgnoringModifiers == "l" && modifiers == [.command] {
+                // Link shortcuts (Cmd+L / Cmd+Shift+L): handle before AppKit key-equivalent fallback.
+                if openLinkTrigger != nil || copyLinkTrigger != nil {
                     _ = self?.handleKeyEvent(event)
-                    return nil // Always consume the event to prevent propagation
-                }
-
-                // Cmd+Shift+L to copy moment link (handle before system can intercept)
-                if event.charactersIgnoringModifiers == "l" && modifiers == [.command, .shift] {
-                    _ = self?.handleKeyEvent(event)
-                    return nil // Always consume the event to prevent propagation
+                    return nil // Always consume to avoid dead-end beep
                 }
 
                 // Cmd+; to toggle more options menu (handle before system can intercept)
@@ -1990,6 +2068,12 @@ public class TimelineWindowController: NSObject {
                     if viewModel.searchViewModel.isRecentEntriesPopoverVisible {
                         return event
                     }
+                    // Expanded search overlay (and its dropdowns) should own wheel events.
+                    if viewModel.isSearchOverlayVisible &&
+                        (viewModel.searchViewModel.isDropdownOpen ||
+                         viewModel.searchViewModel.isSearchOverlayExpanded) {
+                        return event
+                    }
                 }
                 self?.handleScrollEvent(event, source: "LOCAL")
                 return nil // Consume scroll events
@@ -2021,6 +2105,10 @@ public class TimelineWindowController: NSObject {
 
     @discardableResult
     private func handleKeyEvent(_ event: NSEvent) -> Bool {
+        guard shouldHandleTimelineKeyboardShortcuts() else {
+            return false
+        }
+
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let addTagTrigger = addTagShortcutTrigger(for: event, modifiers: modifiers)
         let addCommentTrigger = addCommentShortcutTrigger(for: event, modifiers: modifiers)
@@ -2123,9 +2211,20 @@ public class TimelineWindowController: NSObject {
                     viewModel.searchViewModel.closeDropdownsSignal += 1
                     return true
                 }
-                // If search overlay is showing, close it
+                // If search overlay is expanded with no submitted query/results payload,
+                // collapse to compact mode and clear active filters instead of dismissing.
                 if viewModel.isSearchOverlayVisible {
-                    viewModel.searchViewModel.requestOverlayDismiss(clearSearchState: true)
+                    let searchViewModel = viewModel.searchViewModel
+                    if searchViewModel.isSearchOverlayExpanded &&
+                        !searchViewModel.shouldDismissExpandedOverlayOnEscape {
+                        searchViewModel.clearAllFilters()
+                        searchViewModel.resetSearchOrderToDefault()
+                        searchViewModel.requestOverlayCollapse()
+                        return true
+                    }
+
+                    // Otherwise keep existing behavior: dismiss the overlay.
+                    searchViewModel.requestOverlayDismiss(clearSearchState: true)
                     return true
                 }
                 // If in-frame search is active, close it before falling through to timeline close.
@@ -2341,18 +2440,21 @@ public class TimelineWindowController: NSObject {
         }
 
         // Cmd+L to open current browser link
-        if event.charactersIgnoringModifiers == "l" && modifiers == [.command] {
+        if openLinkShortcutTrigger(for: event, modifiers: modifiers) != nil {
             recordShortcut("cmd+l")
-            if let viewModel = timelineViewModel, viewModel.openCurrentBrowserURL() {
+            if timelineViewModel?.openCurrentBrowserURL() == true {
                 hide(restorePreviousFocus: false)
                 return true
             }
             return false
         }
 
-        // Cmd+Shift+L to copy moment link
-        if event.charactersIgnoringModifiers == "l" && modifiers == [.command, .shift] {
+        // Cmd+Shift+L to copy current browser link (fallback: moment link)
+        if copyLinkShortcutTrigger(for: event, modifiers: modifiers) != nil {
             recordShortcut("cmd+shift+l")
+            if let viewModel = timelineViewModel, viewModel.copyCurrentBrowserURL() {
+                return true
+            }
             copyMomentLink()
             return true
         }
@@ -2406,6 +2508,18 @@ public class TimelineWindowController: NSObject {
                 }
             }
             // Don't consume the event if there's nothing to undo
+            return false
+        }
+
+        // Cmd+Shift+Z to redo (go forward to last undone playhead position)
+        if event.keyCode == 6 && modifiers == [.command, .shift] { // Z key with Command+Shift
+            if let viewModel = timelineViewModel {
+                if viewModel.redoLastUndonePosition() {
+                    recordShortcut("cmd+shift+z")
+                    return true
+                }
+            }
+            // Don't consume the event if there's nothing to redo
             return false
         }
 
@@ -2913,11 +3027,14 @@ public class TimelineWindowController: NSObject {
         }
     }
 
-    private func copyMomentLink() {
+    @discardableResult
+    private func copyMomentLink() -> Bool {
         guard let viewModel = timelineViewModel,
               !viewModel.isInLiveMode,
               let timestamp = viewModel.currentTimestamp,
-              let url = DeeplinkHandler.generateTimelineLink(timestamp: timestamp) else { return }
+              let url = DeeplinkHandler.generateTimelineLink(timestamp: timestamp) else {
+            return false
+        }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(url.absoluteString, forType: .string)
@@ -2925,6 +3042,7 @@ public class TimelineWindowController: NSObject {
         if let coordinator = coordinator {
             DashboardViewModel.recordDeeplinkCopy(coordinator: coordinator, url: url.absoluteString)
         }
+        return true
     }
 
     private func getCurrentFrameImage(viewModel: SimpleTimelineViewModel, completion: @escaping (NSImage?) -> Void) {

@@ -75,24 +75,16 @@ struct SystemSettingsOpener {
         PermissionBanner(
             message: "Retrace needs Accessibility permission to detect which display you're working on.",
             actionTitle: "Open Settings",
-            action: {
-                print("Opening settings...")
-            },
-            onDismiss: {
-                print("Dismissed")
-            }
+            action: {},
+            onDismiss: {}
         )
         .padding()
 
         PermissionBanner(
             message: "Screen recording permission is required to capture your screen.",
             actionTitle: "Grant Permission",
-            action: {
-                print("Opening settings...")
-            },
-            onDismiss: {
-                print("Dismissed")
-            }
+            action: {},
+            onDismiss: {}
         )
         .padding()
     }

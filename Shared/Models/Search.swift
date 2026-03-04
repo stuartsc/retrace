@@ -69,6 +69,7 @@ public struct SearchQuery: Codable, Sendable {
 public struct SearchFilters: Codable, Sendable {
     public let startDate: Date?
     public let endDate: Date?
+    public let dateRanges: [DateRangeCriterion]?
     public let appBundleIDs: [String]?  // nil means all apps
     public let excludedAppBundleIDs: [String]?
     public let selectedTagIds: [Int64]?  // nil means all tags
@@ -81,6 +82,7 @@ public struct SearchFilters: Codable, Sendable {
     public init(
         startDate: Date? = nil,
         endDate: Date? = nil,
+        dateRanges: [DateRangeCriterion]? = nil,
         appBundleIDs: [String]? = nil,
         excludedAppBundleIDs: [String]? = nil,
         selectedTagIds: [Int64]? = nil,
@@ -92,6 +94,7 @@ public struct SearchFilters: Codable, Sendable {
     ) {
         self.startDate = startDate
         self.endDate = endDate
+        self.dateRanges = Self.sanitizedDateRanges(dateRanges)
         self.appBundleIDs = appBundleIDs
         self.excludedAppBundleIDs = excludedAppBundleIDs
         self.selectedTagIds = selectedTagIds
@@ -102,10 +105,22 @@ public struct SearchFilters: Codable, Sendable {
         self.browserUrlFilter = browserUrlFilter
     }
 
+    /// Effective date ranges for querying. Falls back to legacy single-range fields for compatibility.
+    public var effectiveDateRanges: [DateRangeCriterion] {
+        let normalized = Self.sanitizedDateRanges(dateRanges) ?? []
+        if !normalized.isEmpty {
+            return normalized
+        }
+        if startDate != nil || endDate != nil {
+            return [DateRangeCriterion(start: startDate, end: endDate)]
+        }
+        return []
+    }
+
     public static let none = SearchFilters()
 
     public var hasFilters: Bool {
-        startDate != nil || endDate != nil ||
+        !effectiveDateRanges.isEmpty ||
         appBundleIDs != nil || excludedAppBundleIDs != nil ||
         selectedTagIds != nil || excludedTagIds != nil ||
         hiddenFilter != .hide ||
@@ -117,6 +132,7 @@ public struct SearchFilters: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case startDate
         case endDate
+        case dateRanges
         case appBundleIDs
         case excludedAppBundleIDs
         case selectedTagIds
@@ -131,6 +147,7 @@ public struct SearchFilters: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         startDate = try container.decodeIfPresent(Date.self, forKey: .startDate)
         endDate = try container.decodeIfPresent(Date.self, forKey: .endDate)
+        dateRanges = Self.sanitizedDateRanges(try container.decodeIfPresent([DateRangeCriterion].self, forKey: .dateRanges))
         appBundleIDs = try container.decodeIfPresent([String].self, forKey: .appBundleIDs)
         excludedAppBundleIDs = try container.decodeIfPresent([String].self, forKey: .excludedAppBundleIDs)
         selectedTagIds = try container.decodeIfPresent([Int64].self, forKey: .selectedTagIds)
@@ -145,6 +162,7 @@ public struct SearchFilters: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(startDate, forKey: .startDate)
         try container.encodeIfPresent(endDate, forKey: .endDate)
+        try container.encodeIfPresent(Self.sanitizedDateRanges(dateRanges), forKey: .dateRanges)
         try container.encodeIfPresent(appBundleIDs, forKey: .appBundleIDs)
         try container.encodeIfPresent(excludedAppBundleIDs, forKey: .excludedAppBundleIDs)
         try container.encodeIfPresent(selectedTagIds, forKey: .selectedTagIds)
@@ -153,6 +171,12 @@ public struct SearchFilters: Codable, Sendable {
         try container.encode(commentFilter, forKey: .commentFilter)
         try container.encodeIfPresent(windowNameFilter, forKey: .windowNameFilter)
         try container.encodeIfPresent(browserUrlFilter, forKey: .browserUrlFilter)
+    }
+
+    private static func sanitizedDateRanges(_ ranges: [DateRangeCriterion]?) -> [DateRangeCriterion]? {
+        guard let ranges else { return nil }
+        let sanitized = ranges.filter(\.hasBounds)
+        return sanitized.isEmpty ? nil : sanitized
     }
 }
 

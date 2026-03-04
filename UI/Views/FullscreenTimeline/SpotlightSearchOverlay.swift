@@ -34,6 +34,8 @@ public struct SpotlightSearchOverlay: View {
     @State private var recentEntryAppNamesByBundleID: [String: String] = [:]
     @State private var recentEntriesRevealBlockedUntil: Date?
     @State private var recentEntriesRevealTask: Task<Void, Never>?
+    @State private var recentEntriesMetadataWarmupTask: Task<Void, Never>?
+    @State private var didScheduleRecentEntriesMetadataWarmup = false
     @State private var keyEventMonitor: Any?
     @State private var overlayOpenStartTime: CFAbsoluteTime?
     @State private var didRecordOpenLatency = false
@@ -148,7 +150,7 @@ public struct SpotlightSearchOverlay: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                        .stroke(Color.white.opacity(isExpanded ? 0 : 0.15), lineWidth: 1)
                 )
                 .shadow(color: Color.black.opacity(0.5), radius: 20, y: 10)
                 .overlay(alignment: .top) {
@@ -176,7 +178,6 @@ public struct SpotlightSearchOverlay: View {
         }
         .onAppear {
             overlaySessionID = String(UUID().uuidString.prefix(8))
-            Log.debug("\(searchLog) Search overlay opened", category: .ui)
             overlayOpenStartTime = CFAbsoluteTimeGetCurrent()
             didRecordOpenLatency = false
             viewModel.isRecentEntriesPopoverVisible = false
@@ -188,6 +189,7 @@ public struct SpotlightSearchOverlay: View {
                     isExpanded = true
                 }
             }
+            viewModel.isSearchOverlayExpanded = isExpanded
             installKeyEventMonitor()
             scheduleOpenLatencyMeasurement()
             if !viewModel.visibleResults.isEmpty {
@@ -198,14 +200,18 @@ public struct SpotlightSearchOverlay: View {
             refreshRankedRecentEntries()
             refreshRecentEntryTagMap()
             refreshRecentEntryAppNameMap()
+            scheduleRecentEntriesMetadataWarmupIfNeeded()
             refreshRecentEntriesPopoverVisibility()
             logRecentEntriesState(context: "onAppear:afterRefresh")
         }
         .onDisappear {
             recentEntriesRevealTask?.cancel()
             recentEntriesRevealTask = nil
+            recentEntriesMetadataWarmupTask?.cancel()
+            recentEntriesMetadataWarmupTask = nil
             removeKeyEventMonitor()
             clearResultKeyboardNavigation()
+            viewModel.isSearchOverlayExpanded = false
             overlayOpenStartTime = nil
             didRecordOpenLatency = false
             isRecentEntriesPopoverVisible = false
@@ -217,28 +223,17 @@ public struct SpotlightSearchOverlay: View {
             recentEntryTagByID = [:]
             recentEntryAppNamesByBundleID = [:]
             recentEntriesRevealBlockedUntil = nil
+            didScheduleRecentEntriesMetadataWarmup = false
             viewModel.isRecentEntriesPopoverVisible = false
             logRecentEntriesState(context: "onDisappear")
         }
+        .onChange(of: isExpanded) { expanded in
+            viewModel.isSearchOverlayExpanded = expanded
+        }
         .onExitCommand {
-            Log.debug("\(searchLog) Exit command received, isDropdownOpen=\(viewModel.isDropdownOpen), searchQuery='\(viewModel.searchQuery)'", category: .ui)
-            if isRecentEntriesPopoverVisible {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    isRecentEntriesPopoverVisible = false
-                }
-                highlightedRecentEntryIndex = 0
-                return
-            }
-            // If a dropdown is open, close it instead of dismissing the entire overlay
-            if viewModel.isDropdownOpen {
-                viewModel.closeDropdownsSignal += 1
-            } else {
-                // Always dismiss the overlay on Escape (clearing happens in dismissOverlay)
-                dismissOverlay()
-            }
+            handleSearchEscape()
         }
         .onChange(of: viewModel.searchQuery) { newValue in
-            Log.debug("\(searchLog) Query changed to: '\(newValue)'", category: .ui)
             if newValue != viewModel.committedSearchQuery {
                 clearResultKeyboardNavigation()
             }
@@ -250,7 +245,6 @@ public struct SpotlightSearchOverlay: View {
             refreshRecentEntriesPopoverVisibility()
         }
         .onChange(of: viewModel.isSearching) { isSearching in
-            Log.debug("\(searchLog) isSearching: \(isSearching)", category: .ui)
             if isSearching && !isExpanded {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     isExpanded = true
@@ -289,7 +283,6 @@ public struct SpotlightSearchOverlay: View {
         .onChange(of: viewModel.openFilterSignal.id) { _ in
             // When Tab cycles back to search field (index 0), trigger refocus
             if viewModel.openFilterSignal.index == 0 {
-                Log.debug("\(searchLog) Tab navigation returned to search field, triggering refocus", category: .ui)
                 refocusSearchField = UUID()
             }
         }
@@ -306,6 +299,9 @@ public struct SpotlightSearchOverlay: View {
         }
         .onChange(of: viewModel.dismissOverlaySignal.id) { _ in
             dismissOverlay(clearSearchState: viewModel.dismissOverlaySignal.clearSearchState)
+        }
+        .onChange(of: viewModel.collapseOverlaySignal) { _ in
+            collapseToCompactSearchBar(clearFilters: false)
         }
         .onChange(of: viewModel.dismissRecentEntriesPopoverSignal) { _ in
             dismissRecentEntriesPopoverByUser()
@@ -340,87 +336,79 @@ public struct SpotlightSearchOverlay: View {
 
     private var searchBar: some View {
         HStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
-                .font(.retraceTitle3)
-                .foregroundColor(.white.opacity(0.5))
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .font(.retraceTitle3)
+                    .foregroundColor(.white.opacity(0.5))
 
-            SpotlightSearchField(
-                text: $viewModel.searchQuery,
-                onSubmit: {
-                    if isRecentEntriesPopoverVisible {
-                        selectHighlightedRecentEntry()
-                        return
-                    }
-                    if !viewModel.searchQuery.isEmpty {
-                        Log.debug("\(searchLog) Submit pressed, triggering search", category: .ui)
+                SpotlightSearchField(
+                    text: $viewModel.searchQuery,
+                    onSubmit: {
+                        if isRecentEntriesPopoverVisible {
+                            selectHighlightedRecentEntry()
+                            return
+                        }
+                        if !viewModel.searchQuery.isEmpty {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                isExpanded = true
+                            }
+                            prepareResultKeyboardNavigationAfterSubmit()
+                            viewModel.submitSearch()
+                        }
+                    },
+                    onEscape: {
+                        handleSearchEscape()
+                    },
+                    onTab: {
+                        // Tab from search field opens search-order dropdown (first filter)
+                        isRecentEntriesPopoverVisible = false
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                             isExpanded = true
                         }
-                        prepareResultKeyboardNavigationAfterSubmit()
-                        viewModel.submitSearch()
-                    }
-                },
-                onEscape: {
-                    if isRecentEntriesPopoverVisible {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            isRecentEntriesPopoverVisible = false
+                        // Signal to open search-order filter (index 1)
+                        viewModel.openFilterSignal = (1, UUID())
+                    },
+                    onBackTab: {
+                        // Shift+Tab from search field opens Advanced filter (last filter)
+                        isRecentEntriesPopoverVisible = false
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            isExpanded = true
                         }
-                        highlightedRecentEntryIndex = 0
-                        return
-                    }
-                    if viewModel.isDropdownOpen {
-                        viewModel.closeDropdownsSignal += 1
-                    } else {
-                        // Always dismiss the overlay on Escape (clearing happens in dismissOverlay)
-                        dismissOverlay()
-                    }
-                },
-                onTab: {
-                    // Tab from search field opens search-order dropdown (first filter)
-                    Log.debug("\(searchLog) Tab pressed, opening Relevance/Newest/Oldest filter", category: .ui)
-                    isRecentEntriesPopoverVisible = false
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        isExpanded = true
-                    }
-                    // Signal to open search-order filter (index 1)
-                    viewModel.openFilterSignal = (1, UUID())
-                },
-                onBackTab: {
-                    // Shift+Tab from search field opens Advanced filter (last filter)
-                    Log.debug("\(searchLog) Shift+Tab pressed, opening Advanced filter", category: .ui)
-                    isRecentEntriesPopoverVisible = false
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        isExpanded = true
-                    }
-                    viewModel.openFilterSignal = (6, UUID())
-                },
-                onFocus: {
-                    Log.info("\(searchLog)[\(overlaySessionID)] search field focused", category: .ui)
-                    isSearchFieldFocused = true
-                    clearResultKeyboardNavigation()
-                    // Close any open dropdowns when search field gains focus
-                    if viewModel.isDropdownOpen {
-                        viewModel.closeDropdownsSignal += 1
-                    }
-                    refreshRecentEntriesPopoverVisibility()
-                },
-                onBlur: {
-                    isSearchFieldFocused = false
-                },
-                onArrowDown: {
-                    guard isRecentEntriesPopoverVisible else { return false }
-                    guard !rankedRecentEntries.isEmpty else { return false }
-                    highlightedRecentEntryIndex = min(highlightedRecentEntryIndex + 1, rankedRecentEntries.count - 1)
-                    return true
-                },
-                onArrowUp: {
-                    guard isRecentEntriesPopoverVisible else { return false }
-                    highlightedRecentEntryIndex = max(highlightedRecentEntryIndex - 1, 0)
-                    return true
-                },
-                refocusTrigger: refocusSearchField
-            )
-            .frame(height: 24)
+                        viewModel.openFilterSignal = (7, UUID())
+                    },
+                    onFocus: {
+                        Log.info("\(searchLog)[\(overlaySessionID)] search field focused", category: .ui)
+                        isSearchFieldFocused = true
+                        clearResultKeyboardNavigation()
+                        // Close any open dropdowns when search field gains focus
+                        if viewModel.isDropdownOpen {
+                            viewModel.closeDropdownsSignal += 1
+                        }
+                        refreshRecentEntriesPopoverVisibility()
+                    },
+                    onBlur: {
+                        isSearchFieldFocused = false
+                    },
+                    onArrowDown: {
+                        guard isRecentEntriesPopoverVisible else { return false }
+                        guard !rankedRecentEntries.isEmpty else { return false }
+                        highlightedRecentEntryIndex = min(highlightedRecentEntryIndex + 1, rankedRecentEntries.count - 1)
+                        return true
+                    },
+                    onArrowUp: {
+                        guard isRecentEntriesPopoverVisible else { return false }
+                        highlightedRecentEntryIndex = max(highlightedRecentEntryIndex - 1, 0)
+                        return true
+                    },
+                    refocusTrigger: refocusSearchField
+                )
+                .frame(height: 30)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                refocusSearchField = UUID()
+            }
 
             // Loading spinner (shown while searching)
             if viewModel.isSearching {
@@ -475,14 +463,19 @@ public struct SpotlightSearchOverlay: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
+            UnevenRoundedRectangle(
+                topLeadingRadius: 12,
+                bottomLeadingRadius: isExpanded ? 0 : 12,
+                bottomTrailingRadius: isExpanded ? 0 : 12,
+                topTrailingRadius: 12
+            )
                 .stroke(
-                    Color.white.opacity(isSpotlightSearchGlowActive ? 0.60 : 0.28),
-                    lineWidth: isSpotlightSearchGlowActive ? 1.8 : 1.0
+                    Color.white.opacity(isExpanded ? 0 : (isSpotlightSearchGlowActive ? 0.60 : 0.28)),
+                    lineWidth: isExpanded ? 0 : (isSpotlightSearchGlowActive ? 1.8 : 1.0)
                 )
         )
         .shadow(
-            color: Color.white.opacity(isSpotlightSearchGlowActive ? 0.28 : 0.10),
+            color: Color.white.opacity(isExpanded ? 0 : (isSpotlightSearchGlowActive ? 0.28 : 0.10)),
             radius: isSpotlightSearchGlowActive ? 14 : 7,
             x: 0,
             y: 0
@@ -569,12 +562,32 @@ public struct SpotlightSearchOverlay: View {
             }
         }
 
+        if shouldShow {
+            scheduleRecentEntriesMetadataWarmupIfNeeded()
+        }
+
         if isRecentEntriesPopoverVisible {
             highlightedRecentEntryIndex = min(highlightedRecentEntryIndex, max(rankedRecentEntries.count - 1, 0))
         } else {
             highlightedRecentEntryIndex = 0
         }
         logRecentEntriesState(context: "refreshRecentEntriesPopoverVisibility")
+    }
+
+    private func scheduleRecentEntriesMetadataWarmupIfNeeded() {
+        guard !didScheduleRecentEntriesMetadataWarmup else { return }
+        didScheduleRecentEntriesMetadataWarmup = true
+
+        recentEntriesMetadataWarmupTask?.cancel()
+        recentEntriesMetadataWarmupTask = Task(priority: .utility) {
+            // Let overlay first frame settle before metadata warmup.
+            try? await Task.sleep(for: .milliseconds(120), clock: .continuous)
+            guard !Task.isCancelled else { return }
+
+            async let apps: Void = viewModel.loadAvailableApps()
+            async let tags: Void = viewModel.loadAvailableTags()
+            _ = await (apps, tags)
+        }
     }
 
     private func selectHighlightedRecentEntry() {
@@ -795,12 +808,43 @@ public struct SpotlightSearchOverlay: View {
                 )
             }
 
-            if filters.windowNameFilter?.isEmpty == false {
-                recentEntryMetadataToken(icon: "rectangle.and.text.magnifyingglass", text: "Title")
+            if !filters.windowNameTerms.isEmpty {
+                let tint: Color = filters.windowNameFilterMode == .exclude ? .orange.opacity(0.9) : RetraceMenuStyle.textColorMuted
+                let icon = filters.windowNameFilterMode == .exclude ? "minus.circle.fill" : "rectangle.and.text.magnifyingglass"
+                ForEach(Array(filters.windowNameTerms.prefix(3)), id: \.self) { term in
+                    recentEntryMetadataToken(icon: icon, text: "Title: \(term)", tint: tint)
+                }
+                if filters.windowNameTerms.count > 3 {
+                    recentEntryMetadataToken(icon: "ellipsis.circle", text: "+\(filters.windowNameTerms.count - 3)", tint: tint)
+                }
             }
 
-            if filters.browserUrlFilter?.isEmpty == false {
-                recentEntryMetadataToken(icon: "link", text: "URL")
+            if !filters.browserUrlTerms.isEmpty {
+                let tint: Color = filters.browserUrlFilterMode == .exclude ? .orange.opacity(0.9) : RetraceMenuStyle.textColorMuted
+                let icon = filters.browserUrlFilterMode == .exclude ? "minus.circle.fill" : "link"
+                ForEach(Array(filters.browserUrlTerms.prefix(3)), id: \.self) { term in
+                    recentEntryMetadataToken(icon: icon, text: "URL: \(term)", tint: tint)
+                }
+                if filters.browserUrlTerms.count > 3 {
+                    recentEntryMetadataToken(icon: "ellipsis.circle", text: "+\(filters.browserUrlTerms.count - 3)", tint: tint)
+                }
+            }
+
+            if !filters.excludedQueryTerms.isEmpty {
+                ForEach(Array(filters.excludedQueryTerms.prefix(4)), id: \.self) { excludedTerm in
+                    recentEntryMetadataToken(
+                        icon: "minus.circle.fill",
+                        text: excludedTerm,
+                        tint: .orange.opacity(0.9)
+                    )
+                }
+                if filters.excludedQueryTerms.count > 4 {
+                    recentEntryMetadataToken(
+                        icon: "ellipsis.circle",
+                        text: "+\(filters.excludedQueryTerms.count - 4)",
+                        tint: .orange.opacity(0.9)
+                    )
+                }
             }
 
             if !hasRecentEntryFilterMetadata(filters) {
@@ -886,24 +930,29 @@ public struct SpotlightSearchOverlay: View {
     }
 
     private func hasRecentEntryFilterMetadata(_ filters: SearchViewModel.RecentSearchFilters) -> Bool {
-        !filters.appBundleIDs.isEmpty ||
+        let dateRanges = filters.effectiveDateRanges
+        return !filters.appBundleIDs.isEmpty ||
         !filters.tagIDs.isEmpty ||
         filters.hiddenFilter != .hide ||
         filters.commentFilter != .allFrames ||
-        filters.startDate != nil ||
-        filters.endDate != nil ||
-        (filters.windowNameFilter?.isEmpty == false) ||
-        (filters.browserUrlFilter?.isEmpty == false)
+        !dateRanges.isEmpty ||
+        !filters.windowNameTerms.isEmpty ||
+        !filters.browserUrlTerms.isEmpty ||
+        !filters.excludedQueryTerms.isEmpty
     }
 
     private func recentEntryDateLabel(for filters: SearchViewModel.RecentSearchFilters) -> String? {
-        if let startDate = filters.startDate, let endDate = filters.endDate {
+        let dateRanges = filters.effectiveDateRanges
+        if dateRanges.count > 1 {
+            return "\(dateRanges.count) date ranges"
+        }
+        if let startDate = dateRanges.first?.start, let endDate = dateRanges.first?.end {
             return "\(Self.recentEntryShortDateFormatter.string(from: startDate)) - \(Self.recentEntryShortDateFormatter.string(from: endDate))"
         }
-        if let startDate = filters.startDate {
+        if let startDate = dateRanges.first?.start {
             return "From \(Self.recentEntryShortDateFormatter.string(from: startDate))"
         }
-        if let endDate = filters.endDate {
+        if let endDate = dateRanges.first?.end {
             return "Until \(Self.recentEntryShortDateFormatter.string(from: endDate))"
         }
         return nil
@@ -1024,7 +1073,6 @@ public struct SpotlightSearchOverlay: View {
                             viewModel: viewModel
                         )
                         .onAppear {
-                            Log.debug("\(searchLog) Result card appeared: index=\(index), frameID=\(result.frameID.stringValue), generation=\(viewModel.searchGeneration)", category: .ui)
                             loadThumbnail(for: result)
                             loadAppIcon(for: result)
 
@@ -1163,7 +1211,6 @@ public struct SpotlightSearchOverlay: View {
 
         if viewModel.thumbnailCache[key] != nil {
             viewModel.markThumbnailAccessed(key)
-            Log.debug("\(searchLog) Thumbnail already cached for: \(key)", category: .ui)
             return
         }
 
@@ -1172,7 +1219,6 @@ public struct SpotlightSearchOverlay: View {
         }
 
         let startTime = Date()
-        Log.debug("\(searchLog) Starting highlighted thumbnail load for: segmentID=\(result.segmentID.stringValue), timestamp=\(result.timestamp), query='\(searchQuery)', generation=\(currentGeneration)", category: .ui)
 
         Task {
             if await viewModel.loadThumbnailFromDiskIfAvailable(for: key, generation: currentGeneration) {
@@ -1182,7 +1228,6 @@ public struct SpotlightSearchOverlay: View {
 
             do {
                 // 1. Fetch frame image (prefer direct path to avoid per-thumbnail DB lookups and JPEG round-trips)
-                let fetchStart = Date()
                 let fullImage: NSImage
                 if let videoPath = result.videoPath {
                     let cgImage = try await coordinator.getFrameCGImage(
@@ -1209,23 +1254,14 @@ public struct SpotlightSearchOverlay: View {
                     }
                     fullImage = decodedImage
                 }
-                let fetchDuration = Date().timeIntervalSince(fetchStart) * 1000
-                Log.debug("\(searchLog) Frame image fetched in \(Int(fetchDuration))ms, source=\(result.source), directPath=\(result.videoPath != nil)", category: .ui)
-
                 // Check if search generation changed (user started a new search)
                 guard viewModel.searchGeneration == currentGeneration else {
-                    Log.debug("\(searchLog) Search generation changed (\(currentGeneration)->\(viewModel.searchGeneration)), discarding thumbnail for: \(key)", category: .ui)
                     viewModel.failThumbnailLoad(with: nil, for: key, generation: currentGeneration)
                     return
                 }
 
-                let resizeStart = Date()
                 let thumbnail: NSImage
                 if let matchNode = result.highlightNode {
-                    Log.debug(
-                        "\(searchLog) Using precomputed match node id=\(matchNode.nodeID) at (\(matchNode.x), \(matchNode.y))",
-                        category: .ui
-                    )
                     thumbnail = createHighlightedThumbnail(
                         from: fullImage,
                         matchX: matchNode.x,
@@ -1236,17 +1272,13 @@ public struct SpotlightSearchOverlay: View {
                     )
                 } else {
                     // 2. Get OCR nodes for this frame (use frameID for exact match)
-                    let ocrStart = Date()
                     let ocrNodes = try await coordinator.getAllOCRNodes(
                         frameID: result.frameID,
                         source: result.source
                     )
-                    let ocrDuration = Date().timeIntervalSince(ocrStart) * 1000
-                    Log.debug("\(searchLog) OCR nodes fetched in \(Int(ocrDuration))ms, count=\(ocrNodes.count), source=\(result.source)", category: .ui)
 
                     // Check if search generation changed again
                     guard viewModel.searchGeneration == currentGeneration else {
-                        Log.debug("\(searchLog) Search generation changed (\(currentGeneration)->\(viewModel.searchGeneration)), discarding thumbnail for: \(key)", category: .ui)
                         viewModel.failThumbnailLoad(with: nil, for: key, generation: currentGeneration)
                         return
                     }
@@ -1256,20 +1288,15 @@ public struct SpotlightSearchOverlay: View {
 
                     // 4. Create the highlighted thumbnail
                     if let matchNode = matchingNode {
-                        Log.debug("\(searchLog) Found matching node: '\(matchNode.text.prefix(30))...' at (\(matchNode.x), \(matchNode.y))", category: .ui)
                         thumbnail = createHighlightedThumbnail(
                             from: fullImage,
                             matchingNode: matchNode,
                             size: thumbnailSize
                         )
                     } else {
-                        Log.debug("\(searchLog) No matching node found, creating standard thumbnail", category: .ui)
                         thumbnail = createThumbnail(from: fullImage, size: thumbnailSize)
                     }
                 }
-                let resizeDuration = Date().timeIntervalSince(resizeStart) * 1000
-                let totalDuration = Date().timeIntervalSince(startTime) * 1000
-                Log.debug("\(searchLog) Thumbnail created: \(Int(thumbnail.size.width))x\(Int(thumbnail.size.height)), resize=\(Int(resizeDuration))ms, total=\(Int(totalDuration))ms", category: .ui)
 
                 viewModel.finishThumbnailLoad(
                     thumbnail,
@@ -1509,7 +1536,6 @@ public struct SpotlightSearchOverlay: View {
 
         // Small delay to allow dismiss animation
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            Log.debug("\(searchLog) Calling onResultSelected callback with timestamp: \(df.string(from: result.timestamp))", category: .ui)
             onResultSelected(result, query)
         }
     }
@@ -1524,11 +1550,53 @@ public struct SpotlightSearchOverlay: View {
         dismissOverlay(clearSearchState: true)
     }
 
+    private func collapseToCompactSearchBar(clearFilters: Bool) {
+        guard isExpanded else { return }
+
+        clearResultKeyboardNavigation()
+        isRecentEntriesPopoverVisible = false
+        highlightedRecentEntryIndex = 0
+
+        if clearFilters {
+            viewModel.clearAllFilters()
+            viewModel.resetSearchOrderToDefault()
+        }
+
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            isExpanded = false
+        }
+
+        refocusSearchField = UUID()
+        refreshRecentEntriesPopoverVisibility()
+    }
+
+    private func handleSearchEscape() {
+        if isRecentEntriesPopoverVisible {
+            withAnimation(.easeOut(duration: 0.15)) {
+                isRecentEntriesPopoverVisible = false
+            }
+            highlightedRecentEntryIndex = 0
+            return
+        }
+
+        // If a dropdown is open, close it instead of collapsing/dismissing.
+        if viewModel.isDropdownOpen {
+            viewModel.closeDropdownsSignal += 1
+            return
+        }
+
+        // Expanded overlay with no submitted search should collapse back to compact mode.
+        if isExpanded && !viewModel.shouldDismissExpandedOverlayOnEscape {
+            collapseToCompactSearchBar(clearFilters: true)
+            return
+        }
+
+        dismissOverlay()
+    }
+
     private func dismissOverlay(clearSearchState: Bool) {
         guard !isDismissing else { return }
         isDismissing = true
-
-        Log.debug("\(searchLog) Dismissing overlay (clearSearchState=\(clearSearchState))", category: .ui)
 
         // Cancel any in-flight search tasks to prevent blocking while the overlay fades out.
         viewModel.cancelSearch()
@@ -1892,10 +1960,6 @@ struct SpotlightSearchField: NSViewRepresentable {
 
         let schedule = {
             guard let window = textField.window else {
-                Log.debug(
-                    "\(searchLog)[FieldFocus] focus attempt=\(attempt) window=nil retry=\(attempt < maxAttempts)",
-                    category: .ui
-                )
                 if attempt < maxAttempts {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         self.focusTextField(textField, attempt: attempt + 1)
@@ -1903,10 +1967,6 @@ struct SpotlightSearchField: NSViewRepresentable {
                 }
                 return
             }
-            Log.debug(
-                "\(searchLog)[FieldFocus] focus attempt=\(attempt) windowFound isKey=\(window.isKeyWindow)",
-                category: .ui
-            )
             self.performFocus(textField, in: window, attempt: attempt)
         }
 
@@ -2006,12 +2066,10 @@ struct SpotlightSearchField: NSViewRepresentable {
         }
 
         func controlTextDidBeginEditing(_ notification: Notification) {
-            Log.debug("\(searchLog)[FieldFocus] controlTextDidBeginEditing", category: .ui)
             onFocus?()
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
-            Log.debug("\(searchLog)[FieldFocus] controlTextDidEndEditing", category: .ui)
             onBlur?()
         }
 

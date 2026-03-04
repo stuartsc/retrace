@@ -161,6 +161,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let quitConfirmationPreferenceKey = "quitConfirmationPreference"
     private static let canonicalBundleIdentifier = "io.retrace.app"
     private static let singleInstanceLockPath = "/tmp/io.retrace.app.instance.lock"
+    nonisolated private static let watchdogSleepSuspensionSeconds: TimeInterval = 12 * 60 * 60
     nonisolated private static let watchdogWakeGracePeriodSeconds: TimeInterval = 60
 
     private enum QuitTerminationPreference: String {
@@ -302,14 +303,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let blockedFor = String(format: "%.1f", blockedSeconds)
 
             let displayCount = Self.activeDisplayCount()
-            if displayCount == 0 {
+            if displayCount <= 0 {
+                let displayStateDescription = displayCount == 0 ? "0 active displays" : "display probe failed"
                 Log.warning(
-                    "[Watchdog] Auto-quit suppressed: active displays are 0 (darkwake/sleep transition). blocked=\(blockedFor)s",
+                    "[Watchdog] Auto-quit suppressed: \(displayStateDescription) (darkwake/sleep transition). blocked=\(blockedFor)s",
                     category: .ui
                 )
                 MainThreadWatchdog.shared.suspendAutoQuit(
                     for: Self.watchdogWakeGracePeriodSeconds,
-                    reason: "active displays 0 (darkwake/sleep transition)"
+                    reason: "\(displayStateDescription) (darkwake/sleep transition)"
                 )
                 EmergencyDiagnostics.capture(trigger: "watchdog_auto_quit_suppressed_no_display")
                 return
@@ -997,7 +999,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleSystemSleep() async {
-        MainThreadWatchdog.shared.suspendAutoQuit(reason: "system will sleep")
+        MainThreadWatchdog.shared.suspendAutoQuit(
+            for: Self.watchdogSleepSuspensionSeconds,
+            reason: "system will sleep"
+        )
 
         guard let wrapper = coordinatorWrapper else { return }
         guard !isHandlingSystemSleep else { return }
@@ -1046,7 +1051,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleScreensSleep() async {
-        MainThreadWatchdog.shared.suspendAutoQuit(reason: "screens did sleep")
+        MainThreadWatchdog.shared.suspendAutoQuit(
+            for: Self.watchdogSleepSuspensionSeconds,
+            reason: "screens did sleep"
+        )
     }
 
     @MainActor

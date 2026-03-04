@@ -178,6 +178,45 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertNil(retrieved)
     }
 
+    func testUpdateSegmentBrowserURL_DefaultDoesNotOverwriteExistingValue() async throws {
+        let segmentID = try await database.insertSegment(
+            bundleID: "com.google.Chrome",
+            startDate: Date(),
+            endDate: Date(),
+            windowName: "Search",
+            browserUrl: "https://example.com/old",
+            type: 0
+        )
+
+        try await database.updateSegmentBrowserURL(
+            id: segmentID,
+            browserURL: "https://example.com/new"
+        )
+
+        let segment = try await database.getSegment(id: segmentID)
+        XCTAssertEqual(segment?.browserUrl, "https://example.com/old")
+    }
+
+    func testUpdateSegmentBrowserURL_AllowsOverwriteWhenRequested() async throws {
+        let segmentID = try await database.insertSegment(
+            bundleID: "com.google.Chrome",
+            startDate: Date(),
+            endDate: Date(),
+            windowName: "Search",
+            browserUrl: "https://example.com/old",
+            type: 0
+        )
+
+        try await database.updateSegmentBrowserURL(
+            id: segmentID,
+            browserURL: "https://example.com/new",
+            onlyIfNull: false
+        )
+
+        let segment = try await database.getSegment(id: segmentID)
+        XCTAssertEqual(segment?.browserUrl, "https://example.com/new")
+    }
+
     func testGetTotalStorageBytes() async throws {
         let segment1 = VideoSegment(
             id: VideoSegmentID(value: 0),

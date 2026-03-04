@@ -10,6 +10,7 @@ import App
 struct ContextMenuContent: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
     @Binding var showMenu: Bool
+    var highlightHideControlsRow: Bool = false
     @EnvironmentObject var coordinatorWrapper: AppCoordinatorWrapper
 
     var body: some View {
@@ -35,7 +36,12 @@ struct ContextMenuContent: View {
                 .background(Color.white.opacity(0.1))
                 .padding(.vertical, 4)
 
-            ContextMenuRow(title: viewModel.areControlsHidden ? "Show Controls" : "Hide Controls", icon: viewModel.areControlsHidden ? "menubar.arrow.up.rectangle" : "menubar.arrow.down.rectangle", shortcut: "⌘H") {
+            ContextMenuRow(
+                title: viewModel.areControlsHidden ? "Show Controls" : "Hide Controls",
+                icon: viewModel.areControlsHidden ? "menubar.arrow.up.rectangle" : "menubar.arrow.down.rectangle",
+                shortcut: "⌘H",
+                showGuideRing: highlightHideControlsRow
+            ) {
                 showMenu = false
                 viewModel.toggleControlsVisibility()
             }
@@ -225,9 +231,11 @@ struct ContextMenuRow: View {
     let title: String
     let icon: String
     var shortcut: String? = nil
+    var showGuideRing: Bool = false
     let action: () -> Void
 
     @State private var isHovering = false
+    @State private var guidePulse = false
 
     var body: some View {
         Button(action: action) {
@@ -258,11 +266,38 @@ struct ContextMenuRow: View {
             .padding(.horizontal, RetraceMenuStyle.itemPaddingH)
             .padding(.vertical, RetraceMenuStyle.itemPaddingV)
             .background(
-                RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
-                    .fill(isHovering ? RetraceMenuStyle.itemHoverColor : Color.clear)
+                ZStack {
+                    RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                        .fill(isHovering ? RetraceMenuStyle.itemHoverColor : Color.clear)
+
+                    if showGuideRing {
+                        RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                            .stroke(
+                                Color.yellow.opacity(guidePulse ? 0.95 : 0.7),
+                                lineWidth: guidePulse ? 2.6 : 2.0
+                            )
+                            .shadow(
+                                color: Color.yellow.opacity(guidePulse ? 0.45 : 0.25),
+                                radius: guidePulse ? 8 : 5
+                            )
+                            .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: guidePulse)
+                    }
+                }
             )
         }
         .buttonStyle(.plain)
+        .onAppear {
+            if showGuideRing {
+                guidePulse = true
+            }
+        }
+        .onChange(of: showGuideRing) { isEnabled in
+            if isEnabled {
+                guidePulse = true
+            } else {
+                guidePulse = false
+            }
+        }
         .onHover { hovering in
             withAnimation(.easeOut(duration: RetraceMenuStyle.hoverAnimationDuration)) {
                 isHovering = hovering

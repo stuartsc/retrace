@@ -1,5 +1,20 @@
 import Foundation
 
+/// Inclusive date range used by timeline/search filters.
+public struct DateRangeCriterion: Codable, Equatable, Sendable, Hashable {
+    public var start: Date?
+    public var end: Date?
+
+    public init(start: Date? = nil, end: Date? = nil) {
+        self.start = start
+        self.end = end
+    }
+
+    public var hasBounds: Bool {
+        start != nil || end != nil
+    }
+}
+
 /// Mode for app filtering - include selected apps or exclude them
 public enum AppFilterMode: String, Codable, Sendable, CaseIterable {
     /// Show only selected apps (default)
@@ -103,6 +118,9 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
     /// Date range end (nil = no end limit)
     public var endDate: Date?
 
+    /// Multi-range date filter. When non-empty, this takes precedence over `startDate`/`endDate`.
+    public var dateRanges: [DateRangeCriterion]?
+
     public init(
         selectedApps: Set<String>? = nil,
         appFilterMode: AppFilterMode = .include,
@@ -114,7 +132,8 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         windowNameFilter: String? = nil,
         browserUrlFilter: String? = nil,
         startDate: Date? = nil,
-        endDate: Date? = nil
+        endDate: Date? = nil,
+        dateRanges: [DateRangeCriterion]? = nil
     ) {
         self.selectedApps = selectedApps
         self.appFilterMode = appFilterMode
@@ -127,6 +146,19 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         self.browserUrlFilter = browserUrlFilter
         self.startDate = startDate
         self.endDate = endDate
+        self.dateRanges = Self.sanitizedDateRanges(dateRanges)
+    }
+
+    /// Effective date ranges for querying. Falls back to legacy single-range fields for compatibility.
+    public var effectiveDateRanges: [DateRangeCriterion] {
+        let normalized = Self.sanitizedDateRanges(dateRanges) ?? []
+        if !normalized.isEmpty {
+            return normalized
+        }
+        if startDate != nil || endDate != nil {
+            return [DateRangeCriterion(start: startDate, end: endDate)]
+        }
+        return []
     }
 
     /// Returns true if any filter is active (different from default)
@@ -138,8 +170,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         (selectedTags != nil && !selectedTags!.isEmpty) ||
         (windowNameFilter != nil && !windowNameFilter!.isEmpty) ||
         (browserUrlFilter != nil && !browserUrlFilter!.isEmpty) ||
-        startDate != nil ||
-        endDate != nil
+        !effectiveDateRanges.isEmpty
     }
 
     /// Returns true if any advanced filter is active
@@ -158,7 +189,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         if selectedTags != nil && !selectedTags!.isEmpty { count += 1 }
         if windowNameFilter != nil && !windowNameFilter!.isEmpty { count += 1 }
         if browserUrlFilter != nil && !browserUrlFilter!.isEmpty { count += 1 }
-        if startDate != nil || endDate != nil { count += 1 }
+        if !effectiveDateRanges.isEmpty { count += 1 }
         return count
     }
 
@@ -177,6 +208,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         case browserUrlFilter
         case startDate
         case endDate
+        case dateRanges
     }
 
     public init(from decoder: Decoder) throws {
@@ -192,6 +224,7 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         browserUrlFilter = try container.decodeIfPresent(String.self, forKey: .browserUrlFilter)
         startDate = try container.decodeIfPresent(Date.self, forKey: .startDate)
         endDate = try container.decodeIfPresent(Date.self, forKey: .endDate)
+        dateRanges = Self.sanitizedDateRanges(try container.decodeIfPresent([DateRangeCriterion].self, forKey: .dateRanges))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -207,5 +240,12 @@ public struct FilterCriteria: Codable, Equatable, Sendable {
         try container.encodeIfPresent(browserUrlFilter, forKey: .browserUrlFilter)
         try container.encodeIfPresent(startDate, forKey: .startDate)
         try container.encodeIfPresent(endDate, forKey: .endDate)
+        try container.encodeIfPresent(Self.sanitizedDateRanges(dateRanges), forKey: .dateRanges)
+    }
+
+    private static func sanitizedDateRanges(_ ranges: [DateRangeCriterion]?) -> [DateRangeCriterion]? {
+        guard let ranges else { return nil }
+        let sanitized = ranges.filter(\.hasBounds)
+        return sanitized.isEmpty ? nil : sanitized
     }
 }

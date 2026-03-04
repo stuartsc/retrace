@@ -163,22 +163,6 @@ public actor ProcessingManager: ProcessingProtocol {
             )
         }
 
-        // Extract browser URL from OCR if not already available from Accessibility API
-        // This handles browsers that don't expose URL via AX API (Firefox, Opera, Vivaldi, etc.)
-        // Only searches chrome text (top 5% - address bar area)
-        if metadata.browserURL == nil {
-            if let extractedURL = URLExtractor.extractURL(chromeText: chromeText) {
-                metadata = FrameMetadata(
-                    appBundleID: metadata.appBundleID,
-                    appName: metadata.appName,
-                    windowName: metadata.windowName,
-                    browserURL: extractedURL,
-                    redactionReason: metadata.redactionReason,
-                    displayID: metadata.displayID
-                )
-            }
-        }
-
         // Create ExtractedText with separated main/chrome regions
         // Note: CapturedFrame doesn't have an ID yet (assigned by database on insert)
         let extractedText = ExtractedText(

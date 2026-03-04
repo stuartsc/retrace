@@ -110,10 +110,10 @@ struct PauseReminderView_Previews: PreviewProvider {
                 HStack {
                     Spacer()
                     PauseReminderView(
-                        onResumeCapturing: { print("Resume") },
-                        onRemindMeLater: { print("Remind me later") },
-                        onEditIntervalInSettings: { print("Open settings") },
-                        onDismiss: { print("Dismiss") }
+                        onResumeCapturing: {},
+                        onRemindMeLater: {},
+                        onEditIntervalInSettings: {},
+                        onDismiss: {}
                     )
                     .padding()
                 }

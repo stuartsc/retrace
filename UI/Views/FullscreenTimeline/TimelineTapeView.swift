@@ -124,7 +124,11 @@ public struct TimelineTapeView: View {
                 }
                 .frame(width: totalTapeWidth, alignment: .leading)
 
-                // Video boundary markers overlay (only when enabled)
+                // Segment/video boundary markers overlay (only when enabled)
+                if viewModel.showSegmentBoundaries {
+                    segmentBoundaryMarkers(layout: layout)
+                }
+
                 if viewModel.showVideoBoundaries {
                     videoBoundaryMarkers(layout: layout)
                 }
@@ -133,6 +137,24 @@ public struct TimelineTapeView: View {
             .animation(scrubbingAnimationDuration > 0 && !viewModel.isActivelyScrolling ? .easeOut(duration: scrubbingAnimationDuration) : nil, value: viewModel.currentIndex)
             .animation(.easeOut(duration: 0.2), value: viewModel.zoomLevel)
         }
+    }
+
+    // MARK: - Segment Boundary Markers
+
+    /// Blue tick marks showing where segment boundaries are on the timeline
+    @ViewBuilder
+    private func segmentBoundaryMarkers(layout: TapeLayoutSnapshot) -> some View {
+        let boundaries = viewModel.orderedSegmentBoundaryIndices
+
+        ForEach(boundaries, id: \.self) { frameIndex in
+            let xOffset = layout.offsetForFrame(frameIndex) - pixelsPerFrame / 2
+
+            Rectangle()
+                .fill(Color.blue)
+                .frame(width: 2, height: tapeHeight + 16)
+                .offset(x: xOffset, y: -8)
+        }
+        .allowsHitTesting(false)
     }
 
     // MARK: - Video Boundary Markers
@@ -838,15 +860,9 @@ struct VideoControlsButton: View {
         // Button sized to match other controls; speed picker floats above via overlay
         Button(action: {
             viewModel.dismissContextMenu()
-            let wasPlaying = viewModel.isPlaying
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                 viewModel.togglePlayback()
             }
-            Log.info(
-                "[PLAY-CLICK] button click handled wasPlaying=\(wasPlaying) nowPlaying=\(viewModel.isPlaying) " +
-                "speed=\(formattedSpeed(viewModel.playbackSpeed)) mouse=\(formattedMouseLocation())",
-                category: .ui
-            )
         }) {
             Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: TimelineScaleFactor.fontCaption2, weight: .medium))
@@ -927,11 +943,6 @@ struct VideoControlsButton: View {
                 }
             }
         }
-    }
-
-    private func formattedMouseLocation() -> String {
-        let mouse = NSEvent.mouseLocation
-        return "(\(Int(mouse.x)),\(Int(mouse.y)))"
     }
 }
 

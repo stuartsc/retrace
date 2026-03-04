@@ -601,13 +601,23 @@ public actor DatabaseManager: DatabaseProtocol {
         try AppSegmentQueries.updateEndDate(db: db, id: id, endDate: endDate)
     }
 
-    /// Update segment's browserURL if currently null
-    /// Used to backfill URLs extracted from OCR
-    public func updateSegmentBrowserURL(id: Int64, browserURL: String) async throws {
+    /// Update segment browserURL.
+    /// - Parameter onlyIfNull: When true, updates only if browserUrl is currently NULL.
+    ///   When false, allows correcting a previously-written URL.
+    public func updateSegmentBrowserURL(
+        id: Int64,
+        browserURL: String,
+        onlyIfNull: Bool = true
+    ) async throws {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
-        try AppSegmentQueries.updateBrowserURL(db: db, id: id, browserURL: browserURL)
+        try AppSegmentQueries.updateBrowserURL(
+            db: db,
+            id: id,
+            browserURL: browserURL,
+            onlyIfNull: onlyIfNull
+        )
     }
 
     public func getSegment(id: Int64) async throws -> Segment? {

@@ -1365,20 +1365,45 @@ public actor AppCoordinator {
                 )
             }
         } else if let segID = currentSegmentID,
-                  currentSegment?.browserUrl == nil,
                   let browserURL = normalizedBrowserURL {
-            try await services.database.updateSegmentBrowserURL(id: segID, browserURL: browserURL)
-            let host = URL(string: browserURL)?.host ?? browserURL
-            Log.info(
-                "[SegmentURL] Backfilled browserUrl for segmentID=\(segID), bundle=\(metadata.appBundleID ?? "unknown"), host=\(host)",
-                category: .app
-            )
-            try await backfillRecentClosedNilBrowserURLSegments(
-                bundleID: metadata.appBundleID,
-                windowName: metadata.windowName,
-                browserURL: browserURL,
-                referenceTime: frame.timestamp
-            )
+            let existingBrowserURL: String?
+            if let rawBrowserURL = currentSegment?.browserUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !rawBrowserURL.isEmpty {
+                existingBrowserURL = rawBrowserURL
+            } else {
+                existingBrowserURL = nil
+            }
+
+            if existingBrowserURL == nil {
+                try await services.database.updateSegmentBrowserURL(
+                    id: segID,
+                    browserURL: browserURL,
+                    onlyIfNull: true
+                )
+                let host = URL(string: browserURL)?.host ?? browserURL
+                Log.info(
+                    "[SegmentURL] Backfilled browserUrl for segmentID=\(segID), bundle=\(metadata.appBundleID ?? "unknown"), host=\(host)",
+                    category: .app
+                )
+                try await backfillRecentClosedNilBrowserURLSegments(
+                    bundleID: metadata.appBundleID,
+                    windowName: metadata.windowName,
+                    browserURL: browserURL,
+                    referenceTime: frame.timestamp
+                )
+            } else if existingBrowserURL != browserURL {
+                try await services.database.updateSegmentBrowserURL(
+                    id: segID,
+                    browserURL: browserURL,
+                    onlyIfNull: false
+                )
+                let previousLength = existingBrowserURL?.count ?? 0
+                let newLength = browserURL.count
+                Log.debug(
+                    "[SegmentURL] Corrected browserUrl for segmentID=\(segID), bundle=\(metadata.appBundleID ?? "unknown"), oldLen=\(previousLength), newLen=\(newLength)",
+                    category: .app
+                )
+            }
         }
 
         // Update last frame timestamp for idle detection

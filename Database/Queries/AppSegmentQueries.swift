@@ -86,14 +86,29 @@ enum AppSegmentQueries {
         }
     }
 
-    /// Update browserURL if currently null
-    /// Used to backfill URLs extracted from OCR after capture
-    static func updateBrowserURL(db: OpaquePointer, id: Int64, browserURL: String) throws {
-        let sql = """
-            UPDATE segment
-            SET browserUrl = ?
-            WHERE id = ? AND browserUrl IS NULL
-            """
+    /// Update segment browserURL.
+    /// - Parameter onlyIfNull: When true, updates only if browserUrl is NULL.
+    ///   When false, also allows correcting an existing value if it differs.
+    static func updateBrowserURL(
+        db: OpaquePointer,
+        id: Int64,
+        browserURL: String,
+        onlyIfNull: Bool = true
+    ) throws {
+        let sql: String
+        if onlyIfNull {
+            sql = """
+                UPDATE segment
+                SET browserUrl = ?
+                WHERE id = ? AND browserUrl IS NULL
+                """
+        } else {
+            sql = """
+                UPDATE segment
+                SET browserUrl = ?
+                WHERE id = ? AND (browserUrl IS NULL OR browserUrl != ?)
+                """
+        }
 
         var statement: OpaquePointer?
         defer {
@@ -109,6 +124,9 @@ enum AppSegmentQueries {
 
         sqlite3_bind_text(statement, 1, browserURL, -1, SQLITE_TRANSIENT)
         sqlite3_bind_int64(statement, 2, id)
+        if !onlyIfNull {
+            sqlite3_bind_text(statement, 3, browserURL, -1, SQLITE_TRANSIENT)
+        }
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw DatabaseError.queryFailed(

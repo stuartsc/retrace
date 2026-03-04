@@ -26,8 +26,38 @@ public class SearchViewModel: ObservableObject {
         public var commentFilter: CommentFilter
         public var startDate: Date?
         public var endDate: Date?
+        public var dateRanges: [DateRangeCriterion]
+        public var windowNameTerms: [String]  // include terms
+        public var windowNameExcludedTerms: [String]
+        public var windowNameFilterMode: AppFilterMode
+        public var browserUrlTerms: [String]  // include terms
+        public var browserUrlExcludedTerms: [String]
+        public var browserUrlFilterMode: AppFilterMode
+        // Legacy single-value fields (kept for decode compatibility)
         public var windowNameFilter: String?
         public var browserUrlFilter: String?
+        public var excludedQueryTerms: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case appBundleIDs
+            case appFilterMode
+            case tagIDs
+            case tagFilterMode
+            case hiddenFilter
+            case commentFilter
+            case startDate
+            case endDate
+            case dateRanges
+            case windowNameTerms
+            case windowNameExcludedTerms
+            case windowNameFilterMode
+            case browserUrlTerms
+            case browserUrlExcludedTerms
+            case browserUrlFilterMode
+            case windowNameFilter
+            case browserUrlFilter
+            case excludedQueryTerms
+        }
 
         public init(
             appBundleIDs: [String] = [],
@@ -38,8 +68,16 @@ public class SearchViewModel: ObservableObject {
             commentFilter: CommentFilter = .allFrames,
             startDate: Date? = nil,
             endDate: Date? = nil,
+            dateRanges: [DateRangeCriterion] = [],
+            windowNameTerms: [String] = [],
+            windowNameExcludedTerms: [String] = [],
+            windowNameFilterMode: AppFilterMode = .include,
+            browserUrlTerms: [String] = [],
+            browserUrlExcludedTerms: [String] = [],
+            browserUrlFilterMode: AppFilterMode = .include,
             windowNameFilter: String? = nil,
-            browserUrlFilter: String? = nil
+            browserUrlFilter: String? = nil,
+            excludedQueryTerms: [String] = []
         ) {
             self.appBundleIDs = appBundleIDs
             self.appFilterMode = appFilterMode
@@ -49,8 +87,100 @@ public class SearchViewModel: ObservableObject {
             self.commentFilter = commentFilter
             self.startDate = startDate
             self.endDate = endDate
+            self.dateRanges = dateRanges.filter(\.hasBounds)
+            self.windowNameTerms = windowNameTerms
+            self.windowNameExcludedTerms = windowNameExcludedTerms
+            self.windowNameFilterMode = windowNameFilterMode
+            self.browserUrlTerms = browserUrlTerms
+            self.browserUrlExcludedTerms = browserUrlExcludedTerms
+            self.browserUrlFilterMode = browserUrlFilterMode
             self.windowNameFilter = windowNameFilter
             self.browserUrlFilter = browserUrlFilter
+            self.excludedQueryTerms = excludedQueryTerms
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            appBundleIDs = try container.decode([String].self, forKey: .appBundleIDs)
+            appFilterMode = try container.decode(AppFilterMode.self, forKey: .appFilterMode)
+            tagIDs = try container.decode([Int64].self, forKey: .tagIDs)
+            tagFilterMode = try container.decode(TagFilterMode.self, forKey: .tagFilterMode)
+            hiddenFilter = try container.decode(HiddenFilter.self, forKey: .hiddenFilter)
+            commentFilter = try container.decode(CommentFilter.self, forKey: .commentFilter)
+            startDate = try container.decodeIfPresent(Date.self, forKey: .startDate)
+            endDate = try container.decodeIfPresent(Date.self, forKey: .endDate)
+            dateRanges = (try container.decodeIfPresent([DateRangeCriterion].self, forKey: .dateRanges) ?? []).filter(\.hasBounds)
+            if dateRanges.isEmpty, startDate != nil || endDate != nil {
+                dateRanges = [DateRangeCriterion(start: startDate, end: endDate)]
+            } else if let firstRange = dateRanges.first {
+                startDate = firstRange.start
+                endDate = firstRange.end
+            }
+            windowNameTerms = try container.decodeIfPresent([String].self, forKey: .windowNameTerms) ?? []
+            windowNameExcludedTerms = try container.decodeIfPresent([String].self, forKey: .windowNameExcludedTerms) ?? []
+            windowNameFilterMode = try container.decodeIfPresent(AppFilterMode.self, forKey: .windowNameFilterMode) ?? .include
+            browserUrlTerms = try container.decodeIfPresent([String].self, forKey: .browserUrlTerms) ?? []
+            browserUrlExcludedTerms = try container.decodeIfPresent([String].self, forKey: .browserUrlExcludedTerms) ?? []
+            browserUrlFilterMode = try container.decodeIfPresent(AppFilterMode.self, forKey: .browserUrlFilterMode) ?? .include
+            windowNameFilter = try container.decodeIfPresent(String.self, forKey: .windowNameFilter)
+            browserUrlFilter = try container.decodeIfPresent(String.self, forKey: .browserUrlFilter)
+            if windowNameExcludedTerms.isEmpty, windowNameFilterMode == .exclude, !windowNameTerms.isEmpty {
+                windowNameExcludedTerms = windowNameTerms
+                windowNameTerms = []
+            }
+            if browserUrlExcludedTerms.isEmpty, browserUrlFilterMode == .exclude, !browserUrlTerms.isEmpty {
+                browserUrlExcludedTerms = browserUrlTerms
+                browserUrlTerms = []
+            }
+            if windowNameTerms.isEmpty, windowNameExcludedTerms.isEmpty, let windowNameFilter, !windowNameFilter.isEmpty {
+                if windowNameFilterMode == .exclude {
+                    windowNameExcludedTerms = [windowNameFilter]
+                } else {
+                    windowNameTerms = [windowNameFilter]
+                }
+            }
+            if browserUrlTerms.isEmpty, browserUrlExcludedTerms.isEmpty, let browserUrlFilter, !browserUrlFilter.isEmpty {
+                if browserUrlFilterMode == .exclude {
+                    browserUrlExcludedTerms = [browserUrlFilter]
+                } else {
+                    browserUrlTerms = [browserUrlFilter]
+                }
+            }
+            excludedQueryTerms = try container.decodeIfPresent([String].self, forKey: .excludedQueryTerms) ?? []
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(appBundleIDs, forKey: .appBundleIDs)
+            try container.encode(appFilterMode, forKey: .appFilterMode)
+            try container.encode(tagIDs, forKey: .tagIDs)
+            try container.encode(tagFilterMode, forKey: .tagFilterMode)
+            try container.encode(hiddenFilter, forKey: .hiddenFilter)
+            try container.encode(commentFilter, forKey: .commentFilter)
+            let effectiveRanges = self.effectiveDateRanges
+            try container.encodeIfPresent(effectiveRanges.first?.start ?? startDate, forKey: .startDate)
+            try container.encodeIfPresent(effectiveRanges.first?.end ?? endDate, forKey: .endDate)
+            try container.encode(effectiveRanges, forKey: .dateRanges)
+            try container.encode(windowNameTerms, forKey: .windowNameTerms)
+            try container.encode(windowNameExcludedTerms, forKey: .windowNameExcludedTerms)
+            try container.encode(windowNameFilterMode, forKey: .windowNameFilterMode)
+            try container.encode(browserUrlTerms, forKey: .browserUrlTerms)
+            try container.encode(browserUrlExcludedTerms, forKey: .browserUrlExcludedTerms)
+            try container.encode(browserUrlFilterMode, forKey: .browserUrlFilterMode)
+            try container.encodeIfPresent(windowNameTerms.first ?? windowNameExcludedTerms.first, forKey: .windowNameFilter)
+            try container.encodeIfPresent(browserUrlTerms.first ?? browserUrlExcludedTerms.first, forKey: .browserUrlFilter)
+            try container.encode(excludedQueryTerms, forKey: .excludedQueryTerms)
+        }
+
+        public var effectiveDateRanges: [DateRangeCriterion] {
+            let sanitized = dateRanges.filter(\.hasBounds)
+            if !sanitized.isEmpty {
+                return sanitized
+            }
+            if startDate != nil || endDate != nil {
+                return [DateRangeCriterion(start: startDate, end: endDate)]
+            }
+            return []
         }
     }
 
@@ -116,13 +246,19 @@ public class SearchViewModel: ObservableObject {
     @Published public var appFilterMode: AppFilterMode = .include  // include or exclude selected apps
     @Published public var startDate: Date?
     @Published public var endDate: Date?
+    @Published public var dateRanges: [DateRangeCriterion] = []
     @Published public var contentType: ContentType = .all
     @Published public var selectedTags: Set<Int64>?  // nil = all tags
     @Published public var tagFilterMode: TagFilterMode = .include  // include or exclude selected tags
     @Published public var hiddenFilter: HiddenFilter = .hide  // How to handle hidden segments
     @Published public var commentFilter: CommentFilter = .allFrames  // How to handle comment presence
-    @Published public var windowNameFilter: String?  // Optional window title metadata filter
-    @Published public var browserUrlFilter: String?  // Optional browser URL metadata filter
+    @Published public var windowNameTerms: [String] = []  // include terms
+    @Published public var windowNameExcludedTerms: [String] = []
+    @Published public var windowNameFilterMode: AppFilterMode = .include
+    @Published public var browserUrlTerms: [String] = []  // include terms
+    @Published public var browserUrlExcludedTerms: [String] = []
+    @Published public var browserUrlFilterMode: AppFilterMode = .include
+    @Published public var excludedSearchTerms: [String] = []  // Query terms/phrases excluded via Advanced filter
     @Published public var availableTags: [Tag] = []  // Available tags for filter dropdown
 
     // Search mode (tabs)
@@ -139,6 +275,18 @@ public class SearchViewModel: ObservableObject {
     /// Combined list: installed apps + other apps (for backwards compatibility)
     public var availableApps: [AppInfo] {
         installedApps + otherApps
+    }
+
+    /// Effective date ranges for filtering. Falls back to legacy single-range fields.
+    public var effectiveDateRanges: [DateRangeCriterion] {
+        let sanitized = dateRanges.filter(\.hasBounds)
+        if !sanitized.isEmpty {
+            return sanitized
+        }
+        if startDate != nil || endDate != nil {
+            return [DateRangeCriterion(start: startDate, end: endDate)]
+        }
+        return []
     }
 
     // Selected result
@@ -184,6 +332,10 @@ public class SearchViewModel: ObservableObject {
     /// Used by timeline controller to decide when wheel events should be blocked.
     @Published public var isRecentEntriesPopoverVisible = false
 
+    // Whether the search overlay is currently in expanded mode (filters/results visible).
+    // Used by timeline-level event routing to keep scroll input inside the expanded overlay.
+    @Published public var isSearchOverlayExpanded = false
+
     // Whether the DateFilterPopover is actively handling keyboard events (Tab/Enter/arrows)
     // When true, SearchFilterBar's tab monitor and TimelineWindowController's arrow key handler skip processing
     public var isDatePopoverHandlingKeys = false
@@ -198,6 +350,9 @@ public class SearchViewModel: ObservableObject {
     // Signal to dismiss the search overlay from parent-level handlers (e.g. global Escape).
     // clearSearchState=true clears query/results/filters after the overlay fade-out completes.
     @Published public var dismissOverlaySignal: (clearSearchState: Bool, id: UUID) = (false, UUID())
+
+    // Signal to collapse overlay UI back to compact search bar without dismissing.
+    @Published public var collapseOverlaySignal: UUID = UUID()
 
     // Signal to dismiss the recent-entries popover as if the user clicked the header "x".
     @Published public var dismissRecentEntriesPopoverSignal: UUID = UUID()
@@ -252,6 +407,12 @@ public class SearchViewModel: ObservableObject {
     private static let thumbnailDiskCacheMaxAge: TimeInterval = 7 * 24 * 60 * 60
     private static let maxRecentSearchEntryCount = 80
     private static let recentSearchEntriesKey = "search.recentEntries.v1"
+    private static let encodedMetadataFilterPrefix = "__retrace_meta_filter_v1__"
+
+    private struct EncodedMetadataFilterPayload: Codable {
+        let includeTerms: [String]
+        let excludeTerms: [String]
+    }
 
     // MARK: - Search Results Cache (for restoring on app reopen)
 
@@ -267,12 +428,22 @@ public class SearchViewModel: ObservableObject {
     private static let cachedStartDateKey = "search.cachedStartDate"
     /// Key for storing the cached end date
     private static let cachedEndDateKey = "search.cachedEndDate"
+    /// Key for storing cached multi-range date filters
+    private static let cachedDateRangesKey = "search.cachedDateRanges"
     /// Key for storing the cached content type
     private static let cachedContentTypeKey = "search.cachedContentType"
-    /// Key for storing the cached window name filter
+    /// Keys for storing cached advanced metadata filters.
+    private static let cachedWindowNameTermsKey = "search.cachedWindowNameTerms"
+    private static let cachedWindowNameExcludeTermsKey = "search.cachedWindowNameExcludeTerms"
+    private static let cachedWindowNameModeKey = "search.cachedWindowNameMode"
+    private static let cachedBrowserUrlTermsKey = "search.cachedBrowserUrlTerms"
+    private static let cachedBrowserUrlExcludeTermsKey = "search.cachedBrowserUrlExcludeTerms"
+    private static let cachedBrowserUrlModeKey = "search.cachedBrowserUrlMode"
+    // Legacy keys kept for one-way migration.
     private static let cachedWindowNameFilterKey = "search.cachedWindowNameFilter"
-    /// Key for storing the cached browser URL filter
     private static let cachedBrowserUrlFilterKey = "search.cachedBrowserUrlFilter"
+    /// Key for storing cached excluded query terms
+    private static let cachedExcludedSearchTermsKey = "search.cachedExcludedSearchTerms"
     /// Key for storing the cached comment filter
     private static let cachedCommentFilterKey = "search.cachedCommentFilter"
     /// Key for storing the cached search mode
@@ -280,7 +451,7 @@ public class SearchViewModel: ObservableObject {
     /// Key for storing the cached sort order
     private static let cachedSearchSortOrderKey = "search.cachedSearchSortOrder"
     /// Cache version - increment when data structure changes to invalidate old caches
-    private static let searchCacheVersion = 5  // v5: SearchResult carries video path/frame rate for fast thumbnail loading
+    private static let searchCacheVersion = 6  // v6: adds multi-range date filter cache support
     private static let searchCacheVersionKey = "search.cacheVersion"
     /// How long cached search results remain valid.
     /// Keep this aligned with timeline hidden-state cache invalidation.
@@ -330,9 +501,7 @@ public class SearchViewModel: ObservableObject {
             .removeDuplicates()
             .dropFirst()  // Skip initial empty value so we don't clear cache on init
             .sink { [weak self] query in
-                Log.debug("[SearchCache] searchQuery sink fired: query='\(query)'", category: .ui)
                 if query.isEmpty {
-                    Log.debug("[SearchCache] Query is empty, clearing results and cache (hasSubmittedSearch reset to false)", category: .ui)
                     self?.results = nil
                     self?.committedSearchQuery = ""
                     self?.hasSubmittedSearch = false  // Reset so filters don't auto-update for new query
@@ -351,8 +520,15 @@ public class SearchViewModel: ObservableObject {
             $endDate,
             $contentType
         )
+        .combineLatest($dateRanges)
         .combineLatest($selectedTags, $hiddenFilter, $commentFilter)
-        .combineLatest($windowNameFilter, $browserUrlFilter)
+        .combineLatest(
+            Publishers.CombineLatest3(
+                Publishers.CombineLatest($windowNameTerms, $windowNameExcludedTerms),
+                Publishers.CombineLatest($browserUrlTerms, $browserUrlExcludedTerms),
+                $excludedSearchTerms
+            )
+        )
         .dropFirst()  // Skip initial values
         .debounce(for: .seconds(debounceDelay), scheduler: DispatchQueue.main)
         .sink { [weak self] _ in
@@ -696,10 +872,40 @@ public class SearchViewModel: ObservableObject {
         tagFilterMode = filters.tagFilterMode
         hiddenFilter = filters.hiddenFilter
         commentFilter = filters.commentFilter
-        startDate = filters.startDate
-        endDate = filters.endDate
-        windowNameFilter = filters.windowNameFilter
-        browserUrlFilter = filters.browserUrlFilter
+        let restoredDateRanges = Array(filters.effectiveDateRanges.prefix(5))
+        dateRanges = restoredDateRanges
+        startDate = restoredDateRanges.first?.start
+        endDate = restoredDateRanges.first?.end
+        let legacyWindowTerms = filters.windowNameFilter.map { [$0] } ?? []
+        let legacyBrowserTerms = filters.browserUrlFilter.map { [$0] } ?? []
+        let restoredWindowIncludeSource = filters.windowNameTerms.isEmpty
+            ? (filters.windowNameFilterMode == .include ? legacyWindowTerms : [])
+            : filters.windowNameTerms
+        let restoredWindowExcludeSource = filters.windowNameExcludedTerms.isEmpty
+            ? (filters.windowNameFilterMode == .exclude ? legacyWindowTerms : [])
+            : filters.windowNameExcludedTerms
+        let restoredWindowBuckets = normalizedMetadataFilterBuckets(
+            include: restoredWindowIncludeSource,
+            exclude: restoredWindowExcludeSource
+        )
+        windowNameTerms = restoredWindowBuckets.includeTerms
+        windowNameExcludedTerms = restoredWindowBuckets.excludeTerms
+
+        let restoredBrowserIncludeSource = filters.browserUrlTerms.isEmpty
+            ? (filters.browserUrlFilterMode == .include ? legacyBrowserTerms : [])
+            : filters.browserUrlTerms
+        let restoredBrowserExcludeSource = filters.browserUrlExcludedTerms.isEmpty
+            ? (filters.browserUrlFilterMode == .exclude ? legacyBrowserTerms : [])
+            : filters.browserUrlExcludedTerms
+        let restoredBrowserBuckets = normalizedMetadataFilterBuckets(
+            include: restoredBrowserIncludeSource,
+            exclude: restoredBrowserExcludeSource
+        )
+        browserUrlTerms = restoredBrowserBuckets.includeTerms
+        browserUrlExcludedTerms = restoredBrowserBuckets.excludeTerms
+        windowNameFilterMode = filters.windowNameFilterMode
+        browserUrlFilterMode = filters.browserUrlFilterMode
+        excludedSearchTerms = normalizedExcludedSearchTerms(filters.excludedQueryTerms)
     }
 
     public func recordRecentSearchEntry(_ query: String) {
@@ -740,8 +946,14 @@ public class SearchViewModel: ObservableObject {
     private func currentRecentSearchFilters() -> RecentSearchFilters {
         let appBundleIDs = (selectedAppFilters ?? []).sorted()
         let tagIDs = (selectedTags ?? []).sorted()
-        let normalizedWindowName = windowNameFilter?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedBrowserUrl = browserUrlFilter?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedWindowBuckets = normalizedMetadataFilterBuckets(
+            include: windowNameTerms,
+            exclude: windowNameExcludedTerms
+        )
+        let normalizedBrowserBuckets = normalizedMetadataFilterBuckets(
+            include: browserUrlTerms,
+            exclude: browserUrlExcludedTerms
+        )
 
         return RecentSearchFilters(
             appBundleIDs: appBundleIDs,
@@ -750,10 +962,18 @@ public class SearchViewModel: ObservableObject {
             tagFilterMode: tagFilterMode,
             hiddenFilter: hiddenFilter,
             commentFilter: commentFilter,
-            startDate: startDate,
-            endDate: endDate,
-            windowNameFilter: normalizedWindowName?.isEmpty == false ? normalizedWindowName : nil,
-            browserUrlFilter: normalizedBrowserUrl?.isEmpty == false ? normalizedBrowserUrl : nil
+            startDate: effectiveDateRanges.first?.start,
+            endDate: effectiveDateRanges.first?.end,
+            dateRanges: effectiveDateRanges,
+            windowNameTerms: normalizedWindowBuckets.includeTerms,
+            windowNameExcludedTerms: normalizedWindowBuckets.excludeTerms,
+            windowNameFilterMode: windowNameFilterMode,
+            browserUrlTerms: normalizedBrowserBuckets.includeTerms,
+            browserUrlExcludedTerms: normalizedBrowserBuckets.excludeTerms,
+            browserUrlFilterMode: browserUrlFilterMode,
+            windowNameFilter: normalizedWindowBuckets.includeTerms.first ?? normalizedWindowBuckets.excludeTerms.first,
+            browserUrlFilter: normalizedBrowserBuckets.includeTerms.first ?? normalizedBrowserBuckets.excludeTerms.first,
+            excludedQueryTerms: normalizedExcludedSearchTerms(excludedSearchTerms)
         )
     }
 
@@ -799,10 +1019,10 @@ public class SearchViewModel: ObservableObject {
             "tags=\(filters.tagFilterMode.rawValue):\(filters.tagIDs.map(String.init).joined(separator: ","))",
             "visibility=\(filters.hiddenFilter.rawValue)",
             "comments=\(filters.commentFilter.rawValue)",
-            "start=\(filters.startDate?.timeIntervalSince1970 ?? 0)",
-            "end=\(filters.endDate?.timeIntervalSince1970 ?? 0)",
-            "window=\(filters.windowNameFilter ?? "")",
-            "url=\(filters.browserUrlFilter ?? "")"
+            "dateRanges=\(filters.effectiveDateRanges.map { "\($0.start?.timeIntervalSince1970 ?? -1)-\($0.end?.timeIntervalSince1970 ?? -1)" }.joined(separator: ","))",
+            "window=include:\(filters.windowNameTerms.map { $0.lowercased() }.sorted().joined(separator: ","));exclude:\(filters.windowNameExcludedTerms.map { $0.lowercased() }.sorted().joined(separator: ","))",
+            "url=include:\(filters.browserUrlTerms.map { $0.lowercased() }.sorted().joined(separator: ","));exclude:\(filters.browserUrlExcludedTerms.map { $0.lowercased() }.sorted().joined(separator: ","))",
+            "exclude=\(filters.excludedQueryTerms.map { $0.lowercased() }.sorted().joined(separator: ","))"
         ]
         .joined(separator: "|")
     }
@@ -845,20 +1065,17 @@ public class SearchViewModel: ObservableObject {
     /// Ask the overlay view to run its own dismiss animation.
     /// - Parameter clearSearchState: Whether to clear query/results/filters after fade-out.
     public func requestOverlayDismiss(clearSearchState: Bool = true) {
-        Log.info(
-            "[SearchOverlayState] requestOverlayDismiss clearSearchState=\(clearSearchState) queryEmpty=\(searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) hasResults=\(results != nil)",
-            category: .ui
-        )
         dismissOverlaySignal = (clearSearchState, UUID())
+    }
+
+    /// Ask the overlay view to collapse back to compact mode without dismissing.
+    public func requestOverlayCollapse() {
+        collapseOverlaySignal = UUID()
     }
 
     /// Set a one-shot delay for the next "Recent Entries" popover reveal.
     public func setNextRecentEntriesRevealDelay(_ delay: TimeInterval) {
         let normalizedDelay = max(0, delay)
-        Log.debug(
-            "[SearchOverlayState] setNextRecentEntriesRevealDelay delay=\(String(format: "%.3f", normalizedDelay)) prev=\(String(format: "%.3f", nextRecentEntriesRevealDelay))",
-            category: .ui
-        )
         nextRecentEntriesRevealDelay = normalizedDelay
     }
 
@@ -866,16 +1083,11 @@ public class SearchViewModel: ObservableObject {
     public func consumeNextRecentEntriesRevealDelay() -> TimeInterval {
         let delay = nextRecentEntriesRevealDelay
         nextRecentEntriesRevealDelay = 0
-        Log.debug(
-            "[SearchOverlayState] consumeNextRecentEntriesRevealDelay consumed=\(String(format: "%.3f", delay))",
-            category: .ui
-        )
         return delay
     }
 
     /// Suppress recent entries for the next overlay presentation.
     public func suppressRecentEntriesForNextOverlayOpen() {
-        Log.info("[SearchOverlayState] suppressRecentEntriesForNextOverlayOpen set=true", category: .ui)
         suppressRecentEntriesOnNextOverlayOpen = true
     }
 
@@ -883,16 +1095,11 @@ public class SearchViewModel: ObservableObject {
     public func consumeSuppressRecentEntriesForNextOverlayOpen() -> Bool {
         let shouldSuppress = suppressRecentEntriesOnNextOverlayOpen
         suppressRecentEntriesOnNextOverlayOpen = false
-        Log.info(
-            "[SearchOverlayState] consumeSuppressRecentEntriesForNextOverlayOpen consumed=\(shouldSuppress)",
-            category: .ui
-        )
         return shouldSuppress
     }
 
     /// Request the overlay to dismiss the recent-entries popover via its user-dismiss handler path.
     public func requestDismissRecentEntriesPopoverByUser() {
-        Log.info("[SearchOverlayState] requestDismissRecentEntriesPopoverByUser", category: .ui)
         dismissRecentEntriesPopoverSignal = UUID()
     }
 
@@ -940,12 +1147,20 @@ public class SearchViewModel: ObservableObject {
             components.append("\"appMode\":\"\(appFilterMode.rawValue)\"")
         }
 
-        if let startDate = startDate {
-            components.append("\"startDate\":\"\(Log.timestamp(from: startDate))\"")
-        }
-
-        if let endDate = endDate {
-            components.append("\"endDate\":\"\(Log.timestamp(from: endDate))\"")
+        if effectiveDateRanges.count == 1 {
+            if let startDate = effectiveDateRanges[0].start {
+                components.append("\"startDate\":\"\(Log.timestamp(from: startDate))\"")
+            }
+            if let endDate = effectiveDateRanges[0].end {
+                components.append("\"endDate\":\"\(Log.timestamp(from: endDate))\"")
+            }
+        } else if !effectiveDateRanges.isEmpty {
+            let encodedRanges = effectiveDateRanges.map { range in
+                let start = range.start.map { "\"\(Log.timestamp(from: $0))\"" } ?? "null"
+                let end = range.end.map { "\"\(Log.timestamp(from: $0))\"" } ?? "null"
+                return "{\"start\":\(start),\"end\":\(end)}"
+            }.joined(separator: ",")
+            components.append("\"dateRanges\":[\(encodedRanges)]")
         }
 
         if contentType != .all {
@@ -966,14 +1181,45 @@ public class SearchViewModel: ObservableObject {
             components.append("\"commentFilter\":\"\(commentFilter.rawValue)\"")
         }
 
-        if let windowName = windowNameFilter, !windowName.isEmpty {
-            let escaped = windowName.replacingOccurrences(of: "\"", with: "\\\"")
-            components.append("\"windowName\":\"\(escaped)\"")
+        let normalizedWindowBuckets = normalizedMetadataFilterBuckets(
+            include: windowNameTerms,
+            exclude: windowNameExcludedTerms
+        )
+        if !normalizedWindowBuckets.includeTerms.isEmpty {
+            let escapedTerms = normalizedWindowBuckets.includeTerms
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
+                .joined(separator: ",")
+            components.append("\"windowNamesInclude\":[\(escapedTerms)]")
+        }
+        if !normalizedWindowBuckets.excludeTerms.isEmpty {
+            let escapedTerms = normalizedWindowBuckets.excludeTerms
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
+                .joined(separator: ",")
+            components.append("\"windowNamesExclude\":[\(escapedTerms)]")
         }
 
-        if let browserUrl = browserUrlFilter, !browserUrl.isEmpty {
-            let escaped = browserUrl.replacingOccurrences(of: "\"", with: "\\\"")
-            components.append("\"browserUrl\":\"\(escaped)\"")
+        let normalizedBrowserBuckets = normalizedMetadataFilterBuckets(
+            include: browserUrlTerms,
+            exclude: browserUrlExcludedTerms
+        )
+        if !normalizedBrowserBuckets.includeTerms.isEmpty {
+            let escapedTerms = normalizedBrowserBuckets.includeTerms
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
+                .joined(separator: ",")
+            components.append("\"browserUrlsInclude\":[\(escapedTerms)]")
+        }
+        if !normalizedBrowserBuckets.excludeTerms.isEmpty {
+            let escapedTerms = normalizedBrowserBuckets.excludeTerms
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
+                .joined(separator: ",")
+            components.append("\"browserUrlsExclude\":[\(escapedTerms)]")
+        }
+
+        if !excludedSearchTerms.isEmpty {
+            let escapedTerms = normalizedExcludedSearchTerms(excludedSearchTerms)
+                .map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
+                .joined(separator: ",")
+            components.append("\"excludedTerms\":[\(escapedTerms)]")
         }
 
         return "{\(components.joined(separator: ","))}"
@@ -987,7 +1233,6 @@ public class SearchViewModel: ObservableObject {
 
     public func performSearch(query: String, trigger: String = "unknown") async {
         guard !query.isEmpty else {
-            Log.debug("[SearchViewModel] Empty query, clearing results", category: .ui)
             results = nil
             committedSearchQuery = ""
             clearInMemoryThumbnailCache()
@@ -1012,7 +1257,6 @@ public class SearchViewModel: ObservableObject {
             try Task.checkCancellation()
 
             let searchQuery = buildSearchQuery(query)
-            Log.debug("[SearchViewModel] Built search query: text='\(searchQuery.text)', limit=\(searchQuery.limit), offset=\(searchQuery.offset)", category: .ui)
 
             let searchResults = try await coordinator.search(query: searchQuery)
 
@@ -1021,7 +1265,6 @@ public class SearchViewModel: ObservableObject {
 
             if !searchResults.results.isEmpty {
                 let firstResult = searchResults.results[0]
-                Log.debug("[SearchViewModel] First result: frameID=\(firstResult.frameID.stringValue), timestamp=\(firstResult.timestamp), snippet='\(firstResult.snippet.prefix(50))...'", category: .ui)
             }
 
             // Ensure UI updates happen on main actor
@@ -1032,7 +1275,6 @@ public class SearchViewModel: ObservableObject {
                 isSearching = false
             }
         } catch is CancellationError {
-            Log.debug("[SearchViewModel] Search was cancelled", category: .ui)
             await MainActor.run {
                 isSearching = false
             }
@@ -1047,8 +1289,18 @@ public class SearchViewModel: ObservableObject {
     }
 
     private func buildSearchQuery(_ text: String, offset: Int = 0, cursor: SearchPageCursor? = nil) -> SearchQuery {
+        let exclusionFragment = exclusionQueryFragment()
+        let queryWithExclusions: String
+        if exclusionFragment.isEmpty {
+            queryWithExclusions = text
+        } else if text.isEmpty {
+            queryWithExclusions = exclusionFragment
+        } else {
+            queryWithExclusions = "\(text) \(exclusionFragment)"
+        }
+
         // Truncate query to max words to prevent performance issues with very long queries
-        let truncatedText = truncateToMaxWords(text)
+        let truncatedText = truncateToMaxWords(queryWithExclusions)
 
         // Convert Set to Array for the filter, nil if no apps selected (means all apps)
         // Use appBundleIDs for include mode, excludedAppBundleIDs for exclude mode
@@ -1085,17 +1337,19 @@ public class SearchViewModel: ObservableObject {
             excludedTagIdsArray = nil
         }
 
+        let activeDateRanges = effectiveDateRanges
         let filters = SearchFilters(
-            startDate: startDate,
-            endDate: endDate,
+            startDate: activeDateRanges.first?.start ?? startDate,
+            endDate: activeDateRanges.first?.end ?? endDate,
+            dateRanges: activeDateRanges,
             appBundleIDs: appBundleIDsArray,
             excludedAppBundleIDs: excludedAppBundleIDsArray,
             selectedTagIds: selectedTagIdsArray,
             excludedTagIds: excludedTagIdsArray,
             hiddenFilter: hiddenFilter,
             commentFilter: commentFilter,
-            windowNameFilter: windowNameFilter,
-            browserUrlFilter: browserUrlFilter
+            windowNameFilter: encodedMetadataFilter(includeTerms: windowNameTerms, excludeTerms: windowNameExcludedTerms),
+            browserUrlFilter: encodedMetadataFilter(includeTerms: browserUrlTerms, excludeTerms: browserUrlExcludedTerms)
         )
 
         return SearchQuery(
@@ -1117,6 +1371,101 @@ public class SearchViewModel: ObservableObject {
         let truncated = words.prefix(maxSearchWords).joined(separator: " ")
         Log.warning("[SearchViewModel] Query truncated from \(words.count) to \(maxSearchWords) words", category: .ui)
         return truncated
+    }
+
+    private func exclusionQueryFragment() -> String {
+        let tokens = normalizedExcludedSearchTerms(excludedSearchTerms)
+        guard !tokens.isEmpty else { return "" }
+
+        return tokens
+            .map { token in
+                let sanitized = token.replacingOccurrences(of: "\"", with: "")
+                if sanitized.contains(where: \.isWhitespace) {
+                    return "-\"\(sanitized)\""
+                }
+                return "-\(sanitized)"
+            }
+            .joined(separator: " ")
+    }
+
+    private func encodedMetadataFilter(includeTerms: [String], excludeTerms: [String]) -> String? {
+        let normalizedBuckets = normalizedMetadataFilterBuckets(include: includeTerms, exclude: excludeTerms)
+        guard !normalizedBuckets.includeTerms.isEmpty || !normalizedBuckets.excludeTerms.isEmpty else {
+            return nil
+        }
+
+        let payload = EncodedMetadataFilterPayload(
+            includeTerms: normalizedBuckets.includeTerms,
+            excludeTerms: normalizedBuckets.excludeTerms
+        )
+        guard let data = try? JSONEncoder().encode(payload) else { return nil }
+        return Self.encodedMetadataFilterPrefix + data.base64EncodedString()
+    }
+
+    private func normalizedMetadataFilterTerms(_ terms: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalizedTerms: [String] = []
+
+        for term in terms {
+            guard let normalized = Self.normalizedMetadataFilterTerm(term) else { continue }
+            let key = normalized.lowercased()
+            if seen.insert(key).inserted {
+                normalizedTerms.append(normalized)
+            }
+        }
+
+        return normalizedTerms
+    }
+
+    private func normalizedMetadataFilterBuckets(include: [String], exclude: [String]) -> (includeTerms: [String], excludeTerms: [String]) {
+        let normalizedInclude = normalizedMetadataFilterTerms(include)
+        let includeKeys = Set(normalizedInclude.map { $0.lowercased() })
+        var seenExclude = Set<String>()
+        var normalizedExclude: [String] = []
+
+        for term in exclude {
+            guard let normalized = Self.normalizedMetadataFilterTerm(term) else { continue }
+            let key = normalized.lowercased()
+            guard !includeKeys.contains(key) else { continue }
+            if seenExclude.insert(key).inserted {
+                normalizedExclude.append(normalized)
+            }
+        }
+
+        return (normalizedInclude, normalizedExclude)
+    }
+
+    private static func normalizedMetadataFilterTerm(_ term: String) -> String? {
+        let collapsed = term
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? nil : collapsed
+    }
+
+    private func normalizedExcludedSearchTerms(_ terms: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalizedTerms: [String] = []
+
+        for term in terms {
+            guard let normalized = Self.normalizedExcludedSearchTerm(term) else { continue }
+            let key = normalized.lowercased()
+            if seen.insert(key).inserted {
+                normalizedTerms.append(normalized)
+            }
+        }
+
+        return normalizedTerms
+    }
+
+    private static func normalizedExcludedSearchTerm(_ term: String) -> String? {
+        let collapsed = term
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? nil : collapsed
     }
 
     /// Switch search mode and re-run search
@@ -1223,7 +1572,6 @@ public class SearchViewModel: ObservableObject {
 
             isLoadingMore = false
         } catch is CancellationError {
-            Log.debug("[SearchViewModel] Load more was cancelled", category: .ui)
             isLoadingMore = false
         } catch {
             Log.error("[SearchViewModel] Load more failed: \(error.localizedDescription)", category: .ui)
@@ -1258,13 +1606,11 @@ public class SearchViewModel: ObservableObject {
     /// Heavy filesystem/system discovery runs off-main; only state publication stays on main.
     public func loadAvailableApps() async {
         guard !isLoadingApps else {
-            Log.debug("[SearchViewModel] loadAvailableApps skipped - already loading", category: .ui)
             return
         }
 
         // Skip if already loaded
         guard installedApps.isEmpty else {
-            Log.debug("[SearchViewModel] loadAvailableApps skipped - already have \(installedApps.count) installed + \(otherApps.count) other apps", category: .ui)
             return
         }
 
@@ -1387,7 +1733,6 @@ public class SearchViewModel: ObservableObject {
             let data = try JSONEncoder().encode(cachedApps)
             try data.write(to: Self.cachedOtherAppsPath, options: .atomic)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.otherAppsCacheSavedAtKey)
-            Log.debug("[SearchViewModel] Saved \(apps.count) apps to other apps cache", category: .ui)
         } catch {
             Log.error("[SearchViewModel] Failed to save other apps cache: \(error)", category: .ui)
         }
@@ -1426,13 +1771,46 @@ public class SearchViewModel: ObservableObject {
         }
     }
 
+    public func setDateRanges(_ ranges: [DateRangeCriterion]) {
+        let sanitized = Array(ranges.filter(\.hasBounds).prefix(5))
+        dateRanges = sanitized
+        startDate = sanitized.first?.start
+        endDate = sanitized.first?.end
+    }
+
     public func setDateRange(start: Date?, end: Date?) {
-        startDate = start
-        endDate = end
+        if start == nil && end == nil {
+            setDateRanges([])
+        } else {
+            setDateRanges([DateRangeCriterion(start: start, end: end)])
+        }
     }
 
     public func setContentType(_ type: ContentType) {
         contentType = type
+    }
+
+    public func setExcludedSearchTerms(_ terms: [String]) {
+        excludedSearchTerms = normalizedExcludedSearchTerms(terms)
+    }
+
+    public func addExcludedSearchTerm(_ term: String) {
+        var updated = excludedSearchTerms
+        updated.append(term)
+        excludedSearchTerms = normalizedExcludedSearchTerms(updated)
+    }
+
+    public func removeExcludedSearchTerm(_ term: String) {
+        let needle = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return }
+        excludedSearchTerms.removeAll { existing in
+            existing.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle
+        }
+    }
+
+    public func clearExcludedSearchTerms() {
+        guard !excludedSearchTerms.isEmpty else { return }
+        excludedSearchTerms.removeAll()
     }
 
     public func clearAllFilters() {
@@ -1440,13 +1818,19 @@ public class SearchViewModel: ObservableObject {
         appFilterMode = .include
         startDate = nil
         endDate = nil
+        dateRanges = []
         contentType = .all
         selectedTags = nil
         tagFilterMode = .include
         hiddenFilter = .hide
         commentFilter = .allFrames
-        windowNameFilter = nil
-        browserUrlFilter = nil
+        windowNameTerms = []
+        windowNameExcludedTerms = []
+        windowNameFilterMode = .include
+        browserUrlTerms = []
+        browserUrlExcludedTerms = []
+        browserUrlFilterMode = .include
+        excludedSearchTerms = []
     }
 
     public func resetSearchOrderToDefault() {
@@ -1468,7 +1852,6 @@ public class SearchViewModel: ObservableObject {
             await MainActor.run {
                 self.availableTags = tags
             }
-            Log.debug("[SearchViewModel] Loaded \(tags.count) tags for filter", category: .ui)
         } catch {
             Log.error("[SearchViewModel] Failed to load tags: \(error)", category: .ui)
         }
@@ -1517,24 +1900,28 @@ public class SearchViewModel: ObservableObject {
     /// Check if any filters are active
     public var hasActiveFilters: Bool {
         (selectedAppFilters != nil && !selectedAppFilters!.isEmpty) ||
-        startDate != nil || endDate != nil ||
+        !effectiveDateRanges.isEmpty ||
         (selectedTags != nil && !selectedTags!.isEmpty) ||
         hiddenFilter != .hide ||
         commentFilter != .allFrames ||
-        (windowNameFilter?.isEmpty == false) ||
-        (browserUrlFilter?.isEmpty == false)
+        !windowNameTerms.isEmpty ||
+        !windowNameExcludedTerms.isEmpty ||
+        !browserUrlTerms.isEmpty ||
+        !browserUrlExcludedTerms.isEmpty ||
+        !excludedSearchTerms.isEmpty
     }
 
     /// Number of active filter categories (for badge display)
     public var activeFilterCount: Int {
         var count = 0
         if let apps = selectedAppFilters, !apps.isEmpty { count += 1 }
-        if startDate != nil || endDate != nil { count += 1 }
+        if !effectiveDateRanges.isEmpty { count += 1 }
         if let tags = selectedTags, !tags.isEmpty { count += 1 }
         if hiddenFilter != .hide { count += 1 }
         if commentFilter != .allFrames { count += 1 }
-        if windowNameFilter?.isEmpty == false { count += 1 }
-        if browserUrlFilter?.isEmpty == false { count += 1 }
+        if !windowNameTerms.isEmpty || !windowNameExcludedTerms.isEmpty { count += 1 }
+        if !browserUrlTerms.isEmpty || !browserUrlExcludedTerms.isEmpty { count += 1 }
+        if !excludedSearchTerms.isEmpty { count += 1 }
         return count
     }
 
@@ -1605,6 +1992,23 @@ public class SearchViewModel: ObservableObject {
         resultCount > 0
     }
 
+    public static func shouldDismissExpandedOverlayOnEscape(
+        committedSearchQuery: String,
+        hasSearchResultsPayload: Bool
+    ) -> Bool {
+        if hasSearchResultsPayload {
+            return true
+        }
+        return !committedSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public var shouldDismissExpandedOverlayOnEscape: Bool {
+        Self.shouldDismissExpandedOverlayOnEscape(
+            committedSearchQuery: committedSearchQuery,
+            hasSearchResultsPayload: results != nil
+        )
+    }
+
     public var isEmpty: Bool {
         !hasResults && !isSearching
     }
@@ -1613,14 +2017,11 @@ public class SearchViewModel: ObservableObject {
 
     /// Save the current search results to cache for instant restore on app reopen
     public func saveSearchResults() {
-        Log.debug("[SearchCache] saveSearchResults called - query: '\(committedSearchQuery)', results: \(results?.results.count ?? 0)", category: .ui)
 
         guard let results = results, !results.isEmpty else {
-            Log.debug("[SearchCache] SKIP: No results to save (results is nil or empty)", category: .ui)
             return
         }
         guard !committedSearchQuery.isEmpty else {
-            Log.debug("[SearchCache] SKIP: committedSearchQuery is empty", category: .ui)
             return
         }
 
@@ -1629,7 +2030,6 @@ public class SearchViewModel: ObservableObject {
         UserDefaults.standard.set(committedSearchQuery, forKey: Self.cachedSearchQueryKey)
         UserDefaults.standard.set(Double(savedScrollPosition), forKey: Self.cachedScrollPositionKey)
         UserDefaults.standard.set(Self.searchCacheVersion, forKey: Self.searchCacheVersionKey)
-        Log.debug("[SearchCache] Saved version=\(Self.searchCacheVersion) to key='\(Self.searchCacheVersionKey)'", category: .ui)
 
         // Save filters - convert Set to Array for storage
         if let apps = selectedAppFilters, !apps.isEmpty {
@@ -1637,25 +2037,48 @@ public class SearchViewModel: ObservableObject {
         } else {
             UserDefaults.standard.removeObject(forKey: Self.cachedAppFilterKey)
         }
-        if let startDate = startDate {
+        let cachedDateRanges = effectiveDateRanges
+        if let startDate = cachedDateRanges.first?.start {
             UserDefaults.standard.set(startDate.timeIntervalSince1970, forKey: Self.cachedStartDateKey)
         } else {
             UserDefaults.standard.removeObject(forKey: Self.cachedStartDateKey)
         }
-        if let endDate = endDate {
+        if let endDate = cachedDateRanges.first?.end {
             UserDefaults.standard.set(endDate.timeIntervalSince1970, forKey: Self.cachedEndDateKey)
         } else {
             UserDefaults.standard.removeObject(forKey: Self.cachedEndDateKey)
         }
-        if let windowNameFilter = windowNameFilter, !windowNameFilter.isEmpty {
-            UserDefaults.standard.set(windowNameFilter, forKey: Self.cachedWindowNameFilterKey)
+        if let encodedDateRanges = try? JSONEncoder().encode(cachedDateRanges), !cachedDateRanges.isEmpty {
+            UserDefaults.standard.set(encodedDateRanges, forKey: Self.cachedDateRangesKey)
         } else {
+            UserDefaults.standard.removeObject(forKey: Self.cachedDateRangesKey)
+        }
+        if !windowNameTerms.isEmpty || !windowNameExcludedTerms.isEmpty {
+            UserDefaults.standard.set(windowNameTerms, forKey: Self.cachedWindowNameTermsKey)
+            UserDefaults.standard.set(windowNameExcludedTerms, forKey: Self.cachedWindowNameExcludeTermsKey)
+            UserDefaults.standard.set(windowNameFilterMode.rawValue, forKey: Self.cachedWindowNameModeKey)
+            UserDefaults.standard.set(windowNameTerms.first ?? windowNameExcludedTerms.first, forKey: Self.cachedWindowNameFilterKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameTermsKey)
+            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameExcludeTermsKey)
+            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameModeKey)
             UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameFilterKey)
         }
-        if let browserUrlFilter = browserUrlFilter, !browserUrlFilter.isEmpty {
-            UserDefaults.standard.set(browserUrlFilter, forKey: Self.cachedBrowserUrlFilterKey)
+        if !browserUrlTerms.isEmpty || !browserUrlExcludedTerms.isEmpty {
+            UserDefaults.standard.set(browserUrlTerms, forKey: Self.cachedBrowserUrlTermsKey)
+            UserDefaults.standard.set(browserUrlExcludedTerms, forKey: Self.cachedBrowserUrlExcludeTermsKey)
+            UserDefaults.standard.set(browserUrlFilterMode.rawValue, forKey: Self.cachedBrowserUrlModeKey)
+            UserDefaults.standard.set(browserUrlTerms.first ?? browserUrlExcludedTerms.first, forKey: Self.cachedBrowserUrlFilterKey)
         } else {
+            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlTermsKey)
+            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlExcludeTermsKey)
+            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlModeKey)
             UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlFilterKey)
+        }
+        if !excludedSearchTerms.isEmpty {
+            UserDefaults.standard.set(excludedSearchTerms, forKey: Self.cachedExcludedSearchTermsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.cachedExcludedSearchTermsKey)
         }
         if commentFilter != .allFrames {
             UserDefaults.standard.set(commentFilter.rawValue, forKey: Self.cachedCommentFilterKey)
@@ -1674,26 +2097,21 @@ public class SearchViewModel: ObservableObject {
             do {
                 let data = try JSONEncoder().encode(results)
                 try data.write(to: Self.cachedSearchResultsPath)
-                Log.debug("[SearchCache] Saved \(results.results.count) search results to cache (\(data.count / 1024)KB)", category: .ui)
             } catch {
                 Log.warning("[SearchCache] Failed to save search results: \(error)", category: .ui)
             }
         }
 
-        Log.debug("[SearchCache] Saved search results for query: '\(committedSearchQuery)' with filters", category: .ui)
     }
 
     /// Restore cached search results if they exist and haven't expired
     /// Returns true if cache was restored, false otherwise
     @discardableResult
     public func restoreCachedSearchResults() -> Bool {
-        Log.debug("[SearchCache] restoreCachedSearchResults() called", category: .ui)
 
         // Check cache version first - invalidate if version mismatch
         let cachedVersion = UserDefaults.standard.integer(forKey: Self.searchCacheVersionKey)
-        Log.debug("[SearchCache] Reading version from key='\(Self.searchCacheVersionKey)', got: \(cachedVersion)", category: .ui)
         if cachedVersion != Self.searchCacheVersion {
-            Log.debug("[SearchCache] Cache version mismatch (cached: \(cachedVersion), current: \(Self.searchCacheVersion)) - invalidating", category: .ui)
             clearSearchCache()
             return false
         }
@@ -1706,7 +2124,6 @@ public class SearchViewModel: ObservableObject {
 
         // Check if cache has expired
         if elapsed > Self.searchCacheExpirationSeconds {
-            Log.debug("[SearchCache] Cache expired (elapsed: \(Int(elapsed))s)", category: .ui)
             clearSearchCache()
             return false
         }
@@ -1728,8 +2145,22 @@ public class SearchViewModel: ObservableObject {
         }
         let cachedStartDateValue = UserDefaults.standard.double(forKey: Self.cachedStartDateKey)
         let cachedEndDateValue = UserDefaults.standard.double(forKey: Self.cachedEndDateKey)
-        let cachedWindowNameFilter = UserDefaults.standard.string(forKey: Self.cachedWindowNameFilterKey)
-        let cachedBrowserUrlFilter = UserDefaults.standard.string(forKey: Self.cachedBrowserUrlFilterKey)
+        let cachedDateRanges: [DateRangeCriterion] = {
+            guard let data = UserDefaults.standard.data(forKey: Self.cachedDateRangesKey),
+                  let decoded = try? JSONDecoder().decode([DateRangeCriterion].self, from: data) else {
+                return []
+            }
+            return decoded.filter(\.hasBounds)
+        }()
+        let cachedWindowNameTerms = UserDefaults.standard.stringArray(forKey: Self.cachedWindowNameTermsKey) ?? []
+        let cachedWindowNameExcludeTerms = UserDefaults.standard.stringArray(forKey: Self.cachedWindowNameExcludeTermsKey) ?? []
+        let cachedWindowNameModeRaw = UserDefaults.standard.string(forKey: Self.cachedWindowNameModeKey)
+        let cachedLegacyWindowNameFilter = UserDefaults.standard.string(forKey: Self.cachedWindowNameFilterKey)
+        let cachedBrowserUrlTerms = UserDefaults.standard.stringArray(forKey: Self.cachedBrowserUrlTermsKey) ?? []
+        let cachedBrowserUrlExcludeTerms = UserDefaults.standard.stringArray(forKey: Self.cachedBrowserUrlExcludeTermsKey) ?? []
+        let cachedBrowserUrlModeRaw = UserDefaults.standard.string(forKey: Self.cachedBrowserUrlModeKey)
+        let cachedLegacyBrowserUrlFilter = UserDefaults.standard.string(forKey: Self.cachedBrowserUrlFilterKey)
+        let cachedExcludedSearchTerms = UserDefaults.standard.stringArray(forKey: Self.cachedExcludedSearchTermsKey) ?? []
         let cachedCommentFilterRaw = UserDefaults.standard.string(forKey: Self.cachedCommentFilterKey)
         let cachedContentTypeRaw = UserDefaults.standard.string(forKey: Self.cachedContentTypeKey)
         let cachedSearchModeRaw = UserDefaults.standard.string(forKey: Self.cachedSearchModeKey)
@@ -1746,11 +2177,9 @@ public class SearchViewModel: ObservableObject {
             isRestoringFromCache = true
 
             // Restore state
-            Log.debug("[SearchCache] Restoring: setting searchQuery='\(cachedQuery)', results=\(cachedResults.results.count)", category: .ui)
             searchQuery = cachedQuery
             committedSearchQuery = cachedQuery
             results = cachedResults
-            Log.debug("[SearchCache] After restore: searchQuery='\(searchQuery)', results=\(results?.results.count ?? 0)", category: .ui)
             savedScrollPosition = CGFloat(cachedScrollPosition)
             searchGeneration += 1
             nextPageCursor = cachedResults.nextCursor
@@ -1758,10 +2187,71 @@ public class SearchViewModel: ObservableObject {
 
             // Restore filters
             selectedAppFilters = cachedAppFilters
-            startDate = cachedStartDateValue > 0 ? Date(timeIntervalSince1970: cachedStartDateValue) : nil
-            endDate = cachedEndDateValue > 0 ? Date(timeIntervalSince1970: cachedEndDateValue) : nil
-            windowNameFilter = cachedWindowNameFilter?.isEmpty == false ? cachedWindowNameFilter : nil
-            browserUrlFilter = cachedBrowserUrlFilter?.isEmpty == false ? cachedBrowserUrlFilter : nil
+            if !cachedDateRanges.isEmpty {
+                dateRanges = Array(cachedDateRanges.prefix(5))
+                startDate = dateRanges.first?.start
+                endDate = dateRanges.first?.end
+            } else {
+                startDate = cachedStartDateValue > 0 ? Date(timeIntervalSince1970: cachedStartDateValue) : nil
+                endDate = cachedEndDateValue > 0 ? Date(timeIntervalSince1970: cachedEndDateValue) : nil
+                if startDate != nil || endDate != nil {
+                    dateRanges = [DateRangeCriterion(start: startDate, end: endDate)]
+                } else {
+                    dateRanges = []
+                }
+            }
+            let restoredWindowTermsSource: [String] = if !cachedWindowNameTerms.isEmpty {
+                cachedWindowNameTerms
+            } else if let legacy = cachedLegacyWindowNameFilter,
+                      !legacy.isEmpty,
+                      (cachedWindowNameModeRaw.flatMap(AppFilterMode.init(rawValue:)) ?? .include) == .include {
+                [legacy]
+            } else {
+                []
+            }
+            let restoredWindowExcludeSource: [String] = if !cachedWindowNameExcludeTerms.isEmpty {
+                cachedWindowNameExcludeTerms
+            } else if let legacy = cachedLegacyWindowNameFilter,
+                      !legacy.isEmpty,
+                      (cachedWindowNameModeRaw.flatMap(AppFilterMode.init(rawValue:)) ?? .include) == .exclude {
+                [legacy]
+            } else {
+                []
+            }
+            let restoredWindowBuckets = normalizedMetadataFilterBuckets(
+                include: restoredWindowTermsSource,
+                exclude: restoredWindowExcludeSource
+            )
+            windowNameTerms = restoredWindowBuckets.includeTerms
+            windowNameExcludedTerms = restoredWindowBuckets.excludeTerms
+            windowNameFilterMode = cachedWindowNameModeRaw.flatMap(AppFilterMode.init(rawValue:)) ?? .include
+
+            let restoredBrowserTermsSource: [String] = if !cachedBrowserUrlTerms.isEmpty {
+                cachedBrowserUrlTerms
+            } else if let legacy = cachedLegacyBrowserUrlFilter,
+                      !legacy.isEmpty,
+                      (cachedBrowserUrlModeRaw.flatMap(AppFilterMode.init(rawValue:)) ?? .include) == .include {
+                [legacy]
+            } else {
+                []
+            }
+            let restoredBrowserExcludeSource: [String] = if !cachedBrowserUrlExcludeTerms.isEmpty {
+                cachedBrowserUrlExcludeTerms
+            } else if let legacy = cachedLegacyBrowserUrlFilter,
+                      !legacy.isEmpty,
+                      (cachedBrowserUrlModeRaw.flatMap(AppFilterMode.init(rawValue:)) ?? .include) == .exclude {
+                [legacy]
+            } else {
+                []
+            }
+            let restoredBrowserBuckets = normalizedMetadataFilterBuckets(
+                include: restoredBrowserTermsSource,
+                exclude: restoredBrowserExcludeSource
+            )
+            browserUrlTerms = restoredBrowserBuckets.includeTerms
+            browserUrlExcludedTerms = restoredBrowserBuckets.excludeTerms
+            browserUrlFilterMode = cachedBrowserUrlModeRaw.flatMap(AppFilterMode.init(rawValue:)) ?? .include
+            excludedSearchTerms = normalizedExcludedSearchTerms(cachedExcludedSearchTerms)
             if let rawValue = cachedCommentFilterRaw, let filter = CommentFilter(rawValue: rawValue) {
                 commentFilter = filter
             } else {
@@ -1782,7 +2272,6 @@ public class SearchViewModel: ObservableObject {
                 self?.isRestoringFromCache = false
             }
 
-            Log.debug("[SearchCache] INSTANT RESTORE: Loaded \(cachedResults.results.count) cached results for '\(cachedQuery)' with filters (saved \(Int(elapsed))s ago)", category: .ui)
             return true
         } catch {
             Log.warning("[SearchCache] Failed to load cached search results: \(error)", category: .ui)
@@ -1809,8 +2298,16 @@ public class SearchViewModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: cachedAppFilterKey)
         UserDefaults.standard.removeObject(forKey: cachedStartDateKey)
         UserDefaults.standard.removeObject(forKey: cachedEndDateKey)
+        UserDefaults.standard.removeObject(forKey: cachedDateRangesKey)
+        UserDefaults.standard.removeObject(forKey: cachedWindowNameTermsKey)
+        UserDefaults.standard.removeObject(forKey: cachedWindowNameExcludeTermsKey)
+        UserDefaults.standard.removeObject(forKey: cachedWindowNameModeKey)
+        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlTermsKey)
+        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlExcludeTermsKey)
+        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlModeKey)
         UserDefaults.standard.removeObject(forKey: cachedWindowNameFilterKey)
         UserDefaults.standard.removeObject(forKey: cachedBrowserUrlFilterKey)
+        UserDefaults.standard.removeObject(forKey: cachedExcludedSearchTermsKey)
         UserDefaults.standard.removeObject(forKey: cachedCommentFilterKey)
         UserDefaults.standard.removeObject(forKey: cachedContentTypeKey)
         UserDefaults.standard.removeObject(forKey: cachedSearchModeKey)
@@ -1850,7 +2347,6 @@ public class SearchViewModel: ObservableObject {
     /// Cancel any in-flight search and load-more tasks
     /// Call this when the search overlay is dismissed to prevent blocking
     public func cancelSearch() {
-        Log.debug("[SearchViewModel] Cancelling in-flight search tasks", category: .ui)
         currentSearchTask?.cancel()
         currentSearchTask = nil
         currentLoadMoreTask?.cancel()

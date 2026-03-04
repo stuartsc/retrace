@@ -399,7 +399,13 @@ public class SimpleTimelineViewModel: ObservableObject {
     @Published public var isMoreOptionsMenuVisible = false
 
     /// Whether the user is actively scrolling (disables tape animation during rapid scrolling)
-    @Published public var isActivelyScrolling = false
+    @Published public var isActivelyScrolling = false {
+        didSet {
+            // Apply deferred rolling-window trims only after scrub interaction settles.
+            guard oldValue, !isActivelyScrolling else { return }
+            applyDeferredTrimIfNeeded(trigger: "scroll-ended")
+        }
+    }
 
     /// Currently selected frame index (for deletion, etc.) - nil means no selection
     @Published public var selectedFrameIndex: Int? = nil
@@ -662,6 +668,12 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Whether to show video segment boundaries on the timeline tape
     @Published public var showVideoBoundaries: Bool = false
 
+    /// Whether to show segment boundaries on the timeline tape
+    @Published public var showSegmentBoundaries: Bool = false
+
+    /// Whether to show the floating browser URL debug window while scrubbing
+    @Published public var showBrowserURLDebugWindow: Bool = false
+
     // MARK: - Toast Feedback
     public enum ToastTone: Sendable {
         case success
@@ -743,6 +755,16 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Set form of video boundaries for existing call sites.
     public var videoBoundaryIndices: Set<Int> {
         Set(orderedVideoBoundaryIndices)
+    }
+
+    /// Ordered frame indices where segment boundaries occur (first frame of each new segment)
+    public var orderedSegmentBoundaryIndices: [Int] {
+        appBlockSnapshot.segmentBoundaryIndices
+    }
+
+    /// Set form of segment boundaries for existing call sites.
+    public var segmentBoundaryIndices: Set<Int> {
+        Set(orderedSegmentBoundaryIndices)
     }
 
     // MARK: - Video Playback State
@@ -1323,8 +1345,14 @@ public class SimpleTimelineViewModel: ObservableObject {
         let blocks: [AppBlock]
         let frameToBlockIndex: [Int]
         let videoBoundaryIndices: [Int]
+        let segmentBoundaryIndices: [Int]
 
-        static let empty = AppBlockSnapshot(blocks: [], frameToBlockIndex: [], videoBoundaryIndices: [])
+        static let empty = AppBlockSnapshot(
+            blocks: [],
+            frameToBlockIndex: [],
+            videoBoundaryIndices: [],
+            segmentBoundaryIndices: []
+        )
     }
 
     private struct SnapshotFrameInput: Sendable {
@@ -1618,6 +1646,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Preferred index to apply atomically with the next full-frame-window replacement.
     /// Prevents transient edge snaps when `frames` changes before index selection finishes.
     private var pendingCurrentIndexAfterFrameReplacement: Int?
+    /// Deferred rolling-window trim applied after scrubbing stops to avoid mid-scrub index jumps.
+    private var deferredTrimDirection: TrimDirection?
+    private var deferredTrimAnchorFrameID: FrameID?
+    private var deferredTrimAnchorTimestamp: Date?
 
     /// Monotonic ID for loading state transitions in logs.
     private var loadingTransitionID: UInt64 = 0
@@ -1685,7 +1717,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Threshold: if user is within this many frames of newest, near-live reopen policy can apply.
     private static let nearLiveEdgeFrameThreshold: Int = 50
 
-    // MARK: - Playhead Position History (for Cmd+Z undo)
+    // MARK: - Playhead Position History (for Cmd+Z undo / Cmd+Shift+Z redo)
 
     /// Stored position for undo history - contains both frame ID (for precision) and timestamp (for reloading)
     private struct StoppedPosition {
@@ -1697,6 +1729,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Most recent position is at the end of the array
     /// Stores frame ID (unique identifier) and timestamp (for reloading frames if needed)
     private var stoppedPositionHistory: [StoppedPosition] = []
+
+    /// Stack of positions that were undone and can be restored via redo.
+    /// Most recently undone position is at the end of the array.
+    private var undonePositionHistory: [StoppedPosition] = []
 
     /// Maximum number of stopped positions to remember
     private static let maxStoppedPositionHistory = 50
@@ -1727,8 +1763,15 @@ public class SimpleTimelineViewModel: ObservableObject {
         var getMostRecentFramesWithVideoInfo: ((Int, FilterCriteria) async throws -> [FrameWithVideoInfo])?
     }
 
+    // Test-only hooks for deterministic time-window fetch behavior.
+    struct WindowFetchTestHooks {
+        var getFramesWithVideoInfo: ((Date, Date, Int, FilterCriteria, String) async throws -> [FrameWithVideoInfo])?
+        var getFramesWithVideoInfoBefore: ((Date, Int, FilterCriteria, String) async throws -> [FrameWithVideoInfo])?
+    }
+
     var test_refreshProcessingStatusesHooks = RefreshProcessingStatusesTestHooks()
     var test_refreshFrameDataHooks = RefreshFrameDataTestHooks()
+    var test_windowFetchHooks = WindowFetchTestHooks()
 #endif
 
     // MARK: - Initialization
@@ -1745,18 +1788,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         } else {
             self.isSearchOverlayVisible = UserDefaults.standard.bool(forKey: "searchOverlayVisible")
         }
-        Log.info(
-            "[SearchOverlayState] init restored isSearchOverlayVisible=\(isSearchOverlayVisible)",
-            category: .ui
-        )
         if isSearchOverlayVisible {
             // On startup with overlay already visible, keep the search bar front-and-center
             // without opening the recent-entries popover by default.
             searchViewModel.suppressRecentEntriesForNextOverlayOpen()
-            Log.info(
-                "[SearchOverlayState] init suppressing recent entries for first overlay presentation",
-                category: .ui
-            )
         }
 
         // Listen for data source changes (e.g., Rewind data toggled)
@@ -1805,10 +1840,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         $isSearchOverlayVisible
             .dropFirst() // Skip initial value from restoration
             .sink { isVisible in
-                Log.debug(
-                    "[SearchOverlayState] persistence write isSearchOverlayVisible=\(isVisible)",
-                    category: .ui
-                )
                 UserDefaults.standard.set(isVisible, forKey: "searchOverlayVisible")
             }
             .store(in: &cancellables)
@@ -2111,7 +2142,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         let tagCount = filters.selectedTags?.count ?? 0
         let hasWindowFilter = !(filters.windowNameFilter?.isEmpty ?? true)
         let hasURLFilter = !(filters.browserUrlFilter?.isEmpty ?? true)
-        let hasDateRange = filters.startDate != nil || filters.endDate != nil
+        let hasDateRange = !filters.effectiveDateRanges.isEmpty
 
         return "active=\(filters.hasActiveFilters) count=\(filters.activeFilterCount) apps=\(appCount) tags=\(tagCount) appMode=\(filters.appFilterMode.rawValue) hidden=\(filters.hiddenFilter.rawValue) comments=\(filters.commentFilter.rawValue) window=\(hasWindowFilter) url=\(hasURLFilter) date=\(hasDateRange)"
     }
@@ -2200,12 +2231,26 @@ public class SimpleTimelineViewModel: ObservableObject {
         )
 
         do {
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(
+            let framesWithVideoInfo: [FrameWithVideoInfo]
+#if DEBUG
+            if let override = test_windowFetchHooks.getFramesWithVideoInfo {
+                framesWithVideoInfo = try await override(startDate, endDate, limit, filters, reason)
+            } else {
+                framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(
+                    from: startDate,
+                    to: endDate,
+                    limit: limit,
+                    filters: filters
+                )
+            }
+#else
+            framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(
                 from: startDate,
                 to: endDate,
                 limit: limit,
                 filters: filters
             )
+#endif
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
             Log.recordLatency(
                 "timeline.fetch.window_frames_ms",
@@ -2240,19 +2285,33 @@ public class SimpleTimelineViewModel: ObservableObject {
     ) async throws -> [FrameWithVideoInfo] {
         let traceID = nextFetchTraceID(prefix: "before")
         let fetchStart = CFAbsoluteTimeGetCurrent()
-        let boundedStart = filters.startDate.map { Log.timestamp(from: $0) } ?? "nil"
-        let boundedEnd = filters.endDate.map { Log.timestamp(from: $0) } ?? "nil"
+        let effectiveDateRanges = filters.effectiveDateRanges
+        let boundedStart = effectiveDateRanges.first?.start.map { Log.timestamp(from: $0) } ?? "nil"
+        let boundedEnd = effectiveDateRanges.first?.end.map { Log.timestamp(from: $0) } ?? "nil"
         Log.info(
             "[TIMELINE-FETCH][\(traceID)] START reason='\(reason)' before=\(Log.timestamp(from: timestamp)) limit=\(limit) boundedRange=[\(boundedStart) → \(boundedEnd)] filters={\(summarizeFiltersForLog(filters))}",
             category: .ui
         )
 
         do {
-            let framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
+            let framesWithVideoInfo: [FrameWithVideoInfo]
+#if DEBUG
+            if let override = test_windowFetchHooks.getFramesWithVideoInfoBefore {
+                framesWithVideoInfo = try await override(timestamp, limit, filters, reason)
+            } else {
+                framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
+                    timestamp: timestamp,
+                    limit: limit,
+                    filters: filters
+                )
+            }
+#else
+            framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
                 timestamp: timestamp,
                 limit: limit,
                 filters: filters
             )
+#endif
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
             Log.recordLatency(
                 "timeline.fetch.before_frames_ms",
@@ -3598,7 +3657,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         setLoadingState(true, reason: "navigateToCommentFrame")
         clearError()
 
-        let didNavigate = await searchForFrameID(frameID.value)
+        let didNavigate = await searchForFrameID(frameID.value, includeHiddenSegments: true)
         if didNavigate {
             showToast("Opened linked frame", icon: "checkmark.circle.fill")
             return true
@@ -4313,8 +4372,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             criteria.tagFilterMode == .include &&
             hasNoWindowFilter &&
             hasNoBrowserFilter &&
-            criteria.startDate == nil &&
-            criteria.endDate == nil
+            criteria.effectiveDateRanges.isEmpty
     }
 
     /// Check if a frame at a given index is in a hidden segment
@@ -4335,7 +4393,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         ).blocks
     }
 
-    /// Build app blocks, frame->block index mapping, and video boundaries in one pass.
+    /// Build app blocks, frame->block index mapping, and boundary markers in one pass.
     private nonisolated static func buildAppBlockSnapshot(
         from frameList: [SnapshotFrameInput],
         segmentTagsMap: [Int64: Set<Int64>],
@@ -4352,13 +4410,15 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         var blocks: [AppBlock] = []
         var frameToBlockIndex = Array(repeating: 0, count: frameList.count)
-        var boundaries: [Int] = []
+        var videoBoundaries: [Int] = []
+        var segmentBoundaries: [Int] = []
 
         var currentBundleID: String? = frameList[0].bundleID
         var blockStartIndex = 0
         var currentBlockIndex = 0
         var gapBeforeCurrentBlock: TimeInterval? = nil
         var previousVideoPath = frameList[0].videoPath
+        var previousSegmentID = frameList[0].segmentIDValue
         var currentBlockTagIDs = Set<Int64>()
         var currentBlockHasComments = false
 
@@ -4376,9 +4436,14 @@ public class SimpleTimelineViewModel: ObservableObject {
                 if let previousVideoPath,
                    let currentVideoPath,
                    previousVideoPath != currentVideoPath {
-                    boundaries.append(index)
+                    videoBoundaries.append(index)
                 }
                 previousVideoPath = currentVideoPath
+
+                if timelineFrame.segmentIDValue != previousSegmentID {
+                    segmentBoundaries.append(index)
+                }
+                previousSegmentID = timelineFrame.segmentIDValue
             }
 
             var gapDuration: TimeInterval = 0
@@ -4450,7 +4515,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         return AppBlockSnapshot(
             blocks: blocks,
             frameToBlockIndex: frameToBlockIndex,
-            videoBoundaryIndices: boundaries
+            videoBoundaryIndices: videoBoundaries,
+            segmentBoundaryIndices: segmentBoundaries
         )
     }
 
@@ -4568,11 +4634,27 @@ public class SimpleTimelineViewModel: ObservableObject {
         Log.debug("[Filter] Set tag filter mode to \(mode.rawValue) (pending)", category: .ui)
     }
 
-    /// Set date range filter (updates pending, not applied)
+    /// Set date range filters (updates pending, not applied)
+    public func setDateRanges(_ ranges: [DateRangeCriterion]) {
+        let sanitized = ranges.filter(\.hasBounds).prefix(5)
+        pendingFilterCriteria.dateRanges = Array(sanitized)
+        if let first = sanitized.first {
+            pendingFilterCriteria.startDate = first.start
+            pendingFilterCriteria.endDate = first.end
+        } else {
+            pendingFilterCriteria.startDate = nil
+            pendingFilterCriteria.endDate = nil
+        }
+        Log.debug("[Filter] Set date ranges to \(pendingFilterCriteria.effectiveDateRanges) (pending)", category: .ui)
+    }
+
+    /// Legacy single-range setter.
     public func setDateRange(start: Date?, end: Date?) {
-        pendingFilterCriteria.startDate = start
-        pendingFilterCriteria.endDate = end
-        Log.debug("[Filter] Set date range to \(String(describing: start)) - \(String(describing: end)) (pending)", category: .ui)
+        if start == nil && end == nil {
+            setDateRanges([])
+        } else {
+            setDateRanges([DateRangeCriterion(start: start, end: end)])
+        }
     }
 
     /// Starts a latency trace for app quick-filter execution.
@@ -4786,12 +4868,21 @@ public class SimpleTimelineViewModel: ObservableObject {
             components.append("\"browserUrl\":\"\(escaped)\"")
         }
 
-        if let startDate = filterCriteria.startDate {
-            components.append("\"startDate\":\"\(Log.timestamp(from: startDate))\"")
-        }
-
-        if let endDate = filterCriteria.endDate {
-            components.append("\"endDate\":\"\(Log.timestamp(from: endDate))\"")
+        let effectiveDateRanges = filterCriteria.effectiveDateRanges
+        if effectiveDateRanges.count == 1 {
+            if let startDate = effectiveDateRanges[0].start {
+                components.append("\"startDate\":\"\(Log.timestamp(from: startDate))\"")
+            }
+            if let endDate = effectiveDateRanges[0].end {
+                components.append("\"endDate\":\"\(Log.timestamp(from: endDate))\"")
+            }
+        } else if !effectiveDateRanges.isEmpty {
+            let encodedRanges = effectiveDateRanges.map { range in
+                let start = range.start.map { "\"\(Log.timestamp(from: $0))\"" } ?? "null"
+                let end = range.end.map { "\"\(Log.timestamp(from: $0))\"" } ?? "null"
+                return "{\"start\":\(start),\"end\":\(end)}"
+            }.joined(separator: ",")
+            components.append("\"dateRanges\":[\(encodedRanges)]")
         }
 
         return "{\(components.joined(separator: ","))}"
@@ -5271,11 +5362,6 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Open the search overlay and dismiss other dialogs.
     /// - Parameter recentEntriesRevealDelay: One-shot delay before showing recent entries popover.
     public func openSearchOverlay(recentEntriesRevealDelay: TimeInterval = 0) {
-        let trimmedQuery = searchViewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        Log.info(
-            "[SearchOverlayState] openSearchOverlay beforeVisible=\(isSearchOverlayVisible) delay=\(String(format: "%.3f", recentEntriesRevealDelay)) queryEmpty=\(trimmedQuery.isEmpty) hasResults=\(searchViewModel.results != nil)",
-            category: .ui
-        )
         // Dismiss other dialogs first
         dismissOtherDialogs(except: .search)
         // Show controls if hidden (user expects to see the search overlay)
@@ -5294,10 +5380,6 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Close the search overlay
     public func closeSearchOverlay() {
-        Log.info(
-            "[SearchOverlayState] closeSearchOverlay beforeVisible=\(isSearchOverlayVisible)",
-            category: .ui
-        )
         searchViewModel.setNextRecentEntriesRevealDelay(0)
         isSearchOverlayVisible = false
     }
@@ -5305,10 +5387,6 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Toggle the search overlay.
     /// - Parameter recentEntriesRevealDelayOnOpen: One-shot delay applied only when opening.
     public func toggleSearchOverlay(recentEntriesRevealDelayOnOpen: TimeInterval = 0) {
-        Log.info(
-            "[SearchOverlayState] toggleSearchOverlay currentVisible=\(isSearchOverlayVisible) openDelay=\(String(format: "%.3f", recentEntriesRevealDelayOnOpen))",
-            category: .ui
-        )
         if isSearchOverlayVisible {
             closeSearchOverlay()
         } else {
@@ -5336,17 +5414,14 @@ public class SimpleTimelineViewModel: ObservableObject {
             category: .ui
         )
         openSearchOverlay()
-        Log.debug("[SearchDeeplink][\(deeplinkID)] overlay opened", category: .ui)
 
         // Reset prior transient search state so deeplinks are deterministic.
         searchViewModel.cancelSearch()
         searchViewModel.searchQuery = ""
         searchViewModel.clearAllFilters()
-        Log.debug("[SearchDeeplink][\(deeplinkID)] reset search query + filters", category: .ui)
 
         if let normalizedAppBundleID {
             searchViewModel.setAppFilter(normalizedAppBundleID)
-            Log.debug("[SearchDeeplink][\(deeplinkID)] set app filter: \(normalizedAppBundleID)", category: .ui)
         }
 
         guard let normalizedQuery else {
@@ -5685,7 +5760,12 @@ public class SimpleTimelineViewModel: ObservableObject {
                         // (e.g., timeline was hidden for a long time). Do a full reload to avoid
                         // creating a phantom gap in the timeline.
                         if newFrames.count >= refreshLimit {
-                            await loadMostRecentFrame()
+                            // Preserve historical playhead when caller explicitly opted out of
+                            // auto-advancing (timeline hide/reopen while scrubbing older frames).
+                            // A full reload here would hard-reset to newest and break continuity.
+                            if shouldNavigateToNewest {
+                                await loadMostRecentFrame()
+                            }
                             return
                         }
 
@@ -5877,6 +5957,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         guard clampedIndex != currentIndex else { return }
         let previousIndex = currentIndex
 
+        if !undonePositionHistory.isEmpty {
+            undonePositionHistory.removeAll()
+        }
+
         // Clear transient search-result highlight when manually navigating.
         if isShowingSearchHighlight && !hasActiveInFrameSearchQuery {
             clearSearchHighlight()
@@ -5940,7 +6024,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Schedule recording the current position as a "stopped" position after 1 second of inactivity
     private func scheduleStoppedPositionRecording() {
         // Cancel any previous work item
-        playheadStoppedDetectionWorkItem?.cancel()
+        cancelPendingStoppedPositionRecording()
 
         let indexToRecord = currentIndex
 
@@ -5954,6 +6038,25 @@ public class SimpleTimelineViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.stoppedThresholdSeconds, execute: workItem)
     }
 
+    private func cancelPendingStoppedPositionRecording() {
+        playheadStoppedDetectionWorkItem?.cancel()
+        playheadStoppedDetectionWorkItem = nil
+    }
+
+    @discardableResult
+    private func recordCurrentPositionImmediatelyForUndo(reason: String) -> Bool {
+        let historyCountBefore = stoppedPositionHistory.count
+        recordStoppedPosition(currentIndex)
+        let didRecord = stoppedPositionHistory.count != historyCountBefore
+        if didRecord {
+            Log.debug(
+                "[PlayheadUndo] Recorded immediate jump snapshot for \(reason) (history size=\(stoppedPositionHistory.count))",
+                category: .ui
+            )
+        }
+        return didRecord
+    }
+
     /// Record a position as a "stopped" position for undo history
     private func recordStoppedPosition(_ index: Int) {
         // Don't record invalid indices
@@ -5965,6 +6068,11 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Don't record if it's the same as the last recorded frame
         guard frameID != lastRecordedStoppedFrameID else { return }
+
+        // New user navigation invalidates redo history.
+        if !undonePositionHistory.isEmpty {
+            undonePositionHistory.removeAll()
+        }
 
         // Add to history
         stoppedPositionHistory.append(StoppedPosition(frameID: frameID, timestamp: timestamp))
@@ -5988,8 +6096,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             return false
         }
 
-        // Remove the current position (most recent)
-        stoppedPositionHistory.removeLast()
+        // Remove the current position (most recent) and move it to redo history.
+        let currentPosition = stoppedPositionHistory.removeLast()
+        undonePositionHistory.append(currentPosition)
+        if undonePositionHistory.count > Self.maxStoppedPositionHistory {
+            undonePositionHistory.removeFirst(undonePositionHistory.count - Self.maxStoppedPositionHistory)
+        }
 
         // Get the previous position
         guard let previousPosition = stoppedPositionHistory.last else {
@@ -6000,7 +6112,10 @@ public class SimpleTimelineViewModel: ObservableObject {
         lastRecordedStoppedFrameID = previousPosition.frameID
 
         // Cancel any pending stopped position recording
-        playheadStoppedDetectionWorkItem?.cancel()
+        cancelPendingStoppedPositionRecording()
+
+        // Undo is an explicit timeline navigation action; clear transient search-result highlight.
+        resetSearchHighlightState()
 
         // Fast path: check if frame exists in current frames array
         if let index = frames.firstIndex(where: { $0.frame.id == previousPosition.frameID }) {
@@ -6023,6 +6138,46 @@ public class SimpleTimelineViewModel: ObservableObject {
         return true
     }
 
+    /// Redo to the last undone playhead position (Cmd+Shift+Z).
+    /// Returns true if there was a position to redo to, false otherwise.
+    @discardableResult
+    public func redoLastUndonePosition() -> Bool {
+        guard let nextPosition = undonePositionHistory.popLast() else {
+            return false
+        }
+
+        // Cancel pending stop-detection work to avoid stale position snapshots during redo.
+        cancelPendingStoppedPositionRecording()
+
+        // Redo is explicit timeline navigation; clear transient search-result highlight.
+        resetSearchHighlightState()
+
+        // Keep undo history in sync with the redone position.
+        if stoppedPositionHistory.last?.frameID != nextPosition.frameID {
+            stoppedPositionHistory.append(nextPosition)
+            if stoppedPositionHistory.count > Self.maxStoppedPositionHistory {
+                stoppedPositionHistory.removeFirst(stoppedPositionHistory.count - Self.maxStoppedPositionHistory)
+            }
+        }
+        lastRecordedStoppedFrameID = nextPosition.frameID
+
+        // Fast path: frame already in loaded window.
+        if let index = frames.firstIndex(where: { $0.frame.id == nextPosition.frameID }) {
+            if index != currentIndex {
+                currentIndex = index
+                loadImageIfNeeded()
+                checkAndLoadMoreFrames()
+            }
+            return true
+        }
+
+        // Slow path: frame outside current window.
+        Task { @MainActor in
+            await navigateToUndoPosition(nextPosition)
+        }
+        return true
+    }
+
     /// Navigate to an undo position by reloading frames around the timestamp
     /// Similar to navigateToSearchResult but without search highlighting
     @MainActor
@@ -6032,69 +6187,27 @@ public class SimpleTimelineViewModel: ObservableObject {
             exitLiveMode()
         }
 
-        do {
-            setLoadingState(true, reason: "navigateToUndoPosition")
+        // Reuse the shared reload path so boundary-state reset/load-more behavior stays consistent.
+        clearDiskFrameBuffer(reason: "undo navigation")
+        await reloadFramesAroundTimestamp(position.timestamp)
 
-            // Calculate ±10 minute window around target timestamp
-            let calendar = Calendar.current
-            let startDate = calendar.date(byAdding: .minute, value: -10, to: position.timestamp) ?? position.timestamp
-            let endDate = calendar.date(byAdding: .minute, value: 10, to: position.timestamp) ?? position.timestamp
-
-            Log.debug("[PlayheadUndo] Loading frames from \(startDate) to \(endDate)", category: .ui)
-
-            // Fetch frames in the window with current filters applied
-            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
-                from: startDate,
-                to: endDate,
-                limit: 1000,
-                filters: filterCriteria,
-                reason: "navigateToUndoPosition"
-            )
-
-            guard !framesWithVideoInfo.isEmpty else {
-                Log.warning("[PlayheadUndo] No frames found in time range", category: .ui)
-                setLoadingState(false, reason: "navigateToUndoPosition.noFrames")
-                return
-            }
-
-            // Clear disk frame buffer
-            clearDiskFrameBuffer(reason: "undo navigation")
-
-            // Convert to TimelineFrame
-            let timelineFrames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
-
-            // Replace current frames
-            frames = timelineFrames
-
-            // Update window boundaries
-            if let firstFrame = frames.first, let lastFrame = frames.last {
-                oldestLoadedTimestamp = firstFrame.frame.timestamp
-                newestLoadedTimestamp = lastFrame.frame.timestamp
-            }
-
-            // Find and navigate to the target frame by ID
-            if let index = frames.firstIndex(where: { $0.frame.id == position.frameID }) {
-                currentIndex = index
-            } else {
-                // Fallback: find closest frame by timestamp if ID not found (edge case: frame deleted)
-                let closest = frames.enumerated().min(by: {
-                    abs($0.element.frame.timestamp.timeIntervalSince(position.timestamp)) <
-                    abs($1.element.frame.timestamp.timeIntervalSince(position.timestamp))
-                })
-                currentIndex = closest?.offset ?? 0
-                Log.warning("[PlayheadUndo] Frame ID not found, using closest by timestamp", category: .ui)
-            }
-
-            loadImageIfNeeded()
-            checkAndLoadMoreFrames()
-            setLoadingState(false, reason: "navigateToUndoPosition.success")
-
-            Log.info("[PlayheadUndo] Navigation complete, now at index \(currentIndex)", category: .ui)
-
-        } catch {
-            Log.error("[PlayheadUndo] Failed to navigate: \(error)", category: .ui)
-            setLoadingState(false, reason: "navigateToUndoPosition.error")
+        guard !frames.isEmpty else {
+            Log.warning("[PlayheadUndo] Reload window empty after undo navigation", category: .ui)
+            return
         }
+
+        // Ensure undo lands on the exact frame when available.
+        if let index = frames.firstIndex(where: { $0.frame.id == position.frameID }) {
+            if index != currentIndex {
+                currentIndex = index
+                loadImageIfNeeded()
+                _ = checkAndLoadMoreFrames(reason: "navigateToUndoPosition.postReloadFramePin")
+            }
+        } else {
+            Log.warning("[PlayheadUndo] Frame ID not found after reload, keeping closest timestamp frame", category: .ui)
+        }
+
+        Log.info("[PlayheadUndo] Navigation complete, now at index \(currentIndex)", category: .ui)
     }
 
     /// Navigate to a specific frame by ID and highlight the search query
@@ -6119,20 +6232,16 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Log current frames window for debugging
         if let first = frames.first, let last = frames.last {
-            Log.debug("[SearchNavigation] Current frames window: \(df.string(from: first.frame.timestamp)) to \(df.string(from: last.frame.timestamp)) (\(frames.count) frames)", category: .ui)
         } else {
-            Log.debug("[SearchNavigation] Current frames window: EMPTY", category: .ui)
         }
 
         // First, try to find a frame with this ID in our current data
         if let index = frames.firstIndex(where: { $0.frame.id == frameID }) {
-            Log.debug("[SearchNavigation] Found frame by ID in current data at index \(index)", category: .ui)
             navigateToFrame(index)
             showSearchHighlight(query: highlightQuery)
             return
         }
 
-        Log.debug("[SearchNavigation] Frame not in current data by ID, loading frames in ±10 min window...", category: .ui)
 
         // If not found, load frames in a ±10 minute window around the target timestamp
         // This approach (same as Cmd+G date search) guarantees the target frame is included
@@ -6144,7 +6253,6 @@ public class SimpleTimelineViewModel: ObservableObject {
             let startDate = calendar.date(byAdding: .minute, value: -10, to: timestamp) ?? timestamp
             let endDate = calendar.date(byAdding: .minute, value: 10, to: timestamp) ?? timestamp
 
-            Log.debug("[SearchNavigation] Query range: \(df.string(from: startDate)) to \(df.string(from: endDate))", category: .ui)
 
             // Fetch all frames in the 20-minute window with video info (single optimized query)
             // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
@@ -6155,7 +6263,6 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: filterCriteria,
                 reason: "navigateToSearchResult"
             )
-            Log.debug("[SearchNavigation] Loaded \(framesWithVideoInfo.count) frames in time range", category: .ui)
 
             guard !framesWithVideoInfo.isEmpty else {
                 Log.warning("[SearchNavigation] No frames found in time range", category: .ui)
@@ -6167,12 +6274,10 @@ public class SimpleTimelineViewModel: ObservableObject {
             let oldCacheCount = diskFrameBufferIndex.count
             clearDiskFrameBuffer(reason: "search navigation")
             if oldCacheCount > 0 {
-                Log.debug("[SearchNavigation] Cleared disk frame buffer (\(oldCacheCount) frames removed)", category: .ui)
             }
 
             // Convert to TimelineFrame - video info is already included from the JOIN
             let timelineFrames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
-            Log.debug("[SearchNavigation] Converted to \(timelineFrames.count) timeline frames", category: .ui)
 
             // Replace current frames with new window
             frames = timelineFrames
@@ -6181,12 +6286,10 @@ public class SimpleTimelineViewModel: ObservableObject {
             if let firstFrame = frames.first, let lastFrame = frames.last {
                 oldestLoadedTimestamp = firstFrame.frame.timestamp
                 newestLoadedTimestamp = lastFrame.frame.timestamp
-                Log.debug("[SearchNavigation] Window: \(oldestLoadedTimestamp!) to \(newestLoadedTimestamp!)", category: .ui)
             }
 
             // Find and navigate to the target frame by ID
             if let index = frames.firstIndex(where: { $0.frame.id == frameID }) {
-                Log.debug("[SearchNavigation] Found frame by ID at index \(index)", category: .ui)
                 currentIndex = index
             } else {
                 // Fallback: find closest frame by timestamp if ID not found
@@ -6221,7 +6324,6 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Show search highlight for the given query after a 0.5-second delay
     public func showSearchHighlight(query: String) {
-        Log.debug("[SearchHighlight] Will show highlight for query: '\(query)' after delay", category: .ui)
 
         // Clear any existing highlight first (so the view is removed and onAppear will fire again)
         isShowingSearchHighlight = false
@@ -6233,14 +6335,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Only show if the query hasn't changed
             if self.searchHighlightQuery == query {
                 self.isShowingSearchHighlight = true
-                Log.debug("[SearchHighlight] Now showing highlight, OCR nodes available: \(self.ocrNodes.count)", category: .ui)
             }
         }
     }
 
     /// Clear the search highlight
     public func clearSearchHighlight() {
-        Log.debug("[SearchHighlight] Clearing search highlight", category: .ui)
         searchHighlightTimer?.invalidate()
         searchHighlightTimer = nil
 
@@ -6256,6 +6356,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             guard self.searchHighlightQuery == previousQuery else { return }
             self.searchHighlightQuery = nil
         }
+    }
+
+    /// Reset transient search-highlight state immediately when switching timeline contexts.
+    public func resetSearchHighlightState() {
+        clearSearchHighlightImmediately()
     }
 
     private func clearSearchHighlightImmediately() {
@@ -6287,7 +6392,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         guard !queryTokens.isEmpty else { return [] }
 
         let tokenDescriptions = queryTokens.map(\.debugDescription)
-        Log.debug("[SearchHighlight] Query: '\(query)', tokens: \(tokenDescriptions)", category: .ui)
         var matchingNodes: [(node: OCRNodeWithText, ranges: [Range<String.Index>])] = []
 
         for node in ocrNodes {
@@ -6300,18 +6404,14 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             if !ranges.isEmpty {
                 matchingNodes.append((node: node, ranges: ranges))
-                Log.debug("[SearchHighlight] MATCH: node.id=\(node.id), text='\(node.text.prefix(50))', ranges=\(ranges.count)", category: .ui)
             }
         }
 
         if !matchingNodes.isEmpty {
             let totalMatches = matchingNodes.reduce(0) { $0 + $1.ranges.count }
-            Log.debug("[SearchHighlight] Found \(totalMatches) matches in \(matchingNodes.count) nodes for '\(query)'", category: .ui)
         } else {
-            Log.debug("[SearchHighlight] NO MATCHES for '\(query)' in \(ocrNodes.count) nodes", category: .ui)
             // Log first few nodes to see what text they contain
             for (i, node) in ocrNodes.prefix(10).enumerated() {
-                Log.debug("[SearchHighlight] Node[\(i)] id=\(node.id), text='\(node.text.prefix(30))', y=\(node.y)", category: .ui)
             }
         }
 
@@ -7256,6 +7356,25 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         NSWorkspace.shared.open(url)
         Log.info("[Timeline] Opened current browser URL: \(urlString)", category: .ui)
+        return true
+    }
+
+    /// Copy the current frame's browser URL to the clipboard.
+    /// - Returns: `true` if a valid URL was copied.
+    @discardableResult
+    public func copyCurrentBrowserURL() -> Bool {
+        guard let currentFrame,
+              let urlString = currentFrame.metadata.browserURL,
+              !urlString.isEmpty,
+              URL(string: urlString) != nil else {
+            return false
+        }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(urlString, forType: .string)
+        showToast("Link copied")
+        Log.info("[Timeline] Copied current browser URL: \(urlString)", category: .ui)
         return true
     }
 
@@ -8430,12 +8549,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Use nodes in zoom region if active, otherwise all nodes
         let nodesToCheck = isZoomRegionActive ? ocrNodesInZoomRegion : ocrNodes
 
-        // DEBUG: Log what nodes we're using for selection
-        Log.debug("[SELECT-DEBUG] ocrNodes count: \(ocrNodes.count), isZoomRegionActive: \(isZoomRegionActive)", category: .ui)
-        if let firstNode = nodesToCheck.first {
-            Log.debug("[SELECT-DEBUG] First node in selection: id=\(firstNode.id), frameId=\(firstNode.frameId), text='\(firstNode.text.prefix(30))...'", category: .ui)
-        }
-
         let sortedNodes = nodesToCheck.sorted { node1, node2 in
             let yTolerance: CGFloat = 0.02
             if abs(node1.y - node2.y) > yTolerance {
@@ -8444,20 +8557,13 @@ public class SimpleTimelineViewModel: ObservableObject {
             return node1.x < node2.x
         }
 
-        var nodeCount = 0
         for node in sortedNodes {
             if let range = getSelectionRange(for: node.id) {
                 let text = node.text
                 let startIdx = text.index(text.startIndex, offsetBy: min(range.start, text.count))
                 let endIdx = text.index(text.startIndex, offsetBy: min(range.end, text.count))
                 if startIdx < endIdx {
-                    let extractedText = String(text[startIdx..<endIdx])
-                    // DEBUG: Log first 3 nodes being added to result
-                    nodeCount += 1
-                    if nodeCount <= 3 {
-                        Log.debug("[SELECT-DEBUG] Adding node \(nodeCount): id=\(node.id), y=\(String(format: "%.3f", node.y)), range=\(range.start)-\(range.end), text='\(extractedText.prefix(40))...'", category: .ui)
-                    }
-                    result += extractedText
+                    result += String(text[startIdx..<endIdx])
                     result += " "  // Add space between nodes
                 }
             }
@@ -8470,25 +8576,6 @@ public class SimpleTimelineViewModel: ObservableObject {
     public func copySelectedText() {
         let text = selectedText
         guard !text.isEmpty else { return }
-
-        // DEBUG: Dump ALL nodes for this frame
-        if let frame = currentFrame, let videoInfo = currentVideoInfo {
-            Log.debug("[COPY-DEBUG] ========== FRAME \(frame.id.value) (videoIndex=\(videoInfo.frameIndex)) ==========", category: .ui)
-            Log.debug("[COPY-DEBUG] Total ocrNodes: \(ocrNodes.count)", category: .ui)
-            Log.debug("[COPY-DEBUG] Selection: start=\(selectionStart?.nodeID ?? -1), end=\(selectionEnd?.nodeID ?? -1)", category: .ui)
-            Log.debug("[COPY-DEBUG] --- ALL NODES (sorted by y, x) ---", category: .ui)
-            let sorted = ocrNodes.sorted { n1, n2 in
-                if abs(n1.y - n2.y) > 0.02 { return n1.y < n2.y }
-                return n1.x < n2.x
-            }
-            for (i, node) in sorted.enumerated() {
-                let selected = (selectionStart != nil && selectionEnd != nil) ? (getSelectionRange(for: node.id) != nil ? "✓" : " ") : " "
-                Log.debug("[COPY-DEBUG] [\(selected)] \(i): id=\(node.id) y=\(String(format: "%.3f", node.y)) x=\(String(format: "%.3f", node.x)) text='\(node.text.prefix(50))...'", category: .ui)
-            }
-            Log.debug("[COPY-DEBUG] --- COPIED TEXT ---", category: .ui)
-            Log.debug("[COPY-DEBUG] '\(text.prefix(200))...'", category: .ui)
-            Log.debug("[COPY-DEBUG] ==========================================", category: .ui)
-        }
 
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -9097,6 +9184,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         setLoadingState(true, reason: "navigateToDate")
         clearError()
         cancelBoundaryLoadTasks(reason: "navigateToDate")
+        cancelPendingStoppedPositionRecording()
+        _ = recordCurrentPositionImmediatelyForUndo(reason: "navigateToDate.source")
 
         // Exit live mode if active (we're navigating to a specific time, not "now")
         if isInLiveMode {
@@ -9139,6 +9228,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             let closestIndex = findClosestFrameIndex(to: targetDate)
             currentIndex = closestIndex
+            _ = recordCurrentPositionImmediatelyForUndo(reason: "navigateToDate.destination")
 
             loadImageIfNeeded()
             _ = checkAndLoadMoreFrames(reason: "navigateToDate")
@@ -9158,7 +9248,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         cancelBoundaryLoadTasks(reason: "searchForDate")
         dateJumpTraceID += 1
         let jumpTraceID = dateJumpTraceID
-        Log.info("[DateJump:\(jumpTraceID)] START input='\(searchText)' current=\(currentTimestamp.map { Log.timestamp(from: $0) } ?? "nil")", category: .ui)
+        cancelPendingStoppedPositionRecording()
+        _ = recordCurrentPositionImmediatelyForUndo(reason: "searchForDate.source")
 
         // Exit live mode if active (we're navigating away from "now")
         if isInLiveMode {
@@ -9196,32 +9287,11 @@ public class SimpleTimelineViewModel: ObservableObject {
                 parsedDate: targetDate,
                 input: searchText
             )
-            Log.info(
-                "[DateJump:\(jumpTraceID)] target parsed=\(Log.timestamp(from: targetDate)) anchored=\(Log.timestamp(from: anchoredTargetDate))",
-                category: .ui
-            )
 
             // Load frames around the target date (±10 minutes window)
             let calendar = Calendar.current
             let startDate = calendar.date(byAdding: .minute, value: -10, to: anchoredTargetDate) ?? anchoredTargetDate
             let endDate = calendar.date(byAdding: .minute, value: 10, to: anchoredTargetDate) ?? anchoredTargetDate
-            Log.info(
-                "[DateJump:\(jumpTraceID)] query range=\(Log.timestamp(from: startDate)) -> \(Log.timestamp(from: endDate))",
-                category: .ui
-            )
-
-            // Debug logging
-            let df = DateFormatter()
-            df.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
-            df.timeZone = .current
-            Log.debug("[DateSearch] Input: '\(searchText)'", category: .ui)
-            Log.debug("[DateSearch] Parsed targetDate (local): \(df.string(from: targetDate))", category: .ui)
-            Log.debug("[DateSearch] Anchored targetDate (local): \(df.string(from: anchoredTargetDate))", category: .ui)
-            df.timeZone = TimeZone(identifier: "UTC")
-            Log.debug("[DateSearch] Parsed targetDate (UTC): \(df.string(from: targetDate))", category: .ui)
-            Log.debug("[DateSearch] Anchored targetDate (UTC): \(df.string(from: anchoredTargetDate))", category: .ui)
-            df.timeZone = .current
-            Log.debug("[DateSearch] Query range: \(df.string(from: startDate)) to \(df.string(from: endDate))", category: .ui)
 
             // Fetch all frames in the 20-minute window
             // Uses optimized query that JOINs on video table - no N+1 queries!
@@ -9233,15 +9303,6 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: filterCriteria,
                 reason: "searchForDate"
             )
-            Log.debug("[DateSearch] Got \(framesWithVideoInfo.count) frames", category: .ui)
-            if let first = framesWithVideoInfo.first, let last = framesWithVideoInfo.last {
-                Log.info(
-                    "[DateJump:\(jumpTraceID)] result count=\(framesWithVideoInfo.count) first=\(Log.timestamp(from: first.frame.timestamp)) last=\(Log.timestamp(from: last.frame.timestamp))",
-                    category: .ui
-                )
-            } else {
-                Log.info("[DateJump:\(jumpTraceID)] result count=0", category: .ui)
-            }
 
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around \(formatLocalDateForError(targetDate))")
@@ -9266,6 +9327,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Find the frame closest to the target date in our centered set
             let closestIndex = findClosestFrameIndex(to: anchoredTargetDate)
             currentIndex = closestIndex
+            _ = recordCurrentPositionImmediatelyForUndo(reason: "searchForDate.destination")
             logFrameWindowSummary(context: "POST searchForDate", traceID: jumpTraceID)
 
             // Load image if needed
@@ -9293,14 +9355,14 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Search for a frame by its ID and navigate to it
     /// Returns true if frame was found and navigation succeeded
-    private func searchForFrameID(_ frameID: Int64) async -> Bool {
-        Log.debug("[FrameIDSearch] Looking for frame ID: \(frameID)", category: .ui)
+    private func searchForFrameID(_ frameID: Int64, includeHiddenSegments: Bool = false) async -> Bool {
         cancelBoundaryLoadTasks(reason: "searchForFrameID")
+        cancelPendingStoppedPositionRecording()
+        _ = recordCurrentPositionImmediatelyForUndo(reason: "searchForFrameID.source")
 
         do {
             // Try to get the frame by ID
             guard let frameWithVideo = try await coordinator.getFrameWithVideoInfoByID(id: FrameID(value: frameID)) else {
-                Log.debug("[FrameIDSearch] Frame not found: \(frameID)", category: .ui)
                 error = "Frame #\(frameID) not found"
                 setLoadingState(false, reason: "searchForFrameID.notFound")
                 return false
@@ -9308,7 +9370,6 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             let targetFrame = frameWithVideo.frame
             let targetDate = targetFrame.timestamp
-            Log.debug("[FrameIDSearch] Found frame \(frameID) at \(targetDate)", category: .ui)
 
             clearActiveFiltersBeforeJumpIfNeeded(trigger: "frame ID jump")
 
@@ -9319,8 +9380,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Fetch all frames in the window.
             // Linked-comment jumps intentionally ignore hidden filtering so anchored frames remain reachable.
-            var jumpFilters = FilterCriteria.none
-            jumpFilters.hiddenFilter = .showAll
+            var jumpFilters = filterCriteria
+            if includeHiddenSegments {
+                jumpFilters.hiddenFilter = .showAll
+            }
             let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
                 from: startDate,
                 to: endDate,
@@ -9328,7 +9391,6 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: jumpFilters,
                 reason: "searchForFrameID"
             )
-            Log.debug("[FrameIDSearch] Got \(framesWithVideoInfo.count) frames in window", category: .ui)
 
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around frame #\(frameID)")
@@ -9353,13 +9415,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Find the exact frame by ID in our loaded frames
             if let exactIndex = frames.firstIndex(where: { $0.frame.id.value == frameID }) {
                 currentIndex = exactIndex
-                Log.debug("[FrameIDSearch] Navigated to exact frame at index \(exactIndex)", category: .ui)
             } else {
                 // Fallback to closest by timestamp
                 let closestIndex = findClosestFrameIndex(to: targetDate)
                 currentIndex = closestIndex
-                Log.debug("[FrameIDSearch] Frame not in window, using closest at index \(closestIndex)", category: .ui)
             }
+            _ = recordCurrentPositionImmediatelyForUndo(reason: "searchForFrameID.destination")
 
             // Keep comment/tag context anchored to the jumped-to frame.
             // Without this, reopening the comment panel can resolve against a stale block index
@@ -9413,10 +9474,6 @@ public class SimpleTimelineViewModel: ObservableObject {
             return nil
         }
 
-        Log.debug(
-            "[DateSearch] Relative '\(normalized)' resolved from base=\(baseTimestamp) to target=\(resolvedDate)",
-            category: .ui
-        )
         return resolvedDate
     }
 
@@ -9525,7 +9582,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         for chronoInput in chronoInputs {
             if let result = chrono.parse(text: chronoInput, refDate: now, opt: [:]).first?.start.date {
                 let normalized = finalizeParsedDate(result)
-                Log.debug("[DateSearch] SwiftyChrono parsed '\(chronoInput)' as \(normalized)", category: .ui)
                 return normalized
             }
         }
@@ -9611,6 +9667,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             relativeTo: baseTimestamp
         )
     }
+
+    func test_setBoundaryPaginationState(hasMoreOlder: Bool, hasMoreNewer: Bool) {
+        self.hasMoreOlder = hasMoreOlder
+        self.hasMoreNewer = hasMoreNewer
+    }
 #endif
 
     private enum DateSearchAnchorMode: String {
@@ -9641,14 +9702,9 @@ public class SimpleTimelineViewModel: ObservableObject {
         ).first
 
         guard let anchoredTimestamp = firstFrame?.frame.timestamp else {
-            Log.debug("[DateSearch] Anchor mode=\(mode.rawValue) found no frames in bucket; falling back to parsed date", category: .ui)
             return parsedDate
         }
 
-        Log.debug(
-            "[DateSearch] Anchor mode=\(mode.rawValue) resolved first frame at \(anchoredTimestamp)",
-            category: .ui
-        )
         return anchoredTimestamp
     }
 
@@ -9732,10 +9788,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         let maxRecentWindow: TimeInterval = 366 * 24 * 60 * 60
         guard now.timeIntervalSince(priorYearDate) <= maxRecentWindow else { return parsedDate }
 
-        Log.debug(
-            "[DateSearch] Adjusted yearless future date '\(input)' from \(parsedDate) to \(priorYearDate)",
-            category: .ui
-        )
         return priorYearDate
     }
 
@@ -9754,10 +9806,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
         guard priorDayDate <= now else { return parsedDate }
 
-        Log.debug(
-            "[DateSearch] Adjusted future time-only input '\(input)' from \(parsedDate) to \(priorDayDate)",
-            category: .ui
-        )
         return priorDayDate
     }
 
@@ -10593,9 +10641,61 @@ public class SimpleTimelineViewModel: ObservableObject {
         case newer  // Preserve newer frames, trim older
     }
 
-    /// Trim the window if it exceeds max frames
-    private func trimWindowIfNeeded(preserveDirection: TrimDirection) {
+    private func trimDirectionLabel(_ direction: TrimDirection) -> String {
+        switch direction {
+        case .older:
+            return "older"
+        case .newer:
+            return "newer"
+        }
+    }
+
+    private func applyDeferredTrimIfNeeded(trigger: String) {
+        guard let deferredDirection = deferredTrimDirection else { return }
+
+        let anchorFrameID = deferredTrimAnchorFrameID
+        let anchorTimestamp = deferredTrimAnchorTimestamp
+        deferredTrimDirection = nil
+        deferredTrimAnchorFrameID = nil
+        deferredTrimAnchorTimestamp = nil
+
         guard frames.count > WindowConfig.maxFrames else { return }
+
+        Log.info(
+            "[Memory] APPLYING deferred trim trigger=\(trigger) direction=\(trimDirectionLabel(deferredDirection)) frames=\(frames.count)",
+            category: .ui
+        )
+        trimWindowIfNeeded(
+            preserveDirection: deferredDirection,
+            anchorFrameID: anchorFrameID,
+            anchorTimestamp: anchorTimestamp,
+            reason: "deferred.\(trigger)",
+            allowDeferral: false
+        )
+    }
+
+    /// Trim the window if it exceeds max frames
+    private func trimWindowIfNeeded(
+        preserveDirection: TrimDirection,
+        anchorFrameID: FrameID? = nil,
+        anchorTimestamp: Date? = nil,
+        reason: String = "unspecified",
+        allowDeferral: Bool = true
+    ) {
+        guard frames.count > WindowConfig.maxFrames else { return }
+
+        if allowDeferral, preserveDirection == .newer, isActivelyScrolling {
+            deferredTrimDirection = preserveDirection
+            deferredTrimAnchorFrameID = anchorFrameID ?? currentTimelineFrame?.frame.id
+            deferredTrimAnchorTimestamp = anchorTimestamp ?? currentTimelineFrame?.frame.timestamp
+            let anchorIDValue = deferredTrimAnchorFrameID?.value ?? -1
+            let anchorTS = deferredTrimAnchorTimestamp.map { Log.timestamp(from: $0) } ?? "nil"
+            Log.info(
+                "[Memory] DEFERRING trim direction=\(trimDirectionLabel(preserveDirection)) reason=\(reason) frames=\(frames.count) anchorFrameID=\(anchorIDValue) anchorTs=\(anchorTS)",
+                category: .ui
+            )
+            return
+        }
 
         let excessCount = frames.count - WindowConfig.maxFrames
         let beforeCount = frames.count
@@ -10603,7 +10703,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         switch preserveDirection {
         case .older:
             // User is scrolling toward older, trim newer frames from end
-            Log.info("[Memory] TRIMMING \(excessCount) newer frames from END (preserving older)", category: .ui)
+            Log.info("[Memory] TRIMMING \(excessCount) newer frames from END (preserving older) reason=\(reason)", category: .ui)
             frames = Array(frames.dropLast(excessCount))
             // We just discarded newer frames from memory, so forward pagination is available again
             // regardless of whether we previously observed the absolute end.
@@ -10612,11 +10712,33 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         case .newer:
             // User is scrolling toward newer, trim older frames from start
-            Log.info("[Memory] TRIMMING \(excessCount) older frames from START (preserving newer)", category: .ui)
+            Log.info("[Memory] TRIMMING \(excessCount) older frames from START (preserving newer) reason=\(reason)", category: .ui)
             let oldIndex = currentIndex
-            let targetIndexAfterTrim = max(0, oldIndex - excessCount)
+            let resolvedAnchorFrameID = anchorFrameID ?? currentTimelineFrame?.frame.id
+            let resolvedAnchorTimestamp = anchorTimestamp ?? currentTimelineFrame?.frame.timestamp
+            let trimmedFrames = Array(frames.dropFirst(excessCount))
+
+            let targetIndexAfterTrim: Int
+            if let resolvedAnchorFrameID,
+               let anchoredIndex = trimmedFrames.firstIndex(where: { $0.frame.id == resolvedAnchorFrameID }) {
+                targetIndexAfterTrim = anchoredIndex
+            } else if let resolvedAnchorTimestamp {
+                targetIndexAfterTrim = trimmedFrames.enumerated().min {
+                    abs($0.element.frame.timestamp.timeIntervalSince(resolvedAnchorTimestamp))
+                        < abs($1.element.frame.timestamp.timeIntervalSince(resolvedAnchorTimestamp))
+                }?.offset ?? max(0, oldIndex - excessCount)
+            } else {
+                targetIndexAfterTrim = max(0, oldIndex - excessCount)
+            }
+
             pendingCurrentIndexAfterFrameReplacement = targetIndexAfterTrim
-            frames = Array(frames.dropFirst(excessCount))
+            frames = trimmedFrames
+            let anchorIDValue = resolvedAnchorFrameID?.value ?? -1
+            let anchorTS = resolvedAnchorTimestamp.map { Log.timestamp(from: $0) } ?? "nil"
+            Log.info(
+                "[Memory] TRIM anchor result reason=\(reason) oldIndex=\(oldIndex) newIndex=\(targetIndexAfterTrim) anchorFrameID=\(anchorIDValue) anchorTs=\(anchorTS)",
+                category: .ui
+            )
             // We just discarded older frames from memory, so backward pagination is available again.
             hasMoreOlder = true
             hasReachedAbsoluteStart = false

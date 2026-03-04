@@ -119,7 +119,7 @@ public struct SearchFilterBar: View {
             FilterChip(
                 icon: "calendar",
                 label: dateFilterLabel,
-                isActive: viewModel.startDate != nil || viewModel.endDate != nil,
+                isActive: !viewModel.effectiveDateRanges.isEmpty,
                 isOpen: showDatePopover,
                 showChevron: true
             ) {
@@ -134,13 +134,12 @@ public struct SearchFilterBar: View {
             }
             .dropdownOverlay(isPresented: $showDatePopover, yOffset: SpotlightFilterChipMetrics.dropdownYOffset) {
                 DateRangeFilterPopover(
-                    startDate: viewModel.startDate,
-                    endDate: viewModel.endDate,
-                    onApply: { start, end in
-                        viewModel.setDateRange(start: start, end: end)
+                    dateRanges: viewModel.effectiveDateRanges,
+                    onApply: { ranges in
+                        viewModel.setDateRanges(ranges)
                     },
                     onClear: {
-                        viewModel.setDateRange(start: nil, end: nil)
+                        viewModel.setDateRanges([])
                     },
                     width: 300,
                     enableKeyboardNavigation: true,
@@ -288,8 +287,13 @@ public struct SearchFilterBar: View {
             }
             .dropdownOverlay(isPresented: $showAdvancedDropdown, yOffset: SpotlightFilterChipMetrics.dropdownYOffset) {
                 AdvancedSearchFilterPopover(
-                    windowNameFilter: $viewModel.windowNameFilter,
-                    browserUrlFilter: $viewModel.browserUrlFilter
+                    windowNameIncludeTerms: $viewModel.windowNameTerms,
+                    windowNameExcludeTerms: $viewModel.windowNameExcludedTerms,
+                    windowNameFilterMode: $viewModel.windowNameFilterMode,
+                    browserUrlIncludeTerms: $viewModel.browserUrlTerms,
+                    browserUrlExcludeTerms: $viewModel.browserUrlExcludedTerms,
+                    browserUrlFilterMode: $viewModel.browserUrlFilterMode,
+                    excludedSearchTerms: $viewModel.excludedSearchTerms
                 )
             }
 
@@ -515,15 +519,20 @@ public struct SearchFilterBar: View {
     // MARK: - Computed Properties
 
     private var dateFilterLabel: String {
-        if let start = viewModel.startDate, let end = viewModel.endDate {
+        let ranges = viewModel.effectiveDateRanges
+        if ranges.count > 1 {
+            return "\(ranges.count) date ranges"
+        }
+
+        if let start = ranges.first?.start, let end = ranges.first?.end {
             let formatter = DateFormatter()
             formatter.dateFormat = "MMM d"
             return "\(formatter.string(from: start)) - \(formatter.string(from: end))"
-        } else if let start = viewModel.startDate {
+        } else if let start = ranges.first?.start {
             let formatter = DateFormatter()
             formatter.dateFormat = "MMM d"
             return "From \(formatter.string(from: start))"
-        } else if let end = viewModel.endDate {
+        } else if let end = ranges.first?.end {
             let formatter = DateFormatter()
             formatter.dateFormat = "MMM d"
             return "Until \(formatter.string(from: end))"
@@ -532,7 +541,11 @@ public struct SearchFilterBar: View {
     }
 
     private var hasActiveAdvancedFilters: Bool {
-        (viewModel.windowNameFilter?.isEmpty == false) || (viewModel.browserUrlFilter?.isEmpty == false)
+        !viewModel.windowNameTerms.isEmpty ||
+        !viewModel.windowNameExcludedTerms.isEmpty ||
+        !viewModel.browserUrlTerms.isEmpty ||
+        !viewModel.browserUrlExcludedTerms.isEmpty ||
+        !viewModel.excludedSearchTerms.isEmpty
     }
 }
 
