@@ -16,9 +16,19 @@ struct ContextMenuContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if !viewModel.isInLiveMode {
-                ContextMenuRow(title: "Copy Moment Link", icon: "link", shortcut: "⌘L") {
+                ContextMenuRow(title: "Copy Moment Link", icon: "link", shortcut: "⌥⇧L") {
                     showMenu = false
                     copyMomentLink()
+                }
+
+                ContextMenuRow(
+                    title: "Copy URL Link",
+                    icon: "link",
+                    shortcut: "⌘L",
+                    isDisabled: !hasCurrentBrowserURL
+                ) {
+                    showMenu = false
+                    copyURLLink()
                 }
             }
 
@@ -70,6 +80,14 @@ struct ContextMenuContent: View {
 
     // MARK: - Actions
 
+    private var hasCurrentBrowserURL: Bool {
+        guard let urlString = viewModel.currentFrame?.metadata.browserURL,
+              !urlString.isEmpty else {
+            return false
+        }
+        return URL(string: urlString) != nil
+    }
+
     private func copyMomentLink() {
         guard !viewModel.isInLiveMode else { return }
         guard let timestamp = viewModel.currentTimestamp else { return }
@@ -81,6 +99,10 @@ struct ContextMenuContent: View {
             // Record deeplink copy metric with the URL
             DashboardViewModel.recordDeeplinkCopy(coordinator: coordinatorWrapper.coordinator, url: url.absoluteString)
         }
+    }
+
+    private func copyURLLink() {
+        _ = viewModel.copyCurrentBrowserURL()
     }
 
     private func saveImage() {
@@ -232,6 +254,7 @@ struct ContextMenuRow: View {
     let icon: String
     var shortcut: String? = nil
     var showGuideRing: Bool = false
+    var isDisabled: Bool = false
     let action: () -> Void
 
     @State private var isHovering = false
@@ -242,12 +265,12 @@ struct ContextMenuRow: View {
             HStack(spacing: RetraceMenuStyle.iconTextSpacing) {
                 Image(systemName: icon)
                     .font(.system(size: RetraceMenuStyle.iconSize, weight: RetraceMenuStyle.fontWeight))
-                    .foregroundColor(isHovering ? RetraceMenuStyle.textColor : RetraceMenuStyle.textColorMuted)
+                    .foregroundColor(foregroundColor)
                     .frame(width: RetraceMenuStyle.iconFrameWidth)
 
                 Text(title)
                     .font(RetraceMenuStyle.font)
-                    .foregroundColor(isHovering ? RetraceMenuStyle.textColor : RetraceMenuStyle.textColorMuted)
+                    .foregroundColor(foregroundColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
@@ -256,7 +279,7 @@ struct ContextMenuRow: View {
                 if let shortcut = shortcut {
                     Text(shortcut)
                         .font(RetraceMenuStyle.shortcutFont)
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(shortcutColor)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                         .frame(minWidth: RetraceMenuStyle.shortcutColumnMinWidth, alignment: .trailing)
@@ -268,7 +291,7 @@ struct ContextMenuRow: View {
             .background(
                 ZStack {
                     RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
-                        .fill(isHovering ? RetraceMenuStyle.itemHoverColor : Color.clear)
+                        .fill(isHovering && !isDisabled ? RetraceMenuStyle.itemHoverColor : Color.clear)
 
                     if showGuideRing {
                         RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
@@ -286,6 +309,7 @@ struct ContextMenuRow: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
         .onAppear {
             if showGuideRing {
                 guidePulse = true
@@ -302,8 +326,27 @@ struct ContextMenuRow: View {
             withAnimation(.easeOut(duration: RetraceMenuStyle.hoverAnimationDuration)) {
                 isHovering = hovering
             }
-            if hovering { NSCursor.pointingHand.push() }
-            else { NSCursor.pop() }
+            if hovering {
+                if !isDisabled {
+                    NSCursor.pointingHand.push()
+                }
+            } else if !isDisabled {
+                NSCursor.pop()
+            }
         }
+    }
+
+    private var foregroundColor: Color {
+        if isDisabled {
+            return RetraceMenuStyle.textColorMuted.opacity(0.5)
+        }
+        return isHovering ? RetraceMenuStyle.textColor : RetraceMenuStyle.textColorMuted
+    }
+
+    private var shortcutColor: Color {
+        if isDisabled {
+            return RetraceMenuStyle.textColorMuted.opacity(0.4)
+        }
+        return .white.opacity(0.4)
     }
 }

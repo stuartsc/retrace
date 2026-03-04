@@ -335,7 +335,7 @@ public struct SimpleTimelineView: View {
                     VStack {
                         ScrollOrientationHintBanner(
                             currentOrientation: viewModel.scrollOrientationHintCurrentOrientation,
-                            onSwitch: { viewModel.switchScrollOrientation() },
+                            onSwitch: { viewModel.openTimelineScrollOrientationSettings() },
                             onDismiss: { viewModel.dismissScrollOrientationHint() }
                         )
                         .fixedSize()
@@ -1835,11 +1835,17 @@ struct FrameWithURLOverlay<Content: View>: View {
                         containerSize: geometry.size,
                         actualFrameRect: actualFrameRect,
                         isInteractionDisabled: viewModel.isInLiveMode && viewModel.ocrNodes.isEmpty,
-                        onDragStart: { point in
-                            viewModel.startDragSelection(at: point)
+                        onDragStart: { point, isCommandDrag in
+                            viewModel.startDragSelection(
+                                at: point,
+                                mode: isCommandDrag ? .box : .character
+                            )
                         },
-                        onDragUpdate: { point in
-                            viewModel.updateDragSelection(to: point)
+                        onDragUpdate: { point, isCommandDrag in
+                            viewModel.updateDragSelection(
+                                to: point,
+                                mode: isCommandDrag ? .box : .character
+                            )
                             // Show hint banner when user drags through the screen
                             viewModel.showTextSelectionHintBannerOnce()
                         },
@@ -2873,8 +2879,18 @@ struct ZoomedTextSelectionNSView: NSViewRepresentable {
     func makeNSView(context: Context) -> ZoomedSelectionView {
         Log.debug("[ZoomedTextSelectionNSView] makeNSView - creating new ZoomedSelectionView", category: .ui)
         let view = ZoomedSelectionView()
-        view.onDragStart = { point in viewModel.startDragSelection(at: point) }
-        view.onDragUpdate = { point in viewModel.updateDragSelection(to: point) }
+        view.onDragStart = { point, isCommandDrag in
+            viewModel.startDragSelection(
+                at: point,
+                mode: isCommandDrag ? .box : .character
+            )
+        }
+        view.onDragUpdate = { point, isCommandDrag in
+            viewModel.updateDragSelection(
+                to: point,
+                mode: isCommandDrag ? .box : .character
+            )
+        }
         view.onDragEnd = { viewModel.endDragSelection() }
         view.onClearSelection = {
             Log.debug("[ZoomedTextSelectionNSView] onClearSelection callback triggered", category: .ui)
@@ -2998,8 +3014,8 @@ class ZoomedSelectionView: NSView {
     var zoomRegion: CGRect = .zero
     var enlargedSize: CGSize = .zero
 
-    var onDragStart: ((CGPoint) -> Void)?
-    var onDragUpdate: ((CGPoint) -> Void)?
+    var onDragStart: ((CGPoint, Bool) -> Void)?
+    var onDragUpdate: ((CGPoint, Bool) -> Void)?
     var onDragEnd: (() -> Void)?
     var onClearSelection: (() -> Void)?
     var onCopyImage: (() -> Void)?
@@ -3007,8 +3023,11 @@ class ZoomedSelectionView: NSView {
     var onTripleClick: ((CGPoint) -> Void)?
 
     private var isDragging = false
+    private var isCommandDragging = false
     private var hasMoved = false
     private var mouseDownPoint: CGPoint = .zero
+    private var commandDragStartPoint: CGPoint?
+    private var commandDragCurrentPoint: CGPoint?
     private var trackingArea: NSTrackingArea?
     private var isShowingIBeamCursor = false
     private let boundingBoxPadding: CGFloat = 8.0
@@ -3072,24 +3091,34 @@ class ZoomedSelectionView: NSView {
         let location = convert(event.locationInWindow, from: nil)
         mouseDownPoint = location
         hasMoved = false
+        commandDragStartPoint = nil
+        commandDragCurrentPoint = nil
 
         // Convert to original frame coordinates
         let normalizedPoint = screenToOriginalCoords(location)
+        let isCommandDrag = event.modifierFlags.contains(.command)
 
         // Handle multi-click (double-click = word, triple-click = line)
         let clickCount = event.clickCount
         Log.debug("[ZoomedSelectionView] mouseDown clickCount=\(clickCount) isDragging=\(isDragging)", category: .ui)
-        if clickCount == 2 {
+        if clickCount == 2, !isCommandDrag {
             Log.debug("[ZoomedSelectionView] Double-click detected, calling onDoubleClick", category: .ui)
             onDoubleClick?(normalizedPoint)
             isDragging = false
-        } else if clickCount >= 3 {
+            isCommandDragging = false
+        } else if clickCount >= 3, !isCommandDrag {
             Log.debug("[ZoomedSelectionView] Triple-click detected, calling onTripleClick", category: .ui)
             onTripleClick?(normalizedPoint)
             isDragging = false
+            isCommandDragging = false
         } else {
             isDragging = true
-            onDragStart?(normalizedPoint)
+            isCommandDragging = isCommandDrag
+            if isCommandDragging {
+                commandDragStartPoint = location
+                commandDragCurrentPoint = location
+            }
+            onDragStart?(normalizedPoint, isCommandDragging)
         }
         needsDisplay = true
     }
@@ -3107,7 +3136,10 @@ class ZoomedSelectionView: NSView {
         let clampedY = max(0, min(bounds.height, location.y))
 
         let normalizedPoint = screenToOriginalCoords(CGPoint(x: clampedX, y: clampedY))
-        onDragUpdate?(normalizedPoint)
+        if isCommandDragging {
+            commandDragCurrentPoint = CGPoint(x: clampedX, y: clampedY)
+        }
+        onDragUpdate?(normalizedPoint, isCommandDragging)
         needsDisplay = true
     }
 
@@ -3125,6 +3157,9 @@ class ZoomedSelectionView: NSView {
                 onDragEnd?()
             }
         }
+        isCommandDragging = false
+        commandDragStartPoint = nil
+        commandDragCurrentPoint = nil
         needsDisplay = true
     }
 
@@ -3187,6 +3222,30 @@ class ZoomedSelectionView: NSView {
             selectionColor.setFill()
             let path = NSBezierPath(roundedRect: highlightRect, xRadius: 2, yRadius: 2)
             path.fill()
+        }
+
+        // Show marquee preview while Cmd+dragging.
+        if isDragging,
+           isCommandDragging,
+           let start = commandDragStartPoint,
+           let end = commandDragCurrentPoint {
+            let marqueeRect = NSRect(
+                x: min(start.x, end.x),
+                y: min(start.y, end.y),
+                width: abs(end.x - start.x),
+                height: abs(end.y - start.y)
+            )
+
+            let fillColor = NSColor(red: 100/255, green: 160/255, blue: 230/255, alpha: 0.15)
+            fillColor.setFill()
+            let fillPath = NSBezierPath(roundedRect: marqueeRect, xRadius: 4, yRadius: 4)
+            fillPath.fill()
+
+            let borderPath = NSBezierPath(roundedRect: marqueeRect, xRadius: 4, yRadius: 4)
+            borderPath.lineWidth = 1.5
+            borderPath.setLineDash([6, 4], count: 2, phase: 0)
+            NSColor(red: 100/255, green: 160/255, blue: 230/255, alpha: 0.95).setStroke()
+            borderPath.stroke()
         }
     }
 }
@@ -3377,8 +3436,8 @@ struct TextSelectionOverlay: NSViewRepresentable {
     let containerSize: CGSize
     let actualFrameRect: CGRect
     var isInteractionDisabled: Bool = false
-    let onDragStart: (CGPoint) -> Void
-    let onDragUpdate: (CGPoint) -> Void
+    let onDragStart: (CGPoint, Bool) -> Void
+    let onDragUpdate: (CGPoint, Bool) -> Void
     let onDragEnd: () -> Void
     let onClearSelection: () -> Void
     // Zoom region callbacks
@@ -3450,8 +3509,8 @@ class TextSelectionView: NSView {
     var isInteractionDisabled: Bool = false
 
     // Text selection callbacks
-    var onDragStart: ((CGPoint) -> Void)?
-    var onDragUpdate: ((CGPoint) -> Void)?
+    var onDragStart: ((CGPoint, Bool) -> Void)?
+    var onDragUpdate: ((CGPoint, Bool) -> Void)?
     var onDragEnd: (() -> Void)?
     var onClearSelection: (() -> Void)?
 
@@ -3465,9 +3524,12 @@ class TextSelectionView: NSView {
     var onTripleClick: ((CGPoint) -> Void)?
 
     private var isDragging = false
+    private var isCommandDragging = false
     private var isZoomDragging = false  // Shift+Drag mode
     private var hasMoved = false  // Track if mouse moved during drag
     private var mouseDownPoint: CGPoint = .zero
+    private var commandDragStartPoint: CGPoint?
+    private var commandDragCurrentPoint: CGPoint?
     private var trackingArea: NSTrackingArea?
     private var isShowingIBeamCursor = false  // Track cursor state to avoid redundant push/pop
 
@@ -3547,30 +3609,41 @@ class TextSelectionView: NSView {
         let location = convert(event.locationInWindow, from: nil)
         mouseDownPoint = location
         hasMoved = false
+        commandDragStartPoint = nil
+        commandDragCurrentPoint = nil
 
         // Convert screen coordinates to normalized frame coordinates
         let normalizedPoint = screenToNormalizedCoords(location)
+        let isCommandDrag = event.modifierFlags.contains(.command)
 
         // Check if Shift is held - start zoom region mode
         if event.modifierFlags.contains(.shift) {
             isZoomDragging = true
             isDragging = false
+            isCommandDragging = false
             onZoomRegionStart?(normalizedPoint)
         } else {
             // Handle multi-click (double-click = word, triple-click = line)
             let clickCount = event.clickCount
-            if clickCount == 2 {
+            if clickCount == 2, !isCommandDrag {
                 onDoubleClick?(normalizedPoint)
                 isDragging = false
                 isZoomDragging = false
-            } else if clickCount >= 3 {
+                isCommandDragging = false
+            } else if clickCount >= 3, !isCommandDrag {
                 onTripleClick?(normalizedPoint)
                 isDragging = false
                 isZoomDragging = false
+                isCommandDragging = false
             } else {
                 isDragging = true
                 isZoomDragging = false
-                onDragStart?(normalizedPoint)
+                isCommandDragging = isCommandDrag
+                if isCommandDragging {
+                    commandDragStartPoint = location
+                    commandDragCurrentPoint = location
+                }
+                onDragStart?(normalizedPoint, isCommandDragging)
             }
         }
         needsDisplay = true
@@ -3597,7 +3670,10 @@ class TextSelectionView: NSView {
         if isZoomDragging {
             onZoomRegionUpdate?(normalizedPoint)
         } else if isDragging {
-            onDragUpdate?(normalizedPoint)
+            if isCommandDragging {
+                commandDragCurrentPoint = CGPoint(x: clampedX, y: clampedY)
+            }
+            onDragUpdate?(normalizedPoint, isCommandDragging)
         }
         needsDisplay = true
     }
@@ -3617,6 +3693,9 @@ class TextSelectionView: NSView {
                 onDragEnd?()
             }
         }
+        isCommandDragging = false
+        commandDragStartPoint = nil
+        commandDragCurrentPoint = nil
         needsDisplay = true
     }
 
@@ -3665,27 +3744,51 @@ class TextSelectionView: NSView {
             highlightRects.append(highlightRect)
         }
 
-        guard !highlightRects.isEmpty else { return }
+        if !highlightRects.isEmpty {
+            // Use transparency layer to prevent opacity stacking when rects overlap
+            // All rects are composited together first, then the alpha is applied once to the result
+            guard let context = NSGraphicsContext.current?.cgContext else { return }
 
-        // Use transparency layer to prevent opacity stacking when rects overlap
-        // All rects are composited together first, then the alpha is applied once to the result
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
+            context.saveGState()
+            context.setAlpha(0.4)  // Apply alpha to the entire layer, not per-rect
+            context.beginTransparencyLayer(auxiliaryInfo: nil)
 
-        context.saveGState()
-        context.setAlpha(0.4)  // Apply alpha to the entire layer, not per-rect
-        context.beginTransparencyLayer(auxiliaryInfo: nil)
+            // Draw all rects with solid color (alpha will be applied to the layer)
+            let selectionColor = NSColor(red: 100/255, green: 160/255, blue: 230/255, alpha: 1.0)
+            selectionColor.setFill()
 
-        // Draw all rects with solid color (alpha will be applied to the layer)
-        let selectionColor = NSColor(red: 100/255, green: 160/255, blue: 230/255, alpha: 1.0)
-        selectionColor.setFill()
+            for rect in highlightRects {
+                let path = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+                path.fill()
+            }
 
-        for rect in highlightRects {
-            let path = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
-            path.fill()
+            context.endTransparencyLayer()
+            context.restoreGState()
         }
 
-        context.endTransparencyLayer()
-        context.restoreGState()
+        // Show marquee preview while Cmd+dragging.
+        if isDragging,
+           isCommandDragging,
+           let start = commandDragStartPoint,
+           let end = commandDragCurrentPoint {
+            let marqueeRect = NSRect(
+                x: min(start.x, end.x),
+                y: min(start.y, end.y),
+                width: abs(end.x - start.x),
+                height: abs(end.y - start.y)
+            )
+
+            let fillColor = NSColor(red: 100/255, green: 160/255, blue: 230/255, alpha: 0.15)
+            fillColor.setFill()
+            let fillPath = NSBezierPath(roundedRect: marqueeRect, xRadius: 4, yRadius: 4)
+            fillPath.fill()
+
+            let borderPath = NSBezierPath(roundedRect: marqueeRect, xRadius: 4, yRadius: 4)
+            borderPath.lineWidth = 1.5
+            borderPath.setLineDash([6, 4], count: 2, phase: 0)
+            NSColor(red: 100/255, green: 160/255, blue: 230/255, alpha: 0.95).setStroke()
+            borderPath.stroke()
+        }
     }
 }
 
@@ -4842,7 +4945,7 @@ struct DeveloperActionsMenu: View {
 // MARK: - Text Selection Hint Banner
 
 /// Banner displayed at the top of the screen when user attempts text selection
-/// Suggests using Shift + Drag for area selection mode (like Rewind)
+/// Suggests available drag-selection shortcuts.
 struct TextSelectionHintBanner: View {
     let onDismiss: () -> Void
 
@@ -4858,13 +4961,24 @@ struct TextSelectionHintBanner: View {
                 .font(.retraceCaptionMedium)
                 .foregroundColor(.white.opacity(0.9))
 
-            Text("Try area selection mode:")
-                .font(.retraceCaption)
-                .foregroundColor(.white.opacity(0.7))
-
-            // Keyboard shortcut badges
+            // Keyboard shortcut guidance
             HStack(spacing: 4) {
+                Text("Try Area Selection")
+                    .font(.retraceCaption)
+                    .foregroundColor(.white.opacity(0.75))
                 KeyboardBadge(symbol: "⇧ Shift")
+                Text("+")
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.white.opacity(0.5))
+                KeyboardBadge(symbol: "⊹ Drag")
+                Text("OR")
+                    .font(.retraceCaption2Bold)
+                    .foregroundColor(.white.opacity(0.55))
+                    .padding(.horizontal, 2)
+                Text("Box Selection")
+                    .font(.retraceCaption)
+                    .foregroundColor(.white.opacity(0.75))
+                KeyboardBadge(symbol: "⌘ Cmd")
                 Text("+")
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.white.opacity(0.5))
@@ -5207,8 +5321,8 @@ struct FloatingContextMenu: View {
     let highlightHideControlsRow: Bool
 
     // Menu dimensions (approximate)
-    private let menuWidth: CGFloat = 200
-    private let menuHeight: CGFloat = 220
+    private let menuWidth: CGFloat = 272
+    private let menuHeight: CGFloat = 252
     private let edgePadding: CGFloat = 16
 
     var body: some View {

@@ -34,12 +34,24 @@ public enum AppPaths {
     }
 
     /// Rewind/MemoryVault storage root (respects custom location if set)
-    /// Derived from customRewindDBLocation by getting its parent directory
+    /// `customRewindDBLocation` stores a folder path. Legacy file-path values are normalized.
     public static var rewindStorageRoot: String {
         let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-        if let customDBPath = defaults.string(forKey: "customRewindDBLocation") {
-            // Custom DB path is like "/path/to/db-enc.sqlite3", storage root is the parent directory
-            return (customDBPath as NSString).deletingLastPathComponent
+        if let customLocation = defaults.string(forKey: "customRewindDBLocation") {
+            let normalized = NSString(string: customLocation).expandingTildeInPath
+            let fileManager = FileManager.default
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: normalized, isDirectory: &isDirectory), !isDirectory.boolValue {
+                // Backward compatibility for older file-based setting values.
+                return (normalized as NSString).deletingLastPathComponent
+            }
+
+            let lastComponent = (normalized as NSString).lastPathComponent.lowercased()
+            if lastComponent.hasSuffix(".sqlite3") || lastComponent.hasSuffix(".db") {
+                // Handle legacy values that point to a DB file that is no longer present.
+                return (normalized as NSString).deletingLastPathComponent
+            }
+            return normalized
         }
         return defaultRewindStorageRoot
     }
@@ -49,12 +61,8 @@ public enum AppPaths {
         NSString(string: rewindStorageRoot).expandingTildeInPath
     }
 
-    /// Rewind database path (respects custom location if set)
+    /// Rewind database path (db-enc.sqlite3 under rewindStorageRoot)
     public static var rewindDBPath: String {
-        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-        if let customPath = defaults.string(forKey: "customRewindDBLocation") {
-            return customPath
-        }
         return "\(rewindStorageRoot)/db-enc.sqlite3"
     }
 

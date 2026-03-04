@@ -106,6 +106,8 @@ public struct SettingsView: View {
     @State private var ocrCardHighlightTask: Task<Void, Never>? = nil
     @State private var isOCRPrioritySliderHighlighted = false
     @State private var ocrPrioritySliderHighlightTask: Task<Void, Never>? = nil
+    @State private var isTimelineScrollOrientationHighlighted = false
+    @State private var timelineScrollOrientationHighlightTask: Task<Void, Never>? = nil
 
     // Settings search
     @State private var showSettingsSearch = false
@@ -287,10 +289,18 @@ public struct SettingsView: View {
         return FileManager.default.fileExists(atPath: path)
     }
 
-    // Check if Rewind database is accessible
+    // Resolve Rewind folder path from custom setting (supports legacy file-path values)
+    private var rewindFolderPath: String {
+        guard let customPath = customRewindDBLocation else {
+            return AppPaths.defaultRewindStorageRoot
+        }
+        return Self.normalizeRewindFolderPath(customPath)
+    }
+
+    // Check if Rewind database folder is accessible
     private var rewindDBAccessible: Bool {
-        let path = customRewindDBLocation ?? AppPaths.defaultRewindDBPath
-        return FileManager.default.fileExists(atPath: path)
+        let dbPath = "\(rewindFolderPath)/db-enc.sqlite3"
+        return FileManager.default.fileExists(atPath: dbPath)
     }
 
     // Permission states
@@ -418,6 +428,8 @@ public struct SettingsView: View {
     private let settingsMinWidth: CGFloat = 760
     static let pauseReminderIntervalTargetID = "settings.pauseReminderInterval"
     private static let pauseReminderCardAnchorID = "settings.pauseReminderCard"
+    static let timelineScrollOrientationTargetID = "settings.timelineScrollOrientation"
+    private static let timelineScrollOrientationAnchorID = "settings.timelineScrollOrientationAnchor"
     static let powerOCRCardTargetID = "settings.powerOCRCard"
     private static let powerOCRCardAnchorID = "settings.powerOCRCardAnchor"
     static let powerOCRPriorityTargetID = "settings.powerOCRPriority"
@@ -510,6 +522,9 @@ public struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPauseReminderInterval)) { _ in
             requestNavigation(to: Self.pauseReminderIntervalTargetID)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsTimelineScrollOrientation)) { _ in
+            requestNavigation(to: Self.timelineScrollOrientationTargetID)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRCard)) { _ in
             requestNavigation(to: Self.powerOCRCardTargetID)
         }
@@ -526,6 +541,9 @@ public struct SettingsView: View {
             ocrPrioritySliderHighlightTask?.cancel()
             ocrPrioritySliderHighlightTask = nil
             isOCRPrioritySliderHighlighted = false
+            timelineScrollOrientationHighlightTask?.cancel()
+            timelineScrollOrientationHighlightTask = nil
+            isTimelineScrollOrientationHighlighted = false
         }
         .overlay {
             settingsSearchOverlay
@@ -802,6 +820,8 @@ public struct SettingsView: View {
         switch targetID {
         case Self.pauseReminderIntervalTargetID:
             selectedTab = .capture
+        case Self.timelineScrollOrientationTargetID:
+            selectedTab = .general
         case Self.powerOCRCardTargetID:
             selectedTab = .power
         case Self.powerOCRPriorityTargetID:
@@ -827,6 +847,8 @@ public struct SettingsView: View {
         switch targetID {
         case Self.pauseReminderIntervalTargetID:
             guard selectedTab == .capture else { return }
+        case Self.timelineScrollOrientationTargetID:
+            guard selectedTab == .general else { return }
         case Self.powerOCRCardTargetID:
             guard selectedTab == .power else { return }
         case Self.powerOCRPriorityTargetID:
@@ -840,6 +862,8 @@ public struct SettingsView: View {
         switch targetID {
         case Self.pauseReminderIntervalTargetID:
             anchorID = Self.pauseReminderCardAnchorID
+        case Self.timelineScrollOrientationTargetID:
+            anchorID = Self.timelineScrollOrientationAnchorID
         case Self.powerOCRCardTargetID:
             anchorID = Self.powerOCRCardAnchorID
         case Self.powerOCRPriorityTargetID:
@@ -859,6 +883,10 @@ public struct SettingsView: View {
             if targetID == Self.pauseReminderIntervalTargetID {
                 try? await Task.sleep(for: .nanoseconds(Int64(140_000_000)), clock: .continuous)
                 triggerPauseReminderCardHighlight()
+            }
+            if targetID == Self.timelineScrollOrientationTargetID {
+                try? await Task.sleep(for: .nanoseconds(Int64(140_000_000)), clock: .continuous)
+                triggerTimelineScrollOrientationHighlight()
             }
             if targetID == Self.powerOCRCardTargetID {
                 try? await Task.sleep(for: .nanoseconds(Int64(140_000_000)), clock: .continuous)
@@ -891,6 +919,27 @@ public struct SettingsView: View {
                 isPauseReminderCardHighlighted = false
             }
             pauseReminderHighlightTask = nil
+        }
+    }
+
+    private func triggerTimelineScrollOrientationHighlight() {
+        timelineScrollOrientationHighlightTask?.cancel()
+        timelineScrollOrientationHighlightTask = nil
+
+        isTimelineScrollOrientationHighlighted = false
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                isTimelineScrollOrientationHighlighted = true
+            }
+        }
+
+        timelineScrollOrientationHighlightTask = Task { @MainActor in
+            try? await Task.sleep(for: .nanoseconds(Int64(2_100_000_000)), clock: .continuous)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.38)) {
+                isTimelineScrollOrientationHighlighted = false
+            }
+            timelineScrollOrientationHighlightTask = nil
         }
     }
 
@@ -1432,6 +1481,28 @@ public struct SettingsView: View {
                         }
                     }
                 }
+                .id(Self.timelineScrollOrientationAnchorID)
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(
+                            isTimelineScrollOrientationHighlighted
+                                ? Color.retraceAccent.opacity(0.15)
+                                : Color.clear
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(
+                            Color.retraceAccent.opacity(isTimelineScrollOrientationHighlighted ? 0.94 : 0),
+                            lineWidth: isTimelineScrollOrientationHighlighted ? 2.8 : 0
+                        )
+                        .shadow(
+                            color: Color.retraceAccent.opacity(isTimelineScrollOrientationHighlighted ? 0.55 : 0),
+                            radius: 12
+                        )
+                )
+                .animation(.easeInOut(duration: 0.2), value: isTimelineScrollOrientationHighlighted)
             }
         }
     }
@@ -2046,7 +2117,7 @@ public struct SettingsView: View {
                         }
                     }
 
-                    // Rewind Database Location (only shown when Use Rewind data is enabled)
+                    // Rewind Database Folder (only shown when Use Rewind data is enabled)
                     if useRewindData {
                         Divider()
                             .background(Color.white.opacity(0.1))
@@ -2055,7 +2126,7 @@ public struct SettingsView: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(spacing: 6) {
-                                        Text("Rewind Database")
+                                        Text("Rewind Database Folder")
                                             .font(.retraceCalloutMedium)
                                             .foregroundColor(.retracePrimary)
                                         PingDotView(
@@ -2065,7 +2136,7 @@ public struct SettingsView: View {
                                         )
                                     }
                                     HStack(spacing: 4) {
-                                        Text(customRewindDBLocation ?? AppPaths.defaultRewindDBPath)
+                                        Text(rewindFolderPath)
                                             .font(.retraceCaption2)
                                             .foregroundColor(rewindDBAccessible ? .retraceSecondary : .orange)
                                             .lineLimit(1)
@@ -2078,14 +2149,14 @@ public struct SettingsView: View {
                                     }
                                 }
                                 Spacer()
-                                Button("Choose File...") {
+                                Button("Choose Folder...") {
                                     selectRewindDBLocation()
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.regular)
-                                .help("Select the db-enc.sqlite3 file from your Rewind installation")
+                                .help("Select the folder containing Rewind's db-enc.sqlite3 file")
                             }
-                            Text("Select db-enc.sqlite3 file (chunks folder must be in same directory)")
+                            Text("Select the folder containing db-enc.sqlite3 (chunks folder should be in the same directory)")
                                 .font(.retraceCaption2)
                                 .foregroundColor(.retraceSecondary.opacity(0.7))
                         }
@@ -3319,10 +3390,8 @@ public struct SettingsView: View {
 
                             ColorPicker("Tag color", selection: $newTagColor, supportsOpacity: false)
                                 .labelsHidden()
-                                .frame(width: 28, height: 28)
-                                .padding(6)
-                                .background(Color.retraceSecondary.opacity(0.08))
-                                .cornerRadius(8)
+                                .controlSize(.small)
+                                .frame(width: 40, height: 22)
                                 .disabled(isCreatingTag)
 
                             ModernButton(
@@ -3405,10 +3474,8 @@ public struct SettingsView: View {
 
             ColorPicker("Tag color", selection: tagColorBinding(for: tag), supportsOpacity: false)
                 .labelsHidden()
-                .frame(width: 28, height: 28)
-                .padding(6)
-                .background(Color.retraceSecondary.opacity(0.08))
-                .cornerRadius(8)
+                .controlSize(.small)
+                .frame(width: 40, height: 22)
 
             Button {
                 tagToDelete = tag
@@ -5203,6 +5270,21 @@ extension SettingsView {
         AppRelaunch.relaunch()
     }
 
+    nonisolated private static func normalizeRewindFolderPath(_ path: String) -> String {
+        let normalized = NSString(string: path).expandingTildeInPath
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: normalized, isDirectory: &isDirectory), !isDirectory.boolValue {
+            return (normalized as NSString).deletingLastPathComponent
+        }
+
+        let lastComponent = (normalized as NSString).lastPathComponent.lowercased()
+        if lastComponent.hasSuffix(".sqlite3") || lastComponent.hasSuffix(".db") {
+            return (normalized as NSString).deletingLastPathComponent
+        }
+        return normalized
+    }
+
     func selectRetraceDBLocation() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -5268,16 +5350,16 @@ extension SettingsView {
 
     func selectRewindDBLocation() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.database, .data]
-        panel.message = "Choose the Rewind database file (db-enc.sqlite3)"
-        panel.prompt = "Select"
+        panel.canCreateDirectories = false
+        panel.message = "Choose the Rewind data folder (contains db-enc.sqlite3)"
+        panel.prompt = "Select Folder"
 
         // Open to current location if set, otherwise default Rewind storage root
-        if let currentPath = customRewindDBLocation {
-            panel.directoryURL = URL(fileURLWithPath: (currentPath as NSString).deletingLastPathComponent)
+        if customRewindDBLocation != nil {
+            panel.directoryURL = URL(fileURLWithPath: rewindFolderPath)
         } else {
             panel.directoryURL = URL(fileURLWithPath: AppPaths.expandedRewindStorageRoot)
         }
@@ -5287,36 +5369,40 @@ extension SettingsView {
         }
 
         let selectedPath = url.path
+        let defaultPath = NSString(string: AppPaths.defaultRewindStorageRoot).expandingTildeInPath
+        let currentPath = rewindFolderPath
+
+        // Check if selecting the same location that's currently active
+        if selectedPath == currentPath {
+            Log.info("Rewind database folder unchanged (same as current): \(selectedPath)", category: .ui)
+            return
+        }
 
         Task { @MainActor in
-            let validationResult = await validateRewindDatabaseSelection(at: selectedPath)
+            let validationResult = await validateRewindFolderSelection(at: selectedPath)
 
             switch validationResult {
-            case .missingFile:
-                Log.warning("Selected Rewind database file does not exist: \(selectedPath)", category: .ui)
-                return
-
             case .invalid(let message):
                 showDatabaseAlert(
                     type: .error,
-                    title: "Invalid Rewind Database",
+                    title: "Invalid Rewind Folder",
                     message: message
                 )
                 return
 
             case .valid(hasChunks: true):
-                // Valid Rewind database structure - apply immediately
-                applyRewindDBLocation(selectedPath)
+                // Valid Rewind folder structure - apply immediately
+                applyRewindDBLocation(selectedPath, defaultPath: defaultPath)
 
             case .valid(hasChunks: false):
                 // Database exists but no chunks folder - ask user if they want to continue
                 let shouldContinue = showDatabaseConfirmation(
                     title: "Missing Chunks Folder",
-                    message: "The selected Rewind database exists, but the 'chunks' folder (video storage) was not found in the same directory.\n\nRetrace may not be able to load video frames from this database.",
+                    message: "The selected Rewind folder contains db-enc.sqlite3, but the 'chunks' folder (video storage) was not found in the same directory.\n\nRetrace may not be able to load video frames from this database.",
                     primaryButton: "Continue Anyway"
                 )
                 if shouldContinue {
-                    applyRewindDBLocation(selectedPath)
+                    applyRewindDBLocation(selectedPath, defaultPath: defaultPath)
                 }
             }
         }
@@ -5328,10 +5414,9 @@ extension SettingsView {
         case invalid(title: String, message: String)
     }
 
-    private enum RewindDatabaseValidationOutcome: Sendable {
+    private enum RewindFolderValidationOutcome: Sendable {
         case valid(hasChunks: Bool)
         case invalid(message: String)
-        case missingFile
     }
 
     private func validateRetraceFolderSelection(at selectedPath: String) async -> RetraceFolderValidationOutcome {
@@ -5371,25 +5456,31 @@ extension SettingsView {
         return .valid
     }
 
-    private func validateRewindDatabaseSelection(at selectedPath: String) async -> RewindDatabaseValidationOutcome {
+    private func validateRewindFolderSelection(at selectedPath: String) async -> RewindFolderValidationOutcome {
         await Task.detached(priority: .userInitiated) {
-            Self.validateRewindDatabaseSelectionSync(at: selectedPath)
+            Self.validateRewindFolderSelectionSync(at: selectedPath)
         }.value
     }
 
-    nonisolated private static func validateRewindDatabaseSelectionSync(at selectedPath: String) -> RewindDatabaseValidationOutcome {
-        guard FileManager.default.fileExists(atPath: selectedPath) else {
-            return .missingFile
+    nonisolated private static func validateRewindFolderSelectionSync(at selectedPath: String) -> RewindFolderValidationOutcome {
+        var isDirectory: ObjCBool = false
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: selectedPath, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return .invalid(message: "The selected location is not a folder.")
         }
 
-        let verificationResult = verifyRewindDatabase(at: selectedPath)
+        let dbPath = "\(selectedPath)/db-enc.sqlite3"
+        guard fileManager.fileExists(atPath: dbPath) else {
+            return .invalid(message: "The selected folder does not contain db-enc.sqlite3.")
+        }
+
+        let verificationResult = verifyRewindDatabase(at: dbPath)
         guard verificationResult.isValid else {
-            return .invalid(message: verificationResult.error ?? "The selected file is not a valid Rewind database.")
+            return .invalid(message: verificationResult.error ?? "The selected folder does not contain a valid Rewind database.")
         }
 
-        let parentDir = (selectedPath as NSString).deletingLastPathComponent
-        let chunksPath = "\(parentDir)/chunks"
-        let hasChunks = FileManager.default.fileExists(atPath: chunksPath)
+        let chunksPath = "\(selectedPath)/chunks"
+        let hasChunks = fileManager.fileExists(atPath: chunksPath)
         return .valid(hasChunks: hasChunks)
     }
 
@@ -5488,9 +5579,15 @@ extension SettingsView {
         return (true, nil)
     }
 
-    func applyRewindDBLocation(_ path: String) {
-        customRewindDBLocation = path
-        Log.info("Rewind database location changed to: \(path)", category: .ui)
+    func applyRewindDBLocation(_ path: String, defaultPath: String) {
+        let normalizedPath = Self.normalizeRewindFolderPath(path)
+        if normalizedPath == defaultPath {
+            customRewindDBLocation = nil
+            Log.info("Rewind database folder reset to default: \(normalizedPath)", category: .ui)
+        } else {
+            customRewindDBLocation = normalizedPath
+            Log.info("Rewind database folder changed to: \(normalizedPath)", category: .ui)
+        }
 
         // Apply changes immediately by reconnecting Rewind source
         Task {

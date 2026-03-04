@@ -1096,7 +1096,7 @@ struct CurrentAppBadge: View {
                         }
                     }
                 }
-                .instantTooltip("Open Link (⌘L)", isVisible: .constant(isHovering))
+                .instantTooltip("Open Link (⌘⇧L)", isVisible: .constant(isHovering))
                 .id(bundleID)
             }
         }
@@ -1549,7 +1549,7 @@ struct MoreOptionsMenu: View {
                     )
                 )
                     .retraceMenuContainer()
-                    .frame(width: 248)
+                    .frame(width: 272)
                     .clipped()
                     .contentShape(Rectangle())
                     .onHover { hovering in

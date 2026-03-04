@@ -448,6 +448,14 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Character-level selection: end position (node ID, character index within node)
     @Published public var selectionEnd: (nodeID: Int, charIndex: Int)?
 
+    /// Drag selection behavior mode.
+    public enum DragSelectionMode: Sendable {
+        /// Standard caret-like selection where drag start/end map to character positions.
+        case character
+        /// Command-drag selection where all nodes intersecting the drag box are fully selected.
+        case box
+    }
+
     /// Whether all text is selected (via Cmd+A)
     @Published public var isAllTextSelected: Bool = false
 
@@ -457,10 +465,16 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Drag selection end point (in normalized coordinates 0.0-1.0)
     @Published public var dragEndPoint: CGPoint?
 
+    /// Node IDs selected via Cmd+Drag box selection.
+    @Published public var boxSelectedNodeIDs: Set<Int> = []
+
     /// Whether we have any text selected
     public var hasSelection: Bool {
-        isAllTextSelected || (selectionStart != nil && selectionEnd != nil)
+        isAllTextSelected || !boxSelectedNodeIDs.isEmpty || (selectionStart != nil && selectionEnd != nil)
     }
+
+    /// Active drag selection mode for the current drag gesture.
+    private var activeDragSelectionMode: DragSelectionMode = .character
 
     // MARK: - Selection Range Cache (performance optimization for Cmd+A)
 
@@ -7546,6 +7560,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         let nodesToSelect = isZoomRegionActive ? ocrNodesInZoomRegion : ocrNodes
         guard !nodesToSelect.isEmpty else { return }
 
+        activeDragSelectionMode = .character
+        boxSelectedNodeIDs.removeAll()
         isAllTextSelected = true
         // Set selection to span all nodes - use same sorting as getSelectionRange (reading order)
         let sortedNodes = nodesToSelect.sorted { node1, node2 in
@@ -7566,33 +7582,52 @@ public class SimpleTimelineViewModel: ObservableObject {
         selectionStart = nil
         selectionEnd = nil
         isAllTextSelected = false
+        boxSelectedNodeIDs.removeAll()
+        activeDragSelectionMode = .character
         dragStartPoint = nil
         dragEndPoint = nil
     }
 
     /// Start drag selection at a point (normalized coordinates)
-    public func startDragSelection(at point: CGPoint) {
+    public func startDragSelection(at point: CGPoint, mode: DragSelectionMode = .character) {
         dragStartPoint = point
         dragEndPoint = point
         isAllTextSelected = false
+        activeDragSelectionMode = mode
 
-        // Find the character position at this point
-        if let position = findCharacterPosition(at: point) {
-            selectionStart = position
-            selectionEnd = position
-        } else {
+        switch mode {
+        case .character:
+            boxSelectedNodeIDs.removeAll()
+            // Find the character position at this point.
+            if let position = findCharacterPosition(at: point) {
+                selectionStart = position
+                selectionEnd = position
+            } else {
+                selectionStart = nil
+                selectionEnd = nil
+            }
+        case .box:
             selectionStart = nil
             selectionEnd = nil
+            updateBoxSelectionFromDragRect()
         }
     }
 
     /// Update drag selection to a point (normalized coordinates)
-    public func updateDragSelection(to point: CGPoint) {
+    public func updateDragSelection(to point: CGPoint, mode: DragSelectionMode? = nil) {
+        if let mode {
+            activeDragSelectionMode = mode
+        }
         dragEndPoint = point
 
-        // Find the character position at the current point
-        if let position = findCharacterPosition(at: point) {
-            selectionEnd = position
+        switch activeDragSelectionMode {
+        case .character:
+            // Find the character position at the current point.
+            if let position = findCharacterPosition(at: point) {
+                selectionEnd = position
+            }
+        case .box:
+            updateBoxSelectionFromDragRect()
         }
     }
 
@@ -7617,6 +7652,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Find word boundaries
         let (wordStart, wordEnd) = findWordBoundaries(in: text, around: clampedIndex)
 
+        activeDragSelectionMode = .character
+        boxSelectedNodeIDs.removeAll()
         isAllTextSelected = false
         selectionStart = (nodeID: nodeID, charIndex: wordStart)
         selectionEnd = (nodeID: nodeID, charIndex: wordEnd)
@@ -7628,9 +7665,44 @@ public class SimpleTimelineViewModel: ObservableObject {
         guard let node = ocrNodes.first(where: { $0.id == nodeID }) else { return }
 
         // Select the entire node's text
+        activeDragSelectionMode = .character
+        boxSelectedNodeIDs.removeAll()
         isAllTextSelected = false
         selectionStart = (nodeID: nodeID, charIndex: 0)
         selectionEnd = (nodeID: nodeID, charIndex: node.text.count)
+    }
+
+    /// Update Cmd+drag selection to include every node intersecting the current drag box.
+    private func updateBoxSelectionFromDragRect() {
+        guard let start = dragStartPoint, let end = dragEndPoint else {
+            boxSelectedNodeIDs.removeAll()
+            return
+        }
+
+        let rectMinX = min(start.x, end.x)
+        let rectMaxX = max(start.x, end.x)
+        let rectMinY = min(start.y, end.y)
+        let rectMaxY = max(start.y, end.y)
+        let dragRect = CGRect(
+            x: rectMinX,
+            y: rectMinY,
+            width: rectMaxX - rectMinX,
+            height: rectMaxY - rectMinY
+        )
+
+        let nodesToCheck = isZoomRegionActive ? ocrNodesInZoomRegion : ocrNodes
+        boxSelectedNodeIDs = Set(
+            nodesToCheck.compactMap { node in
+                let nodeRect = CGRect(x: node.x, y: node.y, width: node.width, height: node.height)
+                // Inclusive overlap check so edge-touching nodes are selected.
+                let intersects =
+                    nodeRect.maxX >= dragRect.minX &&
+                    nodeRect.minX <= dragRect.maxX &&
+                    nodeRect.maxY >= dragRect.minY &&
+                    nodeRect.minY <= dragRect.maxY
+                return intersects ? node.id : nil
+            }
+        )
     }
 
     /// Find word boundaries around a character index
@@ -7732,12 +7804,13 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
-    /// Switch scroll orientation to the opposite value and dismiss the hint
-    public func switchScrollOrientation() {
-        let store = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-        let current = store.string(forKey: "timelineScrollOrientation") ?? "horizontal"
-        let newValue = current == "horizontal" ? "vertical" : "horizontal"
-        store.set(newValue, forKey: "timelineScrollOrientation")
+    /// Open settings and guide the user to timeline scroll orientation controls.
+    public func openTimelineScrollOrientationSettings() {
+        NotificationCenter.default.post(name: .openSettings, object: nil)
+        NotificationCenter.default.post(name: .openSettingsTimelineScrollOrientation, object: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            NotificationCenter.default.post(name: .openSettingsTimelineScrollOrientation, object: nil)
+        }
         dismissScrollOrientationHint()
     }
 
@@ -8354,6 +8427,26 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Uses reading order within the drag rectangle's X bounds - only nodes that overlap
     /// horizontally with the selection area are considered for reading order.
     public func getSelectionRange(for nodeID: Int) -> (start: Int, end: Int)? {
+        if !boxSelectedNodeIDs.isEmpty {
+            guard boxSelectedNodeIDs.contains(nodeID),
+                  let node = ocrNodes.first(where: { $0.id == nodeID }) else {
+                return nil
+            }
+
+            var rangeStart = 0
+            var rangeEnd = node.text.count
+
+            if let visibleRange = getVisibleCharacterRange(for: node) {
+                rangeStart = max(rangeStart, visibleRange.start)
+                rangeEnd = min(rangeEnd, visibleRange.end)
+                if rangeEnd <= rangeStart {
+                    return nil
+                }
+            }
+
+            return (start: rangeStart, end: rangeEnd)
+        }
+
         guard let start = selectionStart, let end = selectionEnd else { return nil }
         guard let dragStart = dragStartPoint, let dragEnd = dragEndPoint else {
             // Fallback for programmatic selection (Cmd+A, double-click, triple-click)
@@ -8543,7 +8636,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Get the selected text (character-level)
     /// When zoom region is active, only includes text visible within the region
     public var selectedText: String {
-        guard selectionStart != nil && selectionEnd != nil else { return "" }
+        guard hasSelection else { return "" }
 
         var result = ""
         // Use nodes in zoom region if active, otherwise all nodes
@@ -8585,7 +8678,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         DashboardViewModel.recordTextCopy(coordinator: coordinator, text: text)
         
         // Track shift+drag text copy if this was from a manual selection
-        if selectionStart != nil && selectionEnd != nil {
+        if hasSelection {
             DashboardViewModel.recordShiftDragTextCopy(coordinator: coordinator, copiedText: text)
         }
     }

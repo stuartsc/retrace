@@ -167,6 +167,34 @@ public class TimelineWindowController: NSObject {
         return frontmostProcessID == currentProcessID
     }
 
+    nonisolated static func shouldNavigateTimelineBackward(
+        keyCode: UInt16,
+        charactersIgnoringModifiers: String?,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        let normalizedModifiers = modifiers.intersection([.command, .shift, .option, .control])
+        guard normalizedModifiers.isEmpty || normalizedModifiers == [.option] else {
+            return false
+        }
+
+        let key = charactersIgnoringModifiers?.lowercased()
+        return keyCode == 123 || key == "j" || key == "l"
+    }
+
+    nonisolated static func shouldNavigateTimelineForward(
+        keyCode: UInt16,
+        charactersIgnoringModifiers: String?,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        let normalizedModifiers = modifiers.intersection([.command, .shift, .option, .control])
+        guard normalizedModifiers.isEmpty || normalizedModifiers == [.option] else {
+            return false
+        }
+
+        let key = charactersIgnoringModifiers?.lowercased()
+        return keyCode == 124 || key == "k" || key == ";"
+    }
+
     private func shouldHandleTimelineKeyboardShortcuts() -> Bool {
         let currentProcessID = ProcessInfo.processInfo.processIdentifier
         let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -1312,19 +1340,27 @@ public class TimelineWindowController: NSObject {
     }
 
     /// Resolve open-link shortcut key from an NSEvent.
-    /// Supports Cmd+L with both keycode and character fallback.
+    /// Supports Cmd+Shift+L with both keycode and character fallback.
     private func openLinkShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
+        let matchesLKey = event.keyCode == 37 || event.charactersIgnoringModifiers?.lowercased() == "l"
+        guard matchesLKey else { return nil }
+        return modifiers == [.command, .shift] ? "Cmd+Shift+L" : nil
+    }
+
+    /// Resolve copy-link shortcut key from an NSEvent.
+    /// Supports Cmd+L with both keycode and character fallback.
+    private func copyLinkShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
         let matchesLKey = event.keyCode == 37 || event.charactersIgnoringModifiers?.lowercased() == "l"
         guard matchesLKey else { return nil }
         return modifiers == [.command] ? "Cmd+L" : nil
     }
 
-    /// Resolve copy-link shortcut key from an NSEvent.
-    /// Supports Cmd+Shift+L with both keycode and character fallback.
-    private func copyLinkShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
+    /// Resolve copy-moment-link shortcut key from an NSEvent.
+    /// Supports Option+Shift+L with both keycode and character fallback.
+    private func copyMomentLinkShortcutTrigger(for event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
         let matchesLKey = event.keyCode == 37 || event.charactersIgnoringModifiers?.lowercased() == "l"
         guard matchesLKey else { return nil }
-        return modifiers == [.command, .shift] ? "Cmd+Shift+L" : nil
+        return modifiers == [.option, .shift] ? "Option+Shift+L" : nil
     }
 
     /// Toggle quick app filter for the app at the current playhead.
@@ -1852,11 +1888,12 @@ public class TimelineWindowController: NSObject {
                 let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
                 let openLinkTrigger = self.openLinkShortcutTrigger(for: event, modifiers: modifiers)
                 let copyLinkTrigger = self.copyLinkShortcutTrigger(for: event, modifiers: modifiers)
+                let copyMomentLinkTrigger = self.copyMomentLinkShortcutTrigger(for: event, modifiers: modifiers)
                 // Keep Option+C local to the timeline window; do not react globally.
                 if self.addCommentShortcutTrigger(for: event, modifiers: modifiers) != nil {
                     return
                 }
-                if openLinkTrigger != nil || copyLinkTrigger != nil {
+                if openLinkTrigger != nil || copyLinkTrigger != nil || copyMomentLinkTrigger != nil {
                     self.handleKeyEvent(event)
                     return
                 }
@@ -1892,6 +1929,7 @@ public class TimelineWindowController: NSObject {
                 let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
                 let openLinkTrigger = self?.openLinkShortcutTrigger(for: event, modifiers: modifiers)
                 let copyLinkTrigger = self?.copyLinkShortcutTrigger(for: event, modifiers: modifiers)
+                let copyMomentLinkTrigger = self?.copyMomentLinkShortcutTrigger(for: event, modifiers: modifiers)
                 if event.keyCode == 53 { // Escape
                     if self?.handleKeyEvent(event) == true {
                         return nil // Always consume when handled
@@ -2011,8 +2049,8 @@ public class TimelineWindowController: NSObject {
                     return nil // Always consume the event to prevent propagation
                 }
 
-                // Link shortcuts (Cmd+L / Cmd+Shift+L): handle before AppKit key-equivalent fallback.
-                if openLinkTrigger != nil || copyLinkTrigger != nil {
+                // Link shortcuts (Cmd+L / Cmd+Shift+L / Option+Shift+L): handle before AppKit key-equivalent fallback.
+                if openLinkTrigger != nil || copyLinkTrigger != nil || copyMomentLinkTrigger != nil {
                     _ = self?.handleKeyEvent(event)
                     return nil // Always consume to avoid dead-end beep
                 }
@@ -2439,9 +2477,9 @@ public class TimelineWindowController: NSObject {
             return true
         }
 
-        // Cmd+L to open current browser link
+        // Cmd+Shift+L to open current browser link
         if openLinkShortcutTrigger(for: event, modifiers: modifiers) != nil {
-            recordShortcut("cmd+l")
+            recordShortcut("cmd+shift+l")
             if timelineViewModel?.openCurrentBrowserURL() == true {
                 hide(restorePreviousFocus: false)
                 return true
@@ -2449,13 +2487,19 @@ public class TimelineWindowController: NSObject {
             return false
         }
 
-        // Cmd+Shift+L to copy current browser link (fallback: moment link)
+        // Cmd+L to copy current browser URL
         if copyLinkShortcutTrigger(for: event, modifiers: modifiers) != nil {
-            recordShortcut("cmd+shift+l")
+            recordShortcut("cmd+l")
             if let viewModel = timelineViewModel, viewModel.copyCurrentBrowserURL() {
                 return true
             }
-            copyMomentLink()
+            return true
+        }
+
+        // Option+Shift+L to copy moment link
+        if copyMomentLinkShortcutTrigger(for: event, modifiers: modifiers) != nil {
+            recordShortcut("opt+shift+l")
+            _ = copyMomentLink()
             return true
         }
 
@@ -2579,7 +2623,7 @@ public class TimelineWindowController: NSObject {
             return false
         }
 
-        // Left arrow key or J - navigate to previous frame (Option = 3x speed)
+        // Left arrow, J, or L - navigate to previous frame (Option = 3x speed)
         // Skip when search UI is open so overlay controls can own arrow keys.
         if let viewModel = timelineViewModel,
            viewModel.isSearchOverlayVisible,
@@ -2602,7 +2646,11 @@ public class TimelineWindowController: NSObject {
             return true // Consume even at boundary to avoid system "bonk" sound
         }
 
-        if (event.keyCode == 123 || event.charactersIgnoringModifiers == "j") && (modifiers.isEmpty || modifiers == [.option]) {
+        if Self.shouldNavigateTimelineBackward(
+            keyCode: event.keyCode,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifiers: modifiers
+        ) {
             if let viewModel = timelineViewModel {
                 let step = modifiers.contains(.option) ? 3 : 1
                 viewModel.navigateToFrame(viewModel.currentIndex - step)
@@ -2614,7 +2662,7 @@ public class TimelineWindowController: NSObject {
             return true // Always consume to prevent system "bonk" sound
         }
 
-        // Right arrow key or K - navigate to next frame (Option = 3x speed)
+        // Right arrow, K, or ; - navigate to next frame (Option = 3x speed)
         // Cmd+Right: jump to the start of the next consecutive timeline block
         if event.keyCode == 124 && modifiers == [.command] {
             if let viewModel = timelineViewModel, viewModel.navigateToNextBlockStartOrNewestFrame() {
@@ -2626,7 +2674,11 @@ public class TimelineWindowController: NSObject {
             return true // Consume even at boundary to avoid system "bonk" sound
         }
 
-        if (event.keyCode == 124 || event.charactersIgnoringModifiers == "k") && (modifiers.isEmpty || modifiers == [.option]) {
+        if Self.shouldNavigateTimelineForward(
+            keyCode: event.keyCode,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            modifiers: modifiers
+        ) {
             if let viewModel = timelineViewModel {
                 let step = modifiers.contains(.option) ? 3 : 1
                 viewModel.navigateToFrame(viewModel.currentIndex + step)
@@ -2713,7 +2765,7 @@ public class TimelineWindowController: NSObject {
            !event.modifierFlags.contains(.control),
            event.keyCode != 53 { // Don't clear on Escape (handled above)
             // Only clear for non-navigation keys
-            let navigationKeys: Set<UInt16> = [123, 124, 125, 126, 38, 40, 49] // Arrow keys + J, K + Space
+            let navigationKeys: Set<UInt16> = [123, 124, 125, 126, 37, 38, 40, 41, 49] // Arrow keys + J, K, L, ; + Space
             if !navigationKeys.contains(event.keyCode) {
                 viewModel.clearTextSelection()
             }
