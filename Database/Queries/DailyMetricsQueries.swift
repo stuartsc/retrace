@@ -32,6 +32,39 @@ public enum DailyMetricsQueries {
         case shiftDragTextCopy = "shift_drag_text_copy"  // metadata: copied text
         case appLaunches = "app_launches"
         case keyboardShortcut = "keyboard_shortcut"  // metadata: shortcut identifier (e.g. "cmd+c", "cmd+f")
+        case dateSearchSubmitted = "date_search_submitted"
+        case dateSearchOutcome = "date_search_outcome"
+
+        // Timeline tagging/comments/playback metrics
+        case segmentHide = "segment_hide"
+        case segmentUnhide = "segment_unhide"
+        case tagSubmenuOpen = "tag_submenu_open"
+        case tagToggleOnBlock = "tag_toggle_on_block"
+        case tagCreateAndAddOnBlock = "tag_create_and_add_on_block"
+        case commentSubmenuOpen = "comment_submenu_open"
+        case commentAdded = "comment_added"
+        case commentDeletedFromBlock = "comment_deleted_from_block"
+        case commentAttachmentPickerOpened = "comment_attachment_picker_opened"
+        case commentAttachmentOpened = "comment_attachment_opened"
+        case allCommentsOpened = "all_comments_opened"
+        case playbackToggled = "playback_toggled"
+        case playbackSpeedChanged = "playback_speed_changed"
+
+        // Recording/pause/system-monitor/settings metrics
+        case recordingStartedFromMenu = "recording_started_from_menu"
+        case recordingPauseSelected = "recording_pause_selected"
+        case recordingTurnedOff = "recording_turned_off"
+        case recordingAutoResumed = "recording_auto_resumed"
+        case systemMonitorOpened = "system_monitor_opened"
+        case settingsSearchOpened = "settings_search_opened"
+        case redactionRulesUpdated = "redaction_rules_updated"
+        case systemMonitorSettingsOpened = "system_monitor_settings_opened"
+        case systemMonitorOpenPowerOCRCard = "system_monitor_open_power_ocr_card"
+        case systemMonitorOpenPowerOCRPriority = "system_monitor_open_power_ocr_priority"
+
+        // Delete actions
+        case frameDeleted = "frame_deleted"
+        case segmentDeleted = "segment_deleted"
     }
 
     // MARK: - Insert

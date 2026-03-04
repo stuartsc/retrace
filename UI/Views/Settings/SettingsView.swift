@@ -552,9 +552,7 @@ public struct SettingsView: View {
         .background {
             // Hidden button for Cmd+K shortcut
             Button("") {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    showSettingsSearch = true
-                }
+                openSettingsSearch(source: "keyboard_cmd_k")
             }
             .keyboardShortcut("k", modifiers: .command)
             .frame(width: 0, height: 0)
@@ -659,9 +657,7 @@ public struct SettingsView: View {
 
             // Search button
             Button(action: {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    showSettingsSearch = true
-                }
+                openSettingsSearch(source: "sidebar_button")
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -1066,8 +1062,8 @@ public struct SettingsView: View {
 
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
-            keyboardShortcutsCard
             updatesCard
+            keyboardShortcutsCard
             startupCard
             appearanceCard
         }
@@ -3976,6 +3972,19 @@ public struct SettingsView: View {
             settingsSearchQuery = ""
         }
     }
+
+    private func openSettingsSearch(source: String) {
+        if !showSettingsSearch {
+            DashboardViewModel.recordSettingsSearchOpened(
+                coordinator: coordinatorWrapper.coordinator,
+                source: source
+            )
+        }
+
+        withAnimation(.easeOut(duration: 0.15)) {
+            showSettingsSearch = true
+        }
+    }
 }
 
 // MARK: - Settings Search Field
@@ -6166,6 +6175,11 @@ extension SettingsView {
             do {
                 try await coordinator.updateCaptureConfig(newConfig)
                 showRedactionRulesUpdateFeedback()
+                DashboardViewModel.recordRedactionRulesUpdated(
+                    coordinator: coordinator,
+                    windowPatternCount: windowPatterns.count,
+                    urlPatternCount: urlPatterns.count
+                )
                 Log.info(
                     "[SettingsView] Updated redaction rules: windowPatterns=\(windowPatterns.count), urlPatterns=\(urlPatterns.count)",
                     category: .ui

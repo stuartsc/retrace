@@ -4,7 +4,7 @@ import Shared
 
 struct ProcessMemorySummaryCard: View {
     private static let memoryRowsPageSize = 10
-    private static let memoryRowsContainerHeight: CGFloat = 240
+    private static let memoryRowsContainerHeight: CGFloat = 268
 
     private let onRowsHoverChanged: ((Bool) -> Void)?
     private let isRowsScrollEnabled: Bool

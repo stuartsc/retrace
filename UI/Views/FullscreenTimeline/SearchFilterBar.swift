@@ -619,7 +619,7 @@ private struct AppsFilterChip: View {
     @State private var isHovered = false
 
     private let maxVisibleIcons = 5
-    private let iconSize: CGFloat = 15
+    private let iconSize: CGFloat = 13
 
     private var sortedApps: [String] {
         guard let apps = selectedApps else { return [] }
@@ -639,6 +639,7 @@ private struct AppsFilterChip: View {
                 if isExcludeMode {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 9))
+                        .frame(width: iconSize, height: iconSize)
                         .foregroundColor(.orange)
                         .transition(.scale.combined(with: .opacity))
                 }
@@ -679,6 +680,7 @@ private struct AppsFilterChip: View {
                     // Default state - no apps selected
                     Image(systemName: "square.grid.2x2.fill")
                         .font(.system(size: 11))
+                        .frame(width: iconSize, height: iconSize)
                         .transition(.scale.combined(with: .opacity))
                     Text("Apps")
                         .font(.system(size: 11, weight: .medium))
@@ -688,6 +690,7 @@ private struct AppsFilterChip: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
             }
+            .frame(height: iconSize)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: sortedApps)
             .foregroundColor(isActive ? .white : .white.opacity(0.7))
             .padding(.horizontal, 10.5)

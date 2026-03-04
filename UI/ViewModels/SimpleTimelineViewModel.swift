@@ -241,6 +241,23 @@ public class SimpleTimelineViewModel: ObservableObject {
         return frameIDsMatch(oldFrames, trailingWindow)
     }
 
+    private static let pendingDeleteUndoWindowSeconds: TimeInterval = 8
+    private enum PendingDeletePayload {
+        case frame(FrameReference)
+        case frames([FrameReference])
+    }
+
+    private struct PendingDeleteOperation {
+        let id: UUID
+        let payload: PendingDeletePayload
+        let removedFrames: [TimelineFrame]
+        let removedFrameIDs: [FrameID]
+        let restoreStartIndex: Int
+        let previousCurrentIndex: Int
+        let previousSelectedFrameIndex: Int?
+        let undoMessage: String
+    }
+
     // MARK: - Published State
 
     /// All loaded frames with their preloaded video info
@@ -418,6 +435,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Frames that have been "deleted" (optimistically removed from UI)
     @Published public var deletedFrameIDs: Set<FrameID> = []
+
+    /// Bottom action banner shown after a delete so the user can undo.
+    @Published public var pendingDeleteUndoMessage: String?
 
     // MARK: - URL Bounding Box State
 
@@ -815,21 +835,40 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Toggle between play and pause
     public func togglePlayback() {
+        let wasPlaying = isPlaying
         if isPlaying {
             stopPlayback()
         } else {
             startPlayback()
         }
+        DashboardViewModel.recordPlaybackToggled(
+            coordinator: coordinator,
+            source: "timeline",
+            wasPlaying: wasPlaying,
+            isPlaying: isPlaying,
+            speed: playbackSpeed
+        )
     }
 
     /// Update the playback speed and reschedule the timer if playing
     public func setPlaybackSpeed(_ speed: Double) {
+        let previousSpeed = playbackSpeed
+        guard previousSpeed != speed else { return }
+
         playbackSpeed = speed
         if isPlaying {
             // Reschedule timer with new interval
             playbackTimer?.invalidate()
             schedulePlaybackTimer()
         }
+
+        DashboardViewModel.recordPlaybackSpeedChanged(
+            coordinator: coordinator,
+            source: "timeline",
+            previousSpeed: previousSpeed,
+            newSpeed: speed,
+            isPlaying: isPlaying
+        )
     }
 
     /// Schedule the playback timer at the current speed
@@ -1539,6 +1578,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         cacheExpansionTask?.cancel()
         appBlockSnapshotBuildTask?.cancel()
         appBlockSnapshotApplyTask?.cancel()
+        pendingDeleteCommitTask?.cancel()
     }
 
     // MARK: - Private State
@@ -1561,6 +1601,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Task for auto-dismissing error messages after a delay
     private var errorDismissTask: Task<Void, Never>?
+
+    /// Pending optimistic delete operation that can still be undone.
+    private var pendingDeleteOperation: PendingDeleteOperation?
+    private var pendingDeleteCommitTask: Task<Void, Never>?
 
     private struct DiskFrameBufferEntry: Sendable {
         let fileURL: URL
@@ -2610,7 +2654,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         showDeleteConfirmation = true
     }
 
-    /// Perform optimistic deletion of the selected frame and persist to database
+    /// Perform optimistic deletion of the selected frame and queue persistence with an undo window.
     public func confirmDeleteSelectedFrame() {
         guard let index = selectedFrameIndex, index >= 0 && index < frames.count else {
             showDeleteConfirmation = false
@@ -2620,11 +2664,11 @@ public class SimpleTimelineViewModel: ObservableObject {
         let frameToDelete = frames[index]
         let frameID = frameToDelete.frame.id
         let frameRef = frameToDelete.frame
+        let previousCurrentIndex = currentIndex
+        let previousSelectedFrameIndex = selectedFrameIndex
 
-        // Add to deleted set for potential undo
+        // Optimistically mark/delete in UI immediately.
         deletedFrameIDs.insert(frameID)
-
-        // Remove from frames array (optimistic deletion)
         frames.remove(at: index)
 
         // Keep block grouping/navigation consistent immediately for optimistic UI.
@@ -2646,26 +2690,137 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         Log.debug("[Delete] Frame \(frameID) removed from UI (optimistic deletion)", category: .ui)
 
-        // Persist deletion to database in background
-        Task {
-            do {
-                try await coordinator.deleteFrame(
-                    frameID: frameRef.id,
-                    timestamp: frameRef.timestamp,
-                    source: frameRef.source
-                )
-                Log.debug("[Delete] Frame \(frameID) deleted from database", category: .ui)
-            } catch {
-                // Log error but don't restore UI - user already saw it deleted
-                Log.error("[Delete] Failed to delete frame from database: \(error)", category: .ui)
-            }
-        }
+        DashboardViewModel.recordFrameDeleted(
+            coordinator: coordinator,
+            source: "timeline_delete",
+            frameID: frameID.value
+        )
+
+        stagePendingDelete(
+            PendingDeleteOperation(
+                id: UUID(),
+                payload: .frame(frameRef),
+                removedFrames: [frameToDelete],
+                removedFrameIDs: [frameID],
+                restoreStartIndex: index,
+                previousCurrentIndex: previousCurrentIndex,
+                previousSelectedFrameIndex: previousSelectedFrameIndex,
+                undoMessage: "Frame deleted"
+            )
+        )
     }
 
     /// Cancel deletion
     public func cancelDelete() {
         showDeleteConfirmation = false
         isDeleteSegmentMode = false
+    }
+
+    /// Restore the most recently deleted frame/segment if still within the undo window.
+    public func undoPendingDelete() {
+        guard let operation = pendingDeleteOperation else { return }
+        clearPendingDeleteState()
+        restoreDeletedOperation(operation, reason: "undo")
+        showToast("Deletion undone", icon: "arrow.uturn.backward.circle.fill")
+    }
+
+    /// Dismiss the undo banner and persist the pending deletion immediately.
+    public func dismissPendingDeleteUndo() {
+        guard let operation = pendingDeleteOperation else { return }
+        clearPendingDeleteState()
+        Task { [weak self] in
+            await self?.commitDeleteOperation(operation, reason: "dismiss-undo", restoreOnFailure: true)
+        }
+    }
+
+    private func stagePendingDelete(_ operation: PendingDeleteOperation) {
+        commitPendingDeleteIfNeeded(reason: "superseded")
+
+        pendingDeleteOperation = operation
+        pendingDeleteUndoMessage = operation.undoMessage
+
+        pendingDeleteCommitTask?.cancel()
+        pendingDeleteCommitTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.pendingDeleteUndoWindowSeconds), clock: .continuous)
+            guard !Task.isCancelled else { return }
+            await self?.commitPendingDeleteAfterUndoWindow()
+        }
+    }
+
+    private func commitPendingDeleteAfterUndoWindow() async {
+        guard let operation = pendingDeleteOperation else { return }
+        clearPendingDeleteState()
+        await commitDeleteOperation(operation, reason: "undo-window-expired", restoreOnFailure: true)
+    }
+
+    private func commitPendingDeleteIfNeeded(reason: String) {
+        guard let operation = pendingDeleteOperation else { return }
+        clearPendingDeleteState()
+        Task { [weak self] in
+            await self?.commitDeleteOperation(operation, reason: reason, restoreOnFailure: false)
+        }
+    }
+
+    private func clearPendingDeleteState() {
+        pendingDeleteCommitTask?.cancel()
+        pendingDeleteCommitTask = nil
+        pendingDeleteOperation = nil
+        pendingDeleteUndoMessage = nil
+    }
+
+    private func commitDeleteOperation(
+        _ operation: PendingDeleteOperation,
+        reason: String,
+        restoreOnFailure: Bool
+    ) async {
+        do {
+            switch operation.payload {
+            case .frame(let frameRef):
+                try await coordinator.deleteFrame(
+                    frameID: frameRef.id,
+                    timestamp: frameRef.timestamp,
+                    source: frameRef.source
+                )
+                Log.debug("[Delete] Committed frame deletion frameID=\(frameRef.id.value) reason=\(reason)", category: .ui)
+            case .frames(let frameRefs):
+                try await coordinator.deleteFrames(frameRefs)
+                Log.debug("[Delete] Committed segment deletion frames=\(frameRefs.count) reason=\(reason)", category: .ui)
+            }
+        } catch {
+            Log.error("[Delete] Failed to persist deletion reason=\(reason): \(error)", category: .ui)
+            if restoreOnFailure {
+                restoreDeletedOperation(operation, reason: "commit-failed")
+                showToast("Delete failed. Restored.", icon: "xmark.circle.fill")
+            } else {
+                showToast("Delete may not have persisted", icon: "exclamationmark.triangle.fill")
+            }
+        }
+    }
+
+    private func restoreDeletedOperation(_ operation: PendingDeleteOperation, reason: String) {
+        let insertIndex = min(max(0, operation.restoreStartIndex), frames.count)
+        frames.insert(contentsOf: operation.removedFrames, at: insertIndex)
+        for frameID in operation.removedFrameIDs {
+            deletedFrameIDs.remove(frameID)
+        }
+
+        refreshAppBlockSnapshotImmediately(reason: "restoreDeletedOperation.\(reason)")
+
+        if frames.isEmpty {
+            currentIndex = 0
+            selectedFrameIndex = nil
+        } else {
+            currentIndex = min(max(0, operation.previousCurrentIndex), frames.count - 1)
+            if let previousSelection = operation.previousSelectedFrameIndex,
+               previousSelection >= 0,
+               previousSelection < frames.count {
+                selectedFrameIndex = previousSelection
+            } else {
+                selectedFrameIndex = nil
+            }
+        }
+
+        loadImageIfNeeded()
     }
 
     /// Get the selected frame (if any)
@@ -2769,7 +2924,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         selectedBlock?.frameCount ?? 0
     }
 
-    /// Perform optimistic deletion of the entire segment containing the selected frame and persist to database
+    /// Perform optimistic deletion of the entire segment and queue persistence with an undo window.
     public func confirmDeleteSegment() {
         guard let block = selectedBlock else {
             showDeleteConfirmation = false
@@ -2777,7 +2932,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             return
         }
 
-        // Collect all frames to delete (need full FrameReference for database deletion)
+        let previousCurrentIndex = currentIndex
+        let previousSelectedFrameIndex = selectedFrameIndex
+        let removedFrames = Array(frames[block.startIndex...min(block.endIndex, frames.count - 1)])
+
+        // Collect all frames to delete (need full FrameReference for deferred database deletion)
         var framesToDelete: [FrameReference] = []
         for index in block.startIndex...block.endIndex {
             if index < frames.count {
@@ -2815,16 +2974,26 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         Log.debug("[Delete] Segment with \(deleteCount) frames removed from UI (optimistic deletion)", category: .ui)
 
-        // Persist deletion to database in background
-        Task {
-            do {
-                try await coordinator.deleteFrames(framesToDelete)
-                Log.debug("[Delete] Segment with \(deleteCount) frames deleted from database", category: .ui)
-            } catch {
-                // Log error but don't restore UI - user already saw it deleted
-                Log.error("[Delete] Failed to delete segment from database: \(error)", category: .ui)
-            }
-        }
+        let uniqueSegmentCount = Set(framesToDelete.map { $0.segmentID.value }).count
+        DashboardViewModel.recordSegmentDeleted(
+            coordinator: coordinator,
+            source: "timeline_delete",
+            segmentCount: uniqueSegmentCount,
+            frameCount: deleteCount
+        )
+
+        stagePendingDelete(
+            PendingDeleteOperation(
+                id: UUID(),
+                payload: .frames(framesToDelete),
+                removedFrames: removedFrames,
+                removedFrameIDs: framesToDelete.map(\.id),
+                restoreStartIndex: startIndex,
+                previousCurrentIndex: previousCurrentIndex,
+                previousSelectedFrameIndex: previousSelectedFrameIndex,
+                undoMessage: "Segment deleted (\(deleteCount) frames)"
+            )
+        )
     }
 
     // MARK: - Tag Operations
@@ -2836,8 +3005,50 @@ public class SimpleTimelineViewModel: ObservableObject {
         _ = await (tagsTask, commentsTask)
     }
 
+    public func recordTagSubmenuOpen(source: String, block: AppBlock? = nil) {
+        let resolvedBlock: AppBlock?
+        if let block {
+            resolvedBlock = block
+        } else if let index = timelineContextMenuSegmentIndex {
+            resolvedBlock = getBlock(forFrameAt: index)
+        } else {
+            resolvedBlock = nil
+        }
+
+        let segmentCount = resolvedBlock.map { getSegmentIds(inBlock: $0).count }
+        let frameCount = resolvedBlock?.frameCount
+        let selectedTagCount = resolvedBlock?.tagIDs.count ?? selectedSegmentTags.count
+
+        DashboardViewModel.recordTagSubmenuOpen(
+            coordinator: coordinator,
+            source: source,
+            segmentCount: segmentCount,
+            frameCount: frameCount,
+            selectedTagCount: selectedTagCount
+        )
+    }
+
+    public func recordCommentSubmenuOpen(source: String, block: AppBlock? = nil) {
+        let resolvedBlock: AppBlock?
+        if let block {
+            resolvedBlock = block
+        } else if let index = timelineContextMenuSegmentIndex {
+            resolvedBlock = getBlock(forFrameAt: index)
+        } else {
+            resolvedBlock = nil
+        }
+
+        DashboardViewModel.recordCommentSubmenuOpen(
+            coordinator: coordinator,
+            source: source,
+            segmentCount: resolvedBlock.map { getSegmentIds(inBlock: $0).count },
+            frameCount: resolvedBlock?.frameCount,
+            existingCommentCount: selectedBlockComments.count
+        )
+    }
+
     /// Opens the timeline context menu directly into the tag submenu for a tape block.
-    public func openTagSubmenuForTimelineBlock(_ block: AppBlock) {
+    public func openTagSubmenuForTimelineBlock(_ block: AppBlock, source: String = "timeline_block") {
         guard block.frameCount > 0 else { return }
 
         timelineContextMenuSegmentIndex = block.startIndex
@@ -2858,12 +3069,13 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         showTimelineContextMenu = true
+        recordTagSubmenuOpen(source: source, block: block)
 
         Task { await loadTags() }
     }
 
     /// Opens the timeline context menu directly into the comment submenu for a tape block.
-    public func openCommentSubmenuForTimelineBlock(_ block: AppBlock) {
+    public func openCommentSubmenuForTimelineBlock(_ block: AppBlock, source: String = "timeline_block") {
         guard block.frameCount > 0 else { return }
 
         timelineContextMenuSegmentIndex = block.startIndex
@@ -2885,6 +3097,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Open only the dedicated comment overlay; do not present the right-click context menu.
         showTimelineContextMenu = false
+        recordCommentSubmenuOpen(source: source, block: block)
 
         Task { await loadCommentsForSelectedTimelineBlock() }
     }
@@ -3155,6 +3368,14 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Perform the hide operation (extracted for async flow)
     private func performHideSegment(segmentIds: Set<SegmentID>, block: AppBlock) {
+        DashboardViewModel.recordSegmentHide(
+            coordinator: coordinator,
+            source: "timeline_context",
+            segmentCount: segmentIds.count,
+            frameCount: block.frameCount,
+            hiddenFilter: filterCriteria.hiddenFilter.rawValue
+        )
+
         // Add all to hidden set immediately (optimistic UI update)
         for segmentId in segmentIds {
             hiddenSegmentIds.insert(segmentId)
@@ -3252,12 +3473,21 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Perform the unhide operation (extracted for async flow)
     private func performUnhideSegment(segmentIdsToUnhide: Set<SegmentID>, block: AppBlock) {
+        let shouldRemoveFromCurrentView = filterCriteria.hiddenFilter == .onlyHidden
+        DashboardViewModel.recordSegmentUnhide(
+            coordinator: coordinator,
+            source: "timeline_context",
+            segmentCount: segmentIdsToUnhide.count,
+            frameCount: block.frameCount,
+            hiddenFilter: filterCriteria.hiddenFilter.rawValue,
+            removedFromCurrentView: shouldRemoveFromCurrentView
+        )
+
         // Remove from hidden set immediately (optimistic UI update)
         for segmentId in segmentIdsToUnhide {
             hiddenSegmentIds.remove(segmentId)
         }
 
-        let shouldRemoveFromCurrentView = filterCriteria.hiddenFilter == .onlyHidden
         let removeCount = block.frameCount
         let startIndex = block.startIndex
 
@@ -3376,6 +3606,16 @@ public class SimpleTimelineViewModel: ObservableObject {
         let segmentIds = getSegmentIds(inBlock: block)
 
         let isCurrentlySelected = selectedSegmentTags.contains(tag.id)
+        let action = isCurrentlySelected ? "remove" : "add"
+
+        DashboardViewModel.recordTagToggleOnBlock(
+            coordinator: coordinator,
+            source: "timeline_tag_submenu",
+            tagID: tag.id.value,
+            tagName: tag.name,
+            action: action,
+            segmentCount: segmentIds.count
+        )
 
         // Update UI immediately
         if isCurrentlySelected {
@@ -3455,6 +3695,14 @@ public class SimpleTimelineViewModel: ObservableObject {
                     addTagToSegmentTagsMap(tagID: newTag.id, segmentIDs: segmentIds)
                 }
 
+                DashboardViewModel.recordTagCreateAndAddOnBlock(
+                    coordinator: coordinator,
+                    source: "timeline_tag_submenu",
+                    tagID: newTag.id.value,
+                    tagName: newTag.name,
+                    segmentCount: segmentIds.count
+                )
+
                 Log.debug("[Tags] Created tag '\(tagName)' and added to \(segmentIds.count) segments in block", category: .ui)
             } catch {
                 Log.error("[Tags] Failed to create tag: \(error)", category: .ui)
@@ -3486,6 +3734,11 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Open native file picker and add selected files as draft comment attachments.
     public func selectCommentAttachmentFiles() {
+        DashboardViewModel.recordCommentAttachmentPickerOpened(
+            coordinator: coordinator,
+            source: "timeline_comment_submenu"
+        )
+
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -3532,6 +3785,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             return
         }
         NSWorkspace.shared.open(url)
+        DashboardViewModel.recordCommentAttachmentOpened(
+            coordinator: coordinator,
+            source: "timeline_comment_submenu",
+            fileExtension: url.pathExtension.lowercased()
+        )
     }
 
     /// Remove a comment from the currently selected timeline block.
@@ -3581,6 +3839,12 @@ public class SimpleTimelineViewModel: ObservableObject {
                 rebuildCommentTimelineRows()
             }
             decrementCommentCountsForSegments(linkedSegmentIDs)
+            DashboardViewModel.recordCommentDeletedFromBlock(
+                coordinator: coordinator,
+                source: "timeline_comment_submenu",
+                linkedSegmentCount: linkedSegmentIDs.count,
+                hadFrameAnchor: comment.frameID != nil
+            )
             showToast("Comment deleted", icon: "trash.fill")
             return true
         } catch {
@@ -3652,6 +3916,15 @@ public class SimpleTimelineViewModel: ObservableObject {
                         )
                     }
                 }
+                DashboardViewModel.recordCommentAdded(
+                    coordinator: coordinator,
+                    source: "timeline_comment_submenu",
+                    requestedSegmentCount: segmentIds.count,
+                    linkedSegmentCount: createResult.linkedSegmentIDs.count,
+                    bodyLength: commentBody.count,
+                    attachmentCount: persistedAttachments.count,
+                    hasFrameAnchor: selectedFrameID != nil
+                )
                 await loadCommentsForSelectedTimelineBlock()
             } catch {
                 Self.cleanupPersistedCommentAttachments(persistedAttachments)
@@ -3863,6 +4136,12 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Build the "All Comments" timeline, optionally anchored on a specific comment.
     public func loadCommentTimeline(anchoredAt anchorComment: SegmentComment?) async {
         guard !isLoadingCommentTimeline else { return }
+
+        DashboardViewModel.recordAllCommentsOpened(
+            coordinator: coordinator,
+            source: "timeline_comment_submenu",
+            anchorCommentID: anchorComment?.id.value
+        )
 
         resetCommentTimelineState()
         isLoadingCommentTimeline = true
@@ -5001,6 +5280,26 @@ public class SimpleTimelineViewModel: ObservableObject {
         error = nil
     }
 
+    /// Clear stale timeline content when active filters yield zero matches.
+    private func applyFilteredEmptyTimelineState(context: String) {
+        let clearedFrameCount = frames.count
+        cancelBoundaryLoadTasks(reason: "filteredEmpty.\(context)")
+        pendingCurrentIndexAfterFrameReplacement = nil
+        selectedFrameIndex = nil
+        frames = []
+        currentImage = nil
+        frameNotReady = false
+        frameLoadError = false
+        hasMoreOlder = false
+        hasMoreNewer = false
+        hasReachedAbsoluteStart = true
+        hasReachedAbsoluteEnd = true
+        Log.info(
+            "[Filter] Entered filtered empty state context=\(context) clearedFrames=\(clearedFrameCount)",
+            category: .ui
+        )
+    }
+
     /// Show "no results" message and provide option to clear filters
     private func showNoResultsMessage() {
         showErrorWithAutoDismiss("No frames found matching the current filters. Clear filters to see all frames.")
@@ -5585,6 +5884,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             guard !framesWithVideoInfo.isEmpty else {
                 // No frames found - check if filters are active
                 if filterCriteria.hasActiveFilters {
+                    applyFilteredEmptyTimelineState(context: "loadMostRecentFrame.noFrames")
                     showNoResultsMessage()
                 } else {
                     showErrorWithAutoDismiss("No frames found in any database")
@@ -5681,6 +5981,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         guard !framesWithVideoInfo.isEmpty else {
             if filterCriteria.hasActiveFilters {
+                applyFilteredEmptyTimelineState(context: "loadFramesDirectly.noFrames")
                 showNoResultsMessage()
             } else {
                 showErrorWithAutoDismiss("No frames found in any database")
@@ -9333,8 +9634,20 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     /// Search for frames around a natural language date string, or by frame ID if enabled
-    public func searchForDate(_ searchText: String) async {
-        guard !searchText.isEmpty else { return }
+    public func searchForDate(_ searchText: String, source: String = "timeline_date_search") async {
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSearchText.isEmpty else { return }
+        let lookedLikeFrameID = Int64(trimmedSearchText) != nil
+        var frameIDLookupAttempted = false
+
+        DashboardViewModel.recordDateSearchSubmitted(
+            coordinator: coordinator,
+            source: source,
+            query: trimmedSearchText,
+            queryLength: trimmedSearchText.count,
+            frameIDSearchEnabled: enableFrameIDSearch,
+            lookedLikeFrameID: lookedLikeFrameID
+        )
 
         setLoadingState(true, reason: "searchForDate")
         clearError()
@@ -9353,8 +9666,17 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         do {
             // If frame ID search is enabled and input looks like a frame ID (pure number), try that first
-            if enableFrameIDSearch, let frameID = Int64(searchText.trimmingCharacters(in: .whitespaces)) {
+            if enableFrameIDSearch, let frameID = Int64(trimmedSearchText) {
+                frameIDLookupAttempted = true
                 if await searchForFrameID(frameID) {
+                    DashboardViewModel.recordDateSearchOutcome(
+                        coordinator: coordinator,
+                        source: source,
+                        query: trimmedSearchText,
+                        outcome: "frame_id_success",
+                        queryLength: trimmedSearchText.count,
+                        frameIDLookupAttempted: frameIDLookupAttempted
+                    )
                     return // Successfully jumped to frame
                 }
                 // If frame ID search fails, fall through to date search
@@ -9366,9 +9688,17 @@ public class SimpleTimelineViewModel: ObservableObject {
             if let playheadRelativeDate = parsePlayheadRelativeDateIfNeeded(searchText) {
                 targetDate = playheadRelativeDate
             } else {
-                guard let parsedDate = parseNaturalLanguageDate(searchText) else {
+                guard let parsedDate = parseNaturalLanguageDate(trimmedSearchText) else {
                     showErrorWithAutoDismiss("Could not understand: \(searchText)")
                     setLoadingState(false, reason: "searchForDate.parseFailed")
+                    DashboardViewModel.recordDateSearchOutcome(
+                        coordinator: coordinator,
+                        source: source,
+                        query: trimmedSearchText,
+                        outcome: "parse_failed",
+                        queryLength: trimmedSearchText.count,
+                        frameIDLookupAttempted: frameIDLookupAttempted
+                    )
                     return
                 }
                 targetDate = parsedDate
@@ -9378,7 +9708,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             let anchoredTargetDate = try await resolveDateSearchAnchorDate(
                 parsedDate: targetDate,
-                input: searchText
+                input: trimmedSearchText
             )
 
             // Load frames around the target date (±10 minutes window)
@@ -9400,6 +9730,14 @@ public class SimpleTimelineViewModel: ObservableObject {
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around \(formatLocalDateForError(targetDate))")
                 setLoadingState(false, reason: "searchForDate.noFrames")
+                DashboardViewModel.recordDateSearchOutcome(
+                    coordinator: coordinator,
+                    source: source,
+                    query: trimmedSearchText,
+                    outcome: "no_frames",
+                    queryLength: trimmedSearchText.count,
+                    frameIDLookupAttempted: frameIDLookupAttempted
+                )
                 return
             }
 
@@ -9437,12 +9775,29 @@ public class SimpleTimelineViewModel: ObservableObject {
             )
 
             setLoadingState(false, reason: "searchForDate.success")
+            DashboardViewModel.recordDateSearchOutcome(
+                coordinator: coordinator,
+                source: source,
+                query: trimmedSearchText,
+                outcome: "success",
+                queryLength: trimmedSearchText.count,
+                frameIDLookupAttempted: frameIDLookupAttempted,
+                frameCount: framesWithVideoInfo.count
+            )
             closeDateSearch()
 
         } catch {
             self.error = "Failed to search for date: \(error.localizedDescription)"
             Log.error("[DateJump:\(jumpTraceID)] FAILED: \(error)", category: .ui)
             setLoadingState(false, reason: "searchForDate.error")
+            DashboardViewModel.recordDateSearchOutcome(
+                coordinator: coordinator,
+                source: source,
+                query: trimmedSearchText,
+                outcome: "error",
+                queryLength: trimmedSearchText.count,
+                frameIDLookupAttempted: frameIDLookupAttempted
+            )
         }
     }
 

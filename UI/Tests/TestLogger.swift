@@ -488,6 +488,18 @@ final class TimelineKeyboardShortcutDecisionTests: XCTestCase {
             )
         )
     }
+
+    func testShouldToggleSearchOverlayShortcutWhenScrollIsNotActive() {
+        XCTAssertTrue(
+            TimelineWindowController.shouldToggleSearchOverlayFromShortcut(isActivelyScrolling: false)
+        )
+    }
+
+    func testShouldNotToggleSearchOverlayShortcutWhenScrollIsActive() {
+        XCTAssertFalse(
+            TimelineWindowController.shouldToggleSearchOverlayFromShortcut(isActivelyScrolling: true)
+        )
+    }
 }
 
 final class TimelineNavigationShortcutDecisionTests: XCTestCase {
@@ -601,6 +613,55 @@ final class SearchOverlayEscapeDecisionTests: XCTestCase {
                 hasSearchResultsPayload: true
             )
         )
+    }
+}
+
+@MainActor
+final class SearchRecentEntriesRemovalTests: XCTestCase {
+    private let recentEntriesDefaultsKey = "search.recentEntries.v1"
+    private var originalRecentEntriesData: Data?
+
+    override func setUp() {
+        super.setUp()
+        originalRecentEntriesData = UserDefaults.standard.data(forKey: recentEntriesDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: recentEntriesDefaultsKey)
+    }
+
+    override func tearDown() {
+        if let originalRecentEntriesData {
+            UserDefaults.standard.set(originalRecentEntriesData, forKey: recentEntriesDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: recentEntriesDefaultsKey)
+        }
+        super.tearDown()
+    }
+
+    func testRemoveRecentSearchEntryRemovesMatchingEntryAndPersists() {
+        let viewModel = SearchViewModel(coordinator: AppCoordinator())
+        viewModel.recordRecentSearchEntry("alpha query")
+        viewModel.recordRecentSearchEntry("beta query")
+
+        guard let removableEntry = viewModel.recentSearchEntries.first(where: { $0.query == "alpha query" }) else {
+            XCTFail("Expected alpha query to exist in recent entries")
+            return
+        }
+
+        viewModel.removeRecentSearchEntry(removableEntry)
+
+        XCTAssertFalse(viewModel.recentSearchEntries.contains(where: { $0.key == removableEntry.key }))
+
+        let reloadedViewModel = SearchViewModel(coordinator: AppCoordinator())
+        XCTAssertFalse(reloadedViewModel.recentSearchEntries.contains(where: { $0.key == removableEntry.key }))
+    }
+
+    func testRemoveRecentSearchEntryWithUnknownKeyIsNoOp() {
+        let viewModel = SearchViewModel(coordinator: AppCoordinator())
+        viewModel.recordRecentSearchEntry("single query")
+        let beforeRemoval = viewModel.recentSearchEntries
+
+        viewModel.removeRecentSearchEntry(key: "missing-entry-key")
+
+        XCTAssertEqual(viewModel.recentSearchEntries, beforeRemoval)
     }
 }
 
@@ -1230,6 +1291,65 @@ final class InFrameSearchTests: XCTestCase {
             height: 0.1,
             text: text
         )
+    }
+}
+
+@MainActor
+final class TimelineFilteredEmptyStateTests: XCTestCase {
+    func testLoadMostRecentFrameClearsStaleFramesWhenFilteredResultsAreEmpty() async {
+        let viewModel = SimpleTimelineViewModel(coordinator: AppCoordinator())
+        let baseDate = Date(timeIntervalSince1970: 1_700_300_000)
+
+        viewModel.frames = [
+            makeTimelineFrame(
+                id: 1,
+                timestamp: baseDate,
+                frameIndex: 0,
+                bundleID: "com.apple.Safari"
+            )
+        ]
+        viewModel.currentIndex = 0
+        viewModel.currentImage = NSImage(size: NSSize(width: 12, height: 12))
+        viewModel.filterCriteria = FilterCriteria(selectedApps: ["com.google.Chrome"])
+
+        viewModel.test_refreshFrameDataHooks.getMostRecentFramesWithVideoInfo = { limit, filters in
+            XCTAssertGreaterThan(limit, 0)
+            XCTAssertTrue(filters.hasActiveFilters)
+            return []
+        }
+
+        await viewModel.loadMostRecentFrame()
+
+        XCTAssertTrue(viewModel.frames.isEmpty)
+        XCTAssertEqual(viewModel.currentIndex, 0)
+        XCTAssertNil(viewModel.currentFrame)
+        XCTAssertNil(viewModel.currentImage)
+        XCTAssertEqual(
+            viewModel.error,
+            "No frames found matching the current filters. Clear filters to see all frames."
+        )
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
+    private func makeTimelineFrame(
+        id: Int64,
+        timestamp: Date,
+        frameIndex: Int,
+        bundleID: String
+    ) -> TimelineFrame {
+        let frame = FrameReference(
+            id: FrameID(value: id),
+            timestamp: timestamp,
+            segmentID: AppSegmentID(value: id),
+            frameIndexInSegment: frameIndex,
+            metadata: FrameMetadata(
+                appBundleID: bundleID,
+                appName: "Test App",
+                displayID: 1
+            )
+        )
+
+        return TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2)
     }
 }
 

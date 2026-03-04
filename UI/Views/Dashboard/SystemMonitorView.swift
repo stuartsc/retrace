@@ -6,10 +6,12 @@ import Processing
 /// System monitor view showing background task status
 public struct SystemMonitorView: View {
     @StateObject private var viewModel: SystemMonitorViewModel
+    private let coordinator: AppCoordinator
     @StateObject private var scrollLatch = SystemMonitorScrollLatchState()
     @State private var localScrollMonitor: Any?
 
     public init(coordinator: AppCoordinator) {
+        self.coordinator = coordinator
         _viewModel = StateObject(wrappedValue: SystemMonitorViewModel(coordinator: coordinator))
     }
 
@@ -62,6 +64,10 @@ public struct SystemMonitorView: View {
         .onAppear {
             installScrollMonitorIfNeeded()
             ProcessCPUMonitor.shared.setConsumerVisible(.systemMonitor, isVisible: true)
+            DashboardViewModel.recordSystemMonitorOpened(
+                coordinator: coordinator,
+                source: "dashboard_window"
+            )
         }
         .onDisappear {
             removeScrollMonitor()
@@ -183,6 +189,10 @@ public struct SystemMonitorView: View {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         settingsRotation += 90
                     }
+                    DashboardViewModel.recordSystemMonitorSettingsOpened(
+                        coordinator: coordinator,
+                        source: "monitor_header_settings"
+                    )
                     NotificationCenter.default.post(name: .openSettingsPower, object: nil)
                 }) {
                     Image(systemName: "gearshape")
@@ -350,6 +360,10 @@ public struct SystemMonitorView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
+                        DashboardViewModel.recordSystemMonitorOpenPowerOCRCard(
+                            coordinator: coordinator,
+                            source: "monitor_paused_warning"
+                        )
                         NotificationCenter.default.post(name: .openSettingsPowerOCRCard, object: nil)
                     }
                     .padding(12)
@@ -400,6 +414,10 @@ public struct SystemMonitorView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
+                        DashboardViewModel.recordSystemMonitorOpenPowerOCRCard(
+                            coordinator: coordinator,
+                            source: "monitor_ocr_disabled_warning"
+                        )
                         NotificationCenter.default.post(name: .openSettingsPowerOCRCard, object: nil)
                     }
                     .padding(14)
@@ -467,6 +485,10 @@ public struct SystemMonitorView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
+                        DashboardViewModel.recordSystemMonitorOpenPowerOCRPriority(
+                            coordinator: coordinator,
+                            source: "monitor_backlog_nudge"
+                        )
                         NotificationCenter.default.post(name: .openSettingsPowerOCRPriority, object: nil)
                     }
                     .padding(14)

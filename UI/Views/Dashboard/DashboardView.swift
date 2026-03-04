@@ -242,9 +242,6 @@ public struct DashboardView: View {
         )
         .background(
             Button("") {
-                withAnimation(.easeInOut(duration: 0.5)) {
-                    refreshRotation += 360
-                }
                 Task { await viewModel.loadStatistics() }
             }
             .keyboardShortcut("r", modifiers: .command)
@@ -508,7 +505,7 @@ public struct DashboardView: View {
                 recordingIndicator
 
                 // Action buttons
-                refreshButton
+                openTimelineButton
                 monitorButton
                 if updaterManager.shouldShowWhatsNew {
                     changelogButton
@@ -534,7 +531,7 @@ public struct DashboardView: View {
             }
             .foregroundColor(.retraceSecondary)
             .padding(.horizontal, label != nil ? 14 : 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, label != nil ? 8 : 10)
             .background(Color.white.opacity(0.05))
             .cornerRadius(8)
             .overlay(
@@ -555,8 +552,7 @@ public struct DashboardView: View {
 
     // MARK: - Action Button States
 
-    @State private var isHoveringRefresh = false
-    @State private var refreshRotation: Double = 0
+    @State private var isHoveringTimeline = false
     @State private var isHoveringSettings = false
     @State private var settingsRotation: Double = 0
 
@@ -566,21 +562,15 @@ public struct DashboardView: View {
     @State private var isHoveringSupportMe = false
     @State private var isHoveringFeedback = false
 
-    // MARK: - Refresh Button
+    // MARK: - Timeline Button
 
-    private var refreshButton: some View {
+    private var openTimelineButton: some View {
         Button(action: {
-            // Spin animation on click
-            withAnimation(.easeInOut(duration: 0.5)) {
-                refreshRotation += 360
-            }
-            Task { await viewModel.loadStatistics() }
+            TimelineWindowController.shared.show()
         }) {
-            Image(systemName: "arrow.clockwise")
+            Image(systemName: "clock.arrow.circlepath")
                 .font(.retraceCalloutMedium)
                 .foregroundColor(.retraceSecondary)
-                .rotationEffect(.degrees(refreshRotation + (isHoveringRefresh ? 45 : 0)))
-                .animation(.easeInOut(duration: 0.2), value: isHoveringRefresh)
                 .padding(10)
                 .background(Color.white.opacity(0.05))
                 .cornerRadius(8)
@@ -591,9 +581,11 @@ public struct DashboardView: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        // .instantTooltip("Refresh  ⌘R", isVisible: $isHoveringRefresh)
+        .scaleEffect(isHoveringTimeline ? 1.03 : 1.0)
+        .animation(.easeOut(duration: 0.12), value: isHoveringTimeline)
+        .compactTopTooltip("Open Timeline", isVisible: $isHoveringTimeline)
         .onHover { hovering in
-            isHoveringRefresh = hovering
+            isHoveringTimeline = hovering
             if hovering {
                 NSCursor.pointingHand.push()
             } else {
@@ -645,7 +637,9 @@ public struct DashboardView: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        // .instantTooltip("Settings  ⌘,", isVisible: $isHoveringSettings)
+        .scaleEffect(isHoveringSettings ? 1.03 : 1.0)
+        .animation(.easeOut(duration: 0.12), value: isHoveringSettings)
+        .compactTopTooltip("Open Settings", isVisible: $isHoveringSettings)
         .onHover { hovering in
             isHoveringSettings = hovering
             if hovering {
@@ -1518,7 +1512,7 @@ private struct MonitorButton: View {
                 Image(systemName: "waveform.path.ecg")
                     .font(.retraceCalloutMedium)
                     .foregroundColor(isProcessing ? .green : .retraceSecondary)
-                    .scaleEffect(isHovering ? 1.15 : (isProcessing ? heartbeatScale : 1.0))
+                    .scaleEffect(isProcessing ? heartbeatScale : 1.0)
             }
             .padding(10)
             .background(Color.white.opacity(0.05))
@@ -1530,7 +1524,9 @@ private struct MonitorButton: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
-        // .instantTooltip("System Monitor  ⌘⇧M", isVisible: $isHovering)
+        .scaleEffect(isHovering ? 1.03 : 1.0)
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .compactTopTooltip("Open System Monitor", isVisible: $isHovering)
         .onHover { hovering in
             isHovering = hovering
             if hovering {
@@ -1572,6 +1568,42 @@ private struct MonitorButton: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Compact Tooltip
+
+private struct CompactTopTooltip: ViewModifier {
+    let text: String
+    @Binding var isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if isVisible {
+                    Text(text)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.95))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color.black.opacity(0.82))
+                        )
+                        .offset(y: -26)
+                        .transition(.opacity.combined(with: .offset(y: 3)))
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(.easeOut(duration: 0.12), value: isVisible)
+    }
+}
+
+private extension View {
+    func compactTopTooltip(_ text: String, isVisible: Binding<Bool>) -> some View {
+        modifier(CompactTopTooltip(text: text, isVisible: isVisible))
     }
 }
 

@@ -15,21 +15,24 @@ struct ContextMenuContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if !viewModel.isInLiveMode {
-                ContextMenuRow(title: "Copy Moment Link", icon: "link", shortcut: "⌥⇧L") {
-                    showMenu = false
-                    copyMomentLink()
-                }
+            ContextMenuRow(
+                title: "Copy Moment Link",
+                icon: "link",
+                shortcut: "⌥⇧L",
+                isDisabled: viewModel.isInLiveMode
+            ) {
+                showMenu = false
+                copyMomentLink()
+            }
 
-                ContextMenuRow(
-                    title: "Copy URL Link",
-                    icon: "link",
-                    shortcut: "⌘L",
-                    isDisabled: !hasCurrentBrowserURL
-                ) {
-                    showMenu = false
-                    copyURLLink()
-                }
+            ContextMenuRow(
+                title: "Copy URL Link",
+                icon: "link",
+                shortcut: "⌘L",
+                isDisabled: viewModel.isInLiveMode || !hasCurrentBrowserURL
+            ) {
+                showMenu = false
+                copyURLLink()
             }
 
             ContextMenuRow(title: "Copy Image", icon: "doc.on.doc", shortcut: "⌘C") {
@@ -66,14 +69,14 @@ struct ContextMenuContent: View {
                 openSystemMonitor()
             }
 
+            ContextMenuRow(title: "Get Help", icon: "exclamationmark.bubble", shortcut: "⌘⇧H") {
+                showMenu = false
+                openFeedback()
+            }
+
             ContextMenuRow(title: "Settings", icon: "gear", shortcut: "⌘,") {
                 showMenu = false
                 openSettings()
-            }
-
-            ContextMenuRow(title: "Report an Issue", icon: "exclamationmark.bubble", shortcut: "⌘⇧H") {
-                showMenu = false
-                openFeedback()
             }
         }
     }

@@ -3,7 +3,7 @@ import Shared
 
 struct ProcessCPUSummaryCard: View {
     private static let cpuRowsPageSize = 10
-    private static let cpuRowsContainerHeight: CGFloat = 240
+    private static let cpuRowsContainerHeight: CGFloat = 268
 
     private let onRowsHoverChanged: ((Bool) -> Void)?
     private let isRowsScrollEnabled: Bool
@@ -49,7 +49,7 @@ struct ProcessCPUSummaryCard: View {
                 .background(Color.white.opacity(0.06))
 
             VStack(alignment: .leading, spacing: 12) {
-            Text("Avg % uses total machine capacity (\(max(snapshot.logicalCoreCount, 1)) cores). Run % is this table's internal share.")
+            Text("Avg % uses total machine capacity (\(max(snapshot.logicalCoreCount, 1)) cores). Energy is cumulative per-process estimate.")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.retraceSecondary.opacity(0.9))
 
@@ -61,7 +61,11 @@ struct ProcessCPUSummaryCard: View {
                 // Keep the parent scroll area in control until the user expands past the first page.
                 let allowsInnerScroll = isRowsScrollEnabled && visibleRows > Self.cpuRowsPageSize
 
-                Text("Sampled duration: \(formatWindowDuration(snapshot.sampleDurationSeconds)) • Total tracked: \(formatCPUSec(snapshot.totalTrackedCPUSeconds)) CPU Seconds")
+                Text(
+                    "Sampled duration: \(formatWindowDuration(snapshot.sampleDurationSeconds))"
+                        + " • Total tracked: \(formatCPUSec(snapshot.totalTrackedCPUSeconds)) CPU Seconds"
+                        + " • \(formatEnergy(snapshot.totalTrackedEnergyJoules)) J"
+                )
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.retraceSecondary.opacity(0.65))
 
@@ -75,10 +79,10 @@ struct ProcessCPUSummaryCard: View {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.retraceSecondary.opacity(0.7))
                         .frame(width: 50, alignment: .trailing)
-                        Text("Run %")
+                        Text("Energy (J)")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.retraceSecondary.opacity(0.7))
-                        .frame(width: 46, alignment: .trailing)
+                        .frame(width: 62, alignment: .trailing)
                         Text("Avg %")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.retraceAccent.opacity(0.95))
@@ -122,10 +126,10 @@ struct ProcessCPUSummaryCard: View {
                                             .foregroundColor(.retracePrimary)
                                             .frame(width: 50, alignment: .trailing)
 
-                                        Text(formatCPUPercent(row.shareOfTrackedPercent))
+                                        Text(formatEnergy(row.energyJoules))
                                             .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                            .foregroundColor(.retraceSecondary.opacity(0.95))
-                                            .frame(width: 46, alignment: .trailing)
+                                            .foregroundColor(.retracePrimary)
+                                            .frame(width: 62, alignment: .trailing)
 
                                         Text(formatCPUPercent(row.capacityPercent))
                                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -233,6 +237,17 @@ struct ProcessCPUSummaryCard: View {
 
     private func formatCPUPercent(_ percent: Double) -> String {
         String(format: "%.1f%%", percent)
+    }
+
+    private func formatEnergy(_ joules: Double) -> String {
+        let safeJoules = max(0, joules)
+        if safeJoules >= 100 {
+            return String(format: "%.0f", safeJoules)
+        }
+        if safeJoules >= 10 {
+            return String(format: "%.1f", safeJoules)
+        }
+        return String(format: "%.2f", safeJoules)
     }
 
     private func cpuProcessRowAnchorID(_ rowNumber: Int) -> String {

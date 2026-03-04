@@ -167,6 +167,10 @@ public class TimelineWindowController: NSObject {
         return frontmostProcessID == currentProcessID
     }
 
+    nonisolated static func shouldToggleSearchOverlayFromShortcut(isActivelyScrolling: Bool) -> Bool {
+        !isActivelyScrolling
+    }
+
     nonisolated static func shouldNavigateTimelineBackward(
         keyCode: UInt16,
         charactersIgnoringModifiers: String?,
@@ -1472,6 +1476,7 @@ public class TimelineWindowController: NSObject {
                     // Re-assert menu visibility before opening submenu.
                     viewModel.showTimelineContextMenu = true
                     viewModel.isHoveringAddTagButton = true
+                    viewModel.recordTagSubmenuOpen(source: "keyboard_cmd_t")
                     withAnimation(.easeOut(duration: 0.12)) {
                         viewModel.showTagSubmenu = true
                     }
@@ -1496,7 +1501,7 @@ public class TimelineWindowController: NSObject {
 
         viewModel.dismissOtherDialogs()
         withAnimation(.easeOut(duration: 0.15)) {
-            viewModel.openCommentSubmenuForTimelineBlock(block)
+            viewModel.openCommentSubmenuForTimelineBlock(block, source: "keyboard_opt_c")
         }
     }
 
@@ -2356,6 +2361,10 @@ public class TimelineWindowController: NSObject {
         if event.keyCode == 40 && modifiers == [.command] { // K key with Command
             recordShortcut("cmd+k")
             if let viewModel = timelineViewModel {
+                guard Self.shouldToggleSearchOverlayFromShortcut(isActivelyScrolling: viewModel.isActivelyScrolling) else {
+                    Log.info("[TimelineShortcut] Cmd+K ignored while scroll is active", category: .ui)
+                    return true
+                }
                 let wasVisible = viewModel.isSearchOverlayVisible
                 Log.info(
                     "[TimelineShortcut] Cmd+K wasVisible=\(wasVisible) queryEmpty=\(viewModel.searchViewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",

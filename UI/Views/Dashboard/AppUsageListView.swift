@@ -602,48 +602,58 @@ struct AppUsageListView: View {
             appBundleID: app.appBundleID
         )
 
-        return HStack(spacing: 6) {
-            // Extra indent + dot indicator
-            HStack(spacing: 4) {
+        return Button {
+            onWindowTapped?(app, tab)
+        } label: {
+            HStack(spacing: 8) {
                 Spacer()
                     .frame(width: layoutSize.windowRowIndent + 6)
 
-                Circle()
-                    .fill(appColor.opacity(0.4))
-                    .frame(width: 4, height: 4)
-            }
+                // Sub-row marker to keep nested/tabbed hierarchy visible without a heavy card
+                Capsule()
+                    .fill(appColor.opacity(isHovered ? 0.75 : 0.35))
+                    .frame(width: 2, height: 18)
 
-            // Tab title with URL subtitle
-            VStack(alignment: .leading, spacing: 2) {
-                Text(displayTitle)
-                    .font(layoutSize.windowNameFont)
-                    .foregroundColor(.retracePrimary.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                if let url = tab.browserUrl, !url.isEmpty {
-                    Text(url)
-                        .font(.system(size: 10))
-                        .foregroundColor(.retraceSecondary.opacity(0.5))
+                // Tab title with URL subtitle
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayTitle)
+                        .font(layoutSize.windowNameFont)
+                        .foregroundColor(.retracePrimary.opacity(0.85))
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .truncationMode(.tail)
+
+                    if let url = tab.browserUrl, !url.isEmpty {
+                        Text(url)
+                            .font(.system(size: 10))
+                            .foregroundColor(.retraceSecondary.opacity(0.5))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+
+                Spacer()
+
+                HStack(spacing: 5) {
+                    Text(formatDuration(tab.duration))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.retraceSecondary.opacity(0.7))
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(.retraceSecondary.opacity(isHovered ? 0.7 : 0.32))
+                }
+                .frame(width: 60, alignment: .trailing)
             }
-
-            Spacer()
-
-            // Duration
-            Text(formatDuration(tab.duration))
-                .font(.system(size: 9, weight: .medium))
-                .foregroundColor(.retraceSecondary.opacity(0.7))
-                .frame(width: 50, alignment: .trailing)
+            .padding(.trailing, layoutSize.horizontalPadding)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(isHovered ? Color.white.opacity(0.025) : Color.clear)
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, layoutSize.horizontalPadding)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(isHovered ? Color.white.opacity(0.02) : Color.clear)
-        )
+        .buttonStyle(.plain)
+        .help("Open details")
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.1)) {
@@ -654,9 +664,6 @@ struct AppUsageListView: View {
             } else {
                 NSCursor.pop()
             }
-        }
-        .onTapGesture {
-            onWindowTapped?(app, tab)
         }
     }
 

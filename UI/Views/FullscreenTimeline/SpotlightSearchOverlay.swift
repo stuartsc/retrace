@@ -29,6 +29,7 @@ public struct SpotlightSearchOverlay: View {
     @State private var isRecentEntriesDismissedByUser = false
     @State private var suppressRecentEntriesForCurrentPresentation = false
     @State private var highlightedRecentEntryIndex = 0
+    @State private var hoveredRecentEntryKey: String?
     @State private var rankedRecentEntries: [SearchViewModel.RecentSearchEntry] = []
     @State private var recentEntryTagByID: [Int64: Tag] = [:]
     @State private var recentEntryAppNamesByBundleID: [String: String] = [:]
@@ -46,6 +47,7 @@ public struct SpotlightSearchOverlay: View {
     private let panelWidth: CGFloat = 1000
     private let collapsedWidth: CGFloat = 450
     private let maxResultsHeight: CGFloat = 550
+    private let minResultsHeight: CGFloat = 220
     private let dismissAnimationDuration: TimeInterval = 0.15
     private let thumbnailSize = CGSize(width: 280, height: 175)
     private let recentEntryLimit = 15
@@ -218,6 +220,7 @@ public struct SpotlightSearchOverlay: View {
             isRecentEntriesDismissedByUser = false
             suppressRecentEntriesForCurrentPresentation = false
             highlightedRecentEntryIndex = 0
+            hoveredRecentEntryKey = nil
             isSearchFieldFocused = false
             rankedRecentEntries = []
             recentEntryTagByID = [:]
@@ -321,7 +324,7 @@ public struct SpotlightSearchOverlay: View {
         }
         .onPreferenceChange(ResultsAreaHeightPreferenceKey.self) { height in
             guard height > 0 else { return }
-            let clampedHeight = min(maxResultsHeight, max(150, height))
+            let clampedHeight = min(maxResultsHeight, max(minResultsHeight, height))
             // Guard with epsilon to prevent geometry-driven update loops.
             guard abs(resultsHeight - clampedHeight) > 1 else { return }
             resultsHeight = clampedHeight
@@ -570,6 +573,7 @@ public struct SpotlightSearchOverlay: View {
             highlightedRecentEntryIndex = min(highlightedRecentEntryIndex, max(rankedRecentEntries.count - 1, 0))
         } else {
             highlightedRecentEntryIndex = 0
+            hoveredRecentEntryKey = nil
         }
         logRecentEntriesState(context: "refreshRecentEntriesPopoverVisibility")
     }
@@ -601,12 +605,18 @@ public struct SpotlightSearchOverlay: View {
         viewModel.submitRecentSearchEntry(entry)
         isRecentEntriesPopoverVisible = false
         highlightedRecentEntryIndex = 0
+        hoveredRecentEntryKey = nil
 
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             isExpanded = true
         }
 
         prepareResultKeyboardNavigationAfterSubmit()
+    }
+
+    private func removeRecentEntry(_ entry: SearchViewModel.RecentSearchEntry) {
+        viewModel.removeRecentSearchEntry(entry)
+        Log.info("\(searchLog)[\(overlaySessionID)] removed recent entry key=\(entry.key)", category: .ui)
     }
 
     private func dismissRecentEntriesPopoverByUser() {
@@ -616,6 +626,7 @@ public struct SpotlightSearchOverlay: View {
             isRecentEntriesPopoverVisible = false
         }
         highlightedRecentEntryIndex = 0
+        hoveredRecentEntryKey = nil
     }
 
     private func logRecentEntriesState(context: String) {
@@ -674,50 +685,73 @@ public struct SpotlightSearchOverlay: View {
             ScrollView(.vertical, showsIndicators: rankedRecentEntriesCount > recentEntryVisibleCount) {
                 VStack(spacing: recentEntryRowSpacing) {
                     ForEach(Array(rankedRecentEntries.enumerated()), id: \.element.key) { index, entry in
-                        Button {
-                            selectRecentEntry(entry)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                    Text(entry.query)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(RetraceMenuStyle.textColor)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                    Spacer(minLength: 6)
-                                    Text(recentEntryRelativeTimeText(for: entry))
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(RetraceMenuStyle.textColorMuted)
-                                        .lineLimit(1)
-                                        .fixedSize(horizontal: true, vertical: false)
-                                }
+                        let isRowHovered = hoveredRecentEntryKey == entry.key
+                        HStack(alignment: .top, spacing: 8) {
+                            Button {
+                                selectRecentEntry(entry)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 7) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                        Text(entry.query)
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundColor(RetraceMenuStyle.textColor)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                        Spacer(minLength: 6)
+                                        Text(recentEntryRelativeTimeText(for: entry))
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundColor(RetraceMenuStyle.textColorMuted)
+                                            .lineLimit(1)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                    }
 
-                                recentEntryFilterSummaryRow(for: entry.filters)
+                                    recentEntryFilterSummaryRow(for: entry.filters)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
-                            .frame(maxWidth: .infinity, minHeight: recentEntryRowHeight, maxHeight: recentEntryRowHeight, alignment: .leading)
-                            .padding(.horizontal, 10)
-                            .background(
-                                RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
-                                    .fill(index == highlightedRecentEntryIndex ? RetraceMenuStyle.itemHoverColor : Color.clear)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
-                                    .stroke(
-                                        index == highlightedRecentEntryIndex
-                                            ? RetraceMenuStyle.filterStrokeMedium
-                                            : Color.clear,
-                                        lineWidth: 1
-                                    )
-                            )
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button {
+                                removeRecentEntry(entry)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundColor(RetraceMenuStyle.textColorMuted)
+                            }
+                            .buttonStyle(.plain)
+                            .frame(width: 12, height: 12)
+                            .padding(.top, 2)
+                            .opacity(isRowHovered ? 1 : 0)
+                            .allowsHitTesting(isRowHovered)
+                            .accessibilityHidden(!isRowHovered)
+                            .help("Remove recent search")
                         }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: recentEntryRowHeight, maxHeight: recentEntryRowHeight, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                                .fill(index == highlightedRecentEntryIndex ? RetraceMenuStyle.itemHoverColor : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                                .stroke(
+                                    index == highlightedRecentEntryIndex
+                                        ? RetraceMenuStyle.filterStrokeMedium
+                                        : Color.clear,
+                                    lineWidth: 1
+                                )
+                        )
                         .contentShape(Rectangle())
                         .id(entry.key)
                         .onHover { hovering in
-                            guard hovering else { return }
-                            highlightedRecentEntryIndex = index
+                            if hovering {
+                                highlightedRecentEntryIndex = index
+                                hoveredRecentEntryKey = entry.key
+                            } else if hoveredRecentEntryKey == entry.key {
+                                hoveredRecentEntryKey = nil
+                            }
                         }
                     }
                 }
@@ -1009,7 +1043,7 @@ public struct SpotlightSearchOverlay: View {
     }
 
     private var reservedResultsHeight: CGFloat {
-        max(150, resultsHeight)
+        max(minResultsHeight, resultsHeight)
     }
 
     private func reserveExpandedResultsHeight() {
@@ -1184,15 +1218,42 @@ public struct SpotlightSearchOverlay: View {
                 .font(.retraceDisplay2)
                 .foregroundColor(.white.opacity(0.3))
 
-            Text("No results found")
+            Text(viewModel.hasActiveFilters ? "No results match this query with current filters" : "No results found")
                 .font(.retraceBodyMedium)
                 .foregroundColor(.white.opacity(0.6))
 
-            Text("Try a different search term")
+            Text(viewModel.hasActiveFilters ? "Try broadening filters or changing your query" : "Try a different search term")
                 .font(.retraceCaption)
                 .foregroundColor(.white.opacity(0.4))
+
+            if viewModel.hasActiveFilters {
+                noResultsActionButton(title: "Clear Filters") {
+                    viewModel.clearAllFilters()
+                    viewModel.rerunSearchImmediately(trigger: "no-results.clear-filters")
+                }
+            }
         }
+        .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func noResultsActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.white.opacity(0.92))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(Color.white.opacity(0.14))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Thumbnail Loading
@@ -1556,6 +1617,7 @@ public struct SpotlightSearchOverlay: View {
         clearResultKeyboardNavigation()
         isRecentEntriesPopoverVisible = false
         highlightedRecentEntryIndex = 0
+        hoveredRecentEntryKey = nil
 
         if clearFilters {
             viewModel.clearAllFilters()
@@ -1576,6 +1638,7 @@ public struct SpotlightSearchOverlay: View {
                 isRecentEntriesPopoverVisible = false
             }
             highlightedRecentEntryIndex = 0
+            hoveredRecentEntryKey = nil
             return
         }
 
@@ -1603,6 +1666,7 @@ public struct SpotlightSearchOverlay: View {
         clearResultKeyboardNavigation()
         isRecentEntriesPopoverVisible = false
         highlightedRecentEntryIndex = 0
+        hoveredRecentEntryKey = nil
         rankedRecentEntries = []
 
         withAnimation(.easeOut(duration: dismissAnimationDuration)) {

@@ -268,6 +268,8 @@ public struct SimpleTimelineView: View {
                 // Error overlay
                 if let error = viewModel.error {
                     errorOverlay(error)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: viewModel.error)
                 }
 
                 // Delete confirmation dialog
@@ -454,7 +456,65 @@ public struct SimpleTimelineView: View {
                         .opacity(viewModel.toastVisible ? 1.0 : 0.0)
                         Spacer()
                     }
-                    .allowsHitTesting(false)
+                        .allowsHitTesting(false)
+                }
+
+                // Delete undo action banner (interactive)
+                if let undoMessage = viewModel.pendingDeleteUndoMessage {
+                    VStack {
+                        HStack(spacing: 10) {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.orange.opacity(0.95))
+
+                            Text(undoMessage)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.92))
+                                .lineLimit(1)
+
+                            Button("Undo") {
+                                viewModel.undoPendingDelete()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule()
+                                    .fill(Color.white.opacity(0.18))
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.26), lineWidth: 1)
+                            )
+
+                            Button(action: {
+                                viewModel.dismissPendingDeleteUndo()
+                            }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .padding(6)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color.black.opacity(0.68))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                                )
+                        )
+                        .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+                        .padding(.top, max(geometry.safeAreaInsets.top + 18, 56))
+                        Spacer()
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: undoMessage)
                 }
 
             }
@@ -792,14 +852,19 @@ public struct SimpleTimelineView: View {
             }
         } else if !viewModel.isLoading {
             // Empty state - no video or image available.
+            let isFilteredEmptyState = viewModel.frames.isEmpty && viewModel.filterCriteria.hasActiveFilters
             VStack(spacing: .spacingM) {
-                Image(systemName: viewModel.frames.isEmpty ? "photo.on.rectangle.angled" : "clock")
+                Image(systemName: isFilteredEmptyState ? "line.3.horizontal.decrease.circle" : (viewModel.frames.isEmpty ? "photo.on.rectangle.angled" : "clock"))
                     .font(.retraceDisplay)
                     .foregroundColor(.white.opacity(0.3))
-                Text(viewModel.frames.isEmpty ? "No frames recorded" : "Frame not ready yet")
+                Text(isFilteredEmptyState ? "No results for current filters" : (viewModel.frames.isEmpty ? "No frames recorded" : "Frame not ready yet"))
                     .font(.retraceBody)
                     .foregroundColor(.white.opacity(0.5))
-                if !viewModel.frames.isEmpty {
+                if isFilteredEmptyState {
+                    Text("Adjust or clear filters to view timeline frames.")
+                        .font(.retraceCaption)
+                        .foregroundColor(.white.opacity(0.3))
+                } else if !viewModel.frames.isEmpty {
                     Text("Relaunch timeline in a few seconds")
                         .font(.retraceCaption)
                         .foregroundColor(.white.opacity(0.3))
@@ -1116,20 +1181,35 @@ public struct SimpleTimelineView: View {
     // MARK: - Error Overlay
 
     private func errorOverlay(_ message: String) -> some View {
-        VStack(spacing: .spacingM) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.retraceDisplay3)
-                .foregroundColor(.retraceWarning)
+        let accentColor = Color.orange
+
+        return HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(accentColor)
             Text(message)
-                .font(.retraceBody)
-                .foregroundColor(.white.opacity(0.7))
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(.white)
                 .multilineTextAlignment(.center)
+                .lineLimit(3)
         }
-        .padding(.spacingL)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 18)
+        .fixedSize(horizontal: true, vertical: false)
         .background(
-            RoundedRectangle(cornerRadius: .cornerRadiusM)
-                .fill(Color.black.opacity(0.8))
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(.ultraThinMaterial)
+                    .environment(\.colorScheme, .dark)
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.black.opacity(0.5))
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(accentColor.opacity(0.35), lineWidth: 1)
+            }
         )
+        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+        .padding(.horizontal, 24)
+        .allowsHitTesting(false)
     }
 }
 
@@ -5465,6 +5545,7 @@ struct TimelineSegmentContextMenu: View {
                     onHoverChanged: { isHovering in
                         viewModel.isHoveringAddTagButton = isHovering
                         if isHovering && !viewModel.showTagSubmenu {
+                            viewModel.recordTagSubmenuOpen(source: "context_menu_hover")
                             withAnimation(.easeOut(duration: 0.15)) {
                                 viewModel.showCommentSubmenu = false
                                 viewModel.showTagSubmenu = true
@@ -5473,6 +5554,9 @@ struct TimelineSegmentContextMenu: View {
                     }
                 ) {
                     // Toggle on click as well
+                    if !viewModel.showTagSubmenu {
+                        viewModel.recordTagSubmenuOpen(source: "context_menu_click")
+                    }
                     withAnimation(.easeOut(duration: 0.15)) {
                         viewModel.showCommentSubmenu = false
                         viewModel.showTagSubmenu.toggle()
@@ -5498,6 +5582,7 @@ struct TimelineSegmentContextMenu: View {
                         viewModel.showTimelineContextMenu = false
                         viewModel.showCommentSubmenu = true
                     }
+                    viewModel.recordCommentSubmenuOpen(source: "context_menu_click")
                     Task { await viewModel.loadCommentsForSelectedTimelineBlock() }
                 }
 
@@ -9829,7 +9914,7 @@ struct CompactAppsFilterDropdown: View {
     @State private var isHovered = false
 
     private let maxVisibleIcons = 5
-    private let iconSize: CGFloat = 18
+    private let iconSize: CGFloat = 13
 
     private var sortedApps: [String] {
         guard let apps = selectedApps else { return [] }
@@ -9854,7 +9939,8 @@ struct CompactAppsFilterDropdown: View {
                         // Show exclude indicator
                         if isExcludeMode && isActive {
                             Image(systemName: "minus.circle.fill")
-                                .font(.system(size: 11))
+                                .font(.system(size: 10))
+                                .frame(width: iconSize, height: iconSize)
                                 .foregroundColor(.orange)
                         }
 
@@ -9891,6 +9977,7 @@ struct CompactAppsFilterDropdown: View {
                             // Default state - no apps selected
                             Image(systemName: "square.grid.2x2")
                                 .font(.system(size: 11))
+                                .frame(width: iconSize, height: iconSize)
                                 .foregroundColor(.white.opacity(0.5))
 
                             Text("All Apps")
@@ -9904,6 +9991,7 @@ struct CompactAppsFilterDropdown: View {
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(.white.opacity(0.4))
                     }
+                    .frame(height: iconSize)
                     .padding(.horizontal, 11)
                     .padding(.vertical, 9)
                     .background(

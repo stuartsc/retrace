@@ -8,6 +8,9 @@ struct ProcessCPURow: Identifiable {
     let id: String
     let name: String
     let cpuSeconds: Double
+    let energyJoules: Double
+    let averagePowerWatts: Double
+    let peakPowerWatts: Double
     let shareOfTrackedPercent: Double
     let capacityPercent: Double
     let averagePercent: Double
@@ -34,9 +37,12 @@ struct ProcessCPUSnapshot {
         logicalCoreCount: 0,
         retraceCPUSeconds: 0,
         totalTrackedCPUSeconds: 0,
+        retraceEnergyJoules: 0,
+        totalTrackedEnergyJoules: 0,
         retraceRank: nil,
         retraceGroupKey: nil,
         peakPercentByGroup: [:],
+        peakPowerWattsByGroup: [:],
         topProcesses: [],
         totalTrackedCurrentResidentBytes: 0,
         totalTrackedAverageResidentBytes: 0,
@@ -54,9 +60,12 @@ struct ProcessCPUSnapshot {
     let logicalCoreCount: Int
     let retraceCPUSeconds: Double
     let totalTrackedCPUSeconds: Double
+    let retraceEnergyJoules: Double
+    let totalTrackedEnergyJoules: Double
     let retraceRank: Int?
     let retraceGroupKey: String?
     let peakPercentByGroup: [String: Double]
+    let peakPowerWattsByGroup: [String: Double]
     let topProcesses: [ProcessCPURow]
     let totalTrackedCurrentResidentBytes: UInt64
     let totalTrackedAverageResidentBytes: UInt64
@@ -242,6 +251,7 @@ private actor ProcessCPULogSampler {
     private struct ProcessTaskMetrics {
         let cpuAbsoluteUnits: UInt64
         let residentBytes: UInt64
+        let energyNanojoules: UInt64?
     }
 
     private struct BundleMetadata {
@@ -255,6 +265,7 @@ private actor ProcessCPULogSampler {
         let durationSeconds: TimeInterval
         let retraceGroupKey: String?
         let groupDeltaNanoseconds: [String: UInt64]
+        let groupDeltaEnergyNanojoules: [String: UInt64]?
         let groupDeltaUnit: String?
         let groupResidentBytes: [String: UInt64]?
         let groupDisplayNames: [String: String]?
@@ -285,6 +296,7 @@ private actor ProcessCPULogSampler {
     private let retracePID: pid_t = getpid()
     private var lastSampleDate: Date?
     private var lastCPUByPID: [pid_t: UInt64] = [:]
+    private var lastEnergyByPID: [pid_t: UInt64] = [:]
     private var identityByPID: [pid_t: ProcessIdentity] = [:]
     private var groupDisplayNameByKey: [String: String] = [:]
     private var displayNameMapDirty = false
@@ -300,6 +312,8 @@ private actor ProcessCPULogSampler {
     private var windowTotalDuration: TimeInterval = 0
     private var windowCumulativeByGroup: [String: UInt64] = [:]
     private var windowPeakPercentByGroup: [String: Double] = [:]
+    private var windowEnergyCumulativeByGroup: [String: UInt64] = [:]
+    private var windowPeakPowerByGroup: [String: Double] = [:]
     private var windowMemoryIntegralByteSecondsByGroup: [String: Double] = [:]
     private var windowPeakResidentBytesByGroup: [String: UInt64] = [:]
     private let logFileURL: URL
@@ -369,6 +383,8 @@ private actor ProcessCPULogSampler {
         windowTotalDuration = 0
         windowCumulativeByGroup.removeAll(keepingCapacity: false)
         windowPeakPercentByGroup.removeAll(keepingCapacity: false)
+        windowEnergyCumulativeByGroup.removeAll(keepingCapacity: false)
+        windowPeakPowerByGroup.removeAll(keepingCapacity: false)
         windowMemoryIntegralByteSecondsByGroup.removeAll(keepingCapacity: false)
         windowPeakResidentBytesByGroup.removeAll(keepingCapacity: false)
     }
@@ -377,6 +393,7 @@ private actor ProcessCPULogSampler {
         let allPIDs = Self.listAllProcessIDs()
 
         var currentCPUByPID: [pid_t: UInt64] = [:]
+        var currentEnergyByPID: [pid_t: UInt64] = [:]
         var currentResidentBytesByPID: [pid_t: UInt64] = [:]
         var currentIdentityByPID: [pid_t: ProcessIdentity] = [:]
 
@@ -385,6 +402,9 @@ private actor ProcessCPULogSampler {
             guard let identity = identityByPID[pid] ?? resolveIdentity(for: pid) else { continue }
 
             currentCPUByPID[pid] = taskMetrics.cpuAbsoluteUnits
+            if let energyNanojoules = taskMetrics.energyNanojoules {
+                currentEnergyByPID[pid] = energyNanojoules
+            }
             currentResidentBytesByPID[pid] = taskMetrics.residentBytes
             currentIdentityByPID[pid] = identity
             updateGroupDisplayNameIfNeeded(forKey: identity.key, name: identity.name)
@@ -409,24 +429,36 @@ private actor ProcessCPULogSampler {
 
             if duration > 0, duration <= acceptedSampleGap {
                 var groupDeltaNanoseconds: [String: UInt64] = [:]
+                var groupDeltaEnergyNanojoules: [String: UInt64] = [:]
 
                 for (pid, currentCPU) in currentCPUByPID {
-                    guard let previousCPU = lastCPUByPID[pid], currentCPU >= previousCPU else { continue }
                     guard let identity = currentIdentityByPID[pid] else { continue }
 
-                    let deltaAbsoluteUnits = currentCPU - previousCPU
-                    if deltaAbsoluteUnits > 0 {
-                        let deltaNanoseconds = Self.absoluteTimeToNanoseconds(deltaAbsoluteUnits)
-                        groupDeltaNanoseconds[identity.key, default: 0] += deltaNanoseconds
+                    if let previousCPU = lastCPUByPID[pid], currentCPU >= previousCPU {
+                        let deltaAbsoluteUnits = currentCPU - previousCPU
+                        if deltaAbsoluteUnits > 0 {
+                            let deltaNanoseconds = Self.absoluteTimeToNanoseconds(deltaAbsoluteUnits)
+                            groupDeltaNanoseconds[identity.key, default: 0] += deltaNanoseconds
+                        }
+                    }
+
+                    if let currentEnergy = currentEnergyByPID[pid],
+                       let previousEnergy = lastEnergyByPID[pid],
+                       currentEnergy >= previousEnergy {
+                        let deltaEnergy = currentEnergy - previousEnergy
+                        if deltaEnergy > 0 {
+                            groupDeltaEnergyNanojoules[identity.key, default: 0] += deltaEnergy
+                        }
                     }
                 }
 
-                if !groupDeltaNanoseconds.isEmpty || !groupResidentBytes.isEmpty {
+                if !groupDeltaNanoseconds.isEmpty || !groupDeltaEnergyNanojoules.isEmpty || !groupResidentBytes.isEmpty {
                     let entry = CPULogEntry(
                         timestamp: now.timeIntervalSince1970,
                         durationSeconds: duration,
                         retraceGroupKey: retraceGroupKey,
                         groupDeltaNanoseconds: groupDeltaNanoseconds,
+                        groupDeltaEnergyNanojoules: groupDeltaEnergyNanojoules.isEmpty ? nil : groupDeltaEnergyNanojoules,
                         groupDeltaUnit: Self.nanosecondUnit,
                         groupResidentBytes: groupResidentBytes.isEmpty ? nil : groupResidentBytes,
                         groupDisplayNames: nil
@@ -443,6 +475,7 @@ private actor ProcessCPULogSampler {
                     durationSeconds: heartbeatDuration,
                     retraceGroupKey: retraceGroupKey,
                     groupDeltaNanoseconds: [:],
+                    groupDeltaEnergyNanojoules: nil,
                     groupDeltaUnit: Self.nanosecondUnit,
                     groupResidentBytes: groupResidentBytes,
                     groupDisplayNames: nil
@@ -454,6 +487,7 @@ private actor ProcessCPULogSampler {
 
         lastSampleDate = now
         lastCPUByPID = currentCPUByPID
+        lastEnergyByPID = currentEnergyByPID
         identityByPID = currentIdentityByPID
 
         return appendedEntry
@@ -691,6 +725,20 @@ private actor ProcessCPULogSampler {
             }
         }
 
+        if let groupDeltaEnergyNanojoules = entry.groupDeltaEnergyNanojoules {
+            for (key, deltaEnergyNanojoules) in groupDeltaEnergyNanojoules {
+                windowEnergyCumulativeByGroup[key, default: 0] = Self.saturatingAdd(
+                    windowEnergyCumulativeByGroup[key] ?? 0,
+                    deltaEnergyNanojoules
+                )
+                guard entry.durationSeconds > 0 else { continue }
+                let instantPowerWatts = (Double(deltaEnergyNanojoules) / 1_000_000_000.0) / entry.durationSeconds
+                if instantPowerWatts > (windowPeakPowerByGroup[key] ?? 0) {
+                    windowPeakPowerByGroup[key] = instantPowerWatts
+                }
+            }
+        }
+
         guard let groupResidentBytes = entry.groupResidentBytes, !groupResidentBytes.isEmpty else {
             return
         }
@@ -710,6 +758,7 @@ private actor ProcessCPULogSampler {
         guard !windowEntries.isEmpty else { return }
 
         var peakKeysToRebuild: Set<String> = []
+        var peakPowerKeysToRebuild: Set<String> = []
         var peakMemoryKeysToRebuild: Set<String> = []
         var removeCount = 0
         while removeCount < windowEntries.count, windowEntries[removeCount].timestamp < cutoffTimestamp {
@@ -729,6 +778,24 @@ private actor ProcessCPULogSampler {
                 let instantPercent = (Double(delta) / 1_000_000_000.0) / entry.durationSeconds * 100.0
                 if instantPercent >= (currentPeak - 0.000_001) {
                     peakKeysToRebuild.insert(key)
+                }
+            }
+
+            if let groupDeltaEnergyNanojoules = entry.groupDeltaEnergyNanojoules {
+                for (key, deltaEnergyNanojoules) in groupDeltaEnergyNanojoules {
+                    guard let current = windowEnergyCumulativeByGroup[key] else { continue }
+                    if current <= deltaEnergyNanojoules {
+                        windowEnergyCumulativeByGroup.removeValue(forKey: key)
+                    } else {
+                        windowEnergyCumulativeByGroup[key] = current - deltaEnergyNanojoules
+                    }
+
+                    guard entry.durationSeconds > 0,
+                          let currentPeakPower = windowPeakPowerByGroup[key] else { continue }
+                    let instantPowerWatts = (Double(deltaEnergyNanojoules) / 1_000_000_000.0) / entry.durationSeconds
+                    if instantPowerWatts >= (currentPeakPower - 0.000_001) {
+                        peakPowerKeysToRebuild.insert(key)
+                    }
                 }
             }
 
@@ -758,6 +825,7 @@ private actor ProcessCPULogSampler {
         if removeCount > 0 {
             windowEntries.removeFirst(removeCount)
             recomputePeakPercentages(for: peakKeysToRebuild)
+            recomputePeakPowers(for: peakPowerKeysToRebuild)
             recomputePeakResidentBytes(for: peakMemoryKeysToRebuild)
         }
 
@@ -772,6 +840,8 @@ private actor ProcessCPULogSampler {
         windowTotalDuration = 0
         windowCumulativeByGroup.removeAll(keepingCapacity: true)
         windowPeakPercentByGroup.removeAll(keepingCapacity: true)
+        windowEnergyCumulativeByGroup.removeAll(keepingCapacity: true)
+        windowPeakPowerByGroup.removeAll(keepingCapacity: true)
         windowMemoryIntegralByteSecondsByGroup.removeAll(keepingCapacity: true)
         windowPeakResidentBytesByGroup.removeAll(keepingCapacity: true)
 
@@ -811,6 +881,32 @@ private actor ProcessCPULogSampler {
         }
     }
 
+    private func recomputePeakPowers(for keys: Set<String>) {
+        guard !keys.isEmpty else { return }
+
+        var recomputed: [String: Double] = [:]
+        for entry in windowEntries where entry.durationSeconds > 0 {
+            guard let groupDeltaEnergyNanojoules = entry.groupDeltaEnergyNanojoules else { continue }
+            for (key, deltaEnergyNanojoules) in groupDeltaEnergyNanojoules {
+                guard keys.contains(key) else { continue }
+                let instantPowerWatts = (Double(deltaEnergyNanojoules) / 1_000_000_000.0) / entry.durationSeconds
+                if instantPowerWatts > (recomputed[key] ?? 0) {
+                    recomputed[key] = instantPowerWatts
+                }
+            }
+        }
+
+        for key in keys {
+            if windowEnergyCumulativeByGroup[key] == nil {
+                windowPeakPowerByGroup.removeValue(forKey: key)
+            } else if let peakPower = recomputed[key] {
+                windowPeakPowerByGroup[key] = peakPower
+            } else {
+                windowPeakPowerByGroup.removeValue(forKey: key)
+            }
+        }
+    }
+
     private func recomputePeakResidentBytes(for keys: Set<String>) {
         guard !keys.isEmpty else { return }
 
@@ -840,6 +936,8 @@ private actor ProcessCPULogSampler {
         let totalDuration = max(windowTotalDuration, 0)
         let cumulativeByGroup = windowCumulativeByGroup
         let peakPercentByGroup = windowPeakPercentByGroup
+        let energyCumulativeByGroup = windowEnergyCumulativeByGroup
+        let peakPowerByGroup = windowPeakPowerByGroup
         let memoryIntegralByteSecondsByGroup = windowMemoryIntegralByteSecondsByGroup
         let peakResidentBytesByGroup = windowPeakResidentBytesByGroup
         let currentResidentBytesByGroup = windowEntries.last?.groupResidentBytes ?? [:]
@@ -854,8 +952,12 @@ private actor ProcessCPULogSampler {
 
         let retraceNanoseconds = effectiveRetraceGroupKey.flatMap { cumulativeByGroup[$0] } ?? 0
         let retraceCPUSeconds = Double(retraceNanoseconds) / 1_000_000_000.0
+        let retraceEnergyNanojoules = effectiveRetraceGroupKey.flatMap { energyCumulativeByGroup[$0] } ?? 0
+        let retraceEnergyJoules = Double(retraceEnergyNanojoules) / 1_000_000_000.0
         let totalTrackedNanoseconds = cumulativeByGroup.values.reduce(UInt64(0), +)
         let totalTrackedCPUSeconds = Double(totalTrackedNanoseconds) / 1_000_000_000.0
+        let totalTrackedEnergyNanojoules = energyCumulativeByGroup.values.reduce(UInt64(0), Self.saturatingAdd)
+        let totalTrackedEnergyJoules = Double(totalTrackedEnergyNanojoules) / 1_000_000_000.0
         let logicalCoreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
         let capacityDenominatorSeconds = totalDuration * Double(logicalCoreCount)
 
@@ -880,11 +982,17 @@ private actor ProcessCPULogSampler {
                 ? (seconds / capacityDenominatorSeconds) * 100.0
                 : 0
             let averagePercent = totalDuration > 0 ? (seconds / totalDuration) * 100.0 : 0
+            let energyJoules = Double(energyCumulativeByGroup[key] ?? 0) / 1_000_000_000.0
+            let averagePowerWatts = totalDuration > 0 ? energyJoules / totalDuration : 0
+            let peakPowerWatts = peakPowerByGroup[key] ?? 0
             let name = displayNamesByKey[key] ?? key
             return ProcessCPURow(
                 id: key,
                 name: name,
                 cpuSeconds: seconds,
+                energyJoules: energyJoules,
+                averagePowerWatts: averagePowerWatts,
+                peakPowerWatts: peakPowerWatts,
                 shareOfTrackedPercent: shareOfTrackedPercent,
                 capacityPercent: capacityPercent,
                 averagePercent: averagePercent
@@ -956,9 +1064,12 @@ private actor ProcessCPULogSampler {
             logicalCoreCount: logicalCoreCount,
             retraceCPUSeconds: retraceCPUSeconds,
             totalTrackedCPUSeconds: totalTrackedCPUSeconds,
+            retraceEnergyJoules: retraceEnergyJoules,
+            totalTrackedEnergyJoules: totalTrackedEnergyJoules,
             retraceRank: retraceRank,
             retraceGroupKey: effectiveRetraceGroupKey,
             peakPercentByGroup: peakPercentByGroup,
+            peakPowerWattsByGroup: peakPowerByGroup,
             topProcesses: rankedProcesses,
             totalTrackedCurrentResidentBytes: totalTrackedCurrentResidentBytes,
             totalTrackedAverageResidentBytes: totalTrackedAverageResidentBytes,
@@ -1050,6 +1161,7 @@ private actor ProcessCPULogSampler {
         rewriteLog(with: [])
         lastSampleDate = nil
         lastCPUByPID = [:]
+        lastEnergyByPID = [:]
         identityByPID = [:]
         groupDisplayNameByKey = Self.readGroupDisplayNameMap(from: displayNamesFileURL)
         updateGroupDisplayNameIfNeeded(forKey: "bundle:\(retraceBundleID)", name: retraceDisplayName)
@@ -1062,6 +1174,8 @@ private actor ProcessCPULogSampler {
         windowTotalDuration = 0
         windowCumulativeByGroup = [:]
         windowPeakPercentByGroup = [:]
+        windowEnergyCumulativeByGroup = [:]
+        windowPeakPowerByGroup = [:]
         windowMemoryIntegralByteSecondsByGroup = [:]
         windowPeakResidentBytesByGroup = [:]
         retraceGroupKey = nil
@@ -1112,14 +1226,17 @@ private actor ProcessCPULogSampler {
         }
 
         guard result == size else { return nil }
-        let memoryBytes = processFootprintBytes(for: pid) ?? info.pti_resident_size
+        let usage = processRusageCurrent(for: pid)
+        let memoryBytes = usage?.ri_phys_footprint ?? info.pti_resident_size
+        let energyNanojoules = usage?.ri_energy_nj
         return ProcessTaskMetrics(
             cpuAbsoluteUnits: info.pti_total_user + info.pti_total_system,
-            residentBytes: memoryBytes
+            residentBytes: memoryBytes,
+            energyNanojoules: energyNanojoules
         )
     }
 
-    private static func processFootprintBytes(for pid: pid_t) -> UInt64? {
+    private static func processRusageCurrent(for pid: pid_t) -> rusage_info_current? {
         guard let procPidRusageFunction else { return nil }
 
         var usage = rusage_info_current()
@@ -1127,7 +1244,7 @@ private actor ProcessCPULogSampler {
             procPidRusageFunction(pid, RUSAGE_INFO_CURRENT, UnsafeMutableRawPointer(pointer))
         }
         guard result == 0 else { return nil }
-        return usage.ri_phys_footprint > 0 ? usage.ri_phys_footprint : nil
+        return usage
     }
 
     private static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {

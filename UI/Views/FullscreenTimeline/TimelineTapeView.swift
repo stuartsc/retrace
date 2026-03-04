@@ -292,8 +292,8 @@ public struct TimelineTapeView: View {
                     emphasized: isCurrentBlock || isSelectedBlock,
                     tagsByID: tagsByID,
                     tagCatalogRevision: viewModel.tagCatalogRevision,
-                    onOpenTags: { viewModel.openTagSubmenuForTimelineBlock(block) },
-                    onOpenComments: { viewModel.openCommentSubmenuForTimelineBlock(block) }
+                    onOpenTags: { viewModel.openTagSubmenuForTimelineBlock(block, source: "tape_indicator") },
+                    onOpenComments: { viewModel.openCommentSubmenuForTimelineBlock(block, source: "tape_indicator") }
                 )
                 .equatable()
             }
@@ -773,6 +773,7 @@ struct DatetimeButton: View {
                 NSCursor.pop()
             }
         }
+        .instantTooltip("Go to Date & Time (⌘G)", isVisible: $isHovering)
     }
 }
 

@@ -19,6 +19,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 ## Project Commands
 
 ### Build & Test
+
 ```bash
 # Build all targets
 swift build
@@ -163,16 +164,16 @@ retrace/
 
 ## Module Ownership & Responsibilities
 
-| Module | Directory | Agent File | Responsibility |
-|--------|-----------|------------|----------------|
-| **DATABASE** | `Database/` | `Database/AGENTS.md` | SQLite schema, FTS5, CRUD operations, migrations |
-| **STORAGE** | `Storage/` | `Storage/AGENTS.md` | File I/O, HEVC video encoding (working, not optimized), encryption |
-| **CAPTURE** | `Capture/` | `Capture/AGENTS.md` | CGWindowListCapture API, frame deduplication, metadata extraction |
-| **PROCESSING** | `Processing/` | `Processing/AGENTS.md` | Vision OCR, Accessibility API (no audio transcription yet) |
-| **SEARCH** | `Search/` | `Search/AGENTS.md` | Query parsing, FTS5 queries, result ranking (no vector search yet) |
-| **MIGRATION** | `Migration/` | `Migration/AGENTS.md` | Import from Rewind AI (Rewind only, others planned) |
-| **APP** | `App/` | — | Coordinator, DI container, data adapter, lifecycle management |
-| **UI** | `UI/` | `UI/AGENTS.md` | SwiftUI interface (timeline, dashboard, settings, search) |
+| Module         | Directory     | Agent File             | Responsibility                                                     |
+| -------------- | ------------- | ---------------------- | ------------------------------------------------------------------ |
+| **DATABASE**   | `Database/`   | `Database/AGENTS.md`   | SQLite schema, FTS5, CRUD operations, migrations                   |
+| **STORAGE**    | `Storage/`    | `Storage/AGENTS.md`    | File I/O, HEVC video encoding (working, not optimized), encryption |
+| **CAPTURE**    | `Capture/`    | `Capture/AGENTS.md`    | CGWindowListCapture API, frame deduplication, metadata extraction  |
+| **PROCESSING** | `Processing/` | `Processing/AGENTS.md` | Vision OCR, Accessibility API (no audio transcription yet)         |
+| **SEARCH**     | `Search/`     | `Search/AGENTS.md`     | Query parsing, FTS5 queries, result ranking (no vector search yet) |
+| **MIGRATION**  | `Migration/`  | `Migration/AGENTS.md`  | Import from Rewind AI (Rewind only, others planned)                |
+| **APP**        | `App/`        | —                      | Coordinator, DI container, data adapter, lifecycle management      |
+| **UI**         | `UI/`         | `UI/AGENTS.md`         | SwiftUI interface (timeline, dashboard, settings, search)          |
 
 **Rule**: Each agent should **ONLY** modify files in their assigned module directory. Cross-module changes require explicit coordination.
 
@@ -181,6 +182,7 @@ retrace/
 ## Coding Conventions
 
 ### Language & Style
+
 - **Language**: Swift 5.9+
 - **Async/Await**: Required for all I/O operations
 - **Actors**: Use for stateful classes needing synchronization
@@ -188,17 +190,20 @@ retrace/
 - **Value Types**: Prefer structs/enums over classes
 
 ### Module Boundaries
+
 1. **Depend only on protocols** - Import from `Shared/Protocols/` only
 2. **Use shared types** - All cross-module data uses `Shared/Models/`
 3. **No direct imports** - Never import from another module's directory
 4. **Protocol conformance** - Each module implements its protocol from `Shared/`
 
 ### Error Handling
+
 - Use error types from `Shared/Models/Errors.swift`
 - Throw specific errors, not generic ones
 - Add new error cases to your module's directory only
 
 ### Testing
+
 - **Write tests first** - Follow TDD: RED → GREEN → REFACTOR
 - **Test locations**: `{Module}/Tests/`
 - **Test against protocols** - Not implementations
@@ -209,6 +214,7 @@ retrace/
 Many tests "play cop and thief" - creating fake data structures and validating the fake data they created. This provides **zero confidence** about real system behavior.
 
 **USELESS** — tests that Swift can assign struct fields:
+
 ```swift
 let appInfo = AppInfo(bundleID: "com.apple.Safari", ...)
 let result = AccessibilityResult(appInfo: appInfo, ...)
@@ -216,12 +222,14 @@ XCTAssertEqual(result.appInfo.bundleID, "com.apple.Safari")  // circular
 ```
 
 **USEFUL** — tests that exercise real system APIs:
+
 ```swift
 let tables = try await database.getTables()
 XCTAssertTrue(tables.contains("segment"))  // validates real SQLite schema
 ```
 
 **What makes a test useful:**
+
 - ✅ Tests real system APIs (SQLite, FileManager, Vision OCR)
 - ✅ Uses real production input (real screenshots, real OCR output)
 - ✅ Validates end-to-end workflows (screenshot → OCR → database → search)
@@ -298,17 +306,17 @@ frame (1) ──< (1) doc_segment >── (1) searchRanking_content
 
 ## Tech Stack
 
-| Component | Technology | Notes |
-|-----------|------------|-------|
-| Language | Swift 5.9+ | Actors, async/await, Sendable required |
-| UI Framework | SwiftUI | Fully implemented |
-| Screen Capture | CGWindowListCapture | Legacy API, no privacy indicator |
-| Video Encoding | VideoToolbox (HEVC) | Hardware encoding on Apple Silicon |
-| OCR | Vision framework | macOS native OCR |
-| Database | SQLite + FTS5 | Full-text search built-in |
-| Encryption | CryptoKit (AES-256-GCM) | Optional on-device encryption |
-| Audio Transcription | whisper.cpp | Planned (bundled but disabled) |
-| Vector Search | llama.cpp | Planned (prepared but not active) |
+| Component           | Technology              | Notes                                  |
+| ------------------- | ----------------------- | -------------------------------------- |
+| Language            | Swift 5.9+              | Actors, async/await, Sendable required |
+| UI Framework        | SwiftUI                 | Fully implemented                      |
+| Screen Capture      | CGWindowListCapture     | Legacy API, no privacy indicator       |
+| Video Encoding      | VideoToolbox (HEVC)     | Hardware encoding on Apple Silicon     |
+| OCR                 | Vision framework        | macOS native OCR                       |
+| Database            | SQLite + FTS5           | Full-text search built-in              |
+| Encryption          | CryptoKit (AES-256-GCM) | Optional on-device encryption          |
+| Audio Transcription | whisper.cpp             | Planned (bundled but disabled)         |
+| Vector Search       | llama.cpp               | Planned (prepared but not active)      |
 
 ---
 
@@ -352,6 +360,7 @@ Prefer event-scoped logging over high-frequency frame-by-frame logging during no
 **When debugging, add logging to trace the actual execution path BEFORE making assumptions.**
 
 Don't assume you know which code is running. Add logs at each layer to verify:
+
 ```swift
 Log.debug("[VM] Calling coordinator", category: .ui)
 Log.debug("[COORDINATOR] Calling adapter", category: .app)
@@ -365,33 +374,39 @@ Then check which path actually executes and fix the right code.
 ## Critical Rules for All Agents
 
 ### 1. Stay In Your Lane
+
 - **ONLY** modify files in your assigned directory
 - **NEVER** modify files in `Shared/` without explicit coordination
 - **NEVER** modify another agent's directory
 
 ### 2. Depend Only on Protocols
+
 - Import from `Shared/` only
 - Never import from another module's directory
 - Your implementation must conform to protocols in `Shared/Protocols/`
 
 ### 3. Use Shared Types
+
 - All data passed between modules uses types from `Shared/Models/`
 - Don't create duplicate types - use what exists
 - If you need a new shared type, document the need (don't create it)
 
 ### 4. Testing is Mandatory
+
 - Write tests BEFORE implementation (TDD)
 - Test against protocols, not implementations
 - Cover edge cases thoroughly
 - All tests must pass before submitting changes
 
 ### 5. Keep AGENTS.md Up-to-Date
+
 - **Whenever you add, rename, move, or delete files/directories**, update the relevant `AGENTS.md` (root or module-level) in the **same commit**
 - This includes: new Swift files, new subdirectories, new model/protocol types in `Shared/`, and changes to module structure
 - If you notice AGENTS.md is out of date while working, fix it immediately — don't leave it for later
 - The project structure tree, module ownership table, and shared type listings must always reflect reality
 
 ### 6. Main Thread & Hang Prevention (Mandatory)
+
 - Treat the main thread as **UI-only**: state publication, view updates, input handling, and presentation.
 - **Never** do blocking work on main for timeline/search open paths, startup checks, or settings pickers.
 - Move heavy work off main (`Task.detached`, actors, background queues): SQLite/file validation, OCR, screenshot capture, metadata/icon lookup, image decode, and large layout calculations.
@@ -408,6 +423,12 @@ Then check which path actually executes and fix the right code.
   - Search overlay open and navigate: no full-grid teardown thrash.
   - Settings/storage picker validation: no UI freeze while verifying paths.
 
+### 7. Daily Metrics Instrumentation (Mandatory)
+
+- **Any newly added feature or user action must add `daily_metrics` instrumentation in the same change**.
+- Add a new `DailyMetricsQueries.MetricType` (and metadata schema) when no existing metric accurately represents the action.
+- Wire the metric emission at the action entry/outcome points (for example: opened, submitted, succeeded, failed/no-results where applicable).
+
 ---
 
 ## Additional Resources
@@ -418,4 +439,4 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-*This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-02-24*
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-03-04_

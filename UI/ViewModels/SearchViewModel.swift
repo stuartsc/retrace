@@ -943,6 +943,19 @@ public class SearchViewModel: ObservableObject {
         saveRecentSearchEntries()
     }
 
+    public func removeRecentSearchEntry(_ entry: RecentSearchEntry) {
+        removeRecentSearchEntry(key: entry.key)
+    }
+
+    public func removeRecentSearchEntry(key: String) {
+        guard !key.isEmpty else { return }
+
+        let priorCount = recentSearchEntries.count
+        recentSearchEntries.removeAll { $0.key == key }
+        guard recentSearchEntries.count != priorCount else { return }
+        saveRecentSearchEntries()
+    }
+
     private func currentRecentSearchFilters() -> RecentSearchFilters {
         let appBundleIDs = (selectedAppFilters ?? []).sorted()
         let tagIDs = (selectedTags ?? []).sorted()
@@ -1132,6 +1145,19 @@ public class SearchViewModel: ObservableObject {
             }
         }
 
+        currentSearchTask = Task {
+            await performSearch(query: query, trigger: trigger)
+        }
+    }
+
+    /// Re-run the current query immediately without recording a new "submitted search" analytics event.
+    /// Useful for corrective actions in no-results diagnostics.
+    public func rerunSearchImmediately(trigger: String = "manual-rerun") {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        guard hasSubmittedSearch else { return }
+
+        currentSearchTask?.cancel()
         currentSearchTask = Task {
             await performSearch(query: query, trigger: trigger)
         }

@@ -776,6 +776,416 @@ public class DashboardViewModel: ObservableObject {
         }
     }
 
+    public static func recordDateSearchSubmitted(
+        coordinator: AppCoordinator,
+        source: String,
+        query: String,
+        queryLength: Int,
+        frameIDSearchEnabled: Bool,
+        lookedLikeFrameID: Bool
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "query": query,
+            "queryLength": queryLength,
+            "frameIDSearchEnabled": frameIDSearchEnabled,
+            "lookedLikeFrameID": lookedLikeFrameID
+        ])
+        recordMetric(coordinator: coordinator, type: .dateSearchSubmitted, metadata: metadata)
+    }
+
+    public static func recordDateSearchOutcome(
+        coordinator: AppCoordinator,
+        source: String,
+        query: String,
+        outcome: String,
+        queryLength: Int,
+        frameIDLookupAttempted: Bool,
+        frameCount: Int? = nil
+    ) {
+        var payload: [String: Any] = [
+            "source": source,
+            "query": query,
+            "outcome": outcome,
+            "queryLength": queryLength,
+            "frameIDLookupAttempted": frameIDLookupAttempted
+        ]
+        if let frameCount {
+            payload["frameCount"] = frameCount
+        }
+        recordMetric(
+            coordinator: coordinator,
+            type: .dateSearchOutcome,
+            metadata: jsonMetadata(payload)
+        )
+    }
+
+    // MARK: - Extended Metrics
+
+    private static func recordMetric(
+        coordinator: AppCoordinator,
+        type: DailyMetricsQueries.MetricType,
+        metadata: String? = nil
+    ) {
+        Task {
+            try? await coordinator.recordMetricEvent(metricType: type, metadata: metadata)
+        }
+    }
+
+    private static func jsonMetadata(_ payload: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return json
+    }
+
+    public static func recordSegmentHide(
+        coordinator: AppCoordinator,
+        source: String,
+        segmentCount: Int,
+        frameCount: Int,
+        hiddenFilter: String
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "segmentCount": segmentCount,
+            "frameCount": frameCount,
+            "hiddenFilter": hiddenFilter
+        ])
+        recordMetric(coordinator: coordinator, type: .segmentHide, metadata: metadata)
+    }
+
+    public static func recordSegmentUnhide(
+        coordinator: AppCoordinator,
+        source: String,
+        segmentCount: Int,
+        frameCount: Int,
+        hiddenFilter: String,
+        removedFromCurrentView: Bool
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "segmentCount": segmentCount,
+            "frameCount": frameCount,
+            "hiddenFilter": hiddenFilter,
+            "removedFromCurrentView": removedFromCurrentView
+        ])
+        recordMetric(coordinator: coordinator, type: .segmentUnhide, metadata: metadata)
+    }
+
+    public static func recordTagSubmenuOpen(
+        coordinator: AppCoordinator,
+        source: String,
+        segmentCount: Int?,
+        frameCount: Int?,
+        selectedTagCount: Int?
+    ) {
+        var payload: [String: Any] = ["source": source]
+        if let segmentCount {
+            payload["segmentCount"] = segmentCount
+        }
+        if let frameCount {
+            payload["frameCount"] = frameCount
+        }
+        if let selectedTagCount {
+            payload["selectedTagCount"] = selectedTagCount
+        }
+        recordMetric(
+            coordinator: coordinator,
+            type: .tagSubmenuOpen,
+            metadata: jsonMetadata(payload)
+        )
+    }
+
+    public static func recordTagToggleOnBlock(
+        coordinator: AppCoordinator,
+        source: String,
+        tagID: Int64,
+        tagName: String,
+        action: String,
+        segmentCount: Int
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "tagID": tagID,
+            "tagName": tagName,
+            "action": action,
+            "segmentCount": segmentCount
+        ])
+        recordMetric(coordinator: coordinator, type: .tagToggleOnBlock, metadata: metadata)
+    }
+
+    public static func recordTagCreateAndAddOnBlock(
+        coordinator: AppCoordinator,
+        source: String,
+        tagID: Int64,
+        tagName: String,
+        segmentCount: Int
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "tagID": tagID,
+            "tagName": tagName,
+            "segmentCount": segmentCount
+        ])
+        recordMetric(coordinator: coordinator, type: .tagCreateAndAddOnBlock, metadata: metadata)
+    }
+
+    public static func recordCommentSubmenuOpen(
+        coordinator: AppCoordinator,
+        source: String,
+        segmentCount: Int?,
+        frameCount: Int?,
+        existingCommentCount: Int?
+    ) {
+        var payload: [String: Any] = ["source": source]
+        if let segmentCount {
+            payload["segmentCount"] = segmentCount
+        }
+        if let frameCount {
+            payload["frameCount"] = frameCount
+        }
+        if let existingCommentCount {
+            payload["existingCommentCount"] = existingCommentCount
+        }
+        recordMetric(
+            coordinator: coordinator,
+            type: .commentSubmenuOpen,
+            metadata: jsonMetadata(payload)
+        )
+    }
+
+    public static func recordCommentAdded(
+        coordinator: AppCoordinator,
+        source: String,
+        requestedSegmentCount: Int,
+        linkedSegmentCount: Int,
+        bodyLength: Int,
+        attachmentCount: Int,
+        hasFrameAnchor: Bool
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "requestedSegmentCount": requestedSegmentCount,
+            "linkedSegmentCount": linkedSegmentCount,
+            "bodyLength": bodyLength,
+            "attachmentCount": attachmentCount,
+            "hasFrameAnchor": hasFrameAnchor
+        ])
+        recordMetric(coordinator: coordinator, type: .commentAdded, metadata: metadata)
+    }
+
+    public static func recordCommentDeletedFromBlock(
+        coordinator: AppCoordinator,
+        source: String,
+        linkedSegmentCount: Int,
+        hadFrameAnchor: Bool
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "linkedSegmentCount": linkedSegmentCount,
+            "hadFrameAnchor": hadFrameAnchor
+        ])
+        recordMetric(coordinator: coordinator, type: .commentDeletedFromBlock, metadata: metadata)
+    }
+
+    public static func recordCommentAttachmentPickerOpened(coordinator: AppCoordinator, source: String) {
+        let metadata = jsonMetadata(["source": source])
+        recordMetric(
+            coordinator: coordinator,
+            type: .commentAttachmentPickerOpened,
+            metadata: metadata
+        )
+    }
+
+    public static func recordCommentAttachmentOpened(
+        coordinator: AppCoordinator,
+        source: String,
+        fileExtension: String
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "fileExtension": fileExtension
+        ])
+        recordMetric(
+            coordinator: coordinator,
+            type: .commentAttachmentOpened,
+            metadata: metadata
+        )
+    }
+
+    public static func recordAllCommentsOpened(
+        coordinator: AppCoordinator,
+        source: String,
+        anchorCommentID: Int64?
+    ) {
+        var payload: [String: Any] = ["source": source]
+        if let anchorCommentID {
+            payload["anchorCommentID"] = anchorCommentID
+        }
+        recordMetric(coordinator: coordinator, type: .allCommentsOpened, metadata: jsonMetadata(payload))
+    }
+
+    public static func recordPlaybackToggled(
+        coordinator: AppCoordinator,
+        source: String,
+        wasPlaying: Bool,
+        isPlaying: Bool,
+        speed: Double
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "wasPlaying": wasPlaying,
+            "isPlaying": isPlaying,
+            "speed": speed
+        ])
+        recordMetric(coordinator: coordinator, type: .playbackToggled, metadata: metadata)
+    }
+
+    public static func recordPlaybackSpeedChanged(
+        coordinator: AppCoordinator,
+        source: String,
+        previousSpeed: Double,
+        newSpeed: Double,
+        isPlaying: Bool
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "previousSpeed": previousSpeed,
+            "newSpeed": newSpeed,
+            "isPlaying": isPlaying
+        ])
+        recordMetric(coordinator: coordinator, type: .playbackSpeedChanged, metadata: metadata)
+    }
+
+    public static func recordRecordingStartedFromMenu(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .recordingStartedFromMenu,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordRecordingPauseSelected(
+        coordinator: AppCoordinator,
+        source: String,
+        durationSeconds: Int
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "durationSeconds": durationSeconds
+        ])
+        recordMetric(
+            coordinator: coordinator,
+            type: .recordingPauseSelected,
+            metadata: metadata
+        )
+    }
+
+    public static func recordRecordingTurnedOff(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .recordingTurnedOff,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordRecordingAutoResumed(
+        coordinator: AppCoordinator,
+        source: String,
+        pausedDurationSeconds: Int
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "pausedDurationSeconds": pausedDurationSeconds
+        ])
+        recordMetric(
+            coordinator: coordinator,
+            type: .recordingAutoResumed,
+            metadata: metadata
+        )
+    }
+
+    public static func recordSystemMonitorOpened(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .systemMonitorOpened,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordSettingsSearchOpened(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .settingsSearchOpened,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordRedactionRulesUpdated(
+        coordinator: AppCoordinator,
+        windowPatternCount: Int,
+        urlPatternCount: Int
+    ) {
+        let metadata = jsonMetadata([
+            "windowPatternCount": windowPatternCount,
+            "urlPatternCount": urlPatternCount
+        ])
+        recordMetric(coordinator: coordinator, type: .redactionRulesUpdated, metadata: metadata)
+    }
+
+    public static func recordSystemMonitorSettingsOpened(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .systemMonitorSettingsOpened,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordSystemMonitorOpenPowerOCRCard(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .systemMonitorOpenPowerOCRCard,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordSystemMonitorOpenPowerOCRPriority(coordinator: AppCoordinator, source: String) {
+        recordMetric(
+            coordinator: coordinator,
+            type: .systemMonitorOpenPowerOCRPriority,
+            metadata: jsonMetadata(["source": source])
+        )
+    }
+
+    public static func recordFrameDeleted(
+        coordinator: AppCoordinator,
+        source: String,
+        frameID: Int64
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "frameID": frameID
+        ])
+        recordMetric(coordinator: coordinator, type: .frameDeleted, metadata: metadata)
+    }
+
+    public static func recordSegmentDeleted(
+        coordinator: AppCoordinator,
+        source: String,
+        segmentCount: Int,
+        frameCount: Int
+    ) {
+        let metadata = jsonMetadata([
+            "source": source,
+            "segmentCount": segmentCount,
+            "frameCount": frameCount
+        ])
+        recordMetric(coordinator: coordinator, type: .segmentDeleted, metadata: metadata)
+    }
+
     // MARK: - Cleanup
 
     deinit {

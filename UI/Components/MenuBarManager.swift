@@ -294,6 +294,10 @@ public class MenuBarManager: ObservableObject {
                 if shouldRecord {
                     Log.debug("[MenuBar] Hotkey toggle ON - Starting pipeline...", category: .ui)
                     try await coordinator.startPipeline()
+                    DashboardViewModel.recordRecordingStartedFromMenu(
+                        coordinator: coordinator,
+                        source: "menu_hotkey"
+                    )
                 } else {
                     Log.debug("[MenuBar] Hotkey toggle OFF - Stopping pipeline...", category: .ui)
                     try await coordinator.stopPipeline()
@@ -560,6 +564,10 @@ public class MenuBarManager: ObservableObject {
                 if shouldRecord {
                     Log.debug("[MenuBar] Toggle ON - Starting pipeline...", category: .ui)
                     try await coordinator.startPipeline()
+                    DashboardViewModel.recordRecordingStartedFromMenu(
+                        coordinator: coordinator,
+                        source: "menu_toggle"
+                    )
                 } else {
                     Log.debug("[MenuBar] Toggle OFF - Stopping pipeline...", category: .ui)
                     try await coordinator.stopPipeline()
@@ -656,6 +664,23 @@ public class MenuBarManager: ObservableObject {
                 Log.debug("[MenuBar] Pausing capture pipeline...", category: .ui)
                 // Timed pause should come back ON after app relaunch; explicit "Turn Off" should persist OFF.
                 try await coordinator.stopPipeline(persistState: !isTimedPause)
+
+                if isTimedPause, let duration {
+                    await MainActor.run {
+                        DashboardViewModel.recordRecordingPauseSelected(
+                            coordinator: coordinator,
+                            source: "pause_menu",
+                            durationSeconds: Int(duration)
+                        )
+                    }
+                } else {
+                    await MainActor.run {
+                        DashboardViewModel.recordRecordingTurnedOff(
+                            coordinator: coordinator,
+                            source: "pause_menu"
+                        )
+                    }
+                }
             }
 
             if wasRecording, isTimedPause, let duration {
@@ -674,6 +699,12 @@ public class MenuBarManager: ObservableObject {
         isPausedByUser = false
         do {
             try await coordinator.startPipeline()
+            await MainActor.run {
+                DashboardViewModel.recordRecordingStartedFromMenu(
+                    coordinator: coordinator,
+                    source: "status_menu_start"
+                )
+            }
         } catch {
             Log.error("[MenuBar] Failed to start recording: \(error)", category: .ui)
         }
@@ -719,6 +750,11 @@ public class MenuBarManager: ObservableObject {
             do {
                 Log.info("[MenuBar] Timed pause ended - resuming capture", category: .ui)
                 try await self.coordinator.startPipeline()
+                DashboardViewModel.recordRecordingAutoResumed(
+                    coordinator: self.coordinator,
+                    source: "timed_pause",
+                    pausedDurationSeconds: Int(duration)
+                )
             } catch {
                 Log.error("[MenuBar] Failed to auto-resume after timed pause: \(error)", category: .ui)
             }
@@ -815,6 +851,7 @@ public class MenuBarManager: ObservableObject {
 
     private func setupMenu() {
         let menu = NSMenu()
+        let visibleDashboardContent = visibleDashboardContentInFront()
 
         // Open Timeline
         let timelineItem = NSMenuItem(
@@ -827,9 +864,10 @@ public class MenuBarManager: ObservableObject {
         menu.addItem(timelineItem)
 
         // Open Dashboard
+        let isDashboardFrontAndCenter = visibleDashboardContent == .dashboard
         let dashboardItem = NSMenuItem(
-            title: "Dashboard",
-            action: #selector(openDashboard),
+            title: isDashboardFrontAndCenter ? "Hide Dashboard" : "Open Dashboard",
+            action: isDashboardFrontAndCenter ? #selector(hideDashboardFromMenu) : #selector(openDashboard),
             keyEquivalent: dashboardShortcut.menuKeyEquivalent
         )
         dashboardItem.keyEquivalentModifierMask = dashboardShortcut.modifiers.nsModifiers
@@ -837,9 +875,10 @@ public class MenuBarManager: ObservableObject {
         menu.addItem(dashboardItem)
 
         // System Monitor
+        let isSystemMonitorFrontAndCenter = visibleDashboardContent == .monitor
         let monitorItem = NSMenuItem(
-            title: "System Monitor",
-            action: #selector(openSystemMonitor),
+            title: isSystemMonitorFrontAndCenter ? "Hide System Monitor" : "Open System Monitor",
+            action: isSystemMonitorFrontAndCenter ? #selector(hideSystemMonitorFromMenu) : #selector(openSystemMonitor),
             keyEquivalent: systemMonitorShortcut.key.isEmpty ? "" : systemMonitorShortcut.menuKeyEquivalent
         )
         if !systemMonitorShortcut.key.isEmpty {
@@ -1099,7 +1138,13 @@ public class MenuBarManager: ObservableObject {
     }
 
     @objc private func openDashboard() {
-        NotificationCenter.default.post(name: .toggleDashboard, object: nil)
+        NotificationCenter.default.post(name: .openDashboard, object: nil)
+    }
+
+    @objc private func hideDashboardFromMenu() {
+        Task { @MainActor in
+            DashboardWindowController.shared.hide()
+        }
     }
 
     @objc private func openChangelog() {
@@ -1110,6 +1155,10 @@ public class MenuBarManager: ObservableObject {
 
     @objc private func openSystemMonitor() {
         NotificationCenter.default.post(name: .openSystemMonitor, object: nil)
+    }
+
+    @objc private func hideSystemMonitorFromMenu() {
+        NotificationCenter.default.post(name: .toggleSystemMonitor, object: nil)
     }
 
     @objc private func startRecordingFromMenu() {
@@ -1200,6 +1249,25 @@ public class MenuBarManager: ObservableObject {
         Task { @MainActor in
             await pauseRecording(for: duration)
         }
+    }
+
+    private enum VisibleDashboardContent {
+        case dashboard
+        case monitor
+        case other
+    }
+
+    private func visibleDashboardContentInFront() -> VisibleDashboardContent {
+        guard NSApp.isActive else { return .other }
+
+        let titles = [NSApp.keyWindow?.title, NSApp.mainWindow?.title]
+        if titles.contains("Dashboard") {
+            return .dashboard
+        }
+        if titles.contains("System Monitor") {
+            return .monitor
+        }
+        return .other
     }
 
     // MARK: - Update
