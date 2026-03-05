@@ -148,7 +148,7 @@ let package = Package(
                 .unsafeFlags(["-I", whisperIncludePath, "-I", whisperIncludePath + "/ggml"])
             ],
             linkerSettings: [
-                .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib"]),
+                .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib", "-Xlinker", "-rpath", "-Xlinker", whisperLibPath]),
                 .linkedLibrary("whisper"),
                 .linkedFramework("Accelerate"),
                 .linkedFramework("CoreML"),
@@ -223,7 +223,7 @@ let package = Package(
                 "README.md"
             ],
             linkerSettings: [
-                .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib"]),
+                .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib", "-Xlinker", "-rpath", "-Xlinker", whisperLibPath]),
                 .linkedLibrary("whisper"),
                 .linkedFramework("Accelerate"),
                 .linkedFramework("CoreML"),
@@ -273,7 +273,7 @@ let package = Package(
                 .process("Assets.xcassets")
             ],
             linkerSettings: [
-                .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib"]),
+                .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib", "-Xlinker", "-rpath", "-Xlinker", whisperLibPath]),
                 .linkedLibrary("whisper"),
                 .linkedFramework("Accelerate"),
                 .linkedFramework("CoreML"),
