@@ -236,6 +236,15 @@ public actor AppCoordinator {
         services.modelManager
     }
 
+    public func getAudioBackfill() async -> AudioBackfillManager? {
+        await services.audioBackfill
+    }
+
+    public func getAudioTranscriptionQueries() async -> AudioTranscriptionQueries? {
+        guard let db = await services.database.getConnection() else { return nil }
+        return AudioTranscriptionQueries(db: db)
+    }
+
     /// Get current capture configuration
     public func getCaptureConfig() async -> CaptureConfig {
         await services.capture.getConfig()
@@ -481,6 +490,16 @@ public actor AppCoordinator {
         }
         audioTask = Task {
             await runAudioPipeline()
+        }
+
+        // Backfill: transcribe any saved batch audio files from previous sessions
+        if let backfill = await services.audioBackfill {
+            Task {
+                let result = await backfill.processAllPendingBatches()
+                if result.processedCount > 0 || result.silenceCount > 0 {
+                    Log.info("Audio backfill complete: \(result.processedCount) transcribed, \(result.silenceCount) silence, \(result.totalSentences) sentences", category: .app)
+                }
+            }
         }
 
         // Save recording state for persistence across restarts
