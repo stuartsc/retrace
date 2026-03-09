@@ -136,6 +136,7 @@ public class AppNameResolver {
     /// Returns array of AppInfo with bundleID and name
     public func getInstalledApps() -> [AppInfo] {
         var apps: [AppInfo] = []
+        var seenBundleIDs: Set<String> = []
         let fm = FileManager.default
 
         let appFolders = [
@@ -155,6 +156,13 @@ public class AppNameResolver {
                 guard let plist = NSDictionary(contentsOf: plistURL),
                       let bundleID = plist["CFBundleIdentifier"] as? String,
                       !bundleID.isEmpty else {
+                    continue
+                }
+
+                // Skip duplicates from multiple app directories/symlinks.
+                // Bundle IDs are case-insensitive in practice for this purpose.
+                let bundleIDKey = bundleID.lowercased()
+                guard seenBundleIDs.insert(bundleIDKey).inserted else {
                     continue
                 }
 
@@ -185,9 +193,18 @@ public class AppNameResolver {
     /// - Parameter bundleIDs: Array of bundle identifiers
     /// - Returns: Array of AppInfo with resolved names
     public func resolveAll(bundleIDs: [String]) -> [AppInfo] {
-        return bundleIDs.map { bundleID in
-            AppInfo(bundleID: bundleID, name: displayName(for: bundleID))
+        var resolved: [AppInfo] = []
+        var seenBundleIDs: Set<String> = []
+
+        for bundleID in bundleIDs {
+            let bundleIDKey = bundleID.lowercased()
+            guard seenBundleIDs.insert(bundleIDKey).inserted else {
+                continue
+            }
+            resolved.append(AppInfo(bundleID: bundleID, name: displayName(for: bundleID)))
         }
+
+        return resolved
     }
 
     // MARK: - Disk Persistence

@@ -499,11 +499,17 @@ public struct SpotlightSearchOverlay: View {
     }
 
     private func refreshRecentEntryTagMap() {
-        recentEntryTagByID = Dictionary(uniqueKeysWithValues: viewModel.availableTags.map { ($0.id.value, $0) })
+        recentEntryTagByID = Dictionary(
+            viewModel.availableTags.map { ($0.id.value, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     private func refreshRecentEntryAppNameMap() {
-        recentEntryAppNamesByBundleID = Dictionary(uniqueKeysWithValues: viewModel.availableApps.map { ($0.bundleID, $0.name) })
+        recentEntryAppNamesByBundleID = Dictionary(
+            viewModel.availableApps.map { ($0.bundleID, $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     private var rankedRecentEntriesCount: Int {

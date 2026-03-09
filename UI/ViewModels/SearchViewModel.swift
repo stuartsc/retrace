@@ -274,7 +274,7 @@ public class SearchViewModel: ObservableObject {
 
     /// Combined list: installed apps + other apps (for backwards compatibility)
     public var availableApps: [AppInfo] {
-        installedApps + otherApps
+        Self.deduplicatedAppsByBundleID(installedApps + otherApps)
     }
 
     /// Effective date ranges for filtering. Falls back to legacy single-range fields.
@@ -1628,6 +1628,21 @@ public class SearchViewModel: ObservableObject {
         let cachePhaseMs: Int
     }
 
+    /// Deduplicate by bundle ID while preserving first occurrence order.
+    nonisolated private static func deduplicatedAppsByBundleID(_ apps: [AppInfo]) -> [AppInfo] {
+        var deduplicated: [AppInfo] = []
+        var seenBundleIDs: Set<String> = []
+
+        deduplicated.reserveCapacity(apps.count)
+        for app in apps {
+            let bundleIDKey = app.bundleID.lowercased()
+            guard seenBundleIDs.insert(bundleIDKey).inserted else { continue }
+            deduplicated.append(app)
+        }
+
+        return deduplicated
+    }
+
     /// Load available apps for the filter dropdown.
     /// Heavy filesystem/system discovery runs off-main; only state publication stays on main.
     public func loadAvailableApps() async {
@@ -1646,7 +1661,7 @@ public class SearchViewModel: ObservableObject {
         let startTime = CFAbsoluteTimeGetCurrent()
         let snapshot = await Task.detached(priority: .utility) {
             let installedStart = CFAbsoluteTimeGetCurrent()
-            let installed = AppNameResolver.shared.getInstalledApps()
+            let installed = Self.deduplicatedAppsByBundleID(AppNameResolver.shared.getInstalledApps())
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             let installedBundleIDs = Set(installed.map { $0.bundleID })
             let installedPhaseMs = Int((CFAbsoluteTimeGetCurrent() - installedStart) * 1000)
@@ -1714,7 +1729,9 @@ public class SearchViewModel: ObservableObject {
             let uninstalledBundleIDs = allCachedApps
                 .map { $0.bundleID }
                 .filter { !installedBundleIDs.contains($0) }
-            let uninstalledApps = AppNameResolver.shared.resolveAll(bundleIDs: uninstalledBundleIDs)
+            let uninstalledApps = Self.deduplicatedAppsByBundleID(
+                AppNameResolver.shared.resolveAll(bundleIDs: uninstalledBundleIDs)
+            )
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
             return (uninstalledApps, isStale)
@@ -1733,8 +1750,9 @@ public class SearchViewModel: ObservableObject {
             let dbApps = AppNameResolver.shared.resolveAll(bundleIDs: bundleIDs)
 
             // Filter to only apps that aren't currently installed
-            let uninstalledApps = dbApps
-                .filter { !installedBundleIDs.contains($0.bundleID) }
+            let uninstalledApps = Self.deduplicatedAppsByBundleID(
+                dbApps.filter { !installedBundleIDs.contains($0.bundleID) }
+            )
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
             // Update UI on main thread
@@ -1755,7 +1773,8 @@ public class SearchViewModel: ObservableObject {
     /// Save apps to disk cache
     private func saveOtherAppsToCache(_ apps: [AppInfo]) {
         do {
-            let cachedApps = apps.map { CachedAppInfo(bundleID: $0.bundleID, name: $0.name) }
+            let cachedApps = Self.deduplicatedAppsByBundleID(apps)
+                .map { CachedAppInfo(bundleID: $0.bundleID, name: $0.name) }
             let data = try JSONEncoder().encode(cachedApps)
             try data.write(to: Self.cachedOtherAppsPath, options: .atomic)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.otherAppsCacheSavedAtKey)
