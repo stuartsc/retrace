@@ -174,6 +174,41 @@ public actor AudioTranscriptionQueries {
         }
     }
 
+    /// Insert a raw audio batch record (before transcription)
+    /// Saves the audio file path so raw audio is never lost even if transcription fails
+    @discardableResult
+    public func insertRawBatch(
+        startTime: Date,
+        endTime: Date,
+        source: AudioSource,
+        audioPath: String,
+        audioSize: Int64
+    ) throws -> Int64 {
+        let sql = """
+            INSERT INTO audio_captures (
+                session_id, text, start_time, end_time, source, confidence, audio_path, audio_size
+            ) VALUES (NULL, '', ?, ?, ?, NULL, ?, ?);
+            """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_int64(stmt, 1, Schema.dateToTimestamp(startTime))
+        sqlite3_bind_int64(stmt, 2, Schema.dateToTimestamp(endTime))
+        sqlite3_bind_text(stmt, 3, source.rawValue, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 4, audioPath, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 5, audioSize)
+
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+
+        return sqlite3_last_insert_rowid(db)
+    }
+
     // MARK: - Query Transcriptions
 
     /// Get transcriptions within a time range
@@ -374,6 +409,108 @@ public actor AudioTranscriptionQueries {
         return Int(sqlite3_changes(db))
     }
 
+    /// Delete a single transcription record by ID
+    @discardableResult
+    public func deleteTranscription(id: Int64) throws -> Bool {
+        let sql = "DELETE FROM audio_captures WHERE id = ?;"
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_int64(stmt, 1, id)
+
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+
+        return sqlite3_changes(db) > 0
+    }
+
+    /// Update the text field of a transcription record (used to mark silence batches)
+    public func updateTranscriptionText(id: Int64, text: String) throws {
+        let sql = "UPDATE audio_captures SET text = ? WHERE id = ?;"
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_text(stmt, 1, text, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, id)
+
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    // MARK: - Backfill Queries
+
+    /// Get raw batch records that haven't been transcribed yet
+    /// These have text="" and a batch audio file path
+    public func getUntranscribedBatches(limit: Int = 50) throws -> [UntranscribedBatch] {
+        let sql = """
+            SELECT id, start_time, end_time, source, audio_path, audio_size
+            FROM audio_captures
+            WHERE text = '' AND audio_path IS NOT NULL AND audio_path LIKE '%batch_%'
+            ORDER BY start_time ASC
+            LIMIT ?;
+            """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_int(stmt, 1, Int32(limit))
+
+        var results: [UntranscribedBatch] = []
+
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let id = sqlite3_column_int64(stmt, 0)
+            let startTime = Schema.timestampToDate(sqlite3_column_int64(stmt, 1))
+            let endTime = Schema.timestampToDate(sqlite3_column_int64(stmt, 2))
+            let sourceRaw = String(cString: sqlite3_column_text(stmt, 3))
+            let audioPath = String(cString: sqlite3_column_text(stmt, 4))
+            let audioSize = sqlite3_column_int64(stmt, 5)
+
+            results.append(UntranscribedBatch(
+                id: id,
+                startTime: startTime,
+                endTime: endTime,
+                source: AudioSource(rawValue: sourceRaw) ?? .microphone,
+                audioPath: audioPath,
+                audioSize: audioSize
+            ))
+        }
+
+        return results
+    }
+
+    /// Get count of untranscribed batch records
+    public func getUntranscribedBatchCount() throws -> Int {
+        let sql = """
+            SELECT COUNT(*) FROM audio_captures
+            WHERE text = '' AND audio_path IS NOT NULL AND audio_path LIKE '%batch_%';
+            """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            return 0
+        }
+
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
     /// Get total count of transcriptions
     public func getTranscriptionCount() throws -> Int {
         let sql = "SELECT COUNT(*) FROM audio_captures;"
@@ -422,5 +559,32 @@ public struct AudioTranscription: Sendable {
         self.source = source
         self.confidence = confidence
         self.createdAt = createdAt
+    }
+}
+
+// MARK: - Untranscribed Batch Model
+
+public struct UntranscribedBatch: Sendable {
+    public let id: Int64
+    public let startTime: Date
+    public let endTime: Date
+    public let source: AudioSource
+    public let audioPath: String
+    public let audioSize: Int64
+
+    public init(
+        id: Int64,
+        startTime: Date,
+        endTime: Date,
+        source: AudioSource,
+        audioPath: String,
+        audioSize: Int64
+    ) {
+        self.id = id
+        self.startTime = startTime
+        self.endTime = endTime
+        self.source = source
+        self.audioPath = audioPath
+        self.audioSize = audioSize
     }
 }

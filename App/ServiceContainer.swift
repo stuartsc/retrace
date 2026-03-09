@@ -28,6 +28,8 @@ public actor ServiceContainer {
     public let retentionManager: RetentionManager
     public var dataAdapter: DataAdapter?
     public var processingQueue: FrameProcessingQueue?
+    public var audioBackfill: AudioBackfillManager?
+    private var transcriptionService: (any TranscriptionProtocol)?
 
     // MARK: - Configuration
 
@@ -99,6 +101,9 @@ public actor ServiceContainer {
         // Audio storage writer
         let audioWriter = AudioSegmentWriter(storageRoot: storageRootURL)
 
+        // Store transcription service for backfill manager
+        self.transcriptionService = transcriptionService
+
         self.audioProcessing = AudioProcessingManager(
             transcriptionService: transcriptionService,
             transcriptionQueries: nil,  // Set during initialization
@@ -155,6 +160,7 @@ public actor ServiceContainer {
 
         // Use mock transcription service in test mode to avoid loading heavy Whisper model
         let transcriptionService: any TranscriptionProtocol = MockTranscriptionService()
+        self.transcriptionService = transcriptionService
         let storageRoot = URL(fileURLWithPath: "/tmp/retrace_test", isDirectory: true)
         let audioWriter = AudioSegmentWriter(storageRoot: storageRoot)
         self.audioProcessing = AudioProcessingManager(
@@ -254,6 +260,17 @@ public actor ServiceContainer {
                 audioWriter: audioWriter
             )
             Log.info("✓ Audio processing initialized", category: .app)
+
+            // Create backfill manager only if real whisper service is available
+            if let service = self.transcriptionService, !(service is MockTranscriptionService) {
+                self.audioBackfill = AudioBackfillManager(
+                    transcriptionService: service,
+                    transcriptionQueries: audioTranscriptionQueries,
+                    audioWriter: audioWriter,
+                    storageRoot: audioStorageRoot
+                )
+                Log.info("✓ Audio backfill manager initialized", category: .app)
+            }
         } catch {
             Log.warning("Audio processing initialization failed (will record without transcription): \(error)", category: .app)
         }

@@ -1,11 +1,12 @@
 import SwiftUI
+import App
 
-/// Onboarding view for downloading AI models on first launch
+/// View for downloading AI models — used in onboarding and Settings > Audio
 /// Shows model information, download progress, and privacy assurance
 /// Owner: UI module
 struct ModelDownloadView: View {
 
-    @StateObject private var viewModel = ModelDownloadViewModel()
+    @ObservedObject var viewModel: ModelDownloadViewModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -106,7 +107,6 @@ struct ModelDownloadView: View {
         }
         .onChange(of: viewModel.allModelsDownloaded) { allDownloaded in
             if allDownloaded && viewModel.isDownloading {
-                // Auto-dismiss after successful download
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     dismiss()
                 }
@@ -118,9 +118,9 @@ struct ModelDownloadView: View {
 // MARK: - Model Row
 
 private struct ModelRow: View {
-    let model: ModelDownloadViewModel.ModelInfo
-    let status: ModelDownloadViewModel.ModelStatus?
-    let progress: ModelDownloadViewModel.DownloadProgress?
+    let model: ModelDownloadViewModel.ModelDisplayInfo
+    let status: ModelDownloadViewModel.ModelStatusInfo?
+    let progress: ModelDownloadViewModel.DownloadProgressInfo?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -190,10 +190,4 @@ private struct ModelRow: View {
             return .gray
         }
     }
-}
-
-// MARK: - Preview
-
-#Preview {
-    ModelDownloadView()
 }

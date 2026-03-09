@@ -2,6 +2,8 @@ import SwiftUI
 import Shared
 import AppKit
 import App
+import Database
+import Processing
 import Carbon.HIToolbox
 import ScreenCaptureKit
 import SQLCipher
@@ -790,6 +792,8 @@ public struct SettingsView: View {
                             privacySettings
                         case .power:
                             powerSettings
+                        case .audio:
+                            audioSettings
                         case .tags:
                             tagManagementSettings
                         case .advanced:
@@ -3329,6 +3333,199 @@ public struct SettingsView: View {
         notifyPowerSettingsChanged()
     }
 
+    // MARK: - Audio Settings
+
+    @State private var showModelDownloadSheet = false
+    @State private var showDeleteModelConfirmation = false
+    @State private var modelToDelete: ModelManager.ModelInfo?
+    @State private var whisperModelStatus: ModelManager.ModelStatus?
+    @State private var embeddingModelStatus: ModelManager.ModelStatus?
+    @State private var untranscribedBatchCount: Int = 0
+    @State private var isBackfillRunning = false
+    @State private var backfillResultMessage: String?
+
+    private var audioSettings: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Whisper Model Card
+            ModernSettingsCard(title: "Whisper Model", icon: "waveform") {
+                VStack(spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Speech-to-text transcription")
+                                .font(.subheadline)
+                            if let status = whisperModelStatus, status.isValid {
+                                let sizeMB = (status.fileSizeBytes ?? 0) / 1_048_576
+                                Text("Downloaded (\(sizeMB) MB)")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            } else {
+                                Text("Not downloaded")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if let status = whisperModelStatus, status.isValid {
+                            Button("Delete") {
+                                modelToDelete = ModelManager.whisperModel
+                                showDeleteModelConfirmation = true
+                            }
+                            .buttonStyle(.bordered)
+                            .foregroundColor(.red)
+                        }
+                    }
+
+                    // Embedding Model
+                    Divider()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Embedding Model")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text("Semantic search embeddings")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            if let status = embeddingModelStatus, status.isValid {
+                                let sizeMB = (status.fileSizeBytes ?? 0) / 1_048_576
+                                Text("Downloaded (\(sizeMB) MB)")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            } else {
+                                Text("Not downloaded")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if let status = embeddingModelStatus, status.isValid {
+                            Button("Delete") {
+                                modelToDelete = ModelManager.embeddingModel
+                                showDeleteModelConfirmation = true
+                            }
+                            .buttonStyle(.bordered)
+                            .foregroundColor(.red)
+                        }
+                    }
+
+                    Divider()
+
+                    Button(action: {
+                        showModelDownloadSheet = true
+                    }) {
+                        HStack {
+                            Image(systemName: "arrow.down.circle")
+                            Text("Download Models")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .task {
+                await refreshModelStatuses()
+            }
+            .sheet(isPresented: $showModelDownloadSheet) {
+                ModelDownloadView(
+                    viewModel: ModelDownloadViewModel(
+                        modelManager: coordinatorWrapper.coordinator.modelManager
+                    )
+                )
+            }
+            .onChange(of: showModelDownloadSheet) { isShowing in
+                if !isShowing {
+                    Task { await refreshModelStatuses() }
+                }
+            }
+            .alert("Delete Model", isPresented: $showDeleteModelConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete", role: .destructive) {
+                    if let model = modelToDelete {
+                        Task {
+                            try? await coordinatorWrapper.coordinator.modelManager.deleteModel(model)
+                            await refreshModelStatuses()
+                        }
+                    }
+                }
+            } message: {
+                Text("Are you sure you want to delete this model? You can re-download it later.")
+            }
+
+            // Backfill Card — only show when whisper is available and there are untranscribed batches
+            if whisperModelStatus?.isValid == true && (untranscribedBatchCount > 0 || backfillResultMessage != nil) {
+                ModernSettingsCard(title: "Saved Audio", icon: "waveform.badge.plus") {
+                    VStack(spacing: 12) {
+                        if let message = backfillResultMessage {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text(message)
+                                    .font(.subheadline)
+                                Spacer()
+                            }
+                        }
+
+                        if untranscribedBatchCount > 0 {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(untranscribedBatchCount) saved audio batch\(untranscribedBatchCount == 1 ? "" : "es")")
+                                        .font(.subheadline)
+                                    Text("Recorded before the whisper model was downloaded")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+
+                            Button(action: {
+                                Task { await runBackfill() }
+                            }) {
+                                HStack {
+                                    if isBackfillRunning {
+                                        SpinnerView(size: 14, lineWidth: 2, color: .white)
+                                            .frame(width: 16, height: 16)
+                                        Text("Transcribing...")
+                                    } else {
+                                        Image(systemName: "text.badge.checkmark")
+                                        Text("Transcribe Saved Audio")
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isBackfillRunning)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func runBackfill() async {
+        guard let backfill = await coordinatorWrapper.coordinator.getAudioBackfill() else { return }
+        isBackfillRunning = true
+        backfillResultMessage = nil
+
+        let result = await backfill.processAllPendingBatches()
+
+        isBackfillRunning = false
+        if result.processedCount > 0 || result.silenceCount > 0 {
+            backfillResultMessage = "Transcribed \(result.processedCount) batch\(result.processedCount == 1 ? "" : "es"), \(result.totalSentences) sentence\(result.totalSentences == 1 ? "" : "s")"
+        }
+
+        // Refresh count
+        await refreshUntranscribedCount()
+    }
+
+    private func refreshUntranscribedCount() async {
+        guard let queries = await coordinatorWrapper.coordinator.getAudioTranscriptionQueries() else { return }
+        untranscribedBatchCount = (try? await queries.getUntranscribedBatchCount()) ?? 0
+    }
+
+    private func refreshModelStatuses() async {
+        let manager = coordinatorWrapper.coordinator.modelManager
+        whisperModelStatus = await manager.getModelStatus(ModelManager.whisperModel)
+        embeddingModelStatus = await manager.getModelStatus(ModelManager.embeddingModel)
+        await refreshUntranscribedCount()
+    }
+
     // MARK: - Tag Management Settings
     private var tagManagementSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -5753,6 +5950,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
     case exportData = "Export & Data"
     case privacy = "Privacy"
     case power = "Power"
+    case audio = "Audio"
     case tags = "Tags"
     // case search = "Search"  // TODO: Add Search settings later
     case advanced = "Advanced"
@@ -5767,6 +5965,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
         case .exportData: return "square.and.arrow.up"
         case .privacy: return "lock.shield"
         case .power: return "bolt.fill"
+        case .audio: return "speaker.wave.2"
         case .tags: return "tag"
         // case .search: return "magnifyingglass"
         case .advanced: return "wrench.and.screwdriver"
@@ -5781,6 +5980,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
         case .exportData: return "Export and manage your data"
         case .privacy: return "Encryption, exclusions, and permissions"
         case .power: return "OCR processing and battery optimization"
+        case .audio: return "Transcription models and microphone"
         case .tags: return "Manage and delete tags"
         // case .search: return "Search behavior and ranking"
         case .advanced: return "Database, encoding, and developer tools"
@@ -5795,6 +5995,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
         case .exportData: return .retraceAccentGradient
         case .privacy: return .retraceGreenGradient
         case .power: return .retraceOrangeGradient
+        case .audio: return .retracePurpleGradient
         case .tags: return .retraceAccentGradient
         // case .search: return .retraceAccentGradient
         case .advanced: return .retracePurpleGradient
@@ -5816,7 +6017,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
             return { view.resetPowerSettings() }
         case .advanced:
             return { view.resetAdvancedSettings() }
-        case .exportData, .tags:
+        case .exportData, .tags, .audio:
             return nil  // No resettable settings
         }
     }

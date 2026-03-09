@@ -88,6 +88,37 @@ public actor AudioProcessingManager {
     private func processBatch(_ batch: AudioBatch) async {
         let startTime = Date()
 
+        // Step 0: Save raw batch audio to disk immediately (never lose audio)
+        if let writer = audioWriter {
+            do {
+                let (batchPath, batchSize) = try await writer.writeFullBatch(
+                    audioData: batch.audioData,
+                    sampleRate: batch.sampleRate,
+                    channels: batch.channels,
+                    timestamp: batch.startTimestamp,
+                    source: batch.source
+                )
+                Log.debug("[AudioProcessingManager] Saved raw batch: \(batchPath) (\(batchSize) bytes)", category: .processing)
+
+                // Insert DB record for the raw batch
+                if let queries = transcriptionQueries {
+                    do {
+                        try await queries.insertRawBatch(
+                            startTime: batch.startTimestamp,
+                            endTime: batch.endTimestamp,
+                            source: batch.source,
+                            audioPath: batchPath,
+                            audioSize: batchSize
+                        )
+                    } catch {
+                        Log.error("[AudioProcessingManager] Failed to insert raw batch DB record: \(error)", category: .processing)
+                    }
+                }
+            } catch {
+                Log.error("[AudioProcessingManager] Failed to save raw batch audio: \(error)", category: .processing)
+            }
+        }
+
         do {
             // Step 1: Transcribe the full batch with word-level timestamps
             let transcription = try await transcriptionService.transcribeWithTimestamps(

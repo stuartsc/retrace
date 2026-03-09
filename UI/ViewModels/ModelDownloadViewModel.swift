@@ -1,24 +1,25 @@
 import Foundation
 import SwiftUI
 import Shared
+import App
 
-/// ViewModel for model download onboarding
-/// Manages download state and progress for AI models
+/// ViewModel for model download onboarding and settings
+/// Manages download state and progress for AI models via ModelManager
 /// Owner: UI module
 @MainActor
 class ModelDownloadViewModel: ObservableObject {
 
     // MARK: - Published State
 
-    @Published var models: [ModelInfo] = []
-    @Published var modelStatuses: [String: ModelStatus] = [:]
-    @Published var downloadProgress: [String: DownloadProgress] = [:]
+    @Published var models: [ModelDisplayInfo] = []
+    @Published var modelStatuses: [String: ModelStatusInfo] = [:]
+    @Published var downloadProgress: [String: DownloadProgressInfo] = [:]
     @Published var isDownloading = false
     @Published var error: String?
 
-    // MARK: - Model Info (mirrors ModelManager types for UI)
+    // MARK: - Display Types
 
-    struct ModelInfo: Identifiable {
+    struct ModelDisplayInfo: Identifiable {
         let id = UUID()
         let name: String
         let filename: String
@@ -26,12 +27,13 @@ class ModelDownloadViewModel: ObservableObject {
         let purpose: String
     }
 
-    struct ModelStatus {
+    struct ModelStatusInfo {
         let isDownloaded: Bool
         let isValid: Bool
+        let fileSizeBytes: Int64?
     }
 
-    struct DownloadProgress {
+    struct DownloadProgressInfo {
         let bytesDownloaded: Int64
         let totalBytes: Int64
         let percentage: Double
@@ -47,28 +49,21 @@ class ModelDownloadViewModel: ObservableObject {
 
     // MARK: - Dependencies
 
-    private var modelManager: Any? // Will be ModelManager actor
+    private let modelManager: ModelManager
 
     // MARK: - Initialization
 
-    init() {
-        // Initialize with static model information
-        self.models = [
-            ModelInfo(
-                name: "Whisper Small",
-                filename: "ggml-small.bin",
-                sizeMB: 465,
-                purpose: "Speech-to-text transcription"
-            ),
-            ModelInfo(
-                name: "Nomic Embed v1.5",
-                filename: "nomic-embed-text-v1.5.Q4_K_M.gguf",
-                sizeMB: 80,
-                purpose: "Semantic search embeddings"
-            )
-        ]
+    init(modelManager: ModelManager) {
+        self.modelManager = modelManager
 
-        // TODO: Initialize modelManager once integrated with AppCoordinator
+        self.models = ModelManager.allModels.map { model in
+            ModelDisplayInfo(
+                name: model.name,
+                filename: model.filename,
+                sizeMB: model.sizeMB,
+                purpose: model.purpose
+            )
+        }
     }
 
     // MARK: - Computed Properties
@@ -93,12 +88,12 @@ class ModelDownloadViewModel: ObservableObject {
     // MARK: - Actions
 
     func checkModelStatuses() async {
-        // TODO: Integrate with ModelManager
-        // For now, assume no models are downloaded
-        for model in models {
-            modelStatuses[model.name] = ModelStatus(
-                isDownloaded: false,
-                isValid: false
+        let statuses = await modelManager.getAllModelStatuses()
+        for status in statuses {
+            modelStatuses[status.model.name] = ModelStatusInfo(
+                isDownloaded: status.isDownloaded,
+                isValid: status.isValid,
+                fileSizeBytes: status.fileSizeBytes
             )
         }
     }
@@ -108,59 +103,84 @@ class ModelDownloadViewModel: ObservableObject {
         error = nil
 
         do {
-            // TODO: Integrate with actual ModelManager
-            // Simulate download for now
-            for model in models {
-                await simulateDownload(for: model)
+            for modelInfo in ModelManager.allModels {
+                _ = try await modelManager.downloadModel(modelInfo) { [weak self] progress in
+                    Task { @MainActor in
+                        self?.downloadProgress[progress.model.name] = DownloadProgressInfo(
+                            bytesDownloaded: progress.bytesDownloaded,
+                            totalBytes: progress.totalBytes,
+                            percentage: progress.percentage
+                        )
+                    }
+                }
+
+                // Update status after each model completes
+                let status = await modelManager.getModelStatus(modelInfo)
+                modelStatuses[modelInfo.name] = ModelStatusInfo(
+                    isDownloaded: status.isDownloaded,
+                    isValid: status.isValid,
+                    fileSizeBytes: status.fileSizeBytes
+                )
             }
 
-            Log.info("All models downloaded successfully", category: .app)
+            Log.info("[ModelDownloadViewModel] All models downloaded successfully", category: .app)
         } catch {
             self.error = error.localizedDescription
-            Log.error("Model download failed: \(error.localizedDescription)", category: .app)
+            Log.error("[ModelDownloadViewModel] Model download failed: \(error.localizedDescription)", category: .app)
         }
 
         isDownloading = false
     }
 
-    func skip() {
-        Log.info("User skipped model download", category: .app)
-        // App will continue without models
-        // Features requiring models will show appropriate messages
-    }
+    func downloadModel(_ modelInfo: ModelManager.ModelInfo) async {
+        isDownloading = true
+        error = nil
 
-    // MARK: - Private Helpers
+        do {
+            _ = try await modelManager.downloadModel(modelInfo) { [weak self] progress in
+                Task { @MainActor in
+                    self?.downloadProgress[progress.model.name] = DownloadProgressInfo(
+                        bytesDownloaded: progress.bytesDownloaded,
+                        totalBytes: progress.totalBytes,
+                        percentage: progress.percentage
+                    )
+                }
+            }
 
-    private func simulateDownload(for model: ModelInfo) async {
-        let totalBytes = Int64(model.sizeMB * 1_048_576)
-        let chunks = 100
-
-        for i in 0...chunks {
-            let bytesDownloaded = Int64(i) * (totalBytes / Int64(chunks))
-            let percentage = Double(i) / Double(chunks)
-
-            downloadProgress[model.name] = DownloadProgress(
-                bytesDownloaded: bytesDownloaded,
-                totalBytes: totalBytes,
-                percentage: percentage
+            let status = await modelManager.getModelStatus(modelInfo)
+            modelStatuses[modelInfo.name] = ModelStatusInfo(
+                isDownloaded: status.isDownloaded,
+                isValid: status.isValid,
+                fileSizeBytes: status.fileSizeBytes
             )
 
-            try? await Task.sleep(for: .nanoseconds(Int64(20_000_000)), clock: .continuous) // 20ms
+            Log.info("[ModelDownloadViewModel] Downloaded \(modelInfo.name)", category: .app)
+        } catch {
+            self.error = error.localizedDescription
+            Log.error("[ModelDownloadViewModel] Download failed for \(modelInfo.name): \(error.localizedDescription)", category: .app)
         }
 
-        modelStatuses[model.name] = ModelStatus(
-            isDownloaded: true,
-            isValid: true
-        )
+        isDownloading = false
     }
-}
 
-// MARK: - Integration Helper
+    func deleteModel(_ modelInfo: ModelManager.ModelInfo) async {
+        do {
+            try await modelManager.deleteModel(modelInfo)
+            let status = await modelManager.getModelStatus(modelInfo)
+            modelStatuses[modelInfo.name] = ModelStatusInfo(
+                isDownloaded: status.isDownloaded,
+                isValid: status.isValid,
+                fileSizeBytes: status.fileSizeBytes
+            )
+            downloadProgress.removeValue(forKey: modelInfo.name)
+            Log.info("[ModelDownloadViewModel] Deleted \(modelInfo.name)", category: .app)
+        } catch {
+            self.error = error.localizedDescription
+            Log.error("[ModelDownloadViewModel] Failed to delete \(modelInfo.name): \(error)", category: .app)
+        }
+    }
 
-extension ModelDownloadViewModel {
-    /// Set the model manager (called by AppCoordinator)
-    func setModelManager(_ manager: Any) {
-        self.modelManager = manager
-        // TODO: Type properly once ModelManager is integrated
+    func skip() {
+        Log.info("[ModelDownloadViewModel] User skipped model download", category: .app)
     }
 }

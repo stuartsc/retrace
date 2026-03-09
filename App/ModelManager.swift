@@ -9,13 +9,13 @@ public actor ModelManager {
     // MARK: - Model Configuration
 
     public struct ModelInfo: Sendable {
-        let name: String
-        let filename: String
-        let url: String
-        let sizeBytes: Int64
-        let purpose: String
+        public let name: String
+        public let filename: String
+        public let url: String
+        public let sizeBytes: Int64
+        public let purpose: String
 
-        var sizeMB: Int {
+        public var sizeMB: Int {
             Int(sizeBytes / 1_048_576)
         }
     }

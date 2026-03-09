@@ -254,6 +254,64 @@ public actor AudioSegmentWriter {
         return blockBuffer
     }
 
+    /// Write the full batch audio buffer to disk as a compressed M4A file
+    /// Called before transcription to ensure raw audio is never lost
+    /// - Parameters:
+    ///   - audioData: Full PCM buffer (e.g., 30s chunk)
+    ///   - sampleRate: Audio sample rate (default 16000 Hz)
+    ///   - channels: Number of audio channels (default 1 for mono)
+    ///   - timestamp: Absolute timestamp for the batch start
+    ///   - source: Audio source (microphone or system_audio)
+    /// - Returns: Tuple of (relative file path, file size in bytes)
+    public func writeFullBatch(
+        audioData: Data,
+        sampleRate: Int = 16000,
+        channels: Int = 1,
+        timestamp: Date,
+        source: AudioSource
+    ) throws -> (filePath: String, fileSize: Int64) {
+
+        guard !audioData.isEmpty else {
+            throw StorageError.fileWriteFailed(path: "audio batch", underlying: "Empty audio data")
+        }
+
+        // Create output directory structure: audio/YYYY/MM/DD/
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy/MM/dd"
+        let datePath = dateFormatter.string(from: timestamp)
+        let outputDir = storageRoot
+            .appendingPathComponent("audio", isDirectory: true)
+            .appendingPathComponent(datePath, isDirectory: true)
+
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+
+        // Generate unique filename: batch_{timestamp}_{source}_{hash}_{uuid}.m4a
+        let timestampMs = Int(timestamp.timeIntervalSince1970 * 1000)
+        let hash = String(abs(audioData.hashValue) & 0xFFFF, radix: 16, uppercase: true)
+        let uuid = UUID().uuidString.prefix(8)
+        let filename = "batch_\(timestampMs)_\(source.rawValue)_\(hash)_\(uuid).m4a"
+        let outputURL = outputDir.appendingPathComponent(filename)
+
+        guard !FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "File already exists")
+        }
+
+        // Convert PCM to M4A (AAC compression)
+        try convertPCMToM4A(
+            pcmData: audioData,
+            outputURL: outputURL,
+            sampleRate: sampleRate,
+            channels: channels
+        )
+
+        // Get file size
+        let attrs = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+        let fileSize = attrs[.size] as? Int64 ?? 0
+
+        let relativePath = "audio/\(datePath)/\(filename)"
+        return (relativePath, fileSize)
+    }
+
     /// Delete an audio segment file
     public func deleteAudioSegment(relativePath: String) throws {
         let fileURL = storageRoot.appendingPathComponent(relativePath)
