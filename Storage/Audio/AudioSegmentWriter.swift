@@ -29,7 +29,7 @@ public actor AudioSegmentWriter {
         channels: Int = 1,
         timestamp: Date,
         source: AudioSource
-    ) throws -> (filePath: String, fileSize: Int64) {
+    ) async throws -> (filePath: String, fileSize: Int64) {
 
         // Validation
         guard !audioData.isEmpty else {
@@ -80,7 +80,7 @@ public actor AudioSegmentWriter {
         }
 
         // Convert PCM to M4A (AAC compression)
-        try convertPCMToM4A(
+        try await convertPCMToM4A(
             pcmData: sentenceData,
             outputURL: outputURL,
             sampleRate: sampleRate,
@@ -97,161 +97,73 @@ public actor AudioSegmentWriter {
         return (relativePath, fileSize)
     }
 
-    /// Convert raw PCM Int16 data to compressed M4A file using AVAssetWriter
+    /// Convert raw PCM Int16 data to compressed M4A file using AVAudioFile
     private func convertPCMToM4A(
         pcmData: Data,
         outputURL: URL,
         sampleRate: Int,
         channels: Int
-    ) throws {
+    ) async throws {
 
         // Remove existing file if present
         try? FileManager.default.removeItem(at: outputURL)
 
-        // Create asset writer for M4A
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
+        // Create PCM format matching input data (Int16, interleaved)
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: Double(sampleRate),
+            channels: AVAudioChannelCount(channels),
+            interleaved: true
+        ) else {
+            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Failed to create input audio format")
+        }
 
-        // Configure AAC audio output
+        // Create float format for the intermediate buffer (AVAudioFile requires float for writing)
+        guard let floatFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Double(sampleRate),
+            channels: AVAudioChannelCount(channels),
+            interleaved: false
+        ) else {
+            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Failed to create float audio format")
+        }
+
+        // AAC output settings (use quality-based encoding; explicit bitrate fails at 16kHz)
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: sampleRate,
+            AVSampleRateKey: Double(sampleRate),
             AVNumberOfChannelsKey: channels,
-            AVEncoderBitRateKey: 64000  // 64 kbps for good quality/size tradeoff
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
         ]
 
-        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
-        writerInput.expectsMediaDataInRealTime = false
-
-        // Add input to writer
-        guard writer.canAdd(writerInput) else {
-            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Cannot add audio input to writer")
-        }
-        writer.add(writerInput)
-
-        // Start writing session
-        guard writer.startWriting() else {
-            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: writer.error?.localizedDescription ?? "Failed to start writing")
-        }
-        writer.startSession(atSourceTime: .zero)
-
-        // Create audio format description for PCM input
-        var audioFormat = AudioStreamBasicDescription(
-            mSampleRate: Double(sampleRate),
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
-            mBytesPerPacket: UInt32(2 * channels),
-            mFramesPerPacket: 1,
-            mBytesPerFrame: UInt32(2 * channels),
-            mChannelsPerFrame: UInt32(channels),
-            mBitsPerChannel: 16,
-            mReserved: 0
+        // Create output file with AAC compression
+        let outputFile = try AVAudioFile(
+            forWriting: outputURL,
+            settings: outputSettings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
         )
 
-        var formatDescription: CMAudioFormatDescription?
-        let status = CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            asbd: &audioFormat,
-            layoutSize: 0,
-            layout: nil,
-            magicCookieSize: 0,
-            magicCookie: nil,
-            extensions: nil,
-            formatDescriptionOut: &formatDescription
-        )
-
-        guard status == noErr, let formatDescription = formatDescription else {
-            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Failed to create format description")
+        // Create PCM buffer from raw Int16 data
+        let frameCount = pcmData.count / (MemoryLayout<Int16>.size * channels)
+        guard let floatBuffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Failed to create float buffer")
         }
+        floatBuffer.frameLength = AVAudioFrameCount(frameCount)
 
-        // Convert PCM data to sample buffers and append to writer
-        let frameCount = pcmData.count / (2 * channels)
-        let blockBuffer = try createBlockBuffer(from: pcmData)
+        // Convert Int16 PCM data to Float32
+        pcmData.withUnsafeBytes { (rawPtr: UnsafeRawBufferPointer) in
+            guard let int16Ptr = rawPtr.bindMemory(to: Int16.self).baseAddress,
+                  let floatChannelData = floatBuffer.floatChannelData else { return }
 
-        var sampleBuffer: CMSampleBuffer?
-        let sampleStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: blockBuffer,
-            formatDescription: formatDescription,
-            sampleCount: frameCount,
-            presentationTimeStamp: .zero,
-            packetDescriptions: nil,
-            sampleBufferOut: &sampleBuffer
-        )
-
-        guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else {
-            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Failed to create sample buffer")
-        }
-
-        // Append the sample buffer
-        guard writerInput.isReadyForMoreMediaData else {
-            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Writer input not ready for data")
-        }
-
-        let appendSuccess = writerInput.append(sampleBuffer)
-        guard appendSuccess else {
-            throw StorageError.fileWriteFailed(path: outputURL.path, underlying: "Failed to append sample buffer")
-        }
-
-        // Finish writing
-        writerInput.markAsFinished()
-
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting {
-            semaphore.signal()
-        }
-        semaphore.wait()
-
-        if writer.status == .failed {
-            throw StorageError.fileWriteFailed(
-                path: outputURL.path,
-                underlying: writer.error?.localizedDescription ?? "Unknown encoding error"
-            )
-        }
-    }
-
-    /// Create a CMBlockBuffer from PCM data
-    private func createBlockBuffer(from data: Data) throws -> CMBlockBuffer {
-        guard !data.isEmpty else {
-            throw StorageError.fileWriteFailed(path: "block buffer", underlying: "Cannot create buffer from empty data")
-        }
-
-        var blockBuffer: CMBlockBuffer?
-        let status = data.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> OSStatus in
-            CMBlockBufferCreateWithMemoryBlock(
-                allocator: kCFAllocatorDefault,
-                memoryBlock: nil,
-                blockLength: data.count,
-                blockAllocator: kCFAllocatorDefault,
-                customBlockSource: nil,
-                offsetToData: 0,
-                dataLength: data.count,
-                flags: 0,
-                blockBufferOut: &blockBuffer
-            )
-        }
-
-        guard status == noErr, let blockBuffer = blockBuffer else {
-            throw StorageError.fileWriteFailed(path: "block buffer", underlying: "Failed to create block buffer")
-        }
-
-        // Copy data into block buffer - safe to force unwrap after empty check
-        let copyStatus = data.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> OSStatus in
-            guard let baseAddress = ptr.baseAddress else {
-                return OSStatus(kCMBlockBufferBadCustomBlockSourceErr)
+            let floatPtr = floatChannelData[0]
+            for i in 0..<frameCount {
+                floatPtr[i] = Float(int16Ptr[i]) / 32768.0
             }
-            return CMBlockBufferReplaceDataBytes(
-                with: baseAddress,
-                blockBuffer: blockBuffer,
-                offsetIntoDestination: 0,
-                dataLength: data.count
-            )
         }
 
-        guard copyStatus == noErr else {
-            throw StorageError.fileWriteFailed(path: "block buffer", underlying: "Failed to copy data to block buffer: \(copyStatus)")
-        }
-
-        return blockBuffer
+        // Write to file (AVAudioFile handles AAC encoding internally)
+        try outputFile.write(from: floatBuffer)
     }
 
     /// Write the full batch audio buffer to disk as a compressed M4A file
@@ -269,7 +181,7 @@ public actor AudioSegmentWriter {
         channels: Int = 1,
         timestamp: Date,
         source: AudioSource
-    ) throws -> (filePath: String, fileSize: Int64) {
+    ) async throws -> (filePath: String, fileSize: Int64) {
 
         guard !audioData.isEmpty else {
             throw StorageError.fileWriteFailed(path: "audio batch", underlying: "Empty audio data")
@@ -297,7 +209,7 @@ public actor AudioSegmentWriter {
         }
 
         // Convert PCM to M4A (AAC compression)
-        try convertPCMToM4A(
+        try await convertPCMToM4A(
             pcmData: audioData,
             outputURL: outputURL,
             sampleRate: sampleRate,
