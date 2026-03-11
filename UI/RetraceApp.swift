@@ -256,6 +256,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Configure the pause reminder window controller
             PauseReminderWindowController.shared.configure(coordinator: wrapper.coordinator)
 
+            // Configure the transcript window controller
+            TranscriptWindowController.shared.configure(coordinator: wrapper.coordinator)
+
             // Setup sleep/wake observers to properly handle segment tracking
             setupSleepWakeObservers()
 

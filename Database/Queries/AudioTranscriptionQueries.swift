@@ -511,6 +511,29 @@ public actor AudioTranscriptionQueries {
         return Int(sqlite3_column_int(stmt, 0))
     }
 
+    /// Get count of transcriptions within a time range (lightweight availability check)
+    public func getTranscriptionCount(from startDate: Date, to endDate: Date) throws -> Int {
+        let sql = """
+            SELECT COUNT(*) FROM audio_captures
+            WHERE start_time >= ? AND end_time <= ? AND text != '';
+            """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        sqlite3_bind_int64(stmt, 1, Schema.dateToTimestamp(startDate))
+        sqlite3_bind_int64(stmt, 2, Schema.dateToTimestamp(endDate))
+
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            return 0
+        }
+
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
     /// Get total count of transcriptions
     public func getTranscriptionCount() throws -> Int {
         let sql = "SELECT COUNT(*) FROM audio_captures;"

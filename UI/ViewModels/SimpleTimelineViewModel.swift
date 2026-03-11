@@ -331,6 +331,9 @@ public class SimpleTimelineViewModel: ObservableObject {
                         frameLoadError = false
                     }
                 }
+
+                // Check for nearby audio transcriptions (debounced)
+                checkNearbyAudio()
             }
         }
     }
@@ -414,6 +417,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Whether the more options menu is visible
     @Published public var isMoreOptionsMenuVisible = false
+
+    /// Whether audio transcriptions exist near the current timeline position
+    @Published public var hasNearbyAudio: Bool = false
 
     /// Whether the user is actively scrolling (disables tape animation during rapid scrolling)
     @Published public var isActivelyScrolling = false {
@@ -1807,7 +1813,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     // MARK: - Dependencies
 
-    private let coordinator: AppCoordinator
+    let coordinator: AppCoordinator
 
 #if DEBUG
     // Test-only hooks for deterministic concurrency race coverage around refreshProcessingStatuses().
@@ -1891,6 +1897,42 @@ public class SimpleTimelineViewModel: ObservableObject {
             TimelineWindowController.shared.setDialogOpen(isAnyDialogOpen)
         }
         .store(in: &cancellables)
+    }
+
+    /// Debounce timer for nearby audio check
+    private var nearbyAudioCheckTask: Task<Void, Never>?
+
+    /// Check if audio transcriptions exist near the current timeline position (±30 min)
+    public func checkNearbyAudio() {
+        nearbyAudioCheckTask?.cancel()
+        nearbyAudioCheckTask = Task { [weak self] in
+            // Debounce: wait 300ms before querying
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+
+            guard let self = self,
+                  let timestamp = self.currentTimestamp else {
+                await MainActor.run { self?.hasNearbyAudio = false }
+                return
+            }
+
+            let windowSeconds: TimeInterval = 30 * 60  // ±30 minutes
+            let fromDate = timestamp.addingTimeInterval(-windowSeconds)
+            let toDate = timestamp.addingTimeInterval(windowSeconds)
+
+            do {
+                guard let queries = await self.coordinator.getAudioTranscriptionQueries() else {
+                    await MainActor.run { self.hasNearbyAudio = false }
+                    return
+                }
+                let count = try await queries.getTranscriptionCount(from: fromDate, to: toDate)
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self.hasNearbyAudio = count > 0 }
+            } catch {
+                Log.warning("[SimpleTimelineViewModel] Failed to check nearby audio: \(error)", category: .ui)
+                await MainActor.run { self.hasNearbyAudio = false }
+            }
+        }
     }
 
     /// Persist search overlay visibility state across app launches

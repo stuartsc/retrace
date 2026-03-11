@@ -1,6 +1,7 @@
 import SwiftUI
 import Shared
 import App
+import Database
 import UniformTypeIdentifiers
 import AVFoundation
 
@@ -644,7 +645,7 @@ public struct TimelineTapeView: View {
                 // Right side controls (app badge + more options)
                 HStack(spacing: TimelineScaleFactor.controlSpacing) {
                     CurrentAppBadge(viewModel: viewModel)
-                    // ZoomControl(viewModel: viewModel)
+                    AudioTranscriptButton(viewModel: viewModel)
                     MoreOptionsMenu(viewModel: viewModel)
                 }
                 .padding(4)
@@ -838,6 +839,58 @@ struct RefreshButton: View {
             else { NSCursor.pop() }
         }
         .instantTooltip("Refresh (⌘J)", isVisible: $isHovering)
+    }
+}
+
+// MARK: - Audio Transcript Button
+
+/// Button to open the audio transcript window showing transcriptions near the current timeline position
+struct AudioTranscriptButton: View {
+    @ObservedObject var viewModel: SimpleTimelineViewModel
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: {
+            viewModel.dismissContextMenu()
+            Task {
+                await openTranscriptWindow()
+            }
+        }) {
+            Image(systemName: "waveform")
+                .font(.system(size: TimelineScaleFactor.fontCaption2, weight: .medium))
+                .foregroundColor(isHovering ? .white : .white.opacity(0.7))
+                .frame(width: TimelineScaleFactor.controlButtonSize, height: TimelineScaleFactor.controlButtonSize)
+                .themeAwareCircleStyle(isHovering: isHovering)
+        }
+        .buttonStyle(.plain)
+        .opacity(viewModel.hasNearbyAudio ? 1.0 : 0.4)
+        .animation(.easeInOut(duration: 0.3), value: viewModel.hasNearbyAudio)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.1)) {
+                isHovering = hovering
+            }
+            if hovering { NSCursor.pointingHand.push() }
+            else { NSCursor.pop() }
+        }
+        .instantTooltip("Audio Transcript", isVisible: $isHovering)
+    }
+
+    private func openTranscriptWindow() async {
+        guard let timestamp = viewModel.currentTimestamp else { return }
+
+        let windowSeconds: TimeInterval = 30 * 60  // ±30 minutes
+        let fromDate = timestamp.addingTimeInterval(-windowSeconds)
+        let toDate = timestamp.addingTimeInterval(windowSeconds)
+
+        guard let queries = await viewModel.coordinator.getAudioTranscriptionQueries() else { return }
+        do {
+            let transcriptions = try await queries.getTranscriptions(from: fromDate, to: toDate)
+            await MainActor.run {
+                TranscriptWindowController.shared.show(transcriptions: transcriptions, timestamp: timestamp)
+            }
+        } catch {
+            Log.warning("[AudioTranscriptButton] Failed to fetch transcriptions: \(error)", category: .ui)
+        }
     }
 }
 
