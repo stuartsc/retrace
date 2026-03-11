@@ -85,14 +85,24 @@ public actor ServiceContainer {
             Log.info("Model: \(modelPath)", category: .app)
         }
 
-        // Use real transcription service if model exists, otherwise mock
+        // Use real transcription service if model AND CoreML companion exist, otherwise mock.
+        // whisper.cpp (compiled with CoreML) auto-loads {model}-encoder.mlmodelc during init.
+        // If the companion is missing, whisper_init_state crashes (double-free in whisper_free_state).
         let transcriptionService: any TranscriptionProtocol
         let expandedModelPath = NSString(string: modelPath).expandingTildeInPath
-        if FileManager.default.fileExists(atPath: expandedModelPath) {
+        let coreMLCompanionPath = expandedModelPath
+            .replacingOccurrences(of: ".bin", with: "-encoder.mlmodelc")
+        let modelExists = FileManager.default.fileExists(atPath: expandedModelPath)
+        let coreMLExists = FileManager.default.fileExists(atPath: coreMLCompanionPath)
+
+        if modelExists && coreMLExists {
             transcriptionService = WhisperCppTranscriptionService(
                 modelPath: modelPath,
                 coreMLModelPath: WhisperConfigLoader.getCoreMLModelPath()
             )
+        } else if modelExists {
+            Log.warning("Whisper model found but CoreML companion missing at \(coreMLCompanionPath), using mock transcription service (audio will be recorded but not transcribed)", category: .app)
+            transcriptionService = MockTranscriptionService()
         } else {
             Log.warning("Whisper model not found at \(expandedModelPath), using mock transcription service (audio will be recorded but not transcribed)", category: .app)
             transcriptionService = MockTranscriptionService()

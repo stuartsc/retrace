@@ -1138,6 +1138,9 @@ public class MenuBarManager: ObservableObject {
     }
 
     @objc private func openDashboard() {
+        Task { @MainActor in
+            DashboardWindowController.shared.show()
+        }
         NotificationCenter.default.post(name: .openDashboard, object: nil)
     }
 

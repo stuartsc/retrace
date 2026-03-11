@@ -116,6 +116,14 @@ public actor MicrophoneAudioCapture {
         if config.voiceProcessingEnabled {
             do {
                 try inputNode.setVoiceProcessingEnabled(true)
+
+                // Disable automatic ducking of non-voice audio
+                // Voice Processing ducks system volume by default for echo cancellation,
+                // but we're only recording — not playing back — so ducking is unnecessary
+                if #available(macOS 14.0, *) {
+                    inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+                        .init(enableAdvancedDucking: false, duckingLevel: .min)
+                }
             } catch {
                 throw AudioCaptureError.invalidConfiguration(
                     "Voice Processing is required but could not be enabled: \(error.localizedDescription)"

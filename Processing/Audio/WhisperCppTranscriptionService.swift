@@ -24,37 +24,19 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
     public func initialize() async throws {
         guard !isInitialized else { return }
 
-        // Expand ~ in paths
         let expandedPath = NSString(string: modelPath).expandingTildeInPath
 
-        // Initialize with CoreML if available
-        if let coreMLPath = coreMLModelPath {
-            let expandedCoreMLPath = NSString(string: coreMLPath).expandingTildeInPath
+        var params = whisper_context_default_params()
+        params.use_gpu = true
 
-            // Check if CoreML model exists
-            if FileManager.default.fileExists(atPath: expandedCoreMLPath) {
-                var params = whisper_context_default_params()
-                params.use_gpu = true  // Enable Metal/CoreML acceleration
-
-                whisperContext = whisper_init_from_file_with_params(expandedPath, params)
-
-                if whisperContext != nil {
-                    isInitialized = true
-                    Log.info("[WhisperCppTranscriptionService] Whisper.cpp initialized with CoreML acceleration: \(expandedPath)", category: .processing)
-                    return
-                }
-            }
-        }
-
-        // Fallback: Load without CoreML
-        whisperContext = whisper_init_from_file(expandedPath)
+        whisperContext = whisper_init_from_file_with_params(expandedPath, params)
 
         guard whisperContext != nil else {
             throw TranscriptionError.modelLoadFailed("Failed to load model at: \(expandedPath)")
         }
 
         isInitialized = true
-        Log.info("[WhisperCppTranscriptionService] Whisper.cpp initialized with model: \(expandedPath)", category: .processing)
+        Log.info("[WhisperCppTranscriptionService] Initialized with model: \(expandedPath)", category: .processing)
     }
 
     /// Cleanup
