@@ -8,12 +8,6 @@ struct TranscriptContentView: View {
     let timestamp: Date
     let onClose: () -> Void
 
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return f
-    }()
-
     private static let headerFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
@@ -56,7 +50,7 @@ struct TranscriptContentView: View {
                     Image(systemName: "waveform.slash")
                         .font(.system(size: 32))
                         .foregroundColor(.white.opacity(0.3))
-                    Text("No audio transcriptions for this time range")
+                    Text("No audio recordings for this time range")
                         .font(.subheadline)
                         .foregroundColor(.white.opacity(0.4))
                 }
@@ -92,6 +86,18 @@ private struct TranscriptionRow: View {
         return f
     }()
 
+    private var duration: TimeInterval {
+        transcription.endTime.timeIntervalSince(transcription.startTime)
+    }
+
+    private var formattedDuration: String {
+        let seconds = Int(duration)
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        return "\(seconds / 60)m \(seconds % 60)s"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             // Time
@@ -104,12 +110,24 @@ private struct TranscriptionRow: View {
             sourceBadge
                 .frame(width: 36)
 
-            // Transcript text
-            Text(transcription.text)
-                .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.85))
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            // Content: transcript text or raw audio indicator
+            if transcription.text.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.35))
+                    Text("Audio recorded (\(formattedDuration))")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.4))
+                        .italic()
+                }
+            } else {
+                Text(transcription.text)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.85))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, 4)
     }

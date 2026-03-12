@@ -219,7 +219,7 @@ public actor AudioTranscriptionQueries {
         limit: Int = 100
     ) throws -> [AudioTranscription] {
         var sql = """
-            SELECT id, session_id, text, start_time, end_time, source, confidence, created_at
+            SELECT id, session_id, text, start_time, end_time, source, confidence, created_at, audio_path
             FROM audio_captures
             WHERE start_time >= ? AND end_time <= ?
             """
@@ -257,6 +257,7 @@ public actor AudioTranscriptionQueries {
             let sourceRaw = String(cString: sqlite3_column_text(stmt, 5))
             let confidence = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 6)
             let createdAt = Schema.timestampToDate(sqlite3_column_int64(stmt, 7))
+            let audioPath = sqlite3_column_text(stmt, 8).map { String(cString: $0) }
 
             results.append(AudioTranscription(
                 id: id,
@@ -266,7 +267,8 @@ public actor AudioTranscriptionQueries {
                 endTime: endTime,
                 source: AudioSource(rawValue: sourceRaw) ?? .microphone,
                 confidence: confidence,
-                createdAt: createdAt
+                createdAt: createdAt,
+                audioPath: audioPath
             ))
         }
 
@@ -515,7 +517,7 @@ public actor AudioTranscriptionQueries {
     public func getTranscriptionCount(from startDate: Date, to endDate: Date) throws -> Int {
         let sql = """
             SELECT COUNT(*) FROM audio_captures
-            WHERE start_time >= ? AND end_time <= ? AND text != '';
+            WHERE start_time >= ? AND end_time <= ?;
             """
 
         var stmt: OpaquePointer?
@@ -563,6 +565,7 @@ public struct AudioTranscription: Sendable {
     public let source: AudioSource
     public let confidence: Double?
     public let createdAt: Date
+    public let audioPath: String?
 
     public init(
         id: Int64,
@@ -572,7 +575,8 @@ public struct AudioTranscription: Sendable {
         endTime: Date,
         source: AudioSource,
         confidence: Double?,
-        createdAt: Date
+        createdAt: Date,
+        audioPath: String? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -582,6 +586,7 @@ public struct AudioTranscription: Sendable {
         self.source = source
         self.confidence = confidence
         self.createdAt = createdAt
+        self.audioPath = audioPath
     }
 }
 
