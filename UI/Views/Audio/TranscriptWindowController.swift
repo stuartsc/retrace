@@ -4,7 +4,13 @@ import App
 import Database
 import Shared
 
-/// Manages the audio transcript window as an on-demand window
+/// Floating panel that can become key window above the timeline
+private final class TranscriptPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Manages the audio transcript window as an on-demand floating panel
 /// Follows the DashboardWindowController singleton pattern
 @MainActor
 public class TranscriptWindowController: NSObject {
@@ -15,7 +21,7 @@ public class TranscriptWindowController: NSObject {
 
     // MARK: - Properties
 
-    private(set) var window: NSWindow?
+    private(set) var window: NSPanel?
     private var coordinator: AppCoordinator?
     private var hostingController: NSHostingController<TranscriptContentView>?
 
@@ -41,9 +47,14 @@ public class TranscriptWindowController: NSObject {
     public func show(transcriptions: [AudioTranscription], timestamp: Date) {
         Log.info("[TranscriptWindowController] show requested with \(transcriptions.count) transcriptions", category: .ui)
 
+        let storageRoot = coordinator != nil
+            ? URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Retrace").expandingTildeInPath)
+            : nil
+
         let contentView = TranscriptContentView(
             transcriptions: transcriptions,
             timestamp: timestamp,
+            storageRoot: storageRoot,
             onClose: { [weak self] in
                 self?.hide()
             }
@@ -53,29 +64,39 @@ public class TranscriptWindowController: NSObject {
             // Update existing window content
             hostingController.rootView = contentView
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
         } else {
-            // Create new window
+            // Create new panel
             let hosting = NSHostingController(rootView: contentView)
             self.hostingController = hosting
 
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "Audio Transcript"
-            window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-            window.setContentSize(NSSize(width: 500, height: 600))
-            window.minSize = NSSize(width: 350, height: 300)
-            window.center()
-            window.level = .screenSaver + 1
-            window.collectionBehavior = [.managed, .participatesInCycle]
-            window.appearance = NSAppearance(named: .darkAqua)
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.backgroundColor = NSColor.windowBackgroundColor
-            window.delegate = self
+            let panel = TranscriptPanel(
+                contentViewController: hosting
+            )
+            panel.title = "Audio Transcript"
+            panel.styleMask = [.titled, .closable, .resizable, .nonactivatingPanel, .fullSizeContentView]
+            panel.setContentSize(NSSize(width: 500, height: 600))
+            panel.minSize = NSSize(width: 350, height: 300)
+            panel.isFloatingPanel = true
+            panel.hidesOnDeactivate = false
+            panel.becomesKeyOnlyIfNeeded = false
+            panel.level = .screenSaver + 1
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.appearance = NSAppearance(named: .darkAqua)
+            panel.titlebarAppearsTransparent = true
+            panel.titleVisibility = .hidden
+            panel.backgroundColor = NSColor.windowBackgroundColor
+            panel.delegate = self
 
-            self.window = window
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            // Position to the right side of screen
+            if let screen = NSScreen.main {
+                let screenFrame = screen.visibleFrame
+                let x = screenFrame.maxX - 520
+                let y = screenFrame.midY - 300
+                panel.setFrameOrigin(NSPoint(x: x, y: y))
+            }
+
+            self.window = panel
+            panel.makeKeyAndOrderFront(nil)
         }
 
         isVisible = true
@@ -91,11 +112,7 @@ public class TranscriptWindowController: NSObject {
     /// Toggle transcript window visibility
     public func toggle(transcriptions: [AudioTranscription], timestamp: Date) {
         if isVisible {
-            if let window = window, window.isKeyWindow && NSApp.isActive {
-                hide()
-            } else {
-                bringToFront()
-            }
+            hide()
         } else {
             show(transcriptions: transcriptions, timestamp: timestamp)
         }
@@ -104,7 +121,6 @@ public class TranscriptWindowController: NSObject {
     /// Bring transcript window to front if visible
     public func bringToFront() {
         guard let window = window else { return }
-        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 }

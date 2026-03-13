@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Database
 import Shared
 
@@ -6,6 +7,7 @@ import Shared
 struct TranscriptContentView: View {
     let transcriptions: [AudioTranscription]
     let timestamp: Date
+    let storageRoot: URL?
     let onClose: () -> Void
 
     private static let headerFormatter: DateFormatter = {
@@ -57,9 +59,12 @@ struct TranscriptContentView: View {
                 Spacer()
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(sortedTranscriptions, id: \.id) { transcription in
-                            TranscriptionRow(transcription: transcription)
+                            TranscriptionRow(
+                                transcription: transcription,
+                                storageRoot: storageRoot
+                            )
                         }
                     }
                     .padding(16)
@@ -79,6 +84,8 @@ struct TranscriptContentView: View {
 
 private struct TranscriptionRow: View {
     let transcription: AudioTranscription
+    let storageRoot: URL?
+    @State private var isHovering = false
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -96,6 +103,12 @@ private struct TranscriptionRow: View {
             return "\(seconds)s"
         }
         return "\(seconds / 60)m \(seconds % 60)s"
+    }
+
+    private var hasAudioFile: Bool {
+        guard let path = transcription.audioPath, let root = storageRoot else { return false }
+        let fullPath = root.appendingPathComponent(path).path
+        return FileManager.default.fileExists(atPath: fullPath)
     }
 
     var body: some View {
@@ -128,8 +141,44 @@ private struct TranscriptionRow: View {
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Spacer()
+
+            // Reveal in Finder button for entries with audio files
+            if hasAudioFile {
+                Button(action: revealInFinder) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(isHovering ? 0.8 : 0.3))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isHovering ? Color.white.opacity(0.05) : Color.clear)
+        )
+        .onTapGesture {
+            if hasAudioFile {
+                revealInFinder()
+            }
+        }
+        .onHover { hovering in
+            isHovering = hovering
+            if hovering && hasAudioFile {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+    }
+
+    private func revealInFinder() {
+        guard let path = transcription.audioPath, let root = storageRoot else { return }
+        let fileURL = root.appendingPathComponent(path)
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
 
     @ViewBuilder
