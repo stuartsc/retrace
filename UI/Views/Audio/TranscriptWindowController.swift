@@ -65,7 +65,7 @@ public class TranscriptWindowController: NSObject {
             window.setContentSize(NSSize(width: 500, height: 600))
             window.minSize = NSSize(width: 350, height: 300)
             window.center()
-            window.level = .normal
+            window.level = .screenSaver + 1
             window.collectionBehavior = [.managed, .participatesInCycle]
             window.appearance = NSAppearance(named: .darkAqua)
             window.titlebarAppearsTransparent = true
