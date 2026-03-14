@@ -73,36 +73,7 @@
     <key>LSMultipleInstancesProhibited</key>
     <true/>
 
-    <!-- Sparkle Auto-Update Configuration -->
-    <!-- IMPORTANT: Replace SUFeedURL with your actual appcast URL before release -->
-    <key>SUFeedURL</key>
-    <string>https://retrace.to/appcast.xml</string>
-
-    <!-- Enable automatic update checks -->
-    <key>SUEnableAutomaticChecks</key>
-    <true/>
-
-    <!-- Check for updates every 24 hours (86400 seconds) -->
-    <key>SUScheduledCheckInterval</key>
-    <integer>86400</integer>
-
-    <!-- Allow users to opt into automatic updates -->
-    <key>SUAllowsAutomaticUpdates</key>
-    <true/>
-
-    <!-- Default to not automatically downloading/installing updates -->
-    <key>SUAutomaticallyUpdate</key>
-    <false/>
-
-    <!-- Show release notes in update dialog -->
-    <key>SUShowReleaseNotes</key>
-    <true/>
-
-    <!-- EdDSA public key for update signature verification -->
-    <!-- IMPORTANT: Generate your own key pair using Sparkle's generate_keys tool -->
-    <!-- Run: ./Sparkle.framework/bin/generate_keys and save the private key securely -->
-    <!-- Then replace this placeholder with your actual public key -->
-    <key>SUPublicEDKey</key>
-    <string>pM8r2LSHH+MAg7cpZDAle5ZjRB4Kfd4aOaUnud2ePA8=</string>
+    <!-- Sparkle Auto-Update: Disabled (forked project, no appcast feed configured) -->
+    <!-- To re-enable: add SUFeedURL, SUPublicEDKey, and SUEnableAutomaticChecks keys -->
 </dict>
 </plist>

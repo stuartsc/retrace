@@ -1164,42 +1164,22 @@ public struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Check for Updates")
                         .font(.retraceCalloutMedium)
-                        .foregroundColor(.retracePrimary)
+                        .foregroundColor(.retraceSecondary)
 
-                    if let lastCheck = UpdaterManager.shared.lastUpdateCheckDate {
-                        Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary)
-                    } else {
-                        Text("Automatically checks for updates")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary)
-                    }
+                    Text("Auto-update is not configured for this build")
+                        .font(.retraceCaption2)
+                        .foregroundColor(.retraceSecondary.opacity(0.6))
                 }
 
                 Spacer()
 
                 ModernButton(
-                    title: UpdaterManager.shared.isCheckingForUpdates ? "Checking..." : "Check Now",
+                    title: "Check Now",
                     icon: "arrow.clockwise",
                     style: .secondary
-                ) {
-                    UpdaterManager.shared.checkForUpdates()
-                }
-                .disabled(UpdaterManager.shared.isCheckingForUpdates || !UpdaterManager.shared.canCheckForUpdates)
+                ) {}
+                .disabled(true)
             }
-
-            ModernToggleRow(
-                title: "Automatically Check for Updates",
-                subtitle: "Check for new updates in the background",
-                isOn: $updaterManager.automaticUpdateChecksEnabled
-            )
-
-            ModernToggleRow(
-                title: "Automatically Download and Install Updates",
-                subtitle: "Download and install updates in the background",
-                isOn: $updaterManager.automaticallyDownloadsUpdatesEnabled
-            )
         }
     }
 
