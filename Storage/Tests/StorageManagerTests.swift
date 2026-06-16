@@ -225,6 +225,31 @@ final class StorageManagerTests: XCTestCase {
 
         try? FileManager.default.removeItem(at: root)
     }
+
+    func testAudioSegmentWriterClampsSentenceEndToAvailablePCM() async throws {
+        let root = makeTempRoot()
+        let writer = AudioSegmentWriter(storageRoot: root)
+
+        // Regression for fallback transcript timing that can land a few samples past
+        // the actual PCM buffer due to capture/Whisper duration rounding.
+        let audioData = Data(repeating: 0, count: 478_920)
+
+        let result = try await writer.writeAudioSegment(
+            audioData: audioData,
+            startTime: 0,
+            endTime: 15.0053125,
+            sampleRate: 16_000,
+            channels: 1,
+            timestamp: Date(timeIntervalSince1970: 1_781_553_241),
+            source: .microphone
+        )
+
+        let outputURL = root.appendingPathComponent(result.filePath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outputURL.path))
+        XCTAssertGreaterThan(result.fileSize, 0)
+
+        try? FileManager.default.removeItem(at: root)
+    }
 }
 
 // MARK: - Async XCTest helper
@@ -241,4 +266,3 @@ private func XCTAssertThrowsErrorAsync(
         // success
     }
 }
-

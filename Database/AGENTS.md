@@ -2,7 +2,7 @@
 
 You are responsible for the **Database** module of Retrace. Your job is to implement SQLite database operations including schema, migrations, CRUD operations, and full-text search indexing.
 
-**Status**: ✅ Core tables fully implemented (segments, frames, searchRanking FTS5). Uses SQLCipher for optional encryption and Rewind database import compatibility. **Advanced tables not yet implemented** (app_sessions, encoding_queue, junction tables - planned for future release). Audio tables exist in schema but are not yet used.
+**Status**: ✅ Core tables fully implemented (segments, frames, searchRanking FTS5). Uses SQLCipher for optional encryption and Rewind database import compatibility. Audio capture/transcription tables, contextual refinement tracking, daily metrics, and dictation session history are active. **Advanced tables not yet implemented** (app_sessions, encoding_queue, junction tables - planned for future release).
 
 ## Your Directory
 
@@ -23,13 +23,28 @@ Database/
 │   ├── V8_SegmentComments.swift
 │   ├── V9_SegmentCommentFrameAnchor.swift
 │   ├── V10_SegmentCommentSearchIndex.swift
-│   └── V11_SegmentCommentLinkCompositeIndex.swift
+│   ├── V11_SegmentCommentLinkCompositeIndex.swift
+│   ├── V12_AudioCaptures.swift
+│   ├── V13_TranscriptionPass.swift
+│   ├── V14_ContextualRefinement.swift
+│   ├── V15_PipelineVersion.swift
+│   ├── V16_DictationSessions.swift
+│   └── V17_AudioTranscriptMetadata.swift
 ├── Queries/
-│   ├── FrameQueries.swift     # Frame CRUD operations
-│   ├── SegmentQueries.swift   # Segment CRUD operations
-│   └── DocumentQueries.swift  # Document/FTS operations
+│   ├── AppSegmentQueries.swift        # App/session aggregation queries
+│   ├── AudioTranscriptionQueries.swift # Audio transcript CRUD/search/refinement queries
+│   ├── DailyMetricsQueries.swift      # Daily product metrics aggregation
+│   ├── DictationSessionQueries.swift  # Push-to-dictate session history
+│   ├── DocumentQueries.swift          # Document/FTS operations
+│   ├── FTSQueries.swift               # SearchRanking FTS queries
+│   ├── FrameQueries.swift             # Frame CRUD operations
+│   ├── NodeQueries.swift              # OCR node CRUD operations
+│   └── SegmentQueries.swift           # Segment CRUD operations
 └── Tests/
+    ├── AudioRepairPolicyTests.swift
+    ├── AudioTranscriptionPaginationTests.swift
     ├── DatabaseManagerTests.swift
+    ├── DictationSessionQueriesTests.swift
     └── FTSManagerTests.swift
 ```
 
@@ -296,6 +311,7 @@ func testNewFeature() async throws {
 
 ```
 Database/Tests/
+├── AudioTranscriptionPaginationTests.swift # Audio transcript paging queries
 ├── SchemaValidationTests.swift    # SQL syntax validation
 ├── MigrationTests.swift           # Migration execution
 ├── QueryBuilderTests.swift        # Query builder unit tests

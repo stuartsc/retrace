@@ -98,6 +98,12 @@ public struct ShortcutConfig: Codable, Sendable, Equatable {
         key: "H",
         modifiers: [.command, .shift]
     )
+
+    /// Default push-to-dictate shortcut: Ctrl+Space
+    public static let defaultDictation = ShortcutConfig(
+        key: "Space",
+        modifiers: [.control]
+    )
 }
 
 // MARK: - Capture Configuration
@@ -322,7 +328,7 @@ public struct AudioCaptureConfig: Codable, Sendable {
     public init(
         microphoneEnabled: Bool = true,
         systemAudioEnabled: Bool = false,
-        voiceProcessingEnabled: Bool = true,  // Must always be true
+        voiceProcessingEnabled: Bool = false,  // No longer used — AVCaptureSession replaces AVAudioEngine
         hasConsentedToMeetingRecording: Bool = false,
         bufferDurationSeconds: Double = 10.0,
         targetSampleRate: Int = 16000,

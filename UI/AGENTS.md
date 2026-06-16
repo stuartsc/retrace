@@ -2,7 +2,7 @@
 
 You are the **UI** agent responsible for building the SwiftUI interface for Retrace.
 
-**Status**: ✅ Fully implemented with modern SwiftUI design. Timeline, dashboard, search, settings, onboarding, and feedback views all working. Global hotkeys functional (Cmd+Shift+T for timeline, Cmd+Shift+D for dashboard). Menu bar integration complete. **Apple Silicon required**. Audio transcription UI not implemented (planned for future release).
+**Status**: ✅ Fully implemented with modern SwiftUI design. Timeline, dashboard, search, settings, onboarding, feedback, audio transcripts, and push-to-dictate views all working. Global hotkeys functional (Cmd+Shift+T for timeline, Cmd+Shift+D for dashboard, Ctrl+Space hold for dictation). Menu bar integration complete. **Apple Silicon required**.
 
 ## Your Directory
 
@@ -21,11 +21,15 @@ UI/
 │   │   ├── SpotlightSearchOverlay.swift # Primary search overlay UI
 │   │   └── SearchFilterBar.swift        # Search filters and controls
 │   ├── Dashboard/
-│   │   ├── DashboardView.swift          # Main dashboard
+│   │   ├── DashboardView.swift          # Main dashboard with app usage and dictation history
+│   │   ├── DashboardVoiceLayout.swift   # Voice-first dashboard tab/layout policy
 │   │   ├── ChangelogView.swift          # Appcast-powered release notes view
 │   │   ├── AnalyticsCard.swift          # Stats widgets
 │   │   ├── MigrationPanel.swift         # Import UI
 │   │   └── SupportLink.swift            # Twitter/support
+│   ├── Audio/
+│   │   ├── TranscriptContentView.swift  # Continuous transcript display
+│   │   └── TranscriptWindowController.swift # Transcript window lifecycle
 │   └── Settings/
 │       ├── SettingsView.swift           # Settings root
 │       ├── CaptureSettings.swift        # Capture config
@@ -46,6 +50,11 @@ UI/
 │   └── SettingsViewModel.swift
 └── Tests/
     ├── TestLogger.swift                  # UI behavior + deeplink parsing tests
+    ├── HotkeyHoldReleasePolicyTests.swift # Hold-hotkey modifier release regression tests
+    ├── DashboardVoiceLayoutTests.swift   # Voice-first dashboard layout policy tests
+    ├── ProcessCPUMonitorPolicyTests.swift # System monitor launch-sampling policy tests
+    ├── TimelineBackgroundRefreshPolicyTests.swift # Hidden timeline background-work opt-in policy tests
+    ├── TranscriptCursorPolicyTests.swift # Audio transcript cursor stack regression tests
     └── ManualShowSearchSimulationTests.swift # Manual dev harness for showSearch deeplink simulation
 ```
 
@@ -335,6 +344,11 @@ struct BoundingBoxOverlay: View {
    - Percentage of total
    - Click to filter timeline
 
+7. **Voice Dictation**:
+   - Shows configured hold shortcut
+   - Lists recent dictation sessions and inserted transcripts
+   - Shows target app context and insertion status/errors
+
 **Migration UI**:
 
 ```
@@ -398,6 +412,7 @@ struct BoundingBoxOverlay: View {
 - **Show menu bar icon**: Checkbox (status item in macOS menu bar)
 - **Theme**: Auto / Light / Dark
 - **Keyboard shortcuts**: Customize all shortcuts
+- **Voice dictation shortcut**: Hold shortcut used to capture and insert only the speech during key-down/key-up
 - **Notification preferences**: When to show notifications
 
 #### 5.2 Capture Settings
@@ -480,6 +495,10 @@ struct BoundingBoxOverlay: View {
 | Shortcut | Action |
 |----------|--------|
 | `Cmd+Shift+T` | Open Timeline |
+| `Cmd+Shift+D` | Open Dashboard |
+| `Cmd+Shift+R` | Toggle Recording |
+| `Cmd+Shift+M` | Open System Monitor |
+| `Ctrl+Space` | Hold Voice Dictation |
 | `Cmd+F` | Open Search |
 | `Cmd+,` | Open Settings |
 | `/` | Focus search bar |

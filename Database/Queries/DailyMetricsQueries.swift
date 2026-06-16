@@ -61,10 +61,29 @@ public enum DailyMetricsQueries {
         case systemMonitorSettingsOpened = "system_monitor_settings_opened"
         case systemMonitorOpenPowerOCRCard = "system_monitor_open_power_ocr_card"
         case systemMonitorOpenPowerOCRPriority = "system_monitor_open_power_ocr_priority"
+        case dashboardTabSelected = "dashboard_tab_selected"  // metadata: selected tab identifier
+        case dashboardDefaultOpened = "dashboard_default_opened"  // metadata: default tab identifier
+        case dashboardLoadFailed = "dashboard_load_failed"  // metadata: JSON {surface, error}
+        case settingsUtilityAction = "settings_utility_action"  // metadata: action identifier
+        case dashboardTranscriptExpanded = "dashboard_transcript_expanded"  // metadata: surface identifier
+        case dashboardTranscriptLoadOlder = "dashboard_transcript_load_older"  // metadata: surface identifier
+        case dashboardLiveFrameSelected = "dashboard_live_frame_selected"  // metadata: frame/source context
 
         // Delete actions
         case frameDeleted = "frame_deleted"
         case segmentDeleted = "segment_deleted"
+
+        // Push-to-dictate metrics
+        case dictationStarted = "dictation_started"
+        case dictationCompleted = "dictation_completed"  // metadata: status
+        case dictationInserted = "dictation_inserted"  // metadata: target bundle/app
+        case dictationCancelled = "dictation_cancelled"
+        case dictationFailed = "dictation_failed"  // metadata: error/status
+        case dictationSettingsChanged = "dictation_settings_changed"
+
+        // Audio repair/refinement metrics
+        case audioHistoryRepairStarted = "audio_history_repair_started"
+        case audioHistoryRepairCompleted = "audio_history_repair_completed"
     }
 
     // MARK: - Insert

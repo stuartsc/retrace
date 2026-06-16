@@ -7,15 +7,28 @@ import CWhisper
 /// Uses whisper.cpp C library for on-device speech-to-text
 /// Owner: PROCESSING agent
 public actor WhisperCppTranscriptionService: TranscriptionProtocol {
+    internal static let recallFirstNoSpeechThreshold: Float = 1.0
+    internal static let recallFirstLogprobThreshold: Float = -10.0
+    internal static let recallFirstEntropyThreshold: Float = 8.0
+    internal static let recallFirstTemperatureIncrement: Float = 0.2
+    internal static let recallFirstMaxInitialTimestamp: Float = 1.0
+
+    /// Controls whisper.cpp decoding strategy
+    public enum SamplingStrategy: Sendable {
+        case greedy
+        case beamSearch(beamSize: Int)
+    }
 
     private var whisperContext: OpaquePointer?
     private let modelPath: String
     private let coreMLModelPath: String?
+    private let samplingStrategy: SamplingStrategy
     private var isInitialized = false
 
-    public init(modelPath: String, coreMLModelPath: String? = nil) {
+    public init(modelPath: String, coreMLModelPath: String? = nil, samplingStrategy: SamplingStrategy = .greedy) {
         self.modelPath = modelPath
         self.coreMLModelPath = coreMLModelPath
+        self.samplingStrategy = samplingStrategy
     }
 
     // MARK: - Initialization
@@ -63,11 +76,12 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         // Convert PCM Int16 to Float32 for whisper.cpp
         let samples = convertToFloat32(audioData)
 
-        // Call whisper.cpp with default parameters
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-        let result = samples.withUnsafeBufferPointer { samplesPtr in
-            whisper_full(ctx, params, samplesPtr.baseAddress, Int32(samples.count))
-        }
+        // Call whisper.cpp with configured sampling strategy
+        var params = makeWhisperParams()
+        Self.configureRecallFirstDecoding(&params)
+        params.suppress_blank = true
+        params.suppress_nst = false
+        let result = runWhisper(ctx: ctx, params: &params, samples: samples, initialPrompt: nil, languageHint: nil)
 
         guard result == 0 else {
             throw TranscriptionError.transcriptionFailed
@@ -88,7 +102,7 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         let language = String(cString: whisper_lang_str(langId))
 
         return TranscriptionResult(
-            text: fullText.trimmingCharacters(in: .whitespacesAndNewlines),
+            text: Self.stripControlTokens(fullText),
             confidence: 0.0,  // whisper.cpp doesn't provide overall confidence
             language: language,
             duration: Double(samples.count) / 16000.0
@@ -96,7 +110,23 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
     }
 
     /// Transcribe with word-level timestamps
-    public func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool = false) async throws -> DetailedTranscriptionResult {
+    public func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool = false, initialPrompt: String? = nil) async throws -> DetailedTranscriptionResult {
+        try await transcribeWithTimestamps(
+            audioData,
+            wordLevel: wordLevel,
+            initialPrompt: initialPrompt,
+            languageHint: nil
+        )
+    }
+
+    /// Transcribe with word-level timestamps and an optional language hint.
+    /// nil / "auto" uses multilingual auto-detection explicitly.
+    public func transcribeWithTimestamps(
+        _ audioData: Data,
+        wordLevel: Bool = false,
+        initialPrompt: String? = nil,
+        languageHint: String?
+    ) async throws -> DetailedTranscriptionResult {
         guard isInitialized else {
             throw TranscriptionError.notInitialized
         }
@@ -108,15 +138,24 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         let samples = convertToFloat32(audioData)
 
         // Configure whisper.cpp for word-level timestamps
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        var params = makeWhisperParams()
+        Self.configureRecallFirstDecoding(&params)
         params.print_timestamps = wordLevel
         params.token_timestamps = wordLevel
         params.max_len = 0  // Don't limit segment length
+        // Keep suppress_blank (prevents blank token spam) but disable suppress_nst
+        // which was dropping valid short words in fast speech.
+        params.suppress_blank = true
+        params.suppress_nst = false
 
-        // Run transcription
-        let result = samples.withUnsafeBufferPointer { samplesPtr in
-            whisper_full(ctx, params, samplesPtr.baseAddress, Int32(samples.count))
-        }
+        // Run transcription — helper keeps prompt/language C strings alive during whisper_full.
+        let result = runWhisper(
+            ctx: ctx,
+            params: &params,
+            samples: samples,
+            initialPrompt: initialPrompt,
+            languageHint: languageHint
+        )
 
         guard result == 0 else {
             throw TranscriptionError.transcriptionFailed
@@ -153,16 +192,24 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
                     let t0 = Double(tokenData.t0) / 100.0
                     let t1 = Double(tokenData.t1) / 100.0
 
+                    // Skip control tokens entirely ([_BEG_], [_TT_nnn], [BLANK_AUDIO], etc.)
+                    if tokenText.hasPrefix("[") && tokenText.hasSuffix("]") {
+                        continue
+                    }
+
                     // Word boundary detection: whisper tokens starting with space indicate new word
                     if tokenText.hasPrefix(" ") || tokenText.hasPrefix("\n") {
                         // Save previous word if exists
                         if !currentWord.isEmpty, let startTime = wordStartTime {
-                            words.append(TranscriptionWord(
-                                word: currentWord.trimmingCharacters(in: .whitespacesAndNewlines),
-                                start: startTime,
-                                end: t0,
-                                confidence: Double(tokenData.p)
-                            ))
+                            let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
+                            if !cleanWord.isEmpty {
+                                words.append(TranscriptionWord(
+                                    word: cleanWord,
+                                    start: startTime,
+                                    end: t0,
+                                    confidence: Double(tokenData.p)
+                                ))
+                            }
                         }
                         // Start new word
                         currentWord = tokenText.trimmingCharacters(in: .whitespaces)
@@ -177,12 +224,15 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
 
                     // Save last word at end of segment
                     if tokenIdx == numTokens - 1 && !currentWord.isEmpty, let startTime = wordStartTime {
-                        words.append(TranscriptionWord(
-                            word: currentWord.trimmingCharacters(in: .whitespacesAndNewlines),
-                            start: startTime,
-                            end: t1,
-                            confidence: Double(tokenData.p)
-                        ))
+                        let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
+                        if !cleanWord.isEmpty {
+                            words.append(TranscriptionWord(
+                                word: cleanWord,
+                                start: startTime,
+                                end: t1,
+                                confidence: Double(tokenData.p)
+                            ))
+                        }
                     }
                 }
             }
@@ -193,7 +243,102 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         let language = String(cString: whisper_lang_str(langId))
 
         return DetailedTranscriptionResult(
-            text: fullText.trimmingCharacters(in: .whitespacesAndNewlines),
+            text: Self.stripControlTokens(fullText),
+            words: words,
+            language: language,
+            duration: Double(samples.count) / 16000.0
+        )
+    }
+
+    /// Transcribe with word-level timestamps and contextual initial prompt
+    /// The initial prompt conditions the decoder on surrounding context, improving coherence
+    public func transcribeWithContext(
+        _ audioData: Data,
+        wordLevel: Bool = true,
+        initialPrompt: String
+    ) async throws -> DetailedTranscriptionResult {
+        guard isInitialized, let ctx = whisperContext else {
+            throw TranscriptionError.notInitialized
+        }
+
+        let samples = convertToFloat32(audioData)
+
+        var params = makeWhisperParams()
+        Self.configureRecallFirstDecoding(&params)
+        params.print_timestamps = wordLevel
+        params.token_timestamps = wordLevel
+        params.max_len = 0
+        params.suppress_blank = true
+        params.suppress_nst = false
+
+        // Truncate prompt to ~800 chars (whisper uses max n_text_ctx/2 ≈ 224 tokens)
+        let truncatedPrompt = String(initialPrompt.prefix(800))
+
+        // Run transcription with initial_prompt set — helper keeps C strings alive during whisper_full.
+        let result = runWhisper(
+            ctx: ctx,
+            params: &params,
+            samples: samples,
+            initialPrompt: truncatedPrompt,
+            languageHint: nil
+        )
+
+        guard result == 0 else {
+            throw TranscriptionError.transcriptionFailed
+        }
+
+        // Extract results (same as transcribeWithTimestamps)
+        var words: [TranscriptionWord] = []
+        var fullText = ""
+
+        let numSegments = whisper_full_n_segments(ctx)
+        for segmentIdx in 0..<numSegments {
+            guard let segmentText = whisper_full_get_segment_text(ctx, segmentIdx) else { continue }
+            fullText += String(cString: segmentText)
+
+            if wordLevel {
+                let numTokens = whisper_full_n_tokens(ctx, segmentIdx)
+                var currentWord = ""
+                var wordStartTime: Double? = nil
+
+                for tokenIdx in 0..<numTokens {
+                    let tokenData = whisper_full_get_token_data(ctx, segmentIdx, tokenIdx)
+                    guard let tokenTextPtr = whisper_full_get_token_text(ctx, segmentIdx, tokenIdx) else { continue }
+                    let tokenText = String(cString: tokenTextPtr)
+                    let t0 = Double(tokenData.t0) / 100.0
+                    let t1 = Double(tokenData.t1) / 100.0
+
+                    if tokenText.hasPrefix("[") && tokenText.hasSuffix("]") { continue }
+
+                    if tokenText.hasPrefix(" ") || tokenText.hasPrefix("\n") {
+                        if !currentWord.isEmpty, let startTime = wordStartTime {
+                            let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
+                            if !cleanWord.isEmpty {
+                                words.append(TranscriptionWord(word: cleanWord, start: startTime, end: t0, confidence: Double(tokenData.p)))
+                            }
+                        }
+                        currentWord = tokenText.trimmingCharacters(in: .whitespaces)
+                        wordStartTime = t0
+                    } else {
+                        currentWord += tokenText
+                        if wordStartTime == nil { wordStartTime = t0 }
+                    }
+
+                    if tokenIdx == numTokens - 1 && !currentWord.isEmpty, let startTime = wordStartTime {
+                        let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
+                        if !cleanWord.isEmpty {
+                            words.append(TranscriptionWord(word: cleanWord, start: startTime, end: t1, confidence: Double(tokenData.p)))
+                        }
+                    }
+                }
+            }
+        }
+
+        let langId = whisper_full_lang_id(ctx)
+        let language = String(cString: whisper_lang_str(langId))
+
+        return DetailedTranscriptionResult(
+            text: Self.stripControlTokens(fullText),
             words: words,
             language: language,
             duration: Double(samples.count) / 16000.0
@@ -201,6 +346,94 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
     }
 
     // MARK: - Helper Methods
+
+    /// Strip whisper.cpp control tokens like [_BEG_], [BLANK_AUDIO], [_TT_500], [no audio] etc.
+    private static func stripControlTokens(_ text: String) -> String {
+        let stripped = text.replacingOccurrences(
+            of: "\\[.*?\\]",
+            with: "",
+            options: .regularExpression
+        )
+        // Collapse multiple spaces and trim
+        let collapsed = stripped.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        )
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Create whisper params based on the configured sampling strategy
+    private func makeWhisperParams() -> whisper_full_params {
+        switch samplingStrategy {
+        case .greedy:
+            return whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        case .beamSearch(let beamSize):
+            var params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
+            params.beam_search.beam_size = Int32(beamSize)
+            return params
+        }
+    }
+
+    /// The outer audio pipeline decides whether a batch is silence after decoding.
+    /// Keep whisper.cpp from internally skipping quiet/foreign speech before we can inspect it.
+    internal static func configureRecallFirstDecoding(_ params: inout whisper_full_params) {
+        params.no_context = true
+        params.no_speech_thold = recallFirstNoSpeechThreshold
+        params.logprob_thold = recallFirstLogprobThreshold
+        params.entropy_thold = recallFirstEntropyThreshold
+        params.temperature_inc = recallFirstTemperatureIncrement
+        params.max_initial_ts = recallFirstMaxInitialTimestamp
+    }
+
+    private func runWhisper(
+        ctx: OpaquePointer,
+        params: inout whisper_full_params,
+        samples: [Float],
+        initialPrompt: String?,
+        languageHint: String?
+    ) -> Int32 {
+        let language = Self.normalizedLanguageHint(languageHint)
+        params.detect_language = false
+        params.translate = false
+
+        func runWithPrompt() -> Int32 {
+            if let initialPrompt, !initialPrompt.isEmpty {
+                let truncated = String(initialPrompt.suffix(800))
+                return truncated.withCString { promptCStr in
+                    params.initial_prompt = promptCStr
+                    params.carry_initial_prompt = false
+                    return samples.withUnsafeBufferPointer { samplesPtr in
+                        whisper_full(ctx, params, samplesPtr.baseAddress, Int32(samples.count))
+                    }
+                }
+            }
+
+            return samples.withUnsafeBufferPointer { samplesPtr in
+                whisper_full(ctx, params, samplesPtr.baseAddress, Int32(samples.count))
+            }
+        }
+
+        guard let language else {
+            params.language = nil
+            return runWithPrompt()
+        }
+
+        return language.withCString { languageCStr in
+            params.language = languageCStr
+            return runWithPrompt()
+        }
+    }
+
+    /// nil tells whisper.cpp to auto-select the language while still transcribing.
+    /// Do not set `detect_language` for normal transcription; that mode can return language only.
+    internal static func normalizedLanguageHint(_ languageHint: String?) -> String? {
+        let trimmed = languageHint?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let trimmed, !trimmed.isEmpty, trimmed != "auto" else {
+            return nil
+        }
+        return trimmed
+    }
 
     /// Convert PCM Int16 to Float32 for whisper.cpp
     private func convertToFloat32(_ audioData: Data) -> [Float] {
@@ -217,4 +450,3 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         return samples
     }
 }
-

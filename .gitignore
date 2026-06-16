@@ -70,6 +70,7 @@ temp/
 !CONTRIBUTING.md
 !*/README.md
 !*/AGENTS.md
+!docs/roadmap.md
 
 # Xcode user-specific data
 .swiftpm/xcode/xcuserdata/
@@ -113,3 +114,8 @@ scripts/create-dmg.sh
 # Release artifacts
 releases/
 local/
+
+# Local agent/tooling state
+.claude/
+.obsidian/
+.superpowers/

@@ -20,6 +20,7 @@ public actor OnboardingManager {
     private static let recordingShortcutKey = "recordingShortcutConfig"
     private static let systemMonitorShortcutKey = "systemMonitorShortcutConfig"
     private static let feedbackShortcutKey = "feedbackShortcutConfig"
+    private static let dictationShortcutKey = "dictationShortcutConfig"
     private static let hasRewindDataKey = "hasRewindData"
     private static let rewindMigrationCompletedKey = "rewindMigrationCompleted"
 
@@ -82,6 +83,15 @@ public actor OnboardingManager {
         guard let data = settingsDefaults.data(forKey: Self.feedbackShortcutKey),
               let config = try? JSONDecoder().decode(ShortcutConfig.self, from: data) else {
             return .defaultFeedback
+        }
+        return config
+    }
+
+    /// Push-to-dictate shortcut configuration (key + modifiers)
+    public var dictationShortcut: ShortcutConfig {
+        guard let data = settingsDefaults.data(forKey: Self.dictationShortcutKey),
+              let config = try? JSONDecoder().decode(ShortcutConfig.self, from: data) else {
+            return .defaultDictation
         }
         return config
     }
@@ -164,6 +174,14 @@ public actor OnboardingManager {
         if let data = try? JSONEncoder().encode(config) {
             settingsDefaults.set(data, forKey: Self.feedbackShortcutKey)
             Log.info("Feedback shortcut set to: \(config.displayString)", category: .app)
+        }
+    }
+
+    /// Set push-to-dictate shortcut (full config with key + modifiers)
+    public func setDictationShortcut(_ config: ShortcutConfig) {
+        if let data = try? JSONEncoder().encode(config) {
+            settingsDefaults.set(data, forKey: Self.dictationShortcutKey)
+            Log.info("Dictation shortcut set to: \(config.displayString)", category: .app)
         }
     }
 

@@ -129,6 +129,10 @@ public class TimelineWindowController: NSObject {
     /// Live-mode scroll suppression window (seconds) applied on open.
     private static let liveScrollSuppressDuration: CFAbsoluteTime = 0.30
     private static let timelineSettingsStore = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+    private static let hiddenBackgroundRefreshDefaultsKey = "timelineHiddenBackgroundRefreshEnabled"
+    private static let hiddenBackgroundRefreshEnvironmentKey = "RETRACE_TIMELINE_HIDDEN_REFRESH"
+    private static let timelinePrerenderDefaultsKey = "timelinePrerenderEnabled"
+    private static let timelinePrerenderEnvironmentKey = "RETRACE_TIMELINE_PRERENDER"
 
     /// Accumulated wrong-axis and right-axis scroll magnitudes for orientation mismatch detection
     private var wrongAxisScrollAccum: CGFloat = 0
@@ -169,6 +173,52 @@ public class TimelineWindowController: NSObject {
 
     nonisolated static func shouldToggleSearchOverlayFromShortcut(isActivelyScrolling: Bool) -> Bool {
         !isActivelyScrolling
+    }
+
+    nonisolated static func shouldRunHiddenBackgroundRefresh(
+        defaultsValue: Bool?,
+        environmentValue: String?
+    ) -> Bool {
+        shouldEnableOptInBackgroundFeature(defaultsValue: defaultsValue, environmentValue: environmentValue)
+    }
+
+    nonisolated static func shouldPrerenderTimeline(
+        defaultsValue: Bool?,
+        environmentValue: String?
+    ) -> Bool {
+        shouldEnableOptInBackgroundFeature(defaultsValue: defaultsValue, environmentValue: environmentValue)
+    }
+
+    private nonisolated static func shouldEnableOptInBackgroundFeature(
+        defaultsValue: Bool?,
+        environmentValue: String?
+    ) -> Bool {
+        if let environmentValue {
+            switch environmentValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                break
+            }
+        }
+
+        return defaultsValue ?? false
+    }
+
+    private static func shouldRunHiddenBackgroundRefresh() -> Bool {
+        shouldRunHiddenBackgroundRefresh(
+            defaultsValue: timelineSettingsStore.object(forKey: hiddenBackgroundRefreshDefaultsKey) as? Bool,
+            environmentValue: ProcessInfo.processInfo.environment[hiddenBackgroundRefreshEnvironmentKey]
+        )
+    }
+
+    private static func shouldPrerenderTimeline() -> Bool {
+        shouldPrerenderTimeline(
+            defaultsValue: timelineSettingsStore.object(forKey: timelinePrerenderDefaultsKey) as? Bool,
+            environmentValue: ProcessInfo.processInfo.environment[timelinePrerenderEnvironmentKey]
+        )
     }
 
     nonisolated static func shouldNavigateTimelineBackward(
@@ -384,11 +434,18 @@ public class TimelineWindowController: NSObject {
     public func configure(coordinator: AppCoordinator) {
         self.coordinator = coordinator
         self.coordinatorWrapper = AppCoordinatorWrapper(coordinator: coordinator)
-        // Pre-render the window in the background for instant show()
-        Task { @MainActor in
-            // Small delay to let app finish launching
-            try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 0.5 seconds
-            prepareWindow()
+        if Self.shouldPrerenderTimeline() {
+            // Pre-render the window in the background for instant show().
+            Task { @MainActor in
+                // Small delay to let app finish launching
+                try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 0.5 seconds
+                prepareWindow()
+            }
+        } else {
+            Log.info(
+                "[TIMELINE-PRERENDER] Disabled; timeline view will be created on demand",
+                category: .ui
+            )
         }
 
         // Listen for display changes to reposition the hidden window
@@ -515,6 +572,8 @@ public class TimelineWindowController: NSObject {
         
         // Trigger initial layout pass to pre-render the SwiftUI view hierarchy
         hostingView.layoutSubtreeIfNeeded()
+        viewModel.stopPeriodicStatusRefresh()
+        viewModel.handleTimelineClosed()
         Log.info("[TIMELINE-PRERENDER] 🔄 Initial layout completed, elapsed=\(String(format: "%.3f", (CFAbsoluteTimeGetCurrent() - prepareStartTime) * 1000))ms", category: .ui)
 
         // Load the most recent frame data in the background
@@ -954,6 +1013,8 @@ public class TimelineWindowController: NSObject {
 
                 // Clean up live mode state AFTER fade-out completes (prevents flicker)
                 if let viewModel = self?.timelineViewModel {
+                    viewModel.stopPeriodicStatusRefresh()
+                    viewModel.handleTimelineClosed()
                     viewModel.isInLiveMode = false
                     viewModel.liveScreenshot = nil
                     viewModel.isTapeHidden = true
@@ -963,7 +1024,7 @@ public class TimelineWindowController: NSObject {
 
                 // Immediately refresh frame data so next open has fresh data.
                 // Use navigateToNewest: false so short hide/show cycles preserve position.
-                if let viewModel = self?.timelineViewModel {
+                if Self.shouldRunHiddenBackgroundRefresh(), let viewModel = self?.timelineViewModel {
                     await viewModel.refreshFrameData(
                         navigateToNewest: false,
                         allowNearLiveAutoAdvance: false
@@ -1111,6 +1172,16 @@ public class TimelineWindowController: NSObject {
         if resetSchedule {
             backgroundRefreshTimer?.invalidate()
             backgroundRefreshTimer = nil
+        }
+
+        guard Self.shouldRunHiddenBackgroundRefresh() else {
+            backgroundRefreshTimer?.invalidate()
+            backgroundRefreshTimer = nil
+            Log.info(
+                "[TimelineBackgroundRefresh] Hidden timeline refresh disabled; timeline will refresh when opened",
+                category: .ui
+            )
+            return
         }
 
         // Don't restart if already running
@@ -1904,6 +1975,13 @@ public class TimelineWindowController: NSObject {
                 }
                 self.handleKeyEvent(event)
             } else if event.type == .scrollWheel {
+                // Don't intercept scroll events targeting the transcript window
+                if let transcriptWindow = TranscriptWindowController.shared.window,
+                   transcriptWindow.isVisible,
+                   let mouseWindow = NSApp.window(withWindowNumber: event.windowNumber),
+                   mouseWindow === transcriptWindow {
+                    return
+                }
                 // Don't handle scroll events when search UI, filter dropdown, or tag submenu should own wheel input.
                 if let viewModel = self.timelineViewModel,
                    (viewModel.searchViewModel.isRecentEntriesPopoverVisible ||
@@ -2093,6 +2171,13 @@ public class TimelineWindowController: NSObject {
                     return nil // Consume the event
                 }
             } else if event.type == .scrollWheel {
+                // Don't intercept scroll events targeting the transcript window
+                if let transcriptWindow = TranscriptWindowController.shared.window,
+                   transcriptWindow.isVisible,
+                   let mouseWindow = NSApp.window(withWindowNumber: event.windowNumber),
+                   mouseWindow === transcriptWindow {
+                    return event
+                }
                 // Let UI overlays consume scrolling before timeline navigation.
                 if let viewModel = self?.timelineViewModel {
                     // Comment overlay thread/composer are scrollable and should own wheel events.

@@ -2,6 +2,29 @@ import AppKit
 import Carbon.HIToolbox
 import Shared
 
+enum HotkeyHoldReleasePolicy {
+    static func shouldSkipBeforeKeyTranslation(
+        eventType: CGEventType,
+        hasModifierLessHotkey: Bool,
+        hasRelevantModifiers: Bool,
+        hasActiveHold: Bool
+    ) -> Bool {
+        if eventType == .keyUp && hasActiveHold {
+            return false
+        }
+
+        return !hasModifierLessHotkey && !hasRelevantModifiers
+    }
+
+    static func shouldReleaseActiveHold(
+        eventType: CGEventType,
+        keyMatches: Bool,
+        isActiveHold: Bool
+    ) -> Bool {
+        eventType == .keyUp && keyMatches && isActiveHold
+    }
+}
+
 /// Manages global keyboard shortcuts for the application
 /// Allows timeline to be triggered even when app is not in focus
 public class HotkeyManager: NSObject {
@@ -18,9 +41,22 @@ public class HotkeyManager: NSObject {
     private var eventTapRunLoop: CFRunLoop?
     private var isSettingUpEventTap = false
 
-    /// Registered hotkeys with their callbacks
+    private enum HotkeyRegistrationKind {
+        case press(callback: () -> Void)
+        case hold(onKeyDown: () -> Void, onKeyUp: () -> Void)
+    }
+
+    private struct HotkeyRegistration {
+        let id: UUID
+        let key: String
+        let modifiers: NSEvent.ModifierFlags
+        let kind: HotkeyRegistrationKind
+    }
+
+    /// Registered hotkeys with their callbacks.
     /// Uses character-based matching to support non-QWERTY keyboard layouts (DVORAK, Colemak, etc.)
-    private var hotkeys: [(key: String, modifiers: NSEvent.ModifierFlags, callback: () -> Void)] = []
+    private var hotkeys: [HotkeyRegistration] = []
+    private var activeHoldIDs: Set<UUID> = []
 
     /// Whether hotkeys are pending registration (waiting for permissions)
     private var pendingSetup = false
@@ -83,10 +119,35 @@ public class HotkeyManager: NSObject {
     ) {
         Log.info("[HotkeyManager] Registering hotkey: key='\(key)' modifiers=\(modifierDescription(modifiers))", category: .ui)
         withStateLock {
-            hotkeys.append((key, modifiers, callback))
+            hotkeys.append(HotkeyRegistration(
+                id: UUID(),
+                key: key,
+                modifiers: modifiers,
+                kind: .press(callback: callback)
+            ))
         }
 
         // Start monitoring if not already
+        startEventTap()
+    }
+
+    /// Register a hold hotkey with separate key-down and key-up callbacks.
+    public func registerHoldHotkey(
+        key: String,
+        modifiers: NSEvent.ModifierFlags,
+        onKeyDown: @escaping () -> Void,
+        onKeyUp: @escaping () -> Void
+    ) {
+        Log.info("[HotkeyManager] Registering hold hotkey: key='\(key)' modifiers=\(modifierDescription(modifiers))", category: .ui)
+        withStateLock {
+            hotkeys.append(HotkeyRegistration(
+                id: UUID(),
+                key: key,
+                modifiers: modifiers,
+                kind: .hold(onKeyDown: onKeyDown, onKeyUp: onKeyUp)
+            ))
+        }
+
         startEventTap()
     }
 
@@ -97,6 +158,7 @@ public class HotkeyManager: NSObject {
         stopEventTap()
         withStateLock {
             hotkeys.removeAll()
+            activeHoldIDs.removeAll()
         }
     }
 
@@ -193,7 +255,7 @@ public class HotkeyManager: NSObject {
     }
 
     private func setupEventTapOnBackgroundRunLoop() {
-        let eventMask = (1 << CGEventType.keyDown.rawValue)
+        let eventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -253,6 +315,7 @@ public class HotkeyManager: NSObject {
     ) -> Unmanaged<CGEvent>? {
         // Handle tap disabled event
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            Log.warning("[HotkeyManager] Event tap disabled by \(type.rawValue); re-enabling", category: .ui)
             // Re-enable the tap
             if let tap = withStateLock({ eventTap }) {
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -260,12 +323,14 @@ public class HotkeyManager: NSObject {
             return Unmanaged.passUnretained(event)
         }
 
-        // Only handle key down events
-        guard type == .keyDown else {
+        // Only handle key down/up events
+        guard type == .keyDown || type == .keyUp else {
             return Unmanaged.passUnretained(event)
         }
 
-        let hotkeysSnapshot = withStateLock { hotkeys }
+        let (hotkeysSnapshot, activeHoldIDsSnapshot) = withStateLock {
+            (hotkeys, activeHoldIDs)
+        }
         guard !hotkeysSnapshot.isEmpty else {
             return Unmanaged.passUnretained(event)
         }
@@ -279,7 +344,12 @@ public class HotkeyManager: NSObject {
             $0.modifiers.intersection(relevantModifiers).isEmpty
         }
         let hasRelevantModifiers = !modifierFlags(from: flags).intersection(relevantModifiers).isEmpty
-        if !hasModifierLessHotkey && !hasRelevantModifiers {
+        if HotkeyHoldReleasePolicy.shouldSkipBeforeKeyTranslation(
+            eventType: type,
+            hasModifierLessHotkey: hasModifierLessHotkey,
+            hasRelevantModifiers: hasRelevantModifiers,
+            hasActiveHold: !activeHoldIDsSnapshot.isEmpty
+        ) {
             return Unmanaged.passUnretained(event)
         }
 
@@ -289,6 +359,39 @@ public class HotkeyManager: NSObject {
 
         let eventModifiers = modifierFlags(from: flags)
 
+        let isAutoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+
+        if type == .keyUp {
+            for hotkey in hotkeysSnapshot {
+                guard case .hold(_, let onKeyUp) = hotkey.kind else {
+                    continue
+                }
+
+                let keysMatch = pressedKey.lowercased() == hotkey.key.lowercased()
+                let isActiveHold = activeHoldIDsSnapshot.contains(hotkey.id)
+                guard HotkeyHoldReleasePolicy.shouldReleaseActiveHold(
+                    eventType: type,
+                    keyMatches: keysMatch,
+                    isActiveHold: isActiveHold
+                ) else {
+                    continue
+                }
+
+                withStateLock {
+                    activeHoldIDs.remove(hotkey.id)
+                }
+
+                Log.debug(
+                    "[HotkeyManager] Hold hotkey released: key='\(hotkey.key)' modifiersAtRelease=\(modifierDescription(eventModifiers))",
+                    category: .ui
+                )
+                DispatchQueue.main.async {
+                    onKeyUp()
+                }
+                return nil
+            }
+        }
+
         // Check if this matches any registered hotkey using character-based comparison
         for hotkey in hotkeysSnapshot {
             // Compare characters case-insensitively for letter keys
@@ -296,11 +399,30 @@ public class HotkeyManager: NSObject {
             let modifiersMatch = eventModifiers.intersection(relevantModifiers) == hotkey.modifiers.intersection(relevantModifiers)
 
             if keysMatch && modifiersMatch {
-                // Execute callback on main thread
-                let callback = hotkey.callback
+                switch hotkey.kind {
+                case .press(let callback):
+                    guard type == .keyDown, !isAutoRepeat else {
+                        return nil
+                    }
+                    DispatchQueue.main.async {
+                        callback()
+                    }
+                case .hold(let onKeyDown, _):
+                    guard type == .keyDown, !isAutoRepeat else {
+                        return nil
+                    }
 
-                DispatchQueue.main.async {
-                    callback()
+                    withStateLock {
+                        activeHoldIDs.insert(hotkey.id)
+                    }
+
+                    Log.debug(
+                        "[HotkeyManager] Hold hotkey pressed: key='\(hotkey.key)' modifiers=\(modifierDescription(eventModifiers))",
+                        category: .ui
+                    )
+                    DispatchQueue.main.async {
+                        onKeyDown()
+                    }
                 }
 
                 // Consume the event to prevent system beep

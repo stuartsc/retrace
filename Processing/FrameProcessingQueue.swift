@@ -4,6 +4,30 @@ import Database
 import Storage
 import Search
 import AppKit
+import Darwin
+
+struct FrameProcessingMemorySnapshot: Equatable {
+    let residentBytes: UInt64
+    let ownedHeapBytes: UInt64?
+}
+
+enum FrameProcessingMemoryBackoffPolicy {
+    static func shouldBackOff(
+        snapshot: FrameProcessingMemorySnapshot?,
+        residentLimitBytes: UInt64,
+        ownedHeapLimitBytes: UInt64
+    ) -> Bool {
+        guard let snapshot, snapshot.residentBytes >= residentLimitBytes else {
+            return false
+        }
+
+        guard let ownedHeapBytes = snapshot.ownedHeapBytes else {
+            return true
+        }
+
+        return ownedHeapBytes >= ownedHeapLimitBytes
+    }
+}
 
 /// Asynchronous frame processing queue with SQLite-backed durability
 ///
@@ -34,6 +58,10 @@ public actor FrameProcessingQueue {
     private var processingCount: Int = 0   // Frames with status 1
 
     private let memoryReportIntervalNs: UInt64 = 5_000_000_000
+    private let startupBackfillDelaySeconds: TimeInterval = 15
+    private let softResidentMemoryLimitBytes: UInt64 = 2_000_000_000
+    private let softOwnedHeapMemoryLimitBytes: UInt64 = 2_000_000_000
+    private let memoryBackoffSeconds: TimeInterval = 5
 
     // MARK: - Power-Aware Processing Control
 
@@ -289,9 +317,9 @@ public actor FrameProcessingQueue {
     private func runWorker(id: Int) async {
         Log.info("[Queue] Worker \(id) STARTED (total workers: \(workers.count))", category: .processing)
 
-        // Initial delay to ensure database is fully stable
-        // This prevents race conditions on first launch after onboarding
-        try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 500ms - increased for stability
+        // Give capture/audio/dictation startup priority. OCR backlog is durable and can
+        // lag briefly; launching every heavyweight pipeline at once causes memory spikes.
+        try? await Task.sleep(for: .seconds(startupBackfillDelaySeconds), clock: .continuous)
 
         while isRunning && !Task.isCancelled {
             // Check if OCR is disabled globally
@@ -316,11 +344,17 @@ public actor FrameProcessingQueue {
                 continue
             }
 
+            if shouldBackOffForResidentMemory() {
+                try? await Task.sleep(for: .seconds(memoryBackoffSeconds), clock: .continuous)
+                if Task.isCancelled { break }
+                continue
+            }
+
             do {
                 // Try to dequeue a frame
                 guard let queuedFrame = try await dequeue() else {
                     // Queue empty - wait before polling again
-                    try await Task.sleep(for: .nanoseconds(Int64(100_000_000)), clock: .continuous) // 100ms
+                    try await Task.sleep(for: .seconds(1), clock: .continuous)
                     continue
                 }
 
@@ -341,6 +375,7 @@ public actor FrameProcessingQueue {
                     }
 
                     totalProcessed += 1
+                    relieveMallocPressure()
 
                     let elapsed = Date().timeIntervalSince(startTime)
                     Log.info("[Queue-DIAG] Worker \(id) COMPLETED frame \(queuedFrame.frameID) in \(String(format: "%.2f", elapsed))s", category: .processing)
@@ -352,6 +387,7 @@ public actor FrameProcessingQueue {
 
                 } catch {
                     totalFailed += 1
+                    relieveMallocPressure()
 
                     // Check if this is an unrecoverable error (damaged/missing video file)
                     // These errors won't be fixed by retrying, so fail immediately
@@ -530,45 +566,47 @@ public actor FrameProcessingQueue {
 
     /// Convert JPEG data back to CapturedFrame for OCR
     private func convertJPEGToCapturedFrame(_ jpegData: Data, frameRef: FrameReference) throws -> CapturedFrame? {
-        guard let nsImage = NSImage(data: jpegData),
-              let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return nil
-        }
-
-        let width = cgImage.width
-        let height = cgImage.height
-        let bytesPerRow = width * 4
-
-        // Create BGRA bitmap context
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-
-        var pixelData = Data(count: bytesPerRow * height)
-
-        pixelData.withUnsafeMutableBytes { ptr in
-            guard let context = CGContext(
-                data: ptr.baseAddress,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo.rawValue
-            ) else {
-                return
+        autoreleasepool {
+            guard let nsImage = NSImage(data: jpegData),
+                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                return nil
             }
 
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        }
+            let width = cgImage.width
+            let height = cgImage.height
+            let bytesPerRow = width * 4
 
-        return CapturedFrame(
-            timestamp: frameRef.timestamp,
-            imageData: pixelData,
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow,
-            metadata: frameRef.metadata
-        )
+            // Create BGRA bitmap context
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+
+            var pixelData = Data(count: bytesPerRow * height)
+
+            pixelData.withUnsafeMutableBytes { ptr in
+                guard let context = CGContext(
+                    data: ptr.baseAddress,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: bytesPerRow,
+                    space: colorSpace,
+                    bitmapInfo: bitmapInfo.rawValue
+                ) else {
+                    return
+                }
+
+                context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            }
+
+            return CapturedFrame(
+                timestamp: frameRef.timestamp,
+                imageData: pixelData,
+                width: width,
+                height: height,
+                bytesPerRow: bytesPerRow,
+                metadata: frameRef.metadata
+            )
+        }
     }
 
     private func parseActualSegmentID(from relativePath: String) throws -> VideoSegmentID {
@@ -871,11 +909,75 @@ public actor FrameProcessingQueue {
 
     private func logMemorySnapshot() {
         let queueDepth = pendingCount + processingCount
+        let snapshot = currentMemorySnapshot()
+        let rss = Self.formatBytes(Int64(snapshot?.residentBytes ?? 0))
+        let ownedHeap = snapshot?.ownedHeapBytes.map { Self.formatBytes(Int64($0)) } ?? "unknown"
 
         Log.info(
-            "[Queue-Memory] rawCacheFrames=0 rawCacheBytes=0 KB queueDepth=\(queueDepth) pending=\(pendingCount) processing=\(processingCount) workers=\(workers.count)",
+            "[Queue-Memory] rss=\(rss) ownedHeap=\(ownedHeap) rawCacheFrames=0 rawCacheBytes=0 KB queueDepth=\(queueDepth) pending=\(pendingCount) processing=\(processingCount) workers=\(workers.count)",
             category: .processing
         )
+    }
+
+    private func shouldBackOffForResidentMemory() -> Bool {
+        let beforeRelief = currentMemorySnapshot()
+        guard FrameProcessingMemoryBackoffPolicy.shouldBackOff(
+            snapshot: beforeRelief,
+            residentLimitBytes: softResidentMemoryLimitBytes,
+            ownedHeapLimitBytes: softOwnedHeapMemoryLimitBytes
+        ) else {
+            return false
+        }
+
+        let reclaimed = relieveMallocPressure()
+        let afterRelief = currentMemorySnapshot() ?? beforeRelief
+        guard FrameProcessingMemoryBackoffPolicy.shouldBackOff(
+            snapshot: afterRelief,
+            residentLimitBytes: softResidentMemoryLimitBytes,
+            ownedHeapLimitBytes: softOwnedHeapMemoryLimitBytes
+        ) else {
+            return false
+        }
+
+        let residentText = Self.formatBytes(Int64(afterRelief?.residentBytes ?? 0))
+        let ownedHeapText = afterRelief?.ownedHeapBytes.map { Self.formatBytes(Int64($0)) } ?? "unknown"
+        Log.warning(
+            "[Queue-Memory] Pausing OCR worker because resident=\(residentText), ownedHeap=\(ownedHeapText) (reclaimed \(Self.formatBytes(Int64(reclaimed))))",
+            category: .processing
+        )
+        return true
+    }
+
+    private func currentMemorySnapshot() -> FrameProcessingMemorySnapshot? {
+        guard let residentBytes = currentResidentMemoryBytes() else { return nil }
+        return FrameProcessingMemorySnapshot(
+            residentBytes: residentBytes,
+            ownedHeapBytes: currentOwnedHeapMemoryBytes()
+        )
+    }
+
+    private func currentResidentMemoryBytes() -> UInt64? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<integer_t>.stride)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return UInt64(info.resident_size)
+    }
+
+    private func currentOwnedHeapMemoryBytes() -> UInt64? {
+        guard let zone = malloc_default_zone() else { return nil }
+        var stats = malloc_statistics_t()
+        malloc_zone_statistics(zone, &stats)
+        return UInt64(stats.size_in_use)
+    }
+
+    @discardableResult
+    private func relieveMallocPressure() -> UInt64 {
+        UInt64(malloc_zone_pressure_relief(nil, 0))
     }
 
     private static func formatBytes(_ bytes: Int64) -> String {

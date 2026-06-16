@@ -5,7 +5,7 @@ import Shared
 /// Writes sentence-level audio segments to disk as compressed M4A files
 /// Owner: STORAGE agent
 public actor AudioSegmentWriter {
-    private let storageRoot: URL
+    public nonisolated let storageRoot: URL
 
     public init(storageRoot: URL) {
         self.storageRoot = storageRoot
@@ -39,15 +39,22 @@ public actor AudioSegmentWriter {
             throw StorageError.fileWriteFailed(path: "audio segment", underlying: "Invalid time range: \(startTime)-\(endTime)")
         }
 
-        // Calculate byte offsets for the sentence
-        let bytesPerSample = 2  // Int16 PCM
-        let startSample = Int(startTime * Double(sampleRate))
-        let endSample = Int(endTime * Double(sampleRate))
-        let startByte = startSample * bytesPerSample * channels
-        let endByte = endSample * bytesPerSample * channels
+        // Calculate byte offsets for the sentence. Whisper/fallback durations can
+        // round a few samples past the captured PCM buffer, so clamp to real frames.
+        let bytesPerFrame = MemoryLayout<Int16>.size * channels
+        guard sampleRate > 0 && channels > 0 && bytesPerFrame > 0 else {
+            throw StorageError.fileWriteFailed(path: "audio segment", underlying: "Invalid audio format: sampleRate=\(sampleRate), channels=\(channels)")
+        }
+
+        let totalFrames = audioData.count / bytesPerFrame
+        let startSample = Int((startTime * Double(sampleRate)).rounded(.down))
+        let requestedEndSample = Int((endTime * Double(sampleRate)).rounded(.up))
+        let clampedEndSample = min(requestedEndSample, totalFrames)
+        let startByte = startSample * bytesPerFrame
+        let endByte = clampedEndSample * bytesPerFrame
 
         // Extract sentence audio data
-        guard startByte >= 0 && endByte <= audioData.count && startByte < endByte else {
+        guard startSample >= 0 && startSample < totalFrames && startByte < endByte else {
             throw StorageError.fileWriteFailed(path: "audio segment", underlying: "Invalid byte range: \(startByte)-\(endByte) for buffer size \(audioData.count)")
         }
         let sentenceData = audioData.subdata(in: startByte..<endByte)

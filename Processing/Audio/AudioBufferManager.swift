@@ -20,10 +20,13 @@ public struct AudioBatch: Sendable {
 }
 
 /// Accumulates CapturedAudio samples into time-windowed batches per source
-/// Returns a batch when the buffer reaches maxBufferDuration worth of PCM data
+/// Returns a batch when the buffer reaches maxBufferDuration worth of PCM data.
+/// Keeps an overlap of audio between batches so sentences aren't cut at boundaries.
 public actor AudioBufferManager {
 
     private let maxBufferDuration: TimeInterval
+    /// Seconds of audio to carry over from the end of one batch to the start of the next
+    private let overlapDuration: TimeInterval = 5.0
 
     // Separate buffers for mic and system audio
     private var micBuffer = Data()
@@ -108,10 +111,19 @@ public actor AudioBufferManager {
             channels: micChannels
         )
 
-        micBuffer = Data()
-        micStartTimestamp = nil
-        micEndTimestamp = nil
-        micDuration = 0
+        // Keep the last overlapDuration of audio as carry-over for the next batch
+        let overlapBytes = Int(overlapDuration * Double(micSampleRate) * Double(micChannels) * 2) // 2 bytes per Int16 sample
+        if micBuffer.count > overlapBytes {
+            let overlapData = micBuffer.suffix(overlapBytes)
+            micBuffer = Data(overlapData)
+            micStartTimestamp = micEndTimestamp?.addingTimeInterval(-overlapDuration)
+            micDuration = overlapDuration
+        } else {
+            micBuffer = Data()
+            micStartTimestamp = nil
+            micEndTimestamp = nil
+            micDuration = 0
+        }
 
         return batch
     }
@@ -129,10 +141,19 @@ public actor AudioBufferManager {
             channels: systemChannels
         )
 
-        systemBuffer = Data()
-        systemStartTimestamp = nil
-        systemEndTimestamp = nil
-        systemDuration = 0
+        // Keep the last overlapDuration of audio as carry-over for the next batch
+        let overlapBytes = Int(overlapDuration * Double(systemSampleRate) * Double(systemChannels) * 2)
+        if systemBuffer.count > overlapBytes {
+            let overlapData = systemBuffer.suffix(overlapBytes)
+            systemBuffer = Data(overlapData)
+            systemStartTimestamp = systemEndTimestamp?.addingTimeInterval(-overlapDuration)
+            systemDuration = overlapDuration
+        } else {
+            systemBuffer = Data()
+            systemStartTimestamp = nil
+            systemEndTimestamp = nil
+            systemDuration = 0
+        }
 
         return batch
     }

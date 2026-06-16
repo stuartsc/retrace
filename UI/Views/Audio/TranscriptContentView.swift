@@ -10,6 +10,21 @@ struct TranscriptContentView: View {
     let storageRoot: URL?
     let onClose: () -> Void
 
+    /// Strip whisper.cpp control tokens for display (handles legacy DB records)
+    static func stripControlTokens(_ text: String) -> String {
+        let stripped = text.replacingOccurrences(
+            of: "\\[.*?\\]",
+            with: "",
+            options: .regularExpression
+        )
+        let collapsed = stripped.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        )
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static let headerFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
@@ -80,12 +95,30 @@ struct TranscriptContentView: View {
     }
 }
 
+// MARK: - Cursor Policy
+
+enum TranscriptCursorPolicy {
+    enum Action: Equatable {
+        case pushPointingHand
+        case pop
+    }
+
+    static func action(hovering: Bool, hasAudioFile: Bool, cursorIsPushed: Bool) -> Action? {
+        if hovering && hasAudioFile {
+            return cursorIsPushed ? nil : .pushPointingHand
+        }
+
+        return cursorIsPushed ? .pop : nil
+    }
+}
+
 // MARK: - Transcription Row
 
 private struct TranscriptionRow: View {
     let transcription: AudioTranscription
     let storageRoot: URL?
     @State private var isHovering = false
+    @State private var didPushCursor = false
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -135,7 +168,7 @@ private struct TranscriptionRow: View {
                         .italic()
                 }
             } else {
-                Text(transcription.text)
+                Text(TranscriptContentView.stripControlTokens(transcription.text))
                     .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.85))
                     .lineLimit(nil)
@@ -147,11 +180,12 @@ private struct TranscriptionRow: View {
             // Reveal in Finder button for entries with audio files
             if hasAudioFile {
                 Button(action: revealInFinder) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(isHovering ? 0.8 : 0.3))
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(isHovering ? .blue : .white.opacity(0.4))
                 }
                 .buttonStyle(.plain)
+                .help("Reveal audio file in Finder")
             }
         }
         .padding(.vertical, 4)
@@ -162,23 +196,52 @@ private struct TranscriptionRow: View {
         )
         .onTapGesture {
             if hasAudioFile {
+                Log.info("[TranscriptRow] reveal requested id=\(transcription.id) source=\(transcription.source.rawValue) audioPath=\(transcription.audioPath ?? "nil")", category: .ui)
                 revealInFinder()
             }
         }
         .onHover { hovering in
             isHovering = hovering
-            if hovering && hasAudioFile {
-                NSCursor.pointingHand.push()
-            } else {
-                NSCursor.pop()
-            }
+            applyCursorAction(hovering: hovering)
+        }
+        .onDisappear {
+            releaseCursorIfNeeded()
         }
     }
 
     private func revealInFinder() {
-        guard let path = transcription.audioPath, let root = storageRoot else { return }
+        guard let path = transcription.audioPath, let root = storageRoot else {
+            Log.warning("[TranscriptRow] reveal skipped id=\(transcription.id) missing audio path/root", category: .ui)
+            return
+        }
         let fileURL = root.appendingPathComponent(path)
+        Log.info("[TranscriptRow] revealing audio id=\(transcription.id) path=\(path)", category: .ui)
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+    }
+
+    private func applyCursorAction(hovering: Bool) {
+        guard let action = TranscriptCursorPolicy.action(
+            hovering: hovering,
+            hasAudioFile: hasAudioFile,
+            cursorIsPushed: didPushCursor
+        ) else {
+            return
+        }
+
+        switch action {
+        case .pushPointingHand:
+            NSCursor.pointingHand.push()
+            didPushCursor = true
+        case .pop:
+            NSCursor.pop()
+            didPushCursor = false
+        }
+    }
+
+    private func releaseCursorIfNeeded() {
+        guard didPushCursor else { return }
+        NSCursor.pop()
+        didPushCursor = false
     }
 
     @ViewBuilder

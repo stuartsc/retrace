@@ -27,13 +27,31 @@ public struct SentenceSegmenter {
     ///   - words: Array of transcription words with timestamps
     ///   - fullText: Complete transcription text (for validation and fallback)
     /// - Returns: Array of sentences with timing information
-    public static func segment(words: [TranscriptionWord], fullText: String) -> [Sentence] {
-        guard !words.isEmpty else { return [] }
-
-        // Precompute sentence boundaries from fullText as backup
-        let fullTextSentences = fullText.components(separatedBy: CharacterSet(charactersIn: ".?!;:"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+    public static func segment(
+        words: [TranscriptionWord],
+        fullText: String,
+        fallbackDuration: TimeInterval? = nil
+    ) -> [Sentence] {
+        guard !words.isEmpty else {
+            let text = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, let fallbackDuration else { return [] }
+            let endTime = max(fallbackDuration, 0.01)
+            let fallbackWord = TranscriptionWord(
+                word: text,
+                start: 0,
+                end: endTime,
+                confidence: nil
+            )
+            return [
+                Sentence(
+                    text: text,
+                    startTime: 0,
+                    endTime: endTime,
+                    words: [fallbackWord],
+                    confidence: 0
+                )
+            ]
+        }
 
         var sentences: [Sentence] = []
         var currentWords: [TranscriptionWord] = []
@@ -46,28 +64,30 @@ public struct SentenceSegmenter {
             // Check if this word ends a sentence (primary method)
             let endsWithPunctuation = hasSentenceTerminator(word.word)
 
-            // Check if current text matches any sentence from fullText (fallback method)
-            let matchesFullTextSentence = fullTextSentences.contains { sentence in
-                currentText.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(sentence)
-            }
-
-            // Check for long pause (>0.5s) to next word (indicates sentence boundary)
+            // Check for very long pause (>1.5s) to next word — only real sentence breaks, not natural mid-thought pauses
             let hasLongPause: Bool
             if index < words.count - 1 {
                 let nextWord = words[index + 1]
-                hasLongPause = (nextWord.start - word.end) > 0.5
+                hasLongPause = (nextWord.start - word.end) > 1.5
             } else {
                 hasLongPause = false
             }
 
-            // Check if we've accumulated too many words (force break at ~20 words)
-            let tooManyWords = currentWords.count >= 20
+            // Hard safety limit only — force break if a single run gets absurdly long (~60 words)
+            let tooManyWords = currentWords.count >= 60
 
             // Check if this is the last word
             let isLastWord = index == words.count - 1
 
-            // End sentence if any condition is met
-            if endsWithPunctuation || hasLongPause || tooManyWords || isLastWord || matchesFullTextSentence {
+            // Minimum word count — don't emit fragments shorter than 4 words unless forced
+            let minWordsReached = currentWords.count >= 4
+
+            // End sentence if any condition is met — but require minWords unless we've hit a hard limit
+            let shouldEnd = (endsWithPunctuation && minWordsReached) ||
+                            (hasLongPause && minWordsReached) ||
+                            tooManyWords ||
+                            isLastWord
+            if shouldEnd {
                 // Calculate average confidence for the sentence
                 let avgConfidence: Double
                 if currentWords.isEmpty {

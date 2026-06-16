@@ -12,7 +12,6 @@ public struct ContentView: View {
     @State private var showFeedbackSheet = false
     @StateObject private var deeplinkHandler = DeeplinkHandler()
     @StateObject private var launchOnLoginReminderManager: LaunchOnLoginReminderManager
-    @StateObject private var milestoneCelebrationManager: MilestoneCelebrationManager
     @StateObject private var coordinatorWrapper: AppCoordinatorWrapper
     @StateObject private var dashboardViewModel: DashboardViewModel
 
@@ -23,7 +22,6 @@ public struct ContentView: View {
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
         self._launchOnLoginReminderManager = StateObject(wrappedValue: LaunchOnLoginReminderManager(coordinator: coordinator))
-        self._milestoneCelebrationManager = StateObject(wrappedValue: MilestoneCelebrationManager(coordinator: coordinator))
         self._coordinatorWrapper = StateObject(wrappedValue: AppCoordinatorWrapper(coordinator: coordinator))
         self._dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(coordinator: coordinator))
     }
@@ -51,8 +49,7 @@ public struct ContentView: View {
                             DashboardView(
                                 viewModel: dashboardViewModel,
                                 coordinator: coordinator,
-                                launchOnLoginReminderManager: launchOnLoginReminderManager,
-                                milestoneCelebrationManager: milestoneCelebrationManager
+                                launchOnLoginReminderManager: launchOnLoginReminderManager
                             )
 
                         case .settings:

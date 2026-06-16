@@ -1907,7 +1907,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         nearbyAudioCheckTask?.cancel()
         nearbyAudioCheckTask = Task { [weak self] in
             // Debounce: wait 300ms before querying
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(for: .milliseconds(300), clock: .continuous)
             guard !Task.isCancelled else { return }
 
             guard let self = self,

@@ -776,6 +776,57 @@ public class DashboardViewModel: ObservableObject {
         }
     }
 
+    /// Record a dashboard top-tab selection.
+    public static func recordDashboardTabSelected(coordinator: AppCoordinator, tab: String) {
+        recordMetric(coordinator: coordinator, type: .dashboardTabSelected, metadata: tab)
+    }
+
+    /// Record the dashboard opening on its default tab.
+    public static func recordDashboardDefaultOpened(coordinator: AppCoordinator, tab: String) {
+        recordMetric(coordinator: coordinator, type: .dashboardDefaultOpened, metadata: tab)
+    }
+
+    /// Record an independently recoverable dashboard load failure.
+    public static func recordDashboardLoadFailed(
+        coordinator: AppCoordinator,
+        surface: String,
+        error: Error
+    ) {
+        let metadata = jsonMetadata([
+            "surface": surface,
+            "error": error.localizedDescription
+        ])
+        recordMetric(coordinator: coordinator, type: .dashboardLoadFailed, metadata: metadata)
+    }
+
+    /// Record relocated Settings utility actions such as support, help, and debug controls.
+    public static func recordSettingsUtilityAction(coordinator: AppCoordinator, action: String) {
+        recordMetric(coordinator: coordinator, type: .settingsUtilityAction, metadata: action)
+    }
+
+    /// Record expansion of a dashboard transcript row.
+    public static func recordDashboardTranscriptExpanded(coordinator: AppCoordinator, surface: String) {
+        recordMetric(coordinator: coordinator, type: .dashboardTranscriptExpanded, metadata: surface)
+    }
+
+    /// Record user-driven lazy loading of older transcript history.
+    public static func recordDashboardTranscriptLoadOlder(coordinator: AppCoordinator, surface: String) {
+        recordMetric(coordinator: coordinator, type: .dashboardTranscriptLoadOlder, metadata: surface)
+    }
+
+    /// Record selection of a live screenshot/context frame.
+    public static func recordDashboardLiveFrameSelected(
+        coordinator: AppCoordinator,
+        frameID: Int64,
+        source: String
+    ) {
+        let metadata = jsonMetadata([
+            "frameID": frameID,
+            "source": source
+        ])
+        recordMetric(coordinator: coordinator, type: .dashboardLiveFrameSelected, metadata: metadata)
+    }
+
     public static func recordDateSearchSubmitted(
         coordinator: AppCoordinator,
         source: String,

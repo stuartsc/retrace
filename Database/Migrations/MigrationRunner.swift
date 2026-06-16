@@ -99,7 +99,12 @@ actor MigrationRunner {
             V9_SegmentCommentFrameAnchor(),
             V10_SegmentCommentSearchIndex(),
             V11_SegmentCommentLinkCompositeIndex(),
-            V12_AudioCaptures()
+            V12_AudioCaptures(),
+            V13_TranscriptionPass(),
+            V14_ContextualRefinement(),
+            V15_PipelineVersion(),
+            V16_DictationSessions(),
+            V17_AudioTranscriptMetadata()
         ]
     }
 

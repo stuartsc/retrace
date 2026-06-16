@@ -21,6 +21,7 @@ public actor ServiceContainer {
     public let audioCapture: AudioCaptureManager
     public let processing: ProcessingManager
     public let audioProcessing: AudioProcessingManager
+    public let dictation: DictationManager
     public let search: SearchManager
     public let migration: MigrationManager
     public let modelManager: ModelManager
@@ -29,6 +30,8 @@ public actor ServiceContainer {
     public var dataAdapter: DataAdapter?
     public var processingQueue: FrameProcessingQueue?
     public var audioBackfill: AudioBackfillManager?
+    public var audioRefinement: AudioRefinementManager?
+    public var audioContextualRefinement: AudioContextualRefinementManager?
     private var transcriptionService: (any TranscriptionProtocol)?
 
     // MARK: - Configuration
@@ -112,6 +115,7 @@ public actor ServiceContainer {
             audioWriter: audioWriter,
             config: audioProcessingConfig
         )
+        self.dictation = DictationManager(transcriptionService: transcriptionService)
 
         // FTS-only search manager
         self.search = SearchManager(
@@ -171,6 +175,7 @@ public actor ServiceContainer {
             audioWriter: audioWriter,
             config: .default
         )
+        self.dictation = DictationManager(transcriptionService: transcriptionService)
 
         // FTS-only search manager
         self.search = SearchManager(
@@ -255,12 +260,14 @@ public actor ServiceContainer {
                 throw ServiceError.databaseNotReady
             }
             let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
+            let dictationSessionQueries = DictationSessionQueries(db: audioDbPointer)
             let audioStorageRoot = await storage.getStorageDirectory()
             let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
             try await audioProcessing.initialize(
                 transcriptionQueries: audioTranscriptionQueries,
                 audioWriter: audioWriter
             )
+            await dictation.updateSessionStore(dictationSessionQueries)
             Log.info("✓ Audio processing initialized", category: .app)
 
             // Create backfill manager only if real whisper service is available
@@ -273,6 +280,8 @@ public actor ServiceContainer {
                 )
                 Log.info("✓ Audio backfill manager initialized", category: .app)
             }
+
+            _ = try await installAudioRefinementManagersIfAvailable()
         } catch {
             Log.warning("Audio processing initialization failed (will record without transcription): \(error)", category: .app)
         }
@@ -341,6 +350,59 @@ public actor ServiceContainer {
         // Safe to run anytime since all DB operations go through DatabaseManager actor
         await queue.startWorkers()
         Log.info("✓ Processing queue workers started (\(ProcessingQueueConfig.default.workerCount) workers)", category: .app)
+    }
+
+    /// Install pass-2/pass-3 audio refinement managers once the turbo Whisper model is available.
+    /// This is idempotent so startup and post-download installation use the same path.
+    @discardableResult
+    public func installAudioRefinementManagersIfAvailable() async throws -> Bool {
+        guard audioRefinement == nil || audioContextualRefinement == nil else {
+            return true
+        }
+
+        guard let turboPath = await modelManager.getWhisperTurboModelPath() else {
+            return false
+        }
+
+        guard let audioDbPointer = await database.getConnection() else {
+            throw ServiceError.databaseNotReady
+        }
+
+        let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
+        let audioStorageRoot = await storage.getStorageDirectory()
+        let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
+        let turboService = WhisperCppTranscriptionService(
+            modelPath: turboPath.path,
+            samplingStrategy: .beamSearch(beamSize: 5)
+        )
+        try await turboService.initialize()
+
+        if audioRefinement == nil {
+            let refinement = AudioRefinementManager(
+                transcriptionService: turboService,
+                transcriptionQueries: audioTranscriptionQueries,
+                audioWriter: audioWriter,
+                storageRoot: audioStorageRoot
+            )
+            let processingRef = self.audioProcessing
+            await refinement.setPass1ActiveCheck {
+                await processingRef.isCurrentlyProcessing
+            }
+            self.audioRefinement = refinement
+            Log.info("✓ Audio refinement manager initialized (turbo model)", category: .app)
+        }
+
+        if audioContextualRefinement == nil {
+            self.audioContextualRefinement = AudioContextualRefinementManager(
+                transcriptionService: turboService,
+                transcriptionQueries: audioTranscriptionQueries,
+                audioWriter: audioWriter,
+                storageRoot: audioStorageRoot
+            )
+            Log.info("✓ Audio contextual refinement manager initialized", category: .app)
+        }
+
+        return true
     }
 
     /// Register Rewind data source if user has opted in
@@ -475,6 +537,47 @@ public actor ServiceContainer {
             cutoffDate: cutoffDate
         )
         Log.info("✓ Rewind source configured during initialization", category: .app)
+    }
+
+    /// Upgrade from MockTranscriptionService to real WhisperCppTranscriptionService
+    /// Called after whisper model is downloaded at runtime
+    public func upgradeToRealTranscription() async throws {
+        guard transcriptionService is MockTranscriptionService else {
+            Log.info("[ServiceContainer] Already using real transcription service, skipping upgrade", category: .app)
+            return
+        }
+
+        guard let modelURL = await modelManager.getWhisperModelPath() else {
+            Log.warning("[ServiceContainer] Cannot upgrade transcription: whisper model not found", category: .app)
+            return
+        }
+
+        let realService = WhisperCppTranscriptionService(modelPath: modelURL.path)
+        try await realService.initialize()
+        self.transcriptionService = realService
+
+        // Hot-swap the service in the audio processing manager
+        await audioProcessing.updateTranscriptionService(realService)
+        await dictation.updateTranscriptionService(realService)
+        Log.info("[ServiceContainer] Upgraded to real WhisperCppTranscriptionService", category: .app)
+
+        // Create backfill manager if not already present
+        if self.audioBackfill == nil {
+            guard let audioDbPointer = await database.getConnection() else {
+                Log.warning("[ServiceContainer] Cannot create backfill manager: database not ready", category: .app)
+                return
+            }
+            let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
+            let audioStorageRoot = await storage.getStorageDirectory()
+            let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
+            self.audioBackfill = AudioBackfillManager(
+                transcriptionService: realService,
+                transcriptionQueries: audioTranscriptionQueries,
+                audioWriter: audioWriter,
+                storageRoot: audioStorageRoot
+            )
+            Log.info("[ServiceContainer] Audio backfill manager created after transcription upgrade", category: .app)
+        }
     }
 
     /// Shutdown all services gracefully

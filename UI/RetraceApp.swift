@@ -178,9 +178,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // CRITICAL FIX: Ensure bundle identifier is set
         // When running from Xcode/SPM, the bundle ID might not be set correctly
         if Bundle.main.bundleIdentifier == nil {
-            // Set activation policy to accessory (menu bar app, no dock icon)
-            // This is required when running without a proper bundle ID
-            NSApp.setActivationPolicy(.accessory)
+            // Set activation policy to regular (shows in Dock)
+            NSApp.setActivationPolicy(.regular)
         }
 
         // Check if another instance is already running (skip if this is a relaunch)
@@ -264,7 +263,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Setup power settings change observer
             setupPowerSettingsObserver()
-            ProcessCPUMonitor.shared.start()
+            ProcessCPUMonitor.shared.startAtLaunchIfEnabled()
 
             Log.info("[AppDelegate] Menu bar and window controllers initialized", category: .app)
 
@@ -288,12 +287,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 didHandleInitialDeeplink = true
             }
 
+            let hasCompletedOnboarding = await wrapper.coordinator.onboardingManager.hasCompletedOnboarding
+
             if shouldShowDashboardAfterInitialization {
                 requestDashboardReveal(source: "pendingExternalDashboardReveal")
                 shouldShowDashboardAfterInitialization = false
-            } else if !didHandleInitialDeeplink {
-                // Show dashboard on first launch (only if no deeplinks)
+            } else if !didHandleInitialDeeplink && !hasCompletedOnboarding {
+                // First-run onboarding still needs the dashboard surface.
                 DashboardWindowController.shared.show()
+            } else if !didHandleInitialDeeplink {
+                // Normal launches should keep Retrace in the menu bar. Dictation and
+                // recording must not depend on an open dashboard window.
+                NSApp.hide(nil)
+                Log.info("[LaunchSurface] Completed startup in menu-bar mode without opening dashboard", category: .app)
             }
 
         } catch {
@@ -1262,17 +1268,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func shouldRevealDashboardForActivation() -> Bool {
-        guard isInitialized else { return false }
-        guard !isTerminationDecisionInProgress else { return false }
-        guard !isTerminationFlushInProgress else { return false }
-        guard !TimelineWindowController.shared.isVisible else { return false }
-        guard !DashboardWindowController.shared.isVisible else { return false }
-        guard !PauseReminderWindowController.shared.isVisible else { return false }
-
-        let hasVisibleForegroundWindow = NSApp.windows.contains { window in
-            window.level.rawValue == 0 && window.isVisible
-        }
-        return !hasVisibleForegroundWindow
+        // App activation is not an explicit dashboard request. Keep background
+        // launches lightweight; use the menu bar, app menu, hotkey, Dock reopen,
+        // or duplicate launch path to reveal the dashboard.
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {

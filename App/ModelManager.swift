@@ -36,6 +36,14 @@ public actor ModelManager {
         purpose: "Semantic search embeddings"
     )
 
+    public static let whisperTurboModel = ModelInfo(
+        name: "Whisper Large V3 Turbo",
+        filename: "ggml-large-v3-turbo.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        sizeBytes: 1_600_000_000, // ~1.6 GB
+        purpose: "High-accuracy speech-to-text (refinement pass)"
+    )
+
     public static let allModels = [whisperModel, embeddingModel]
 
     // MARK: - Paths
@@ -252,6 +260,11 @@ public actor ModelManager {
 
     public func getWhisperModelPath() async -> URL? {
         let status = await getModelStatus(Self.whisperModel)
+        return status.isValid ? status.localPath : nil
+    }
+
+    public func getWhisperTurboModelPath() async -> URL? {
+        let status = await getModelStatus(Self.whisperTurboModel)
         return status.isValid ? status.localPath : nil
     }
 

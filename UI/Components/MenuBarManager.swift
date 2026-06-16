@@ -38,6 +38,7 @@ public class MenuBarManager: ObservableObject {
     private var recordingShortcut: ShortcutConfig = .defaultRecording
     private var systemMonitorShortcut: ShortcutConfig = .defaultSystemMonitor
     private var feedbackShortcut: ShortcutConfig = .defaultFeedback
+    private var dictationShortcut: ShortcutConfig = .defaultDictation
 
     /// Timer for icon fill animation
     private var iconAnimationTimer: Timer?
@@ -171,7 +172,8 @@ public class MenuBarManager: ObservableObject {
         recordingShortcut = await onboardingManager.recordingShortcut
         systemMonitorShortcut = await onboardingManager.systemMonitorShortcut
         feedbackShortcut = await onboardingManager.feedbackShortcut
-        Log.info("[MenuBarManager] Loaded shortcuts - Timeline: \(timelineShortcut.displayString), Dashboard: \(dashboardShortcut.displayString), Recording: \(recordingShortcut.displayString), Monitor: \(systemMonitorShortcut.displayString), Feedback: \(feedbackShortcut.displayString)", category: .ui)
+        dictationShortcut = await onboardingManager.dictationShortcut
+        Log.info("[MenuBarManager] Loaded shortcuts - Timeline: \(timelineShortcut.displayString), Dashboard: \(dashboardShortcut.displayString), Recording: \(recordingShortcut.displayString), Monitor: \(systemMonitorShortcut.displayString), Feedback: \(feedbackShortcut.displayString), Dictation: \(dictationShortcut.displayString)", category: .ui)
     }
 
     /// Reload shortcuts from storage and re-register hotkeys (called from Settings)
@@ -258,6 +260,20 @@ public class MenuBarManager: ObservableObject {
             }
         }
 
+        // Register hold-to-dictate global hotkey (skip if cleared)
+        if !dictationShortcut.key.isEmpty {
+            HotkeyManager.shared.registerHoldHotkey(
+                key: dictationShortcut.key,
+                modifiers: dictationShortcut.modifiers.nsModifiers,
+                onKeyDown: { [weak self] in
+                    self?.beginDictation()
+                },
+                onKeyUp: { [weak self] in
+                    self?.endDictation()
+                }
+            )
+        }
+
         // Also configure the timeline window controller
         Task { @MainActor in
             TimelineWindowController.shared.configure(coordinator: coordinator)
@@ -309,6 +325,18 @@ public class MenuBarManager: ObservableObject {
                 isRecording = actualState
                 updateIcon(recording: actualState)
             }
+        }
+    }
+
+    private func beginDictation() {
+        Task {
+            _ = await coordinator.beginDictation()
+        }
+    }
+
+    private func endDictation() {
+        Task {
+            _ = await coordinator.endDictation()
         }
     }
 

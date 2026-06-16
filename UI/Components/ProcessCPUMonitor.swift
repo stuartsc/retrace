@@ -103,8 +103,45 @@ final class ProcessCPUMonitor: ObservableObject {
     private static let slowPollingInterval: TimeInterval = 15
     private static let batteryPollingInterval: TimeInterval = 30
     private static let snapshotWindowDuration: TimeInterval = 12 * 60 * 60
+    private static let settingsStore = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+    private static let startAtLaunchDefaultsKey = "processCPUMonitorStartAtLaunch"
+    private static let startAtLaunchEnvironmentKey = "RETRACE_PROCESS_CPU_MONITOR_START_AT_LAUNCH"
 
     private init() {}
+
+    nonisolated static func shouldStartAtLaunch(
+        defaultsValue: Bool?,
+        environmentValue: String?
+    ) -> Bool {
+        if let environmentValue {
+            switch environmentValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                break
+            }
+        }
+
+        return defaultsValue ?? false
+    }
+
+    private static func shouldStartAtLaunch() -> Bool {
+        shouldStartAtLaunch(
+            defaultsValue: settingsStore.object(forKey: startAtLaunchDefaultsKey) as? Bool,
+            environmentValue: ProcessInfo.processInfo.environment[startAtLaunchEnvironmentKey]
+        )
+    }
+
+    func startAtLaunchIfEnabled() {
+        guard Self.shouldStartAtLaunch() else {
+            Log.info("[ProcessCPUMonitor] Launch sampling disabled; system monitor will sample on demand", category: .ui)
+            return
+        }
+
+        start()
+    }
 
     func start() {
         guard samplingTask == nil else { return }
@@ -121,6 +158,11 @@ final class ProcessCPUMonitor: ObservableObject {
         if activeConsumers.isEmpty {
             Task(priority: .utility) { [sampler] in
                 await sampler.dropWindowState()
+            }
+
+            if !Self.shouldStartAtLaunch() {
+                stop()
+                return
             }
         }
 

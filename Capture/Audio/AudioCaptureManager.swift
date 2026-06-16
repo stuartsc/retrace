@@ -2,6 +2,20 @@ import Foundation
 import AVFoundation
 import Shared
 
+enum AudioStreamBufferingPolicy {
+    static let sourceSampleLimit = 6_000
+    static let combinedSampleLimit = 12_000
+
+    static func makeStream(
+        limit: Int
+    ) -> (stream: AsyncStream<CapturedAudio>, continuation: AsyncStream<CapturedAudio>.Continuation) {
+        AsyncStream<CapturedAudio>.makeStream(
+            of: CapturedAudio.self,
+            bufferingPolicy: .bufferingNewest(limit)
+        )
+    }
+}
+
 /// Main coordinator for audio capture with dual-pipeline architecture
 /// Pipeline A: Microphone (with Voice Isolation)
 /// Pipeline B: System Audio (privacy-aware, auto-muted during meetings)
@@ -32,6 +46,8 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     // Combined audio stream
     private var audioContinuation: AsyncStream<CapturedAudio>.Continuation?
     private var _audioStream: AsyncStream<CapturedAudio>?
+    private var microphoneStreamTask: Task<Void, Never>?
+    private var systemAudioStreamTask: Task<Void, Never>?
 
     public init(config: AudioCaptureConfig = .default) {
         self.config = config
@@ -56,7 +72,9 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         self.config = config
 
         // Create combined audio stream
-        let (stream, continuation) = AsyncStream<CapturedAudio>.makeStream()
+        let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(
+            limit: AudioStreamBufferingPolicy.combinedSampleLimit
+        )
         self._audioStream = stream
         self.audioContinuation = continuation
 
@@ -71,21 +89,26 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         // Start microphone capture if enabled
         if config.microphoneEnabled {
             try await microphoneCapture.startCapture()
-            Task {
+            microphoneStreamTask = Task {
                 await streamMicrophoneAudio()
             }
         }
 
-        // Start system audio capture if enabled
+        // Start system audio capture if enabled (non-fatal if it fails)
         if config.systemAudioEnabled {
-            try await systemAudioCapture.startCapture()
+            do {
+                try await systemAudioCapture.startCapture()
 
-            // Apply initial mute state based on current meeting state
-            let currentState = await meetingDetector.getCurrentState()
-            await updateSystemAudioMuteState(meetingState: currentState)
+                // Apply initial mute state based on current meeting state
+                let currentState = await meetingDetector.getCurrentState()
+                await updateSystemAudioMuteState(meetingState: currentState)
 
-            Task {
-                await streamSystemAudio()
+                systemAudioStreamTask = Task {
+                    await streamSystemAudio()
+                }
+                Log.info("[AudioCaptureManager] System audio capture started", category: .capture)
+            } catch {
+                Log.warning("[AudioCaptureManager] System audio capture failed (will continue with mic only): \(error)", category: .capture)
             }
         }
 
@@ -110,8 +133,13 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         await meetingDetector.stopMonitoring()
 
         isCapturing = false
+        microphoneStreamTask?.cancel()
+        microphoneStreamTask = nil
+        systemAudioStreamTask?.cancel()
+        systemAudioStreamTask = nil
         audioContinuation?.finish()
         audioContinuation = nil
+        _audioStream = nil
     }
 
     public var audioStream: AsyncStream<CapturedAudio> {
@@ -119,7 +147,9 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
             return stream
         }
 
-        let (stream, continuation) = AsyncStream<CapturedAudio>.makeStream()
+        let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(
+            limit: AudioStreamBufferingPolicy.combinedSampleLimit
+        )
         self._audioStream = stream
         self.audioContinuation = continuation
         return stream

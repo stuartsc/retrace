@@ -18,8 +18,22 @@ public protocol TranscriptionProtocol: Actor {
     /// - Parameters:
     ///   - audioData: PCM Int16 audio data at 16kHz mono
     ///   - wordLevel: Whether to return word-level timestamps
+    ///   - initialPrompt: Optional text from previous batch to help whisper continue sentences across boundaries
     /// - Returns: Detailed transcription with timestamps
-    func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool) async throws -> DetailedTranscriptionResult
+    func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool, initialPrompt: String?) async throws -> DetailedTranscriptionResult
+}
+
+public extension TranscriptionProtocol {
+    /// Transcribe with an optional Whisper language hint. Implementations that do not
+    /// support language hints fall back to their default multilingual behavior.
+    func transcribeWithTimestamps(
+        _ audioData: Data,
+        wordLevel: Bool,
+        initialPrompt: String?,
+        languageHint: String?
+    ) async throws -> DetailedTranscriptionResult {
+        try await transcribeWithTimestamps(audioData, wordLevel: wordLevel, initialPrompt: initialPrompt)
+    }
 }
 
 // MARK: - Result Types

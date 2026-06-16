@@ -9,6 +9,9 @@ import Shared
 /// 3. Re-encode frames to video + enqueue for async OCR processing
 /// 4. Clean up WAL after successful recovery
 public actor RecoveryManager {
+    private static let immediateRecoveryMaxBytes: Int64 = 512 * 1024 * 1024
+    private static let staleOversizedSessionAge: TimeInterval = 24 * 60 * 60
+
     private let walManager: WALManager
     private let storage: StorageProtocol
     private let database: DatabaseProtocol
@@ -50,14 +53,32 @@ public actor RecoveryManager {
         var totalFrames = 0
         var totalSegments = 0
         var totalSkippedFrames = 0
+        var recoveredSessions = 0
 
         // Process each session individually to check existing video files
         for session in sessions {
             do {
+                let sessionSize = fileSize(at: session.framesURL)
+                if shouldQuarantineWithoutLoading(session: session, fileSize: sessionSize) {
+                    let ageHours = Date().timeIntervalSince(session.metadata.startTime) / 3600
+                    let reason = "stale-oversized-\(Self.formatBytes(sessionSize))-age-\(String(format: "%.1f", ageHours))h"
+                    _ = try await walManager.quarantineSession(session, reason: reason)
+                    continue
+                }
+
+                if sessionSize > Self.immediateRecoveryMaxBytes {
+                    Log.warning(
+                        "[Recovery] Skipping oversized recent WAL session \(session.videoID.value) without loading \(Self.formatBytes(sessionSize)); it will remain active for chunked recovery",
+                        category: .storage
+                    )
+                    continue
+                }
+
                 let walFrames = try await walManager.readFrames(from: session)
                 guard !walFrames.isEmpty else {
                     // Empty session - just clean up
                     try await walManager.finalizeSession(session)
+                    recoveredSessions += 1
                     continue
                 }
 
@@ -76,6 +97,7 @@ public actor RecoveryManager {
 
                     // Clean up WAL
                     try await walManager.finalizeSession(session)
+                    recoveredSessions += 1
                     continue
                 }
 
@@ -95,6 +117,7 @@ public actor RecoveryManager {
 
                     // Clean up WAL
                     try await walManager.finalizeSession(session)
+                    recoveredSessions += 1
                     continue
                 }
 
@@ -122,6 +145,7 @@ public actor RecoveryManager {
 
                 // Clean up WAL
                 try await walManager.finalizeSession(session)
+                recoveredSessions += 1
 
             } catch {
                 Log.error("[Recovery] ✗ Failed to process WAL session \(session.videoID.value): \(error)", category: .storage)
@@ -134,10 +158,29 @@ public actor RecoveryManager {
         Log.info("[Recovery] Complete: \(sessions.count) sessions, \(totalFrames) frames processed, \(totalSegments) new video segments", category: .storage)
 
         return RecoveryResult(
-            sessionsRecovered: sessions.count,
+            sessionsRecovered: recoveredSessions,
             framesRecovered: totalFrames,
             videoSegmentsCreated: totalSegments
         )
+    }
+
+    private func shouldQuarantineWithoutLoading(session: WALSession, fileSize: Int64) -> Bool {
+        guard fileSize > Self.immediateRecoveryMaxBytes else { return false }
+        let age = Date().timeIntervalSince(session.metadata.startTime)
+        return age >= Self.staleOversizedSessionAge
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        return formatter.string(fromByteCount: max(0, bytes))
     }
 
     /// Ensure frames exist in database and enqueue for OCR if needed (without re-encoding video)

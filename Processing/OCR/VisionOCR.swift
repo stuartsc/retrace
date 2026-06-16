@@ -15,9 +15,9 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
     /// OCR scale settings for adaptive downscaling.
     /// Frames above the target megapixel budget are downscaled to cap OCR cost.
     private static let maxOCRScaleFactor: CGFloat = 1.0
-    private static let minOCRScaleFactor: CGFloat = 0.55
-    private static let targetMegapixelsAccurate: CGFloat = 3.0
-    private static let targetMegapixelsFast: CGFloat = 4.0
+    private static let minOCRScaleFactor: CGFloat = 0.30
+    private static let targetMegapixelsAccurate: CGFloat = 1.75
+    private static let targetMegapixelsFast: CGFloat = 2.25
 
     public init(recognitionLanguages: [String] = ["en-US"]) {
         self.recognitionLanguages = recognitionLanguages
@@ -30,82 +30,62 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         bytesPerRow: Int,
         config: ProcessingConfig
     ) async throws -> [TextRegion] {
-        // Create a fresh request per call for thread safety with concurrent workers
-        let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = Self.recognitionLevel(for: config)
-        textRequest.recognitionLanguages = recognitionLanguages
-        textRequest.usesLanguageCorrection = false
-        textRequest.preferBackgroundProcessing = config.preferBackgroundProcessing
+        try autoreleasepool {
+            let textRequest = VNRecognizeTextRequest()
+            textRequest.recognitionLevel = Self.recognitionLevel(for: config)
+            textRequest.recognitionLanguages = recognitionLanguages
+            textRequest.usesLanguageCorrection = false
+            textRequest.preferBackgroundProcessing = config.preferBackgroundProcessing
 
-        // Create CGImage from raw pixel data
-        guard let cgImage = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
-            throw ProcessingError.imageConversionFailed
-        }
+            guard let cgImage = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
+                throw ProcessingError.imageConversionFailed
+            }
 
-        let ocrImage: CGImage
-        let ocrScaleFactor = Self.calculateOCRScaleFactor(
-            width: width,
-            height: height,
-            config: config
-        )
-        if ocrScaleFactor < Self.maxOCRScaleFactor {
-            ocrImage = downscaleImage(cgImage, scale: ocrScaleFactor) ?? cgImage
-        } else {
-            ocrImage = cgImage
-        }
+            let ocrImage: CGImage
+            let ocrScaleFactor = Self.calculateOCRScaleFactor(
+                width: width,
+                height: height,
+                config: config
+            )
+            if ocrScaleFactor < Self.maxOCRScaleFactor {
+                ocrImage = downscaleImage(cgImage, scale: ocrScaleFactor) ?? cgImage
+            } else {
+                ocrImage = cgImage
+            }
 
-        // Perform recognition with per-call request
-        let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
-
-        return try await withCheckedThrowingContinuation { continuation in
+            let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
             do {
                 try handler.perform([textRequest])
-
-                guard let observations = textRequest.results else {
-                    continuation.resume(returning: [])
-                    return
-                }
-
-                // Convert observations to TextRegions
-                let regions = observations.compactMap { observation -> TextRegion? in
-                    // Filter by confidence threshold
-                    guard observation.confidence >= config.minimumConfidence else { return nil }
-
-                    // Extract text (top candidate)
-                    guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                    let text = topCandidate.string
-
-                    // Skip empty text
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-                    // Get bounding box (normalized coordinates, origin bottom-left)
-                    let box = observation.boundingBox
-
-                    // CRITICAL: Flip Y coordinate from Vision's bottom-left origin to top-left origin
-                    // Vision: y=0 at bottom, y=1 at top
-                    // Rewind/Screen: y=0 at top, y=1 at bottom
-                    // Formula: flippedY = 1.0 - visionY - visionHeight
-                    let flippedY = 1.0 - box.origin.y - box.height
-
-                    // Convert normalized coordinates to pixel coordinates (with flipped Y)
-                    let pixelBox = CGRect(
-                        x: box.origin.x * CGFloat(width),
-                        y: flippedY * CGFloat(height),
-                        width: box.width * CGFloat(width),
-                        height: box.height * CGFloat(height)
-                    )
-
-                    return TextRegion(
-                        frameID: FrameID(value: 0), // Placeholder - will be updated by caller
-                        text: text,
-                        bounds: pixelBox,
-                        confidence: Double(observation.confidence)
-                    )
-                }
-
-                continuation.resume(returning: regions)
             } catch {
-                continuation.resume(throwing: ProcessingError.ocrFailed(underlying: error.localizedDescription))
+                throw ProcessingError.ocrFailed(underlying: error.localizedDescription)
+            }
+
+            guard let observations = textRequest.results else {
+                return []
+            }
+
+            return observations.compactMap { observation -> TextRegion? in
+                guard observation.confidence >= config.minimumConfidence else { return nil }
+                guard let topCandidate = observation.topCandidates(1).first else { return nil }
+                let text = topCandidate.string
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+                // Vision uses bottom-left origin; Retrace stores top-left pixel coordinates.
+                let box = observation.boundingBox
+                let flippedY = 1.0 - box.origin.y - box.height
+                let pixelBox = CGRect(
+                    x: box.origin.x * CGFloat(width),
+                    y: flippedY * CGFloat(height),
+                    width: box.width * CGFloat(width),
+                    height: box.height * CGFloat(height)
+                )
+
+                return TextRegion(
+                    frameID: FrameID(value: 0), // Placeholder - updated by caller.
+                    text: text,
+                    bounds: pixelBox,
+                    confidence: Double(observation.confidence)
+                )
             }
         }
     }
@@ -116,53 +96,47 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
     /// Uses the same .accurate pipeline as frame processing
     /// Returns TextRegions with **normalized coordinates** (0.0-1.0) for direct use with OCRNodeWithText
     public func recognizeTextFromCGImage(_ cgImage: CGImage) async throws -> [TextRegion] {
-        // No downscaling for live screenshot - it's a one-shot operation
-        // and downscaling can introduce subtle bounding box drift from integer rounding
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = .accurate
-        textRequest.recognitionLanguages = recognitionLanguages
-        textRequest.usesLanguageCorrection = true
+        try autoreleasepool {
+            // No downscaling for live screenshot - it's a one-shot operation
+            // and downscaling can introduce subtle bounding box drift from integer rounding.
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let textRequest = VNRecognizeTextRequest()
+            textRequest.recognitionLevel = .accurate
+            textRequest.recognitionLanguages = recognitionLanguages
+            textRequest.usesLanguageCorrection = true
+            textRequest.preferBackgroundProcessing = true
 
-        return try await withCheckedThrowingContinuation { continuation in
             do {
                 try handler.perform([textRequest])
-
-                guard let observations = textRequest.results else {
-                    continuation.resume(returning: [])
-                    return
-                }
-
-                let regions = observations.compactMap { observation -> TextRegion? in
-                    guard observation.confidence >= 0.5 else { return nil }
-                    guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                    let text = topCandidate.string
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-                    let box = observation.boundingBox
-
-                    // Flip Y from Vision's bottom-left origin to top-left origin
-                    let flippedY = 1.0 - box.origin.y - box.height
-
-                    // Return NORMALIZED coordinates (0.0-1.0) for OCRNodeWithText
-                    let normalizedBox = CGRect(
-                        x: box.origin.x,
-                        y: flippedY,
-                        width: box.width,
-                        height: box.height
-                    )
-
-                    return TextRegion(
-                        frameID: FrameID(value: 0),
-                        text: text,
-                        bounds: normalizedBox,
-                        confidence: Double(observation.confidence)
-                    )
-                }
-
-                continuation.resume(returning: regions)
             } catch {
-                continuation.resume(throwing: ProcessingError.ocrFailed(underlying: error.localizedDescription))
+                throw ProcessingError.ocrFailed(underlying: error.localizedDescription)
+            }
+
+            guard let observations = textRequest.results else {
+                return []
+            }
+
+            return observations.compactMap { observation -> TextRegion? in
+                guard observation.confidence >= 0.5 else { return nil }
+                guard let topCandidate = observation.topCandidates(1).first else { return nil }
+                let text = topCandidate.string
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+                let box = observation.boundingBox
+                let flippedY = 1.0 - box.origin.y - box.height
+                let normalizedBox = CGRect(
+                    x: box.origin.x,
+                    y: flippedY,
+                    width: box.width,
+                    height: box.height
+                )
+
+                return TextRegion(
+                    frameID: FrameID(value: 0),
+                    text: text,
+                    bounds: normalizedBox,
+                    confidence: Double(observation.confidence)
+                )
             }
         }
     }
@@ -434,94 +408,79 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
             )
         }
 
-        // Create CGImage from raw pixel data
-        guard let cgImage = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
-            throw ProcessingError.imageConversionFailed
-        }
+        return try autoreleasepool {
+            guard let cgImage = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
+                throw ProcessingError.imageConversionFailed
+            }
 
-        let ocrImage: CGImage
-        let ocrScaleFactor = Self.calculateOCRScaleFactor(
-            width: width,
-            height: height,
-            config: config
-        )
-        if ocrScaleFactor < Self.maxOCRScaleFactor {
-            ocrImage = downscaleImage(cgImage, scale: ocrScaleFactor) ?? cgImage
-        } else {
-            ocrImage = cgImage
-        }
+            let ocrImage: CGImage
+            let ocrScaleFactor = Self.calculateOCRScaleFactor(
+                width: width,
+                height: height,
+                config: config
+            )
+            if ocrScaleFactor < Self.maxOCRScaleFactor {
+                ocrImage = downscaleImage(cgImage, scale: ocrScaleFactor) ?? cgImage
+            } else {
+                ocrImage = cgImage
+            }
 
-        // Convert pixel region to normalized coordinates for Vision
-        // Vision uses bottom-left origin (y=0 at bottom)
-        let normalizedX = region.minX / CGFloat(width)
-        let normalizedWidth = region.width / CGFloat(width)
-        let normalizedHeight = region.height / CGFloat(height)
-        // Flip Y: our y=0 at top, Vision y=0 at bottom
-        let normalizedY = 1.0 - (region.maxY / CGFloat(height))
+            // Convert pixel region to normalized coordinates for Vision.
+            let normalizedX = region.minX / CGFloat(width)
+            let normalizedWidth = region.width / CGFloat(width)
+            let normalizedHeight = region.height / CGFloat(height)
+            let normalizedY = 1.0 - (region.maxY / CGFloat(height))
+            let normalizedRegion = CGRect(
+                x: normalizedX,
+                y: normalizedY,
+                width: normalizedWidth,
+                height: normalizedHeight
+            )
 
-        let normalizedRegion = CGRect(
-            x: normalizedX,
-            y: normalizedY,
-            width: normalizedWidth,
-            height: normalizedHeight
-        )
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = Self.recognitionLevel(for: config)
+            request.recognitionLanguages = recognitionLanguages
+            request.usesLanguageCorrection = config.ocrAccuracyLevel == .accurate
+            request.preferBackgroundProcessing = config.preferBackgroundProcessing
+            request.regionOfInterest = normalizedRegion
 
-        // Create a fresh request with regionOfInterest
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = Self.recognitionLevel(for: config)
-        request.recognitionLanguages = recognitionLanguages
-        request.usesLanguageCorrection = config.ocrAccuracyLevel == .accurate
-        request.regionOfInterest = normalizedRegion
-
-        let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
-
-        return try await withCheckedThrowingContinuation { continuation in
+            let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
             do {
                 try handler.perform([request])
-
-                guard let observations = request.results else {
-                    continuation.resume(returning: [])
-                    return
-                }
-
-                let regions = observations.compactMap { observation -> TextRegion? in
-                    guard observation.confidence >= config.minimumConfidence else { return nil }
-                    guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                    let text = topCandidate.string
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-                    // Vision returns bounding box relative to the regionOfInterest
-                    // We need to remap to full frame coordinates
-                    let roiBox = observation.boundingBox
-
-                    // Convert ROI-relative coords to full-image normalized coords
-                    let fullImageX = normalizedRegion.origin.x + (roiBox.origin.x * normalizedRegion.width)
-                    let fullImageY = normalizedRegion.origin.y + (roiBox.origin.y * normalizedRegion.height)
-                    let fullImageWidth = roiBox.width * normalizedRegion.width
-                    let fullImageHeight = roiBox.height * normalizedRegion.height
-
-                    // Flip Y from Vision's bottom-left to our top-left origin
-                    let flippedY = 1.0 - fullImageY - fullImageHeight
-
-                    // Convert normalized to pixel coordinates
-                    let pixelBounds = CGRect(
-                        x: fullImageX * CGFloat(width),
-                        y: flippedY * CGFloat(height),
-                        width: fullImageWidth * CGFloat(width),
-                        height: fullImageHeight * CGFloat(height)
-                    )
-
-                    return TextRegion(
-                        frameID: FrameID(value: 0),
-                        text: text,
-                        bounds: pixelBounds,
-                        confidence: Double(observation.confidence)
-                    )
-                }
-
-                continuation.resume(returning: regions)
             } catch {
-                continuation.resume(throwing: ProcessingError.ocrFailed(underlying: error.localizedDescription))
+                throw ProcessingError.ocrFailed(underlying: error.localizedDescription)
+            }
+
+            guard let observations = request.results else {
+                return []
+            }
+
+            return observations.compactMap { observation -> TextRegion? in
+                guard observation.confidence >= config.minimumConfidence else { return nil }
+                guard let topCandidate = observation.topCandidates(1).first else { return nil }
+                let text = topCandidate.string
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+                // Vision returns ROI-relative coordinates; remap them to full-frame pixels.
+                let roiBox = observation.boundingBox
+                let fullImageX = normalizedRegion.origin.x + (roiBox.origin.x * normalizedRegion.width)
+                let fullImageY = normalizedRegion.origin.y + (roiBox.origin.y * normalizedRegion.height)
+                let fullImageWidth = roiBox.width * normalizedRegion.width
+                let fullImageHeight = roiBox.height * normalizedRegion.height
+                let flippedY = 1.0 - fullImageY - fullImageHeight
+                let pixelBounds = CGRect(
+                    x: fullImageX * CGFloat(width),
+                    y: flippedY * CGFloat(height),
+                    width: fullImageWidth * CGFloat(width),
+                    height: fullImageHeight * CGFloat(height)
+                )
+
+                return TextRegion(
+                    frameID: FrameID(value: 0),
+                    text: text,
+                    bounds: pixelBounds,
+                    confidence: Double(observation.confidence)
+                )
             }
         }
     }

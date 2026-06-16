@@ -1,14 +1,16 @@
 import Foundation
 import AVFoundation
+import CoreMedia
 import CoreAudio
 import Shared
 
 /// Microphone audio capture (Pipeline A)
-/// Uses AVAudioEngine with Voice Processing enabled for hardware-accelerated
-/// echo cancellation and background noise removal (Voice Isolation)
+/// Uses AVCaptureSession for shared mic access — does NOT block other apps from using the mic
 public actor MicrophoneAudioCapture {
 
-    private let audioEngine = AVAudioEngine()
+    private let captureSession = AVCaptureSession()
+    private var audioOutput: AVCaptureAudioDataOutput?
+    private var delegate: MicAudioDelegate?
     private let formatConverter: AudioFormatConverter
     private var isRunning = false
 
@@ -48,32 +50,60 @@ public actor MicrophoneAudioCapture {
     // MARK: - Lifecycle
 
     /// Start capturing microphone audio
-    public func startCapture() throws {
-        guard !isRunning else { return }
+    public func startCapture() async throws {
+        guard !isRunning else {
+            Log.warning("[MicrophoneAudioCapture] Already running, skipping", category: .capture)
+            return
+        }
+
+        print("[MicrophoneAudioCapture] Starting capture...")
+        Log.info("[MicrophoneAudioCapture] Starting capture...", category: .capture)
 
         // Create audio stream
-        let (stream, continuation) = AsyncStream<CapturedAudio>.makeStream()
+        let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(
+            limit: AudioStreamBufferingPolicy.sourceSampleLimit
+        )
         self._audioStream = stream
         self.audioContinuation = continuation
 
-        // Configure audio engine
-        try configureAudioEngine()
+        // Configure capture session
+        try configureCaptureSession(continuation: continuation)
+        Log.info("[MicrophoneAudioCapture] Capture session configured", category: .capture)
 
-        // Start the engine
-        try audioEngine.start()
-        isRunning = true
+        // Start on background queue (startRunning is synchronous and can block)
+        let session = captureSession
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                session.startRunning()
+                cont.resume()
+            }
+        }
+
+        let running = captureSession.isRunning
+        isRunning = running
+        Log.info("[MicrophoneAudioCapture] AVCaptureSession running=\(running) (shared mic, no Voice Processing)", category: .capture)
     }
 
     /// Stop capturing
     public func stopCapture() {
         guard isRunning else { return }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        isRunning = false
+        captureSession.stopRunning()
 
+        // Remove inputs/outputs
+        for input in captureSession.inputs {
+            captureSession.removeInput(input)
+        }
+        for output in captureSession.outputs {
+            captureSession.removeOutput(output)
+        }
+
+        isRunning = false
         audioContinuation?.finish()
         audioContinuation = nil
+        _audioStream = nil
+        delegate = nil
+        audioOutput = nil
     }
 
     /// Get audio stream
@@ -83,7 +113,9 @@ public actor MicrophoneAudioCapture {
                 return stream
             }
 
-            let (stream, continuation) = AsyncStream<CapturedAudio>.makeStream()
+            let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(
+                limit: AudioStreamBufferingPolicy.sourceSampleLimit
+            )
             self._audioStream = stream
             self.audioContinuation = continuation
             return stream
@@ -101,130 +133,139 @@ public actor MicrophoneAudioCapture {
         self.config = newConfig
 
         if wasRunning {
-            try startCapture()
+            try await startCapture()
         }
     }
 
     // MARK: - Private Configuration
 
-    private func configureAudioEngine() throws {
-        let inputNode = audioEngine.inputNode
+    private func configureCaptureSession(continuation: AsyncStream<CapturedAudio>.Continuation) throws {
+        captureSession.beginConfiguration()
+        defer { captureSession.commitConfiguration() }
 
-        // CRITICAL: Enable Voice Processing (Voice Isolation)
-        // This provides hardware-accelerated echo cancellation and noise removal
-        // This is NON-NEGOTIABLE per privacy policy requirements
-        if config.voiceProcessingEnabled {
-            do {
-                try inputNode.setVoiceProcessingEnabled(true)
-
-                // Disable automatic ducking of non-voice audio
-                // Voice Processing ducks system volume by default for echo cancellation,
-                // but we're only recording — not playing back — so ducking is unnecessary
-                if #available(macOS 14.0, *) {
-                    inputNode.voiceProcessingOtherAudioDuckingConfiguration =
-                        .init(enableAdvancedDucking: false, duckingLevel: .min)
-                }
-            } catch {
-                throw AudioCaptureError.invalidConfiguration(
-                    "Voice Processing is required but could not be enabled: \(error.localizedDescription)"
-                )
-            }
+        // Get default audio device (mic)
+        guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
+            throw AudioCaptureError.invalidConfiguration("No audio input device available")
         }
 
-        // Get input format
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        Log.info("[MicrophoneAudioCapture] Using device: \(audioDevice.localizedName)", category: .capture)
 
-        // Install tap to capture audio
-        let bufferSize = AVAudioFrameCount(config.bufferDurationSeconds * inputFormat.sampleRate)
-
-        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, time in
-            Task {
-                await self?.processAudioBuffer(buffer, timestamp: time)
-            }
+        // Add input
+        let audioInput = try AVCaptureDeviceInput(device: audioDevice)
+        guard captureSession.canAddInput(audioInput) else {
+            throw AudioCaptureError.invalidConfiguration("Cannot add audio input to capture session")
         }
+        captureSession.addInput(audioInput)
+
+        // Add output
+        let output = AVCaptureAudioDataOutput()
+        let callbackQueue = DispatchQueue(label: "io.retrace.mic-capture", qos: .userInitiated)
+
+        let del = MicAudioDelegate(
+            continuation: continuation,
+            formatConverter: formatConverter
+        )
+        output.setSampleBufferDelegate(del, queue: callbackQueue)
+
+        guard captureSession.canAddOutput(output) else {
+            throw AudioCaptureError.invalidConfiguration("Cannot add audio output to capture session")
+        }
+        captureSession.addOutput(output)
+
+        self.audioOutput = output
+        self.delegate = del
+    }
+}
+
+// MARK: - AVCaptureAudioDataOutput Delegate
+
+private final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
+
+    private let continuation: AsyncStream<CapturedAudio>.Continuation
+    private let formatConverter: AudioFormatConverter
+
+    init(continuation: AsyncStream<CapturedAudio>.Continuation, formatConverter: AudioFormatConverter) {
+        self.continuation = continuation
+        self.formatConverter = formatConverter
+        super.init()
     }
 
-    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer, timestamp: AVAudioTime) async {
-        guard let audioContinuation = self.audioContinuation else { return }
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
+        guard let desc = asbd else { return }
+
+        let sampleRate = desc.mSampleRate
+        let channels = Int(desc.mChannelsPerFrame)
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+
+        guard frameCount > 0 else { return }
+
+        // Get raw audio data
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var lengthAtOffset: Int = 0
+        var totalLength: Int = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+
+        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset, totalLengthOut: &totalLength, dataPointerOut: &dataPointer)
+        guard status == kCMBlockBufferNoErr, let rawData = dataPointer else { return }
 
         do {
-            // Convert to standard format (16kHz mono PCM Int16)
-            let convertedData = try convertBuffer(buffer)
+            // Determine input format from ASBD
+            let inputFormat: AudioFormatType
+            if desc.mFormatFlags & kAudioFormatFlagIsFloat != 0 {
+                inputFormat = .float32
+            } else if desc.mBitsPerChannel == 16 {
+                inputFormat = .int16
+            } else {
+                inputFormat = .float32  // fallback
+            }
+
+            let convertedData = try formatConverter.convertToStandardFormat(
+                inputData: UnsafeRawPointer(rawData),
+                inputLength: totalLength,
+                inputSampleRate: sampleRate,
+                inputChannels: channels,
+                inputFormat: inputFormat
+            )
+
+            let duration = Double(frameCount) / sampleRate
 
             let capturedAudio = CapturedAudio(
                 timestamp: Date(),
                 audioData: convertedData,
-                duration: Double(buffer.frameLength) / buffer.format.sampleRate,
+                duration: duration,
                 source: .microphone,
                 sampleRate: formatConverter.targetSampleRate,
                 channels: formatConverter.targetChannels
             )
 
-            audioContinuation.yield(capturedAudio)
+            continuation.yield(capturedAudio)
 
         } catch {
-            Log.error("[MicrophoneAudioCapture] Error converting microphone audio: \(error)", category: .capture)
-        }
-    }
-
-    private func convertBuffer(_ buffer: AVAudioPCMBuffer) throws -> Data {
-        let inputFormat = buffer.format
-
-        // If we have float32 data (AVAudioEngine's native format)
-        guard let floatChannelData = buffer.floatChannelData else {
-            throw AudioCaptureError.formatConversionFailed
-        }
-
-        let frameLength = Int(buffer.frameLength)
-        let channelCount = Int(inputFormat.channelCount)
-
-        // Interleave channels if needed
-        var interleavedSamples = [Float]()
-        interleavedSamples.reserveCapacity(frameLength * channelCount)
-
-        if channelCount == 1 {
-            // Mono - direct copy
-            let channelData = UnsafeBufferPointer(start: floatChannelData[0], count: frameLength)
-            interleavedSamples.append(contentsOf: channelData)
-        } else {
-            // Multi-channel - interleave
-            for frame in 0..<frameLength {
-                for channel in 0..<channelCount {
-                    interleavedSamples.append(floatChannelData[channel][frame])
-                }
-            }
-        }
-
-        // Convert to standard format
-        return try interleavedSamples.withUnsafeBytes { bufferPointer in
-            guard let baseAddress = bufferPointer.baseAddress else {
-                throw AudioCaptureError.formatConversionFailed
-            }
-
-            return try formatConverter.convertToStandardFormat(
-                inputData: baseAddress,
-                inputLength: interleavedSamples.count * MemoryLayout<Float>.size,
-                inputSampleRate: inputFormat.sampleRate,
-                inputChannels: channelCount,
-                inputFormat: .float32
-            )
+            // Don't spam logs for every buffer
         }
     }
 }
 
-// MARK: - Voice Processing Validation
+// MARK: - Voice Processing Validation (legacy compatibility)
 
 extension MicrophoneAudioCapture {
 
-    /// Verify that Voice Processing is actually enabled
-    /// Use this for testing/debugging
+    /// Voice Processing is no longer used — always returns false
     public func isVoiceProcessingEnabled() -> Bool {
-        return audioEngine.inputNode.isVoiceProcessingEnabled
+        return false
     }
 
     /// Get current audio format information
     public func getInputFormat() -> (sampleRate: Double, channels: Int) {
-        let format = audioEngine.inputNode.outputFormat(forBus: 0)
-        return (format.sampleRate, Int(format.channelCount))
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            return (0, 0)
+        }
+        let format = device.activeFormat.formatDescription
+        if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee {
+            return (asbd.mSampleRate, Int(asbd.mChannelsPerFrame))
+        }
+        return (0, 0)
     }
 }

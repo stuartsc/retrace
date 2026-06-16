@@ -4,7 +4,7 @@
 
 Retrace is a local-first screen recording and search application for macOS, inspired by Rewind AI. It captures screens, extracts text via OCR, and makes everything searchable—all locally on-device.
 
-**Status**: Core screen capture (CGWindowListCapture), OCR (Vision), full-text search (FTS5), HEVC encoding, and Rewind import are working. Audio transcription and vector search are planned for future releases.
+**Status**: Core screen capture (CGWindowListCapture), OCR (Vision), full-text search (FTS5), HEVC encoding, Rewind import, audio transcription, and push-to-dictate are working. Vector search is planned for a future release.
 
 ---
 
@@ -12,6 +12,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 - **Module-Specific Instructions**: Each module has its own `AGENTS.md` file in its directory
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
 - **Technical Audit Docs**: `local/docs/` (includes deep-dive implementation and performance audit notes)
 
 ---
@@ -48,6 +49,9 @@ retrace/
 ├── README.md                    # Human-readable project overview
 ├── CONTRIBUTING.md              # Contribution guidelines
 ├── Package.swift                # Swift Package Manager configuration
+├── docs/                        # Product and data-access documentation
+│   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
+│   └── roadmap.md               # Product thesis, differentiation, and roadmap
 ├── scripts/                     # Build/release/validation scripts
 │   ├── release.sh               # End-to-end release automation
 │   ├── create-release.sh        # Release build + packaging helper
@@ -66,7 +70,8 @@ retrace/
 │   │   ├── Segment.swift        # Segment data model
 │   │   ├── Config.swift         # Configuration types
 │   │   ├── Errors.swift         # Error types
-│   │   ├── Audio.swift          # Audio model types (Release 2)
+│   │   ├── Audio.swift          # Audio capture and transcription model types
+│   │   ├── Dictation.swift      # Push-to-dictate config/session model types
 │   │   ├── FilterCriteria.swift # Timeline/search filter criteria
 │   │   ├── Source.swift         # Data source enum (native, rewind, etc.)
 │   │   ├── Tag.swift            # Tag model types
@@ -76,6 +81,8 @@ retrace/
 │       ├── StorageProtocol.swift
 │       ├── CaptureProtocol.swift
 │       ├── ProcessingProtocol.swift
+│       ├── AudioCaptureProtocol.swift
+│       ├── TranscriptionProtocol.swift
 │       ├── SearchProtocol.swift
 │       └── MigrationProtocol.swift
 │
@@ -87,9 +94,9 @@ retrace/
 │   ├── FTSManager.swift         # Full-text search management
 │   ├── IDMappingService.swift   # ID mapping between sources
 │   ├── Schema.swift             # Current schema definition
-│   ├── Migrations/              # Schema migration scripts
-│   ├── Queries/                 # Query implementations
-│   └── Tests/
+│   ├── Migrations/              # Schema migration scripts (including audio/dictation)
+│   ├── Queries/                 # Query implementations (including audio transcripts/dictation sessions)
+│   └── Tests/                  # App integration, dictation, and refinement policy tests
 │
 ├── Storage/                     # File I/O, HEVC encoding
 │   ├── AGENTS.md
@@ -108,6 +115,7 @@ retrace/
 │   ├── ScreenCapture/           # Screen capture implementation
 │   ├── Deduplication/           # Perceptual hash deduplication
 │   ├── Metadata/                # AppInfoProvider, BrowserURLExtractor
+│   ├── Audio/                   # Microphone/system audio capture
 │   └── Tests/
 │
 ├── Processing/                  # OCR and text extraction
@@ -118,6 +126,7 @@ retrace/
 │   ├── OCR/                     # Vision framework OCR
 │   ├── Accessibility/           # Accessibility API integration
 │   ├── TextMerger/              # Text merging utilities
+│   ├── Audio/                   # Whisper transcription, buffering, refinement, backfill
 │   └── Tests/
 │
 ├── Search/                      # Full-text search
@@ -142,6 +151,7 @@ retrace/
 │   ├── ModelManager.swift       # Model management
 │   ├── OnboardingManager.swift  # First-run onboarding flow
 │   ├── RetentionManager.swift   # Data retention policies
+│   ├── Dictation/               # Push-to-dictate buffer, manager, target context, insertion service
 │   └── Tests/
 │
 └── UI/                          # SwiftUI interface
@@ -151,7 +161,8 @@ retrace/
     ├── Components/              # Reusable UI components (MenuBarManager, HotkeyManager, etc.)
     ├── ViewModels/              # View models (Dashboard, Search, Timeline, Feedback)
     ├── Views/
-    │   ├── Dashboard/           # App usage analytics views
+    │   ├── Dashboard/           # App usage analytics and dictation history views
+    │   ├── Audio/               # Transcript window views
     │   ├── FullscreenTimeline/  # Timeline scrubbing & playback (10 views)
     │   ├── Search/              # Search UI (SearchView, ResultRow, FrameViewer)
     │   ├── Settings/            # Settings panel
@@ -168,12 +179,12 @@ retrace/
 | -------------- | ------------- | ---------------------- | ------------------------------------------------------------------ |
 | **DATABASE**   | `Database/`   | `Database/AGENTS.md`   | SQLite schema, FTS5, CRUD operations, migrations                   |
 | **STORAGE**    | `Storage/`    | `Storage/AGENTS.md`    | File I/O, HEVC video encoding (working, not optimized), encryption |
-| **CAPTURE**    | `Capture/`    | `Capture/AGENTS.md`    | CGWindowListCapture API, frame deduplication, metadata extraction  |
-| **PROCESSING** | `Processing/` | `Processing/AGENTS.md` | Vision OCR, Accessibility API (no audio transcription yet)         |
+| **CAPTURE**    | `Capture/`    | `Capture/AGENTS.md`    | CGWindowListCapture API, frame deduplication, metadata/audio capture |
+| **PROCESSING** | `Processing/` | `Processing/AGENTS.md` | Vision OCR, Accessibility API, audio transcription/refinement      |
 | **SEARCH**     | `Search/`     | `Search/AGENTS.md`     | Query parsing, FTS5 queries, result ranking (no vector search yet) |
 | **MIGRATION**  | `Migration/`  | `Migration/AGENTS.md`  | Import from Rewind AI (Rewind only, others planned)                |
-| **APP**        | `App/`        | —                      | Coordinator, DI container, data adapter, lifecycle management      |
-| **UI**         | `UI/`         | `UI/AGENTS.md`         | SwiftUI interface (timeline, dashboard, settings, search)          |
+| **APP**        | `App/`        | —                      | Coordinator, DI container, data adapter, lifecycle, dictation      |
+| **UI**         | `UI/`         | `UI/AGENTS.md`         | SwiftUI interface (timeline, dashboard, settings, search, audio)   |
 
 **Rule**: Each agent should **ONLY** modify files in their assigned module directory. Cross-module changes require explicit coordination.
 
@@ -315,7 +326,7 @@ frame (1) ──< (1) doc_segment >── (1) searchRanking_content
 | OCR                 | Vision framework        | macOS native OCR                       |
 | Database            | SQLite + FTS5           | Full-text search built-in              |
 | Encryption          | CryptoKit (AES-256-GCM) | Optional on-device encryption          |
-| Audio Transcription | whisper.cpp             | Planned (bundled but disabled)         |
+| Audio Transcription | whisper.cpp             | Local transcription pipeline           |
 | Vector Search       | llama.cpp               | Planned (prepared but not active)      |
 
 ---
@@ -326,6 +337,7 @@ frame (1) ──< (1) doc_segment >── (1) searchRanking_content
 - **Hardware**: **Apple Silicon required** (M1/M2/M3) - Intel not supported
 - **Permissions**:
   - Screen Recording permission (required)
+  - Microphone permission (required for dictation/audio capture)
   - Accessibility permission (required for app context extraction)
 
 ---

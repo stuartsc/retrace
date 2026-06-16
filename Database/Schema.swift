@@ -94,11 +94,16 @@ enum Schema {
     /// Enable foreign key constraint enforcement (was OFF in Rewind)
     static let enableForeignKeys = "PRAGMA foreign_keys=ON;"
 
-    /// Use memory for temp tables (faster)
-    static let setTempStoreMemory = "PRAGMA temp_store=MEMORY;"
+    /// Keep temporary tables off heap by default. OCR/search writes should not be
+    /// able to expand app RSS just because the local database has grown large.
+    static let setTempStoreFile = "PRAGMA temp_store=FILE;"
 
-    /// 64MB cache (was 2MB in Rewind)
-    static let setCacheSize = "PRAGMA cache_size=-64000;"
+    /// 16MB page cache per connection. Higher values are faster but caused large
+    /// resident-memory growth on multi-GB local databases.
+    static let setCacheSize = "PRAGMA cache_size=-16000;"
+
+    /// Be explicit: do not mmap the multi-GB database into the app address space.
+    static let disableMmap = "PRAGMA mmap_size=0;"
 
     /// Auto vacuum to prevent fragmentation (was OFF in Rewind)
     static let setAutoVacuum = "PRAGMA auto_vacuum=INCREMENTAL;"
@@ -112,8 +117,9 @@ enum Schema {
             enableWAL,
             setSynchronousNormal,
             enableForeignKeys,
-            setTempStoreMemory,
+            setTempStoreFile,
             setCacheSize,
+            disableMmap,
             setWALAutocheckpoint
         ]
     }

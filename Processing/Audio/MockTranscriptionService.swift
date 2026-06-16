@@ -33,7 +33,7 @@ public actor MockTranscriptionService: TranscriptionProtocol {
         )
     }
 
-    public func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool) async throws -> DetailedTranscriptionResult {
+    public func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool, initialPrompt: String? = nil) async throws -> DetailedTranscriptionResult {
         guard isInitialized else {
             throw TranscriptionError.notInitialized
         }

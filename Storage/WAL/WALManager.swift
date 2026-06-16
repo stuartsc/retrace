@@ -229,6 +229,44 @@ public actor WALManager {
         frameIDOffsetIndexCache.removeValue(forKey: session.videoID.value)
     }
 
+    /// Move a WAL session out of the active recovery path without deleting it.
+    /// Used for stale oversized sessions that would otherwise be retried on every
+    /// launch and allocate several GB while recovery reads full raw frames.
+    public func quarantineSession(_ session: WALSession, reason: String) async throws -> URL {
+        let quarantineRoot = walRootURL.appendingPathComponent("quarantine", isDirectory: true)
+        try FileManager.default.createDirectory(at: quarantineRoot, withIntermediateDirectories: true)
+
+        let safeReason = reason
+            .lowercased()
+            .map { character -> Character in
+                character.isLetter || character.isNumber ? character : "-"
+            }
+            .reduce(into: "") { result, character in
+                if !(result.last == "-" && character == "-") {
+                    result.append(character)
+                }
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        var destination = quarantineRoot.appendingPathComponent(
+            "\(session.sessionDir.lastPathComponent)-\(timestamp)-\(safeReason.isEmpty ? "quarantined" : safeReason)",
+            isDirectory: true
+        )
+        if FileManager.default.fileExists(atPath: destination.path) {
+            destination = quarantineRoot.appendingPathComponent(
+                "\(destination.lastPathComponent)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        }
+
+        try FileManager.default.moveItem(at: session.sessionDir, to: destination)
+        frameOffsetIndexCache.removeValue(forKey: session.videoID.value)
+        frameIDOffsetIndexCache.removeValue(forKey: session.videoID.value)
+        Log.warning("[WAL] Quarantined WAL session \(session.videoID.value) to \(destination.path) reason=\(reason)", category: .storage)
+        return destination
+    }
+
     /// Clear ALL WAL sessions (used when changing database location)
     /// WARNING: This deletes unrecovered frame data! Only call when intentionally switching databases.
     public func clearAllSessions() async throws {

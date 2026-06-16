@@ -848,6 +848,7 @@ struct RefreshButton: View {
 struct AudioTranscriptButton: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
     @State private var isHovering = false
+    @State private var didPushCursor = false
 
     var body: some View {
         Button(action: {
@@ -869,22 +870,76 @@ struct AudioTranscriptButton: View {
             withAnimation(.easeOut(duration: 0.1)) {
                 isHovering = hovering
             }
-            if hovering { NSCursor.pointingHand.push() }
-            else { NSCursor.pop() }
+            applyCursorAction(hovering: hovering)
+        }
+        .onDisappear {
+            releaseCursorIfNeeded()
         }
         .instantTooltip("Audio Transcript", isVisible: $isHovering)
     }
 
+    private func applyCursorAction(hovering: Bool) {
+        guard let action = TranscriptCursorPolicy.action(
+            hovering: hovering,
+            hasAudioFile: true,
+            cursorIsPushed: didPushCursor
+        ) else {
+            return
+        }
+
+        switch action {
+        case .pushPointingHand:
+            NSCursor.pointingHand.push()
+            didPushCursor = true
+        case .pop:
+            NSCursor.pop()
+            didPushCursor = false
+        }
+    }
+
+    private func releaseCursorIfNeeded() {
+        guard didPushCursor else { return }
+        NSCursor.pop()
+        didPushCursor = false
+    }
+
     private func openTranscriptWindow() async {
-        guard let timestamp = viewModel.currentTimestamp else { return }
+        guard let timestamp = viewModel.currentTimestamp else {
+            Log.warning("[AudioTranscriptButton] Open skipped - current timestamp unavailable", category: .ui)
+            return
+        }
+
+        Log.info("[AudioTranscriptButton] Open requested timestamp=\(Log.timestamp(from: timestamp)) hasNearbyAudio=\(viewModel.hasNearbyAudio)", category: .ui)
+
+        // Wire up the timestamp provider so the window can auto-refresh as timeline moves
+        let vm = viewModel
+        TranscriptWindowController.shared.currentTimestampProvider = { [weak vm] in
+            vm?.currentTimestamp
+        }
 
         let windowSeconds: TimeInterval = 30 * 60  // ±30 minutes
         let fromDate = timestamp.addingTimeInterval(-windowSeconds)
         let toDate = timestamp.addingTimeInterval(windowSeconds)
 
-        guard let queries = await viewModel.coordinator.getAudioTranscriptionQueries() else { return }
+        guard let queries = await viewModel.coordinator.getAudioTranscriptionQueries() else {
+            Log.warning("[AudioTranscriptButton] Open skipped - audio transcription queries unavailable", category: .ui)
+            return
+        }
+
+        let start = CFAbsoluteTimeGetCurrent()
         do {
+            Log.debug("[AudioTranscriptButton] Fetch started range=\(Log.timestamp(from: fromDate))...\(Log.timestamp(from: toDate))", category: .ui)
             let transcriptions = try await queries.getTranscriptions(from: fromDate, to: toDate)
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            Log.recordLatency(
+                "transcript.open.query_ms",
+                valueMs: elapsedMs,
+                category: .ui,
+                summaryEvery: 10,
+                warningThresholdMs: 100,
+                criticalThresholdMs: 500
+            )
+            Log.info("[AudioTranscriptButton] Fetch completed count=\(transcriptions.count) elapsed=\(String(format: "%.1f", elapsedMs))ms", category: .ui)
             await MainActor.run {
                 TranscriptWindowController.shared.show(transcriptions: transcriptions, timestamp: timestamp)
             }

@@ -71,6 +71,41 @@ public class AppCoordinatorWrapper: ObservableObject {
         await updateStatus()
     }
 
+    // MARK: - Manual Refinement Trigger
+
+    @Published public var isRefining = false
+    @Published public var lastRefinementMessage: String?
+
+    /// Manually trigger the refinement pipeline (backfill → pass-2 → pass-3)
+    public func refineNow() async {
+        guard !isRefining else { return }
+        isRefining = true
+        lastRefinementMessage = "Refining..."
+
+        let status = await coordinator.triggerRefinementNow()
+
+        let parts = [
+            status.backfillProcessed > 0 ? "\(status.backfillProcessed) backfilled" : nil,
+            status.pass2Refined > 0 ? "\(status.pass2Refined) pass-2" : nil,
+            status.pass3Refined > 0 ? "\(status.pass3Refined) pass-3" : nil
+        ].compactMap { $0 }
+
+        if parts.isEmpty {
+            lastRefinementMessage = "Up to date"
+        } else {
+            lastRefinementMessage = parts.joined(separator: ", ")
+        }
+        isRefining = false
+
+        // Clear message after 5 seconds
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5), clock: .continuous)
+            if lastRefinementMessage != "Refining..." {
+                lastRefinementMessage = nil
+            }
+        }
+    }
+
     public func dismissAccessibilityWarning() {
         showAccessibilityPermissionWarning = false
     }

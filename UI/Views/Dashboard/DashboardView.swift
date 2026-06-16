@@ -1,6 +1,9 @@
 import SwiftUI
+import AppKit
+import ImageIO
 import Shared
 import App
+import Database
 
 // MARK: - Layout Size
 
@@ -39,7 +42,7 @@ private enum LayoutSize {
 }
 
 /// Maximum width for the dashboard content area before it centers
-private let dashboardMaxWidth: CGFloat = 1100
+private let dashboardMaxWidth = DashboardVoiceLayoutPolicy.defaultContentWidth
 /// Shared breakpoint for compact dashboard-style layouts.
 let dashboardCompactLayoutThreshold: CGFloat = 850
 
@@ -60,17 +63,39 @@ public struct DashboardView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @StateObject private var coordinatorWrapper: AppCoordinatorWrapper
     @ObservedObject var launchOnLoginReminderManager: LaunchOnLoginReminderManager
-    @ObservedObject var milestoneCelebrationManager: MilestoneCelebrationManager
     @ObservedObject private var updaterManager = UpdaterManager.shared
     @State private var isPulsing = false
-    @State private var showFeedbackSheet = false
     @State private var usageViewMode: AppUsageViewMode = Self.loadSavedViewMode()
     @State private var selectedApp: AppUsageData? = nil
     @State private var selectedWindow: WindowUsageData? = nil
     @State private var showSessionsSheet = false
     @State private var showSystemMonitor = false
-    @State private var showDiscordFollowup = false
     @State private var currentTheme: MilestoneCelebrationManager.ColorTheme = MilestoneCelebrationManager.getCurrentTheme()
+    @State private var selectedDashboardTab: DashboardContentTab = .defaultTab
+    @State private var dictationConfig: DictationConfig = .default
+    @State private var recentDictationSessions: [DictationSession] = []
+    @State private var dictationDashboardError: String?
+    @State private var isLoadingDictationSessions = false
+    @State private var isLoadingMoreDictationSessions = false
+    @State private var canLoadMoreDictationSessions = true
+    @State private var expandedDictationSessionIDs: Set<UUID> = []
+    @State private var liveAudioRows: [DashboardLiveAudioRow] = []
+    @State private var liveAudioError: String?
+    @State private var isLoadingLiveAudio = false
+    @State private var isLoadingMoreLiveAudio = false
+    @State private var canLoadMoreLiveAudioRows = true
+    @State private var liveAudioTranscriptOffset = 0
+    @State private var expandedLiveAudioRowIDs: Set<Int64> = []
+    @State private var liveFrames: [FrameWithVideoInfo] = []
+    @State private var liveFrameError: String?
+    @State private var isLoadingLiveFrames = false
+    @State private var isLoadingMoreLiveFrames = false
+    @State private var canLoadMoreLiveFrames = true
+    @State private var selectedLiveFrameID: Int64?
+    @State private var liveFrameThumbnails: [Int64: NSImage] = [:]
+    @State private var liveFrameThumbnailLoadingIDs: Set<Int64> = []
+    @State private var liveFrameOCRNodes: [Int64: [OCRNodeWithText]] = [:]
+    @State private var liveFrameOCRLoadingIDs: Set<Int64> = []
     @Binding var hasLoadedInitialData: Bool
 
     enum AppUsageViewMode: String, CaseIterable {
@@ -87,6 +112,7 @@ public struct DashboardView: View {
 
     private static let viewModeDefaultsKey = "dashboardAppUsageViewMode"
     private static let pauseMenuWidth: CGFloat = 100
+    private static let transcriptPageSize = 20
 
     private static func loadSavedViewMode() -> AppUsageViewMode {
         guard let raw = UserDefaults.standard.string(forKey: viewModeDefaultsKey),
@@ -106,13 +132,11 @@ public struct DashboardView: View {
         viewModel: DashboardViewModel,
         coordinator: AppCoordinator,
         launchOnLoginReminderManager: LaunchOnLoginReminderManager,
-        milestoneCelebrationManager: MilestoneCelebrationManager,
         hasLoadedInitialData: Binding<Bool> = .constant(false)
     ) {
         self.viewModel = viewModel
         _coordinatorWrapper = StateObject(wrappedValue: AppCoordinatorWrapper(coordinator: coordinator))
         self.launchOnLoginReminderManager = launchOnLoginReminderManager
-        self.milestoneCelebrationManager = milestoneCelebrationManager
         self._hasLoadedInitialData = hasLoadedInitialData
     }
 
@@ -179,56 +203,22 @@ public struct DashboardView: View {
                 .padding(.top, 28)
                 .padding(.bottom, 32)
 
-            // Two-column layout: metrics on left, app usage on right
-            // This section expands to fill remaining height
+            // Voice-first content layout with compact stats strip.
             GeometryReader { geometry in
                 let layoutSize = LayoutSize.from(width: geometry.size.width)
-                let isCompactLayout = geometry.size.width < dashboardCompactLayoutThreshold
 
-                HStack(alignment: .top, spacing: isCompactLayout ? 0 : 24) {
-                    if !isCompactLayout {
-                        // Left column: Stats cards (single column, fixed width)
-                        ZStack {
-                            ScrollView(showsIndicators: false) {
-                                VStack(spacing: 16) {
-                                    ForEach(statsCards) { card in
-                                        statCard(
-                                            icon: card.icon,
-                                            title: card.title,
-                                            value: card.value,
-                                            subtitle: card.subtitle,
-                                            graphData: card.graphData,
-                                            graphColor: card.graphColor,
-                                            theme: currentTheme,
-                                            valueFormatter: card.valueFormatter,
-                                            layoutSize: layoutSize
-                                        )
-                                    }
-                                }
-                                .padding(.top, 2)
-                                .padding(.bottom, 20) // Extra padding for scroll affordance
-                            }
+                VStack(spacing: 14) {
+                    dashboardContentSection(layoutSize: layoutSize)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                            ScrollAffordance(height: 32, color: themeBaseBackground)
-                        }
-                        .frame(width: layoutSize.cardWidth)
-                    }
-
-                    // Right column: App usage (scrolls internally)
-                    appUsageSection(layoutSize: layoutSize)
+                    dashboardStatsStrip(layoutSize: layoutSize)
                 }
                 .frame(maxWidth: dashboardMaxWidth)
                 .frame(maxWidth: .infinity)
+                .frame(maxHeight: .infinity, alignment: .top)
             }
             .padding(.horizontal, 32)
             .padding(.bottom, 24)
-
-            // Footer
-            footer
-                .frame(maxWidth: dashboardMaxWidth)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 32)
-                .padding(.bottom, 24)
         }
         .background(
             ZStack {
@@ -254,13 +244,66 @@ public struct DashboardView: View {
                 hasLoadedInitialData = true
                 Log.debug("[Dashboard] Initial load - first appearance", category: .ui)
                 await viewModel.loadStatistics()
+                DashboardViewModel.recordDashboardDefaultOpened(
+                    coordinator: coordinatorWrapper.coordinator,
+                    tab: selectedDashboardTab.rawValue
+                )
             } else {
                 Log.debug("[Dashboard] Tab switch - skipping reload", category: .ui)
             }
         }
+        .task(id: selectedDashboardTab) {
+            switch selectedDashboardTab {
+            case .dictation:
+                await loadDictationDashboardData(reset: recentDictationSessions.isEmpty)
+            case .live:
+                await loadLiveAudioDashboardData(reset: liveAudioRows.isEmpty)
+                await loadLiveFramesDashboardData(reset: liveFrames.isEmpty)
+                while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
+                    loopTab: .live,
+                    selectedTab: selectedDashboardTab,
+                    isWindowVisible: viewModel.isWindowVisible
+                ) {
+                    try? await Task.sleep(for: .seconds(8))
+                    guard !Task.isCancelled else { return }
+                    guard DashboardRefreshLoopPolicy.shouldContinue(
+                        loopTab: .live,
+                        selectedTab: selectedDashboardTab,
+                        isWindowVisible: viewModel.isWindowVisible
+                    ) else { return }
+                    await refreshLiveAudioDashboardData()
+                    await refreshLiveFramesDashboardData()
+                }
+            case .appUsage:
+                return
+            }
+
+            while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
+                loopTab: .dictation,
+                selectedTab: selectedDashboardTab,
+                isWindowVisible: viewModel.isWindowVisible
+            ) {
+                try? await Task.sleep(for: .seconds(8))
+                guard !Task.isCancelled else { return }
+                guard DashboardRefreshLoopPolicy.shouldContinue(
+                    loopTab: .dictation,
+                    selectedTab: selectedDashboardTab,
+                    isWindowVisible: viewModel.isWindowVisible
+                ) else { return }
+                await refreshDictationDashboardData()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidBecomeKey)) { _ in
             Log.debug("[Dashboard] Window became key - refreshing", category: .ui)
-            Task { await viewModel.loadStatistics() }
+            Task {
+                await viewModel.loadStatistics()
+                if selectedDashboardTab == .dictation {
+                    await refreshDictationDashboardData()
+                } else if selectedDashboardTab == .live {
+                    await refreshLiveAudioDashboardData()
+                    await refreshLiveFramesDashboardData()
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidOpen)) { _ in
             viewModel.isWindowVisible = true
@@ -374,69 +417,6 @@ public struct DashboardView: View {
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showSessionsSheet)
             }
         }
-        .overlay {
-            ZStack {
-                // Milestone celebration dialog
-                if let milestone = milestoneCelebrationManager.currentMilestone {
-                    ZStack {
-                        // Dimmed background
-                        Color.black.opacity(0.6)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                // Dismiss on background tap
-                                milestoneCelebrationManager.dismissCurrentMilestone()
-                            }
-
-                        // Celebration dialog
-                        MilestoneCelebrationView(
-                            milestone: milestone,
-                            onDismiss: {
-                                milestoneCelebrationManager.dismissCurrentMilestone()
-                            },
-                            onMaybeLater: {
-                                milestoneCelebrationManager.dismissCurrentMilestone()
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    showDiscordFollowup = true
-                                }
-                            },
-                            onSupport: {
-                                milestoneCelebrationManager.openSupportLink()
-                            }
-                        )
-                        .transition(.scale.combined(with: .opacity))
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: milestone)
-                }
-
-                if showDiscordFollowup {
-                    ZStack {
-                        Color.black.opacity(0.65)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    showDiscordFollowup = false
-                                }
-                            }
-
-                        DiscordFollowupView(
-                            onJoin: {
-                                milestoneCelebrationManager.openDiscordLink()
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    showDiscordFollowup = false
-                                }
-                            },
-                            onMaybeLater: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    showDiscordFollowup = false
-                                }
-                            }
-                        )
-                        .transition(.scale.combined(with: .opacity))
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showDiscordFollowup)
-                }
-            }
-        }
     }
 
     // MARK: - App Session Actions
@@ -506,16 +486,13 @@ public struct DashboardView: View {
 
                 // Action buttons
                 openTimelineButton
+                refreshTranscriptsButton
                 monitorButton
                 if updaterManager.shouldShowWhatsNew {
                     changelogButton
                 }
                 settingsButton
             }
-        }
-        .sheet(isPresented: $showFeedbackSheet) {
-            FeedbackFormView()
-                .environmentObject(coordinatorWrapper)
         }
     }
 
@@ -556,12 +533,6 @@ public struct DashboardView: View {
     @State private var isHoveringSettings = false
     @State private var settingsRotation: Double = 0
 
-    // MARK: - Footer Hover States
-
-    @State private var isHoveringHaseab = false
-    @State private var isHoveringSupportMe = false
-    @State private var isHoveringFeedback = false
-
     // MARK: - Timeline Button
 
     private var openTimelineButton: some View {
@@ -598,6 +569,58 @@ public struct DashboardView: View {
 
     private var monitorButton: some View {
         MonitorButton(isProcessing: viewModel.ocrQueueDepth > 0)
+    }
+
+    // MARK: - Refresh Transcripts Button
+
+    @State private var refreshRotation: Double = 0
+    @State private var refreshSpinTask: Task<Void, Never>?
+
+    private var refreshTranscriptsButton: some View {
+        Button(action: {
+            Task { await coordinatorWrapper.refineNow() }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.retraceCalloutMedium)
+                    .rotationEffect(.degrees(refreshRotation))
+                if let message = coordinatorWrapper.lastRefinementMessage {
+                    Text(message)
+                        .font(.retraceCaption2Medium)
+                        .transition(.opacity)
+                }
+            }
+            .foregroundColor(.retraceSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.white.opacity(0.05))
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(coordinatorWrapper.isRefining)
+        .help("Refresh transcripts — runs pass-2 and pass-3 refinement on any pending audio")
+        .onChange(of: coordinatorWrapper.isRefining) { isRefining in
+            refreshSpinTask?.cancel()
+            if isRefining {
+                // Drive the spin from a loop we can cancel cleanly
+                refreshSpinTask = Task { @MainActor in
+                    while !Task.isCancelled {
+                        withAnimation(.linear(duration: 1.0)) {
+                            refreshRotation += 360
+                        }
+                        try? await Task.sleep(for: .seconds(1), clock: .continuous)
+                    }
+                }
+            } else {
+                // Snap back to 0 with a short settle animation
+                refreshSpinTask = nil
+                withAnimation(.easeOut(duration: 0.2)) {
+                    refreshRotation = 0
+                }
+            }
+        }
     }
 
     // MARK: - Changelog Button
@@ -901,6 +924,83 @@ public struct DashboardView: View {
         ]
     }
 
+    private func dashboardStatsStrip(layoutSize _: LayoutSize) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: DashboardStatsStripLayoutPolicy.spacing) {
+                ForEach(statsCards) { card in
+                    compactStatTile(card)
+                        .frame(
+                            width: DashboardStatsStripLayoutPolicy.tileWidth,
+                            height: DashboardStatsStripLayoutPolicy.tileHeight
+                        )
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: DashboardStatsStripLayoutPolicy.tileHeight,
+            maxHeight: DashboardStatsStripLayoutPolicy.tileHeight
+        )
+    }
+
+    private func compactStatTile(_ card: StatCardData) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.retraceSecondary.opacity(0.10))
+                        .frame(width: 32, height: 32)
+
+                    Image(systemName: card.icon)
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retraceSecondary)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(card.title)
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+                        .lineLimit(1)
+
+                    Text(card.value)
+                        .font(.retraceCalloutMedium)
+                        .foregroundColor(.retracePrimary)
+                        .lineLimit(1)
+
+                    Text(card.subtitle)
+                        .font(.retraceCaption2)
+                        .foregroundColor(.retraceSecondary.opacity(0.72))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if let data = card.graphData, !data.isEmpty {
+                MiniLineGraphView(
+                    dataPoints: data,
+                    lineColor: card.graphColor,
+                    showGradientFill: true,
+                    showYAxis: false,
+                    valueFormatter: card.valueFormatter
+                )
+                .frame(height: DashboardStatsStripLayoutPolicy.graphHeight)
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.white.opacity(0.018))
+                    .frame(height: DashboardStatsStripLayoutPolicy.graphHeight)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(themeBorderColor.opacity(0.8), lineWidth: 1)
+        )
+    }
+
     private func statCard(
         icon: String,
         title: String,
@@ -999,12 +1099,109 @@ public struct DashboardView: View {
         return "since \(formatter.string(from: date))"
     }
 
+    // MARK: - Dashboard Content Section
+
+    private func dashboardContentSection(layoutSize: LayoutSize) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            dashboardContentTabs
+
+            Group {
+                switch selectedDashboardTab {
+                case .dictation:
+                    dictationDashboardCard(layoutSize: layoutSize)
+                case .appUsage:
+                    appUsageDashboardCard(layoutSize: layoutSize)
+                case .live:
+                    liveDashboardCard(layoutSize: layoutSize)
+                }
+            }
+            .transition(.opacity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var dashboardContentTabs: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                ForEach(DashboardContentTab.allCases) { tab in
+                    Button {
+                        selectDashboardTab(tab)
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: tab.icon)
+                                .font(.retraceCaption2Medium)
+
+                            Text(tab.title)
+                                .font(.retraceCaptionMedium)
+                        }
+                        .foregroundColor(selectedDashboardTab == tab ? .retracePrimary : .retraceSecondary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(selectedDashboardTab == tab ? Color.white.opacity(0.10) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                }
+            }
+            .padding(4)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.white.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+            )
+
+            Text(selectedDashboardTab.subtitle)
+                .font(.retraceCaption2Medium)
+                .foregroundColor(.retraceSecondary.opacity(0.8))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func selectDashboardTab(_ tab: DashboardContentTab) {
+        guard selectedDashboardTab != tab else { return }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            selectedDashboardTab = tab
+        }
+
+        DashboardViewModel.recordDashboardTabSelected(
+            coordinator: coordinatorWrapper.coordinator,
+            tab: tab.rawValue
+        )
+
+        if tab == .dictation {
+            Task {
+                await refreshDictationDashboardData()
+            }
+        } else if tab == .live {
+            Task {
+                await refreshLiveAudioDashboardData()
+                await refreshLiveFramesDashboardData()
+            }
+        }
+    }
+
     // MARK: - App Usage Section
 
-    private func appUsageSection(layoutSize: LayoutSize) -> some View {
+    private func appUsageDashboardCard(layoutSize: LayoutSize) -> some View {
         let appUsageLayout: AppUsageLayoutSize = .normal
 
-        return VStack(alignment: .leading, spacing: 0) {
+        return Group {
             if viewModel.isLoading && viewModel.weeklyAppUsage.isEmpty {
                 loadingStateView
             } else if viewModel.weeklyAppUsage.isEmpty {
@@ -1066,6 +1263,1465 @@ public struct DashboardView: View {
                         .stroke(themeBorderColor.opacity(1.2), lineWidth: 1.2)
                 )
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: - Dictation Dashboard
+
+    private func dictationDashboardCard(layoutSize _: LayoutSize) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.retraceAccent.opacity(0.14))
+                        .frame(width: 42, height: 42)
+
+                    Image(systemName: "mic.fill")
+                        .font(.retraceHeadline)
+                        .foregroundColor(.retraceAccent)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Voice Dictation")
+                        .font(.retraceHeadline)
+                        .foregroundColor(.retracePrimary)
+
+                    Text(dictationConfig.isEnabled ? DashboardContentTab.dictation.subtitle : "Disabled")
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retraceSecondary)
+                }
+
+                Spacer()
+
+                Text(dictationConfig.shortcut.displayString)
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retracePrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Capsule())
+            }
+
+            recentInsertionsPanel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding(18)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(themeBorderColor.opacity(1.2), lineWidth: 1.2)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    // MARK: - Live Dashboard
+
+    private func liveDashboardCard(layoutSize _: LayoutSize) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.retraceDanger.opacity(viewModel.isRecording ? 0.14 : 0.08))
+                        .frame(width: 42, height: 42)
+
+                    Image(systemName: "waveform.and.magnifyingglass")
+                        .font(.retraceHeadline)
+                        .foregroundColor(viewModel.isRecording ? .retraceDanger : .retraceSecondary)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Live Memory")
+                        .font(.retraceHeadline)
+                        .foregroundColor(.retracePrimary)
+
+                    Text(DashboardContentTab.live.subtitle)
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retraceSecondary)
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(viewModel.isRecording ? Color.retraceDanger : Color.retraceSecondary)
+                        .frame(width: 7, height: 7)
+
+                    Text(viewModel.isRecording ? "Recording" : "Paused")
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Capsule())
+            }
+
+            GeometryReader { geometry in
+                let mode = DashboardLiveLayoutPolicy.contentMode(forWidth: geometry.size.width)
+                let columns = DashboardLiveLayoutPolicy.columnWidths(forWidth: geometry.size.width)
+
+                Group {
+                    switch mode {
+                    case .threeColumn:
+                        HStack(alignment: .top, spacing: DashboardLiveLayoutPolicy.columnSpacing) {
+                            liveAudioPanel
+                                .frame(width: columns.audio)
+                                .frame(maxHeight: .infinity)
+
+                            liveScreenshotsPanel
+                                .frame(width: columns.screenshots)
+                                .frame(maxHeight: .infinity)
+
+                            liveContextPanel
+                                .frame(width: columns.context)
+                                .frame(maxHeight: .infinity)
+                        }
+                    case .stacked:
+                        ScrollView(showsIndicators: false) {
+                            VStack(spacing: 14) {
+                                liveAudioPanel
+                                liveScreenshotsPanel
+                                liveContextPanel
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(themeBorderColor.opacity(1.2), lineWidth: 1.2)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var recentInsertionsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recent Insertions")
+                .font(.retraceCalloutMedium)
+                .foregroundColor(.retracePrimary)
+
+            Text("Only speech captured during the dictation hold appears here.")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+
+            if let dictationDashboardError {
+                Text(dictationDashboardError)
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceWarning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if isLoadingDictationSessions && recentDictationSessions.isEmpty {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            } else if recentDictationSessions.isEmpty {
+                Text("No dictation sessions yet. Hold \(dictationConfig.shortcut.displayString), speak, then release to paste.")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(recentDictationSessions) { session in
+                            dictationSessionRow(session)
+                                .onAppear {
+                                    loadMoreDictationSessionsIfNeeded(current: session)
+                                }
+
+                            if session.id != recentDictationSessions.last?.id {
+                                Divider()
+                                    .background(Color.white.opacity(0.06))
+                            }
+                        }
+
+                        if canLoadMoreDictationSessions {
+                            loadOlderFooter(isLoading: isLoadingMoreDictationSessions)
+                                .onAppear {
+                                    Task { await loadMoreDictationSessions() }
+                                }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(14)
+    }
+
+    private var liveAudioPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(viewModel.isRecording ? Color.retraceDanger : Color.retraceSecondary)
+                    .frame(width: 7, height: 7)
+
+                Text("Live Audio")
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Spacer()
+
+                if isLoadingLiveAudio {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                }
+            }
+
+            Text("Speech-first memory. Fresh capture stays visible while transcript repair catches up.")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+
+            if let liveAudioError {
+                Text(liveAudioError)
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retraceWarning)
+            } else if liveAudioRows.isEmpty {
+                Text("No continuous transcript yet.")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(liveAudioRows) { row in
+                            liveAudioRow(row)
+                                .onAppear {
+                                    loadMoreLiveAudioRowsIfNeeded(current: row)
+                                }
+                        }
+
+                        if canLoadMoreLiveAudioRows {
+                            loadOlderFooter(isLoading: isLoadingMoreLiveAudio)
+                                .onAppear {
+                                    Task { await loadMoreLiveAudioRows() }
+                                }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(14)
+    }
+
+    private var liveScreenshotsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.stack.fill")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceAccent)
+
+                Text("Screenshots")
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Spacer()
+
+                if isLoadingLiveFrames {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                }
+            }
+
+            Text("Recent screen frames, loaded as they scroll into view.")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+
+            if let liveFrameError {
+                Text(liveFrameError)
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retraceWarning)
+            } else if isLoadingLiveFrames && liveFrames.isEmpty {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            } else if liveFrames.isEmpty {
+                Text("No screen frames yet.")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(liveFrames, id: \.frame.id.value) { frame in
+                            liveScreenshotRow(frame)
+                                .onAppear {
+                                    loadMoreLiveFramesIfNeeded(current: frame)
+                                    loadLiveFrameThumbnailIfNeeded(frame)
+                                }
+                        }
+
+                        if canLoadMoreLiveFrames {
+                            loadOlderFooter(isLoading: isLoadingMoreLiveFrames)
+                                .onAppear {
+                                    Task { await loadMoreLiveFrames() }
+                                }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(14)
+    }
+
+    private var liveContextPanel: some View {
+        let selectedFrame = selectedLiveFrame
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.viewfinder")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceAccent)
+
+                Text("Context")
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Spacer()
+
+                if let selectedFrame {
+                    Text(selectedFrame.frame.source.displayName)
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+                }
+            }
+
+            Text("OCR, app, window, URL, and capture metadata for the selected frame.")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+
+            if let selectedFrame {
+                liveFrameMetadataCard(selectedFrame)
+
+                let frameID = selectedFrame.frame.id.value
+                if liveFrameOCRLoadingIDs.contains(frameID) {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.55)
+                        Text("Loading OCR...")
+                            .font(.retraceCaption2Medium)
+                            .foregroundColor(.retraceSecondary)
+                    }
+                    .padding(.vertical, 6)
+                } else if let nodes = liveFrameOCRNodes[frameID], !nodes.isEmpty {
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(nodes.prefix(18).enumerated()), id: \.offset) { _, node in
+                                Text(node.text)
+                                    .font(.retraceCaption2)
+                                    .foregroundColor(.retracePrimary)
+                                    .textSelection(.enabled)
+                                    .lineLimit(4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                                    .background(Color.white.opacity(0.035))
+                                    .cornerRadius(8)
+                            }
+                        }
+                    }
+                } else {
+                    Text("No OCR text captured for this frame yet.")
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retraceSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                }
+            } else {
+                Text("Select a screenshot to inspect its context.")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(14)
+    }
+
+    private func liveScreenshotRow(_ item: FrameWithVideoInfo) -> some View {
+        let frame = item.frame
+        let frameID = frame.id.value
+        let isSelected = selectedLiveFrameID == frameID
+
+        return Button {
+            selectLiveFrame(item)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack {
+                    if let image = liveFrameThumbnails[frameID] {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.white.opacity(0.035))
+                            .overlay {
+                                if liveFrameThumbnailLoadingIDs.contains(frameID) {
+                                    ProgressView()
+                                        .scaleEffect(0.65)
+                                } else {
+                                    Image(systemName: frame.isEncodedToVideo ? "photo" : "clock.badge.exclamationmark")
+                                        .font(.retraceHeadline)
+                                        .foregroundColor(.retraceSecondary.opacity(0.7))
+                                }
+                            }
+                    }
+                }
+                .frame(height: 118)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(frame.timestamp, style: .time)
+                            .font(.retraceCaption2Medium)
+                            .foregroundColor(.retraceSecondary)
+
+                        Spacer(minLength: 0)
+
+                        Text(frame.metadata.appName ?? frame.metadata.appBundleID ?? "Unknown")
+                            .font(.retraceCaption2Medium)
+                            .foregroundColor(.retracePrimary)
+                            .lineLimit(1)
+                    }
+
+                    if let windowName = frame.metadata.windowName, !windowName.isEmpty {
+                        Text(windowName)
+                            .font(.retraceCaption2)
+                            .foregroundColor(.retraceSecondary.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(10)
+            .background(isSelected ? Color.retraceAccent.opacity(0.11) : Color.white.opacity(0.035))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.retraceAccent.opacity(0.55) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func liveFrameMetadataCard(_ item: FrameWithVideoInfo) -> some View {
+        let frame = item.frame
+
+        return VStack(alignment: .leading, spacing: 8) {
+            metadataLine(label: "Time", value: formatDashboardTimestamp(frame.timestamp))
+            metadataLine(label: "App", value: frame.metadata.appName ?? frame.metadata.appBundleID ?? "Unknown")
+
+            if let windowName = frame.metadata.windowName, !windowName.isEmpty {
+                metadataLine(label: "Window", value: windowName)
+            }
+
+            if let browserURL = frame.metadata.browserURL, !browserURL.isEmpty {
+                metadataLine(label: "URL", value: browserURL)
+            }
+
+            metadataLine(label: "Frame", value: "#\(frame.id.value)")
+            metadataLine(label: "Video", value: frame.isEncodedToVideo ? "\(frame.videoID.value) · \(frame.frameIndexInSegment)" : "Pending encode")
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.035))
+        .cornerRadius(10)
+    }
+
+    private func metadataLine(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.retraceCaption2Medium)
+                .foregroundColor(.retraceSecondary.opacity(0.7))
+
+            Text(value)
+                .font(.retraceCaption2)
+                .foregroundColor(.retracePrimary)
+                .lineLimit(3)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func loadOlderFooter(isLoading: Bool) -> some View {
+        HStack(spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .scaleEffect(0.55)
+            }
+
+            Text(isLoading ? "Loading older entries..." : "Scroll for older entries")
+                .font(.retraceCaption2Medium)
+                .foregroundColor(.retraceSecondary.opacity(0.75))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func liveAudioRow(_ row: DashboardLiveAudioRow) -> some View {
+        if row.isPendingSummary || row.isLowConfidenceSummary || row.isStatusSummary {
+            liveAudioPendingSummaryRow(row)
+        } else {
+            liveAudioTranscriptRow(row)
+        }
+    }
+
+    private func liveAudioPendingSummaryRow(_ row: DashboardLiveAudioRow) -> some View {
+        let isLowConfidence = row.isLowConfidenceSummary
+        let isPending = row.isPendingSummary
+        let accent = isLowConfidence ? Color.retraceSecondary : (isPending ? Color.retraceWarning : Color.retraceAccent)
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(accent.opacity(0.14))
+                        .frame(width: 28, height: 28)
+
+                    Image(systemName: summaryIconName(for: row))
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(accent)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(summaryTitle(for: row))
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retracePrimary)
+
+                    Text("Latest capture \(row.startedAt, style: .time)")
+                        .font(.retraceCaption2)
+                        .foregroundColor(.retraceSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(row.pendingBatchCount == 1 ? "1 batch" : "\(row.pendingBatchCount) batches")
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(accent.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            Text(row.displayText)
+                .font(.retraceCaptionMedium)
+                .foregroundColor(.retracePrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(isLowConfidence
+                ? "Stored for repair, hidden from the readable stream unless a cleaner pass finds speech."
+                : (isPending
+                    ? "Showing the newest readable transcripts below instead of repeating placeholder rows."
+                    : "Repeated identical status rows are collapsed so speech and repair state stay readable.")
+            )
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+        }
+        .padding(12)
+        .background(
+            LinearGradient(
+                colors: [
+                    accent.opacity(0.09),
+                    Color.white.opacity(0.035)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(accent.opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private func summaryTitle(for row: DashboardLiveAudioRow) -> String {
+        if row.isLowConfidenceSummary {
+            return "Audio under repair"
+        }
+        if row.isPendingSummary {
+            return "Signal queue"
+        }
+        return "Repeated audio status"
+    }
+
+    private func summaryIconName(for row: DashboardLiveAudioRow) -> String {
+        if row.isLowConfidenceSummary {
+            return "waveform.badge.exclamationmark"
+        }
+        if row.isPendingSummary {
+            return "waveform.path.badge.clock"
+        }
+        return "rectangle.stack.badge.minus"
+    }
+
+    private func liveAudioTranscriptRow(_ row: DashboardLiveAudioRow) -> some View {
+        let isExpanded = expandedLiveAudioRowIDs.contains(row.id)
+
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(row.startedAt, style: .time)
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retraceSecondary)
+
+                Text(row.source.rawValue.capitalized)
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retraceAccent)
+
+                if !row.hasTranscriptText {
+                    Text(row.statusBadgeText)
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                if row.hasTranscriptText {
+                    copyTranscriptButton(text: row.text, surface: "live_audio")
+                }
+            }
+
+            Text(row.displayText)
+                .font(.retraceCaptionMedium)
+                .foregroundColor(row.hasTranscriptText ? .retracePrimary : .retraceSecondary)
+                .lineLimit(DashboardTranscriptDisplayPolicy.lineLimit(isExpanded: isExpanded))
+                .textSelection(.enabled)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.035))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isExpanded ? Color.retraceAccent.opacity(0.45) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            toggleLiveAudioExpansion(row)
+        }
+    }
+
+    private func dictationSessionRow(_ session: DictationSession) -> some View {
+        let isExpanded = expandedDictationSessionIDs.contains(session.id)
+        let transcriptText = dictationSessionPreview(session)
+
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: dictationStatusIcon(session.status))
+                .font(.retraceCaptionMedium)
+                .foregroundColor(dictationStatusColor(session.status))
+                .frame(width: 18, height: 18)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(session.startedAt, style: .time)
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+
+                    Text(dictationStatusLabel(session.status))
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(dictationStatusColor(session.status))
+
+                    if let endedAt = session.endedAt {
+                        Text(formatDictationDuration(endedAt.timeIntervalSince(session.startedAt)))
+                            .font(.retraceCaption2Medium)
+                            .foregroundColor(.retraceSecondary.opacity(0.8))
+                    }
+
+                    Spacer(minLength: 0)
+
+                    copyTranscriptButton(text: transcriptText, surface: "dictation")
+                }
+
+                Text(transcriptText)
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retracePrimary)
+                    .lineLimit(DashboardTranscriptDisplayPolicy.lineLimit(isExpanded: isExpanded))
+                    .textSelection(.enabled)
+
+                if let appName = session.targetContext?.appName, !appName.isEmpty {
+                    Text(appName)
+                        .font(.retraceCaption2)
+                        .foregroundColor(.retraceSecondary.opacity(0.8))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 4)
+        .background(isExpanded ? Color.white.opacity(0.028) : Color.clear)
+        .cornerRadius(10)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            toggleDictationSessionExpansion(session)
+        }
+    }
+
+    private func copyTranscriptButton(text: String, surface: String) -> some View {
+        Button {
+            copyTranscriptText(text, surface: surface)
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.retraceCaption2Medium)
+                .foregroundColor(.retraceSecondary)
+                .padding(5)
+                .background(Color.white.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .help("Copy full text")
+    }
+
+    private func copyTranscriptText(_ text: String, surface _: String) {
+        let cleanedText = DashboardTranscriptDisplayPolicy.copyText(text)
+        guard !cleanedText.isEmpty else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cleanedText, forType: .string)
+        DashboardViewModel.recordTextCopy(
+            coordinator: coordinatorWrapper.coordinator,
+            text: cleanedText
+        )
+    }
+
+    private func toggleDictationSessionExpansion(_ session: DictationSession) {
+        if expandedDictationSessionIDs.contains(session.id) {
+            expandedDictationSessionIDs.remove(session.id)
+        } else {
+            expandedDictationSessionIDs.insert(session.id)
+            DashboardViewModel.recordDashboardTranscriptExpanded(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "dictation"
+            )
+        }
+    }
+
+    private func toggleLiveAudioExpansion(_ row: DashboardLiveAudioRow) {
+        if expandedLiveAudioRowIDs.contains(row.id) {
+            expandedLiveAudioRowIDs.remove(row.id)
+        } else {
+            expandedLiveAudioRowIDs.insert(row.id)
+            DashboardViewModel.recordDashboardTranscriptExpanded(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "live_audio"
+            )
+        }
+    }
+
+    private var selectedLiveFrame: FrameWithVideoInfo? {
+        guard let selectedLiveFrameID else {
+            return liveFrames.first
+        }
+        return liveFrames.first { $0.frame.id.value == selectedLiveFrameID } ?? liveFrames.first
+    }
+
+    private func selectLiveFrame(_ item: FrameWithVideoInfo) {
+        selectedLiveFrameID = item.frame.id.value
+        DashboardViewModel.recordDashboardLiveFrameSelected(
+            coordinator: coordinatorWrapper.coordinator,
+            frameID: item.frame.id.value,
+            source: item.frame.source.rawValue
+        )
+        loadLiveFrameThumbnailIfNeeded(item)
+        loadLiveFrameContextIfNeeded(item)
+    }
+
+    private func loadMoreDictationSessionsIfNeeded(current session: DictationSession) {
+        guard session.id == recentDictationSessions.last?.id else { return }
+        Task { await loadMoreDictationSessions() }
+    }
+
+    private func loadMoreLiveAudioRowsIfNeeded(current row: DashboardLiveAudioRow) {
+        guard row.id == liveAudioRows.last?.id else { return }
+        Task { await loadMoreLiveAudioRows() }
+    }
+
+    private func loadMoreLiveFramesIfNeeded(current item: FrameWithVideoInfo) {
+        guard item.frame.id == liveFrames.last?.frame.id else { return }
+        Task { await loadMoreLiveFrames() }
+    }
+
+    private func loadMoreDictationSessions() async {
+        await loadDictationDashboardData(reset: false)
+    }
+
+    private func loadMoreLiveAudioRows() async {
+        await loadLiveAudioDashboardData(reset: false)
+    }
+
+    private func loadMoreLiveFrames() async {
+        await loadLiveFramesDashboardData(reset: false)
+    }
+
+    private func loadDictationDashboardData(reset: Bool = true) async {
+        guard reset || canLoadMoreDictationSessions else { return }
+        guard !isLoadingDictationSessions && !isLoadingMoreDictationSessions else { return }
+
+        if reset {
+            isLoadingDictationSessions = true
+            canLoadMoreDictationSessions = true
+        } else {
+            isLoadingMoreDictationSessions = true
+        }
+        defer {
+            isLoadingDictationSessions = false
+            isLoadingMoreDictationSessions = false
+        }
+
+        do {
+            dictationConfig = await coordinatorWrapper.coordinator.getDictationConfig()
+            let offset = reset ? 0 : recentDictationSessions.count
+            let sessions = try await coordinatorWrapper.coordinator.getRecentDictationSessions(
+                limit: Self.transcriptPageSize,
+                offset: offset
+            )
+
+            if reset {
+                recentDictationSessions = sessions
+            } else {
+                appendDictationSessions(sessions)
+                if !sessions.isEmpty {
+                    DashboardViewModel.recordDashboardTranscriptLoadOlder(
+                        coordinator: coordinatorWrapper.coordinator,
+                        surface: "dictation"
+                    )
+                }
+            }
+
+            canLoadMoreDictationSessions = sessions.count == Self.transcriptPageSize
+            dictationDashboardError = nil
+        } catch {
+            dictationDashboardError = "Unable to load dictation history"
+            DashboardViewModel.recordDashboardLoadFailed(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "dictation_sessions",
+                error: error
+            )
+            Log.error("[Dashboard] Failed to load dictation history", category: .ui, error: error)
+        }
+    }
+
+    private func refreshDictationDashboardData() async {
+        guard !isLoadingDictationSessions && !isLoadingMoreDictationSessions else { return }
+        if recentDictationSessions.isEmpty {
+            await loadDictationDashboardData(reset: true)
+            return
+        }
+
+        do {
+            dictationConfig = await coordinatorWrapper.coordinator.getDictationConfig()
+            let sessions = try await coordinatorWrapper.coordinator.getRecentDictationSessions(
+                limit: Self.transcriptPageSize,
+                offset: 0
+            )
+            mergeLatestDictationSessions(sessions)
+            if recentDictationSessions.count <= Self.transcriptPageSize {
+                canLoadMoreDictationSessions = sessions.count == Self.transcriptPageSize
+            }
+            dictationDashboardError = nil
+        } catch {
+            dictationDashboardError = "Unable to load dictation history"
+            DashboardViewModel.recordDashboardLoadFailed(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "dictation_sessions",
+                error: error
+            )
+            Log.error("[Dashboard] Failed to refresh dictation history", category: .ui, error: error)
+        }
+    }
+
+    private func loadLiveAudioDashboardData(reset: Bool = true) async {
+        guard reset || canLoadMoreLiveAudioRows else { return }
+        guard !isLoadingLiveAudio && !isLoadingMoreLiveAudio else { return }
+
+        if reset {
+            isLoadingLiveAudio = liveAudioRows.isEmpty
+            canLoadMoreLiveAudioRows = true
+        } else {
+            isLoadingMoreLiveAudio = true
+        }
+        defer {
+            isLoadingLiveAudio = false
+            isLoadingMoreLiveAudio = false
+        }
+
+        do {
+            guard let queries = await coordinatorWrapper.coordinator.getAudioTranscriptionQueries() else {
+                liveAudioRows = []
+                liveAudioTranscriptOffset = 0
+                liveAudioError = "Transcript store is not available"
+                return
+            }
+
+            let rows: [DashboardLiveAudioRow]
+            let canLoadMore: Bool
+            if reset {
+                let activityRows = try await fetchLiveAudioRows(
+                    queries: queries,
+                    limit: Self.transcriptPageSize,
+                    offset: 0,
+                    includeActivityRows: true
+                )
+                let transcriptRows = try await fetchLiveAudioRows(
+                    queries: queries,
+                    limit: Self.transcriptPageSize,
+                    offset: 0,
+                    includeActivityRows: false
+                )
+                rows = liveAudioRowsForPresentation(activityRows + transcriptRows)
+                liveAudioTranscriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
+                    currentOffset: 0,
+                    fetchedTranscriptRows: transcriptRows.count,
+                    reset: true
+                )
+                canLoadMore = transcriptRows.count == Self.transcriptPageSize
+            } else {
+                let transcriptOffset = liveAudioTranscriptOffset
+                rows = try await fetchLiveAudioRows(
+                    queries: queries,
+                    limit: Self.transcriptPageSize,
+                    offset: transcriptOffset,
+                    includeActivityRows: false
+                )
+                canLoadMore = rows.count == Self.transcriptPageSize
+            }
+
+            if reset {
+                liveAudioRows = rows
+            } else {
+                appendLiveAudioRows(rows)
+                liveAudioTranscriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
+                    currentOffset: liveAudioTranscriptOffset,
+                    fetchedTranscriptRows: rows.count,
+                    reset: false
+                )
+                if !rows.isEmpty {
+                    DashboardViewModel.recordDashboardTranscriptLoadOlder(
+                        coordinator: coordinatorWrapper.coordinator,
+                        surface: "live_audio"
+                    )
+                }
+            }
+
+            canLoadMoreLiveAudioRows = canLoadMore
+            liveAudioError = nil
+        } catch {
+            liveAudioError = "Unable to load live transcript"
+            DashboardViewModel.recordDashboardLoadFailed(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "live_audio",
+                error: error
+            )
+            Log.error("[Dashboard] Failed to load live audio transcript", category: .ui, error: error)
+        }
+    }
+
+    private func refreshLiveAudioDashboardData() async {
+        guard !isLoadingLiveAudio && !isLoadingMoreLiveAudio else { return }
+        if liveAudioRows.isEmpty {
+            await loadLiveAudioDashboardData(reset: true)
+            return
+        }
+
+        do {
+            guard let queries = await coordinatorWrapper.coordinator.getAudioTranscriptionQueries() else {
+                liveAudioError = "Transcript store is not available"
+                return
+            }
+
+            let activityRows = try await fetchLiveAudioRows(
+                queries: queries,
+                limit: Self.transcriptPageSize,
+                offset: 0,
+                includeActivityRows: true
+            )
+            let transcriptRows = try await fetchLiveAudioRows(
+                queries: queries,
+                limit: Self.transcriptPageSize,
+                offset: 0,
+                includeActivityRows: false
+            )
+            let rows = liveAudioRowsForPresentation(activityRows + transcriptRows)
+            mergeLatestLiveAudioRows(rows)
+            liveAudioTranscriptOffset = max(liveAudioTranscriptOffset, transcriptRows.count)
+            if liveAudioRows.count <= Self.transcriptPageSize {
+                canLoadMoreLiveAudioRows = transcriptRows.count == Self.transcriptPageSize
+            }
+            liveAudioError = nil
+        } catch {
+            liveAudioError = "Unable to load live transcript"
+            DashboardViewModel.recordDashboardLoadFailed(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "live_audio",
+                error: error
+            )
+            Log.error("[Dashboard] Failed to refresh live audio transcript", category: .ui, error: error)
+        }
+    }
+
+    private func loadLiveFramesDashboardData(reset: Bool = true) async {
+        guard reset || canLoadMoreLiveFrames else { return }
+        guard !isLoadingLiveFrames && !isLoadingMoreLiveFrames else { return }
+
+        if reset {
+            isLoadingLiveFrames = liveFrames.isEmpty
+            canLoadMoreLiveFrames = true
+        } else {
+            isLoadingMoreLiveFrames = true
+        }
+        defer {
+            isLoadingLiveFrames = false
+            isLoadingMoreLiveFrames = false
+        }
+
+        do {
+            let frames: [FrameWithVideoInfo]
+            if reset {
+                frames = try await coordinatorWrapper.coordinator.getMostRecentFramesWithVideoInfo(
+                    limit: DashboardLiveLayoutPolicy.screenshotPageSize
+                )
+            } else if let oldestTimestamp = liveFrames.last?.frame.timestamp {
+                frames = try await coordinatorWrapper.coordinator.getFramesWithVideoInfoBefore(
+                    timestamp: oldestTimestamp,
+                    limit: DashboardLiveLayoutPolicy.screenshotPageSize
+                )
+            } else {
+                frames = []
+            }
+
+            if reset {
+                liveFrames = frames
+            } else {
+                appendLiveFrames(frames)
+                if !frames.isEmpty {
+                    DashboardViewModel.recordDashboardTranscriptLoadOlder(
+                        coordinator: coordinatorWrapper.coordinator,
+                        surface: "live_screenshots"
+                    )
+                }
+            }
+
+            canLoadMoreLiveFrames = frames.count == DashboardLiveLayoutPolicy.screenshotPageSize
+            liveFrameError = nil
+            ensureSelectedLiveFrame()
+            trimLiveFrameCaches()
+        } catch {
+            liveFrameError = "Unable to load screenshots"
+            DashboardViewModel.recordDashboardLoadFailed(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "live_screenshots",
+                error: error
+            )
+            Log.error("[Dashboard] Failed to load live screenshots", category: .ui, error: error)
+        }
+    }
+
+    private func refreshLiveFramesDashboardData() async {
+        guard !isLoadingLiveFrames && !isLoadingMoreLiveFrames else { return }
+        if liveFrames.isEmpty {
+            await loadLiveFramesDashboardData(reset: true)
+            return
+        }
+
+        do {
+            let frames = try await coordinatorWrapper.coordinator.getMostRecentFramesWithVideoInfo(
+                limit: DashboardLiveLayoutPolicy.screenshotPageSize
+            )
+            mergeLatestLiveFrames(frames)
+            if liveFrames.count <= DashboardLiveLayoutPolicy.screenshotPageSize {
+                canLoadMoreLiveFrames = frames.count == DashboardLiveLayoutPolicy.screenshotPageSize
+            }
+            liveFrameError = nil
+            ensureSelectedLiveFrame()
+            trimLiveFrameCaches()
+        } catch {
+            liveFrameError = "Unable to refresh screenshots"
+            DashboardViewModel.recordDashboardLoadFailed(
+                coordinator: coordinatorWrapper.coordinator,
+                surface: "live_screenshots",
+                error: error
+            )
+            Log.error("[Dashboard] Failed to refresh live screenshots", category: .ui, error: error)
+        }
+    }
+
+    private func appendDictationSessions(_ sessions: [DictationSession]) {
+        let existingIDs = Set(recentDictationSessions.map(\.id))
+        recentDictationSessions.append(contentsOf: sessions.filter { !existingIDs.contains($0.id) })
+    }
+
+    private func mergeLatestDictationSessions(_ sessions: [DictationSession]) {
+        let latestIDs = Set(sessions.map(\.id))
+        recentDictationSessions = sessions + recentDictationSessions.filter { !latestIDs.contains($0.id) }
+    }
+
+    private func fetchLiveAudioRows(
+        queries: AudioTranscriptionQueries,
+        limit: Int,
+        offset: Int,
+        includeActivityRows: Bool
+    ) async throws -> [DashboardLiveAudioRow] {
+        let transcriptions = try await queries.getTranscriptions(
+            from: Date(timeIntervalSince1970: 0),
+            to: Date(),
+            source: nil,
+            limit: limit,
+            offset: offset,
+            includeActivityRows: includeActivityRows
+        )
+        return liveAudioRows(from: transcriptions)
+    }
+
+    private func liveAudioRows(from transcriptions: [AudioTranscription]) -> [DashboardLiveAudioRow] {
+        transcriptions.map {
+            DashboardLiveAudioRow(
+                id: $0.id,
+                text: DashboardTranscriptDisplayPolicy.copyText($0.text),
+                startedAt: $0.startTime,
+                endedAt: $0.endTime,
+                source: $0.source,
+                confidence: $0.confidence,
+                transcriptStatus: $0.transcriptStatus,
+                detectedLanguage: $0.detectedLanguage,
+                audioVariant: $0.audioVariant,
+                qualityFlags: $0.qualityFlags
+            )
+        }
+    }
+
+    private func liveAudioRowsForPresentation(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
+        let uniqueRows = Dictionary(grouping: rows, by: \.id)
+            .compactMap { _, rows in rows.first }
+            .sorted {
+                if $0.startedAt != $1.startedAt {
+                    return $0.startedAt > $1.startedAt
+                }
+                return $0.id > $1.id
+            }
+        return DashboardLiveAudioPresentationPolicy.rowsForDisplay(uniqueRows)
+    }
+
+    private func appendLiveAudioRows(_ rows: [DashboardLiveAudioRow]) {
+        let existingIDs = Set(liveAudioRows.map(\.id))
+        let mergedRows = liveAudioRows + rows.filter { !existingIDs.contains($0.id) }
+        liveAudioRows = liveAudioRowsForPresentation(mergedRows)
+    }
+
+    private func mergeLatestLiveAudioRows(_ rows: [DashboardLiveAudioRow]) {
+        let retentionLimit = max(
+            DashboardLiveMemoryPolicy.passiveTranscriptRetentionLimit,
+            liveAudioRows.count
+        )
+        let mergedRows = DashboardLiveMemoryPolicy.mergedLatest(
+            rows,
+            into: liveAudioRows,
+            id: \.id,
+            maxCount: retentionLimit
+        )
+        liveAudioRows = liveAudioRowsForPresentation(mergedRows)
+    }
+
+    private func appendLiveFrames(_ frames: [FrameWithVideoInfo]) {
+        let existingIDs = Set(liveFrames.map(\.frame.id.value))
+        liveFrames.append(contentsOf: frames.filter { !existingIDs.contains($0.frame.id.value) })
+    }
+
+    private func mergeLatestLiveFrames(_ frames: [FrameWithVideoInfo]) {
+        let retentionLimit = max(
+            DashboardLiveMemoryPolicy.passiveScreenshotRetentionLimit,
+            liveFrames.count
+        )
+        liveFrames = DashboardLiveMemoryPolicy.mergedLatest(
+            frames,
+            into: liveFrames,
+            id: { $0.frame.id.value },
+            maxCount: retentionLimit
+        )
+    }
+
+    private func trimLiveFrameCaches() {
+        trimLiveFrameThumbnailCache()
+        trimLiveFrameOCRCache()
+    }
+
+    private func trimLiveFrameThumbnailCache() {
+        let retainedIDs = DashboardLiveMemoryPolicy.retainedCacheIDs(
+            preferredIDs: liveFrames.map(\.frame.id.value),
+            selectedID: selectedLiveFrameID,
+            maxCount: DashboardLiveMemoryPolicy.thumbnailCacheLimit
+        )
+        liveFrameThumbnails = liveFrameThumbnails.filter { retainedIDs.contains($0.key) }
+    }
+
+    private func trimLiveFrameOCRCache() {
+        let retainedIDs = DashboardLiveMemoryPolicy.retainedCacheIDs(
+            preferredIDs: liveFrames.map(\.frame.id.value),
+            selectedID: selectedLiveFrameID,
+            maxCount: DashboardLiveMemoryPolicy.ocrCacheLimit
+        )
+        liveFrameOCRNodes = liveFrameOCRNodes.filter { retainedIDs.contains($0.key) }
+    }
+
+    private func isRetainedLiveFrame(_ frameID: Int64) -> Bool {
+        liveFrames.contains { $0.frame.id.value == frameID }
+    }
+
+    private func ensureSelectedLiveFrame() {
+        if let selectedLiveFrameID,
+           liveFrames.contains(where: { $0.frame.id.value == selectedLiveFrameID }) {
+            return
+        }
+
+        selectedLiveFrameID = liveFrames.first?.frame.id.value
+        if let first = liveFrames.first {
+            loadLiveFrameContextIfNeeded(first)
+        }
+    }
+
+    private func loadLiveFrameThumbnailIfNeeded(_ item: FrameWithVideoInfo) {
+        let frame = item.frame
+        let frameID = frame.id.value
+        guard liveFrameThumbnails[frameID] == nil else { return }
+        guard !liveFrameThumbnailLoadingIDs.contains(frameID) else { return }
+        guard frame.isEncodedToVideo else { return }
+
+        liveFrameThumbnailLoadingIDs.insert(frameID)
+
+        let coordinator = coordinatorWrapper.coordinator
+        let videoInfo = item.videoInfo
+        let frameSource = frame.source
+        let videoID = frame.videoID
+        let frameIndexInSegment = frame.frameIndexInSegment
+
+        Task.detached(priority: .utility) {
+            do {
+                let thumbnailData: Data?
+                if let videoInfo {
+                    let cgImage = try await coordinator.getFrameCGImage(
+                        videoPath: videoInfo.videoPath,
+                        frameIndex: videoInfo.frameIndex,
+                        frameRate: videoInfo.frameRate,
+                        source: frameSource
+                    )
+                    thumbnailData = Self.dashboardThumbnailPNGData(from: cgImage)
+                } else {
+                    let data = try await coordinator.getFrameImageByIndex(
+                        videoID: videoID,
+                        frameIndex: frameIndexInSegment,
+                        source: frameSource
+                    )
+                    thumbnailData = Self.dashboardThumbnailPNGData(from: data)
+                }
+
+                guard let thumbnailData,
+                      let image = NSImage(data: thumbnailData) else {
+                    throw NSError(
+                        domain: "DashboardLiveScreenshot",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Unable to create screenshot thumbnail"]
+                    )
+                }
+
+                await MainActor.run {
+                    if isRetainedLiveFrame(frameID) {
+                        liveFrameThumbnails[frameID] = image
+                        trimLiveFrameThumbnailCache()
+                    }
+                    _ = liveFrameThumbnailLoadingIDs.remove(frameID)
+                }
+            } catch {
+                await MainActor.run {
+                    _ = liveFrameThumbnailLoadingIDs.remove(frameID)
+                }
+                Log.warning("[Dashboard] Failed to load live screenshot thumbnail \(frameID): \(error)", category: .ui)
+            }
+        }
+    }
+
+    nonisolated private static func dashboardThumbnailPNGData(from data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: DashboardLiveMemoryPolicy.thumbnailMaxPixelDimension,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return pngData(from: thumbnail)
+    }
+
+    nonisolated private static func dashboardThumbnailPNGData(from image: CGImage) -> Data? {
+        let thumbnail = downscaledCGImage(
+            image,
+            maxPixelDimension: DashboardLiveMemoryPolicy.thumbnailMaxPixelDimension
+        ) ?? image
+        return pngData(from: thumbnail)
+    }
+
+    nonisolated private static func downscaledCGImage(_ image: CGImage, maxPixelDimension: Int) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        let largestDimension = max(width, height)
+        guard largestDimension > maxPixelDimension else {
+            return image
+        }
+
+        let scale = CGFloat(maxPixelDimension) / CGFloat(largestDimension)
+        let targetWidth = max(1, Int((CGFloat(width) * scale).rounded()))
+        let targetHeight = max(1, Int((CGFloat(height) * scale).rounded()))
+        let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let context = CGContext(
+            data: nil,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        return context.makeImage()
+    }
+
+    nonisolated private static func pngData(from image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            "public.png" as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return data as Data
+    }
+
+    private func loadLiveFrameContextIfNeeded(_ item: FrameWithVideoInfo) {
+        let frame = item.frame
+        let frameID = frame.id.value
+        guard liveFrameOCRNodes[frameID] == nil else { return }
+        guard !liveFrameOCRLoadingIDs.contains(frameID) else { return }
+
+        liveFrameOCRLoadingIDs.insert(frameID)
+
+        Task {
+            do {
+                let nodes = try await coordinatorWrapper.coordinator.getAllOCRNodes(
+                    frameID: frame.id,
+                    source: frame.source
+                )
+                await MainActor.run {
+                    if isRetainedLiveFrame(frameID) {
+                        liveFrameOCRNodes[frameID] = nodes
+                        trimLiveFrameOCRCache()
+                    }
+                    _ = liveFrameOCRLoadingIDs.remove(frameID)
+                }
+            } catch {
+                await MainActor.run {
+                    if isRetainedLiveFrame(frameID) {
+                        liveFrameOCRNodes[frameID] = []
+                        trimLiveFrameOCRCache()
+                    }
+                    _ = liveFrameOCRLoadingIDs.remove(frameID)
+                }
+                Log.warning("[Dashboard] Failed to load live frame OCR \(frameID): \(error)", category: .ui)
+            }
+        }
+    }
+
+    private func dictationSessionPreview(_ session: DictationSession) -> String {
+        let trimmedText = session.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedText.isEmpty {
+            return trimmedText
+        }
+        if let errorMessage = session.errorMessage, !errorMessage.isEmpty {
+            return errorMessage
+        }
+        return "No inserted text"
+    }
+
+    private func dictationStatusLabel(_ status: DictationInsertionStatus) -> String {
+        switch status {
+        case .capturing:
+            return "Capturing"
+        case .transcribing:
+            return "Transcribing"
+        case .inserted:
+            return "Inserted"
+        case .empty:
+            return "Empty"
+        case .failed:
+            return "Failed"
+        case .cancelled:
+            return "Cancelled"
+        case .blockedSecureInput:
+            return "Secure input"
+        case .blockedFocusChanged:
+            return "Focus changed"
+        }
+    }
+
+    private func dictationStatusIcon(_ status: DictationInsertionStatus) -> String {
+        switch status {
+        case .inserted:
+            return "checkmark.circle.fill"
+        case .failed, .blockedSecureInput, .blockedFocusChanged:
+            return "exclamationmark.triangle.fill"
+        case .empty:
+            return "circle.dashed"
+        case .cancelled:
+            return "xmark.circle.fill"
+        case .capturing:
+            return "mic.circle.fill"
+        case .transcribing:
+            return "waveform.circle.fill"
+        }
+    }
+
+    private func dictationStatusColor(_ status: DictationInsertionStatus) -> Color {
+        switch status {
+        case .inserted:
+            return .retraceSuccess
+        case .failed, .blockedSecureInput, .blockedFocusChanged:
+            return .retraceWarning
+        case .empty, .cancelled:
+            return .retraceSecondary
+        case .capturing, .transcribing:
+            return .retraceAccent
         }
     }
 
@@ -1277,152 +2933,6 @@ public struct DashboardView: View {
         )
     }
 
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack {
-            Spacer()
-
-            HStack(spacing: 16) {
-                Link(destination: URL(string: "https://dub.sh/haseab-twitter")!) {
-                    HStack(spacing: 4) {
-                        Text("Made with")
-                            .foregroundColor(.retraceSecondary)
-                        Text("❤️")
-                        Text("by")
-                            .foregroundColor(.retraceSecondary)
-                        Text("@haseab")
-                            .foregroundColor(Color(red: 74/255, green: 144/255, blue: 226/255))  // Bright blue for link
-                            .scaleEffect(isHoveringHaseab ? 1.05 : 1.0)
-                            .animation(.easeInOut(duration: 0.15), value: isHoveringHaseab)
-                    }
-                    .font(.retraceCaption2Medium)
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    isHoveringHaseab = hovering
-                    if hovering {
-                        NSCursor.pointingHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-
-                Circle()
-                    .fill(Color.retraceSecondary.opacity(0.5))
-                    .frame(width: 3, height: 3)
-
-                Link(destination: URL(string: "https://dub.sh/support-haseab")!) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "cup.and.saucer.fill")
-                            .font(.retraceCaption2)
-                        Text("Support Me")
-                    }
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceSecondary)
-                    .scaleEffect(isHoveringSupportMe ? 1.05 : 1.0)
-                    .animation(.easeInOut(duration: 0.15), value: isHoveringSupportMe)
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    isHoveringSupportMe = hovering
-                    if hovering {
-                        NSCursor.pointingHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-
-                Circle()
-                    .fill(Color.retraceSecondary.opacity(0.5))
-                    .frame(width: 3, height: 3)
-
-                Button(action: { showFeedbackSheet = true }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "questionmark.circle")
-                            .font(.retraceCalloutMedium)
-                        Text("Help")
-                            .font(.retraceCaptionMedium)
-                    }
-                    .foregroundColor(.retraceSecondary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.05))
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                    )
-                    .scaleEffect(isHoveringFeedback ? 1.05 : 1.0)
-                    .animation(.easeInOut(duration: 0.15), value: isHoveringFeedback)
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    isHoveringFeedback = hovering
-                    if hovering {
-                        NSCursor.pointingHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-
-                #if DEBUG
-                Circle()
-                    .fill(Color.retraceSecondary.opacity(0.5))
-                    .frame(width: 3, height: 3)
-
-                Menu {
-                    Button("Show 10h Milestone") {
-                        milestoneCelebrationManager.currentMilestone = .tenHours
-                    }
-                    Button("Show 100h Milestone") {
-                        milestoneCelebrationManager.currentMilestone = .hundredHours
-                    }
-                    Button("Show 1000h Milestone") {
-                        milestoneCelebrationManager.currentMilestone = .thousandHours
-                    }
-                    Button("Show 10000h Milestone 🐐") {
-                        milestoneCelebrationManager.currentMilestone = .tenThousandHours
-                    }
-                    Divider()
-                    Button("Show Launch on Login Banner") {
-                        launchOnLoginReminderManager.shouldShowReminder = true
-                    }
-                    Divider()
-                    Menu("Set Color Theme") {
-                        Button("Blue") {
-                            MilestoneCelebrationManager.setDebugThemeOverride(.blue)
-                        }
-                        Button("Gold") {
-                            MilestoneCelebrationManager.setDebugThemeOverride(.gold)
-                        }
-                        Button("Purple") {
-                            MilestoneCelebrationManager.setDebugThemeOverride(.purple)
-                        }
-                        Divider()
-                        Button("Reset to Saved Theme") {
-                            MilestoneCelebrationManager.setDebugThemeOverride(nil)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "ant.fill")
-                            .font(.retraceCaption2)
-                        Text("Debug")
-                    }
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.orange)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                #endif
-            }
-
-            Spacer()
-        }
-        .padding(.vertical, 12)
-    }
-
     // MARK: - Formatting Helpers
 
     private func formatTotalTime(_ seconds: TimeInterval) -> String {
@@ -1434,6 +2944,19 @@ public struct DashboardView: View {
         } else {
             return "\(minutes)m"
         }
+    }
+
+    private func formatDictationDuration(_ seconds: TimeInterval) -> String {
+        if seconds < 60 {
+            return String(format: "%.1fs", max(seconds, 0))
+        }
+        return formatTotalTime(seconds)
+    }
+
+    private func formatDashboardTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, h:mm:ss a"
+        return formatter.string(from: date)
     }
 
     private func formatScreenTimeFromDaily(_ data: [DailyDataPoint]) -> String {
@@ -1612,13 +3135,11 @@ struct DashboardView_Previews: PreviewProvider {
     static var previews: some View {
         let coordinator = AppCoordinator()
         let launchOnLoginManager = LaunchOnLoginReminderManager(coordinator: coordinator)
-        let milestoneManager = MilestoneCelebrationManager(coordinator: coordinator)
 
         DashboardView(
             viewModel: DashboardViewModel(coordinator: coordinator),
             coordinator: coordinator,
-            launchOnLoginReminderManager: launchOnLoginManager,
-            milestoneCelebrationManager: milestoneManager
+            launchOnLoginReminderManager: launchOnLoginManager
         )
         .frame(width: 1200, height: 900)
         .preferredColorScheme(.dark)

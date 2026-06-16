@@ -97,6 +97,7 @@ public struct SettingsView: View {
 
     /// Optional initial tab to open (passed from parent when navigating to specific section)
     private let initialTab: SettingsTab?
+    private let launchOnLoginReminderManager: LaunchOnLoginReminderManager?
 
     @State private var selectedTab: SettingsTab = .general
     @State private var hoveredTab: SettingsTab? = nil
@@ -117,8 +118,13 @@ public struct SettingsView: View {
 
     // MARK: - Initialization
 
-    public init(initialTab: SettingsTab? = nil, initialScrollTargetID: String? = nil) {
+    public init(
+        initialTab: SettingsTab? = nil,
+        initialScrollTargetID: String? = nil,
+        launchOnLoginReminderManager: LaunchOnLoginReminderManager? = nil
+    ) {
         self.initialTab = initialTab
+        self.launchOnLoginReminderManager = launchOnLoginReminderManager
         // Set initial selected tab if provided
         if let tab = initialTab {
             _selectedTab = State(initialValue: tab)
@@ -153,6 +159,8 @@ public struct SettingsView: View {
     @State private var isRecordingSystemMonitorShortcut = false
     @State private var feedbackShortcut = SettingsShortcutKey(from: .defaultFeedback)
     @State private var isRecordingFeedbackShortcut = false
+    @State private var dictationShortcut = SettingsShortcutKey(from: .defaultDictation)
+    @State private var isRecordingDictationShortcut = false
     @State private var shortcutError: String? = nil
     @State private var recordingTimeoutTask: Task<Void, Never>? = nil
 
@@ -362,6 +370,8 @@ public struct SettingsView: View {
             searchableText: ["startup", "launch at login", "start automatically", "menu bar icon", "show menu bar"]),
         SettingsSearchEntry(id: "general.appearance", tab: .general, cardTitle: "Appearance", cardIcon: "paintbrush",
             searchableText: ["appearance", "font style", "accent color", "color theme", "timeline colored borders", "scrubbing animation", "scroll sensitivity", "scroll orientation", "horizontal scroll", "vertical scroll", "dark mode", "light mode", "theme"]),
+        SettingsSearchEntry(id: "general.aboutSupport", tab: .general, cardTitle: "About & Support", cardIcon: "heart",
+            searchableText: ["about", "support", "help", "creator", "haseab", "feedback"]),
         // Capture
         SettingsSearchEntry(id: "capture.rate", tab: .capture, cardTitle: "Capture Rate", cardIcon: "gauge.with.dots.needle.50percent",
             searchableText: ["capture rate", "capture interval", "capture on window change", "frame rate", "screenshot frequency"]),
@@ -405,6 +415,8 @@ public struct SettingsView: View {
             searchableText: ["timeline", "video controls", "play pause", "auto advance"]),
         SettingsSearchEntry(id: "advanced.developer", tab: .advanced, cardTitle: "Developer", cardIcon: "hammer",
             searchableText: ["developer", "frame ids", "ocr debug overlay", "database schema", "debug"]),
+        SettingsSearchEntry(id: "advanced.debugTools", tab: .advanced, cardTitle: "Debug Tools", cardIcon: "ant",
+            searchableText: ["debug", "diagnostics", "theme override", "launch on login banner"]),
         SettingsSearchEntry(id: "advanced.dangerZone", tab: .advanced, cardTitle: "Danger Zone", cardIcon: "exclamationmark.triangle",
             searchableText: ["danger zone", "reset all settings", "delete all data", "factory reset"]),
     ]
@@ -512,6 +524,9 @@ public struct SettingsView: View {
         }
         .onChange(of: feedbackShortcut) { _ in
             Task { await saveShortcuts() }
+        }
+        .onChange(of: dictationShortcut) { _ in
+            Task { await saveShortcuts(recordDictationChange: true) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPower)) { _ in
             selectedTab = .power
@@ -1070,6 +1085,7 @@ public struct SettingsView: View {
             keyboardShortcutsCard
             startupCard
             appearanceCard
+            aboutSupportCard
         }
     }
 
@@ -1083,7 +1099,7 @@ public struct SettingsView: View {
                     label: "Open Timeline",
                     shortcut: $timelineShortcut,
                     isRecording: $isRecordingTimelineShortcut,
-                    otherShortcuts: [dashboardShortcut, recordingShortcut, systemMonitorShortcut, feedbackShortcut]
+                    otherShortcuts: [dashboardShortcut, recordingShortcut, systemMonitorShortcut, feedbackShortcut, dictationShortcut]
                 )
 
                 Divider()
@@ -1093,7 +1109,7 @@ public struct SettingsView: View {
                     label: "Open Dashboard",
                     shortcut: $dashboardShortcut,
                     isRecording: $isRecordingDashboardShortcut,
-                    otherShortcuts: [timelineShortcut, recordingShortcut, systemMonitorShortcut, feedbackShortcut]
+                    otherShortcuts: [timelineShortcut, recordingShortcut, systemMonitorShortcut, feedbackShortcut, dictationShortcut]
                 )
 
                 Divider()
@@ -1103,7 +1119,7 @@ public struct SettingsView: View {
                     label: "Toggle Recording",
                     shortcut: $recordingShortcut,
                     isRecording: $isRecordingRecordingShortcut,
-                    otherShortcuts: [timelineShortcut, dashboardShortcut, systemMonitorShortcut, feedbackShortcut]
+                    otherShortcuts: [timelineShortcut, dashboardShortcut, systemMonitorShortcut, feedbackShortcut, dictationShortcut]
                 )
 
                 Divider()
@@ -1113,7 +1129,7 @@ public struct SettingsView: View {
                     label: "System Monitor",
                     shortcut: $systemMonitorShortcut,
                     isRecording: $isRecordingSystemMonitorShortcut,
-                    otherShortcuts: [timelineShortcut, dashboardShortcut, recordingShortcut, feedbackShortcut]
+                    otherShortcuts: [timelineShortcut, dashboardShortcut, recordingShortcut, feedbackShortcut, dictationShortcut]
                 )
 
                 Divider()
@@ -1123,7 +1139,17 @@ public struct SettingsView: View {
                     label: "Help",
                     shortcut: $feedbackShortcut,
                     isRecording: $isRecordingFeedbackShortcut,
-                    otherShortcuts: [timelineShortcut, dashboardShortcut, recordingShortcut, systemMonitorShortcut]
+                    otherShortcuts: [timelineShortcut, dashboardShortcut, recordingShortcut, systemMonitorShortcut, dictationShortcut]
+                )
+
+                Divider()
+                    .background(Color.retraceBorder)
+
+                settingsShortcutRecorderRow(
+                    label: "Voice Dictation (hold)",
+                    shortcut: $dictationShortcut,
+                    isRecording: $isRecordingDictationShortcut,
+                    otherShortcuts: [timelineShortcut, dashboardShortcut, recordingShortcut, systemMonitorShortcut, feedbackShortcut]
                 )
 
                 if let error = shortcutError {
@@ -1142,12 +1168,13 @@ public struct SettingsView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             // Cancel recording if user clicks outside
-            if isRecordingTimelineShortcut || isRecordingDashboardShortcut || isRecordingRecordingShortcut || isRecordingSystemMonitorShortcut || isRecordingFeedbackShortcut {
+            if isRecordingTimelineShortcut || isRecordingDashboardShortcut || isRecordingRecordingShortcut || isRecordingSystemMonitorShortcut || isRecordingFeedbackShortcut || isRecordingDictationShortcut {
                 isRecordingTimelineShortcut = false
                 isRecordingDashboardShortcut = false
                 isRecordingRecordingShortcut = false
                 isRecordingSystemMonitorShortcut = false
                 isRecordingFeedbackShortcut = false
+                isRecordingDictationShortcut = false
                 recordingTimeoutTask?.cancel()
             }
         }
@@ -1510,6 +1537,7 @@ public struct SettingsView: View {
                 isRecordingRecordingShortcut = false
                 isRecordingSystemMonitorShortcut = false
                 isRecordingFeedbackShortcut = false
+                isRecordingDictationShortcut = false
                 shortcutError = nil
                 recordingTimeoutTask?.cancel()
 
@@ -1615,6 +1643,7 @@ public struct SettingsView: View {
     private static let recordingShortcutKey = "recordingShortcutConfig"
     private static let systemMonitorShortcutKey = "systemMonitorShortcutConfig"
     private static let feedbackShortcutKey = "feedbackShortcutConfig"
+    private static let dictationShortcutKey = "dictationShortcutConfig"
 
     private func loadSavedShortcuts() async {
         // Load directly from UserDefaults (same as OnboardingManager)
@@ -1638,9 +1667,13 @@ public struct SettingsView: View {
            let config = try? JSONDecoder().decode(ShortcutConfig.self, from: data) {
             feedbackShortcut = SettingsShortcutKey(from: config)
         }
+        if let data = settingsStore.data(forKey: Self.dictationShortcutKey),
+           let config = try? JSONDecoder().decode(ShortcutConfig.self, from: data) {
+            dictationShortcut = SettingsShortcutKey(from: config)
+        }
     }
 
-    private func saveShortcuts() async {
+    private func saveShortcuts(recordDictationChange: Bool = false) async {
         if let data = try? JSONEncoder().encode(timelineShortcut.toConfig) {
             settingsStore.set(data, forKey: Self.timelineShortcutKey)
         }
@@ -1656,8 +1689,55 @@ public struct SettingsView: View {
         if let data = try? JSONEncoder().encode(feedbackShortcut.toConfig) {
             settingsStore.set(data, forKey: Self.feedbackShortcutKey)
         }
+        if let data = try? JSONEncoder().encode(dictationShortcut.toConfig) {
+            settingsStore.set(data, forKey: Self.dictationShortcutKey)
+        }
         settingsStore.synchronize()
         MenuBarManager.shared?.reloadShortcuts()
+
+        if recordDictationChange {
+            let currentConfig = await coordinatorWrapper.coordinator.getDictationConfig()
+            await coordinatorWrapper.coordinator.updateDictationConfig(DictationConfig(
+                isEnabled: currentConfig.isEnabled,
+                shortcut: dictationShortcut.toConfig,
+                preRollSeconds: currentConfig.preRollSeconds,
+                postRollSeconds: currentConfig.postRollSeconds,
+                restoreClipboardDelaySeconds: currentConfig.restoreClipboardDelaySeconds,
+                insertionMethod: currentConfig.insertionMethod
+            ))
+        }
+    }
+
+    @ViewBuilder
+    private var aboutSupportCard: some View {
+        ModernSettingsCard(title: "About & Support", icon: "heart") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Retrace is the voice-first memory layer for your Mac.")
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Text("Project links and help now live here instead of taking space from the dashboard.")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary)
+
+                HStack(spacing: 12) {
+                    ModernButton(title: "@haseab", icon: "person.crop.circle", style: .secondary) {
+                        recordSettingsUtilityAction("creator_link")
+                        openExternalURL("https://dub.sh/haseab-twitter")
+                    }
+
+                    ModernButton(title: "Support Me", icon: "cup.and.saucer.fill", style: .secondary) {
+                        recordSettingsUtilityAction("support_link")
+                        openExternalURL("https://dub.sh/support-haseab")
+                    }
+
+                    ModernButton(title: "Help", icon: "questionmark.circle", style: .secondary) {
+                        recordSettingsUtilityAction("help")
+                        NotificationCenter.default.post(name: .openFeedback, object: nil)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Capture Settings
@@ -3835,6 +3915,7 @@ public struct SettingsView: View {
             cacheCard
             timelineCard
             developerCard
+            debugToolsCard
             dangerZoneCard
         }
     }
@@ -3956,6 +4037,45 @@ public struct SettingsView: View {
     }
 
     @ViewBuilder
+    private var debugToolsCard: some View {
+        #if DEBUG
+        ModernSettingsCard(title: "Debug Tools", icon: "ant") {
+            VStack(alignment: .leading, spacing: 12) {
+                ModernButton(title: "Show Launch on Login Banner", icon: "sparkles", style: .secondary) {
+                    recordSettingsUtilityAction("debug_show_launch_login_banner")
+                    launchOnLoginReminderManager?.shouldShowReminder = true
+                }
+                .disabled(launchOnLoginReminderManager == nil)
+
+                HStack(spacing: 10) {
+                    ModernButton(title: "Blue Theme", icon: "circle.fill", style: .secondary) {
+                        recordSettingsUtilityAction("debug_theme_blue")
+                        MilestoneCelebrationManager.setDebugThemeOverride(.blue)
+                    }
+
+                    ModernButton(title: "Gold Theme", icon: "circle.fill", style: .secondary) {
+                        recordSettingsUtilityAction("debug_theme_gold")
+                        MilestoneCelebrationManager.setDebugThemeOverride(.gold)
+                    }
+
+                    ModernButton(title: "Purple Theme", icon: "circle.fill", style: .secondary) {
+                        recordSettingsUtilityAction("debug_theme_purple")
+                        MilestoneCelebrationManager.setDebugThemeOverride(.purple)
+                    }
+
+                    ModernButton(title: "Reset Theme", icon: "arrow.counterclockwise", style: .secondary) {
+                        recordSettingsUtilityAction("debug_theme_reset")
+                        MilestoneCelebrationManager.setDebugThemeOverride(nil)
+                    }
+                }
+            }
+        }
+        #else
+        EmptyView()
+        #endif
+    }
+
+    @ViewBuilder
     private var dangerZoneCard: some View {
         ModernSettingsCard(title: "Danger Zone", icon: "exclamationmark.triangle", dangerous: true) {
             HStack(spacing: 12) {
@@ -3985,6 +4105,18 @@ public struct SettingsView: View {
         }
     }
 
+    private func openExternalURL(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func recordSettingsUtilityAction(_ action: String) {
+        DashboardViewModel.recordSettingsUtilityAction(
+            coordinator: coordinatorWrapper.coordinator,
+            action: action
+        )
+    }
+
     // MARK: - Settings Search Card Resolution
 
     // NOTE: Add a case here when creating a new settings card (must match the id from searchIndex)
@@ -3995,6 +4127,7 @@ public struct SettingsView: View {
         case "general.updates": updatesCard
         case "general.startup": startupCard
         case "general.appearance": appearanceCard
+        case "general.aboutSupport": aboutSupportCard
         case "capture.rate": captureRateCard
         case "capture.compression": compressionCard
         case "capture.pauseReminder": pauseReminderCard
@@ -4013,6 +4146,7 @@ public struct SettingsView: View {
         case "advanced.cache": cacheCard
         case "advanced.timeline": timelineCard
         case "advanced.developer": developerCard
+        case "advanced.debugTools": debugToolsCard
         case "advanced.dangerZone": dangerZoneCard
         default: EmptyView()
         }
@@ -6727,6 +6861,7 @@ extension SettingsView {
         recordingShortcut = SettingsShortcutKey(from: .defaultRecording)
         systemMonitorShortcut = SettingsShortcutKey(from: .defaultSystemMonitor)
         feedbackShortcut = SettingsShortcutKey(from: .defaultFeedback)
+        dictationShortcut = SettingsShortcutKey(from: .defaultDictation)
         Task { await saveShortcuts() }
 
         // Startup

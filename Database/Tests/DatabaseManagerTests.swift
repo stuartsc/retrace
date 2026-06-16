@@ -62,6 +62,59 @@ final class DatabaseManagerTests: XCTestCase {
         try await db.close()
     }
 
+    func testDashboardTabMetricRecordsRealDailyMetricEvent() async throws {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try await database.recordMetricEvent(
+            metricType: .dashboardTabSelected,
+            timestamp: timestamp,
+            metadata: "dictation"
+        )
+
+        let total = try await database.getDailyMetricCount(
+            metricType: .dashboardTabSelected,
+            from: timestamp,
+            to: timestamp
+        )
+        let dailyCounts = try await database.getDailyMetrics(
+            metricType: .dashboardTabSelected,
+            from: timestamp,
+            to: timestamp
+        )
+
+        XCTAssertEqual(total, 1)
+        XCTAssertEqual(dailyCounts.reduce(Int64(0)) { $0 + $1.value }, 1)
+    }
+
+    func testVoiceDashboardMetricsRecordRealDailyMetricEvents() async throws {
+        let timestamp = Date(timeIntervalSince1970: 1_700_100_000)
+        let metricTypes: [DailyMetricsQueries.MetricType] = [
+            .dashboardDefaultOpened,
+            .dashboardLoadFailed,
+            .settingsUtilityAction,
+            .dashboardTranscriptExpanded,
+            .dashboardTranscriptLoadOlder,
+            .dashboardLiveFrameSelected
+        ]
+
+        for metricType in metricTypes {
+            try await database.recordMetricEvent(
+                metricType: metricType,
+                timestamp: timestamp,
+                metadata: "test"
+            )
+        }
+
+        for metricType in metricTypes {
+            let total = try await database.getDailyMetricCount(
+                metricType: metricType,
+                from: timestamp,
+                to: timestamp
+            )
+            XCTAssertEqual(total, 1, "Expected one event for \(metricType.rawValue)")
+        }
+    }
+
     // ┌─────────────────────────────────────────────────────────────────────────┐
     // │ SEGMENT TESTS                                                           │
     // └─────────────────────────────────────────────────────────────────────────┘

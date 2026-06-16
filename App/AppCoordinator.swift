@@ -8,6 +8,47 @@ import Search
 import Migration
 import CoreGraphics
 
+enum AudioPipelineBufferPolicy {
+    static let bridgeSampleLimit = 12_000
+
+    static func makeStream(
+        limit: Int = bridgeSampleLimit
+    ) -> (stream: AsyncStream<CapturedAudio>, continuation: AsyncStream<CapturedAudio>.Continuation) {
+        AsyncStream<CapturedAudio>.makeStream(
+            of: CapturedAudio.self,
+            bufferingPolicy: .bufferingNewest(limit)
+        )
+    }
+}
+
+enum PipelineStopReason: Sendable {
+    case normal
+    case unexpectedScreenCaptureStop
+}
+
+struct PipelineStopTeardownPlan: Equatable, Sendable {
+    let stopScreenCapture: Bool
+    let stopAudioCapture: Bool
+    let cancelPipelineTasks: Bool
+    let cancelRefinementLoop: Bool
+    let persistStoppedRecordingState: Bool
+}
+
+enum PipelineStopTeardownPolicy {
+    static func plan(
+        for reason: PipelineStopReason,
+        persistState: Bool
+    ) -> PipelineStopTeardownPlan {
+        PipelineStopTeardownPlan(
+            stopScreenCapture: reason != .unexpectedScreenCaptureStop,
+            stopAudioCapture: true,
+            cancelPipelineTasks: true,
+            cancelRefinementLoop: true,
+            persistStoppedRecordingState: persistState
+        )
+    }
+}
+
 // MARK: - OCR Power Settings Notifications
 
 public enum OCRPowerSettingsNotification {
@@ -147,6 +188,32 @@ public final class PipelineStatusHolder: @unchecked Sendable {
 /// Implements the core data pipeline: Capture → Storage → Processing → Database → Search
 /// Owner: APP integration
 public actor AppCoordinator {
+    static func shouldStartAutomaticRefinementLoop(
+        defaultsValue: Bool?,
+        environmentValue: String?
+    ) -> Bool {
+        if let environmentValue {
+            switch environmentValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "1", "true", "yes", "on":
+                return true
+            case "0", "false", "no", "off":
+                return false
+            default:
+                break
+            }
+        }
+
+        return defaultsValue ?? false
+    }
+
+    private static func shouldStartAutomaticRefinementLoop() -> Bool {
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        return shouldStartAutomaticRefinementLoop(
+            defaultsValue: defaults.object(forKey: "automaticAudioRefinementEnabled") as? Bool,
+            environmentValue: ProcessInfo.processInfo.environment["RETRACE_AUTOMATIC_REFINEMENT_LOOP"]
+        )
+    }
+
     public struct SegmentCommentCreateResult: Sendable {
         public let comment: SegmentComment
         public let linkedSegmentIDs: [SegmentID]
@@ -171,6 +238,7 @@ public actor AppCoordinator {
     private let services: ServiceContainer
     private var captureTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
+    private var refinementLoopTask: Task<Void, Never>?
     private var isRunning = false
 
     // Statistics
@@ -240,9 +308,180 @@ public actor AppCoordinator {
         await services.audioBackfill
     }
 
+    /// Status of a refinement run
+    public struct RefinementRunStatus: Sendable {
+        public let backfillProcessed: Int
+        public let pass2Refined: Int
+        public let pass3Refined: Int
+        public let totalSentencesAffected: Int
+    }
+
+    public struct AudioHistoryRepairStatus: Sendable {
+        public let markedForRepair: Int
+        public let backfillProcessed: Int
+        public let pass2Refined: Int
+        public let pass3Refined: Int
+        public let totalSentencesAffected: Int
+    }
+
+    /// Manually trigger a full refinement cycle now (ignores schedule).
+    /// Safe to call multiple times — individual managers have isRunning guards.
+    public func triggerRefinementNow() async -> RefinementRunStatus {
+        Log.info("[AppCoordinator] Manual refinement triggered", category: .app)
+
+        var backfillProcessed = 0
+        var pass2Refined = 0
+        var pass3Refined = 0
+        var totalSentences = 0
+
+        if let backfill = await services.audioBackfill {
+            let result = await backfill.processAllPendingBatches()
+            backfillProcessed = result.processedCount
+            totalSentences += result.totalSentences
+            Log.info("[AppCoordinator] Manual backfill: \(result.processedCount) transcribed, \(result.totalSentences) sentences", category: .app)
+        }
+
+        if let refinement = await services.audioRefinement {
+            let result = await refinement.processAllPendingRefinements()
+            pass2Refined = result.refinedCount
+            totalSentences += result.totalSentences
+            Log.info("[AppCoordinator] Manual pass-2: \(result.refinedCount) refined", category: .app)
+        }
+
+        if let contextual = await services.audioContextualRefinement {
+            let result = await contextual.processAllPendingRefinements(runMode: .manual)
+            pass3Refined = result.refinedCount
+            totalSentences += result.totalSentences
+            Log.info("[AppCoordinator] Manual pass-3: \(result.refinedCount) refined", category: .app)
+        }
+
+        return RefinementRunStatus(
+            backfillProcessed: backfillProcessed,
+            pass2Refined: pass2Refined,
+            pass3Refined: pass3Refined,
+            totalSentencesAffected: totalSentences
+        )
+    }
+
+    /// Mark historical placeholder batches in a bounded range as pending, then run the full
+    /// repair/refinement cycle. This replaces ad-hoc DB resets for old [silence]/[hallucination] rows.
+    public func repairAudioHistory(from startDate: Date, to endDate: Date, limit: Int = 500) async -> AudioHistoryRepairStatus {
+        let metadata = "from=\(Int(startDate.timeIntervalSince1970));to=\(Int(endDate.timeIntervalSince1970));limit=\(limit)"
+        try? await recordMetricEvent(metricType: .audioHistoryRepairStarted, metadata: metadata)
+
+        var markedForRepair = 0
+        if let db = await services.database.getConnection() {
+            let queries = AudioTranscriptionQueries(db: db)
+            do {
+                markedForRepair = try await queries.markHistoricalPlaceholdersPendingForRepair(
+                    from: startDate,
+                    to: endDate,
+                    limit: limit
+                )
+                Log.info("[AppCoordinator] Audio history repair marked \(markedForRepair) batch(es)", category: .app)
+            } catch {
+                Log.error("[AppCoordinator] Audio history repair marking failed", category: .app, error: error)
+            }
+        }
+
+        let refinement = await triggerRefinementNow()
+        let result = AudioHistoryRepairStatus(
+            markedForRepair: markedForRepair,
+            backfillProcessed: refinement.backfillProcessed,
+            pass2Refined: refinement.pass2Refined,
+            pass3Refined: refinement.pass3Refined,
+            totalSentencesAffected: refinement.totalSentencesAffected
+        )
+
+        let completionMetadata = "\(metadata);marked=\(markedForRepair);backfill=\(result.backfillProcessed);pass2=\(result.pass2Refined);pass3=\(result.pass3Refined);sentences=\(result.totalSentencesAffected)"
+        try? await recordMetricEvent(metricType: .audioHistoryRepairCompleted, metadata: completionMetadata)
+        return result
+    }
+
     public func getAudioTranscriptionQueries() async -> AudioTranscriptionQueries? {
         guard let db = await services.database.getConnection() else { return nil }
         return AudioTranscriptionQueries(db: db)
+    }
+
+    // MARK: - Dictation
+
+    @discardableResult
+    public func beginDictation() async -> UUID {
+        let context = await MainActor.run {
+            DictationTargetContextProvider.current()
+        }
+        let id = await services.dictation.beginDictation(targetContext: context)
+        try? await recordMetricEvent(metricType: .dictationStarted, metadata: context?.bundleID)
+        return id
+    }
+
+    public func endDictation() async -> DictationSession? {
+        do {
+            let context = await MainActor.run {
+                DictationTargetContextProvider.current()
+            }
+            let session = try await services.dictation.endDictation(
+                currentTargetContext: context,
+                validateInsertionTarget: true
+            )
+            try? await recordMetricEvent(metricType: .dictationCompleted, metadata: session.status.rawValue)
+
+            switch session.status {
+            case .inserted:
+                let metadata = [
+                    session.targetContext?.bundleID,
+                    session.targetContext?.appName
+                ].compactMap { $0 }.joined(separator: "|")
+                try? await recordMetricEvent(metricType: .dictationInserted, metadata: metadata.isEmpty ? nil : metadata)
+            case .cancelled:
+                try? await recordMetricEvent(metricType: .dictationCancelled)
+            case .failed, .blockedSecureInput, .blockedFocusChanged:
+                try? await recordMetricEvent(
+                    metricType: .dictationFailed,
+                    metadata: session.errorMessage ?? session.status.rawValue
+                )
+            case .capturing, .transcribing, .empty:
+                break
+            }
+
+            return session
+        } catch {
+            try? await recordMetricEvent(metricType: .dictationFailed, metadata: error.localizedDescription)
+            Log.error("[AppCoordinator] Dictation end failed", category: .app, error: error)
+            return nil
+        }
+    }
+
+    public func getRecentDictationSessions(limit: Int = 10, offset: Int = 0) async throws -> [DictationSession] {
+        guard let db = await services.database.getConnection() else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+        return try await DictationSessionQueries(db: db).getRecentSessions(limit: limit, offset: offset)
+    }
+
+    public func getDictationConfig() async -> DictationConfig {
+        let config = await services.dictation.getConfig()
+        let persistedShortcut = await services.onboardingManager.dictationShortcut
+        guard config.shortcut != persistedShortcut else {
+            return config
+        }
+
+        let mergedConfig = DictationConfig(
+            isEnabled: config.isEnabled,
+            shortcut: persistedShortcut,
+            preRollSeconds: config.preRollSeconds,
+            postRollSeconds: config.postRollSeconds,
+            restoreClipboardDelaySeconds: config.restoreClipboardDelaySeconds,
+            insertionMethod: config.insertionMethod
+        )
+        await services.dictation.updateConfig(mergedConfig)
+        return mergedConfig
+    }
+
+    public func updateDictationConfig(_ config: DictationConfig) async {
+        await services.dictation.updateConfig(config)
+        await services.onboardingManager.setDictationShortcut(config.shortcut)
+        try? await recordMetricEvent(metricType: .dictationSettingsChanged, metadata: config.shortcut.displayString)
     }
 
     /// Get current capture configuration
@@ -454,6 +693,9 @@ public actor AppCoordinator {
 
         Log.info("Starting capture pipeline...", category: .app)
 
+        // Ensure whisper model is available (downloads if needed, then upgrades transcription service)
+        await ensureWhisperModel()
+
         // Check permissions first
         guard await services.capture.hasPermission() else {
             Log.error("Screen recording permission not granted", category: .app)
@@ -492,14 +734,64 @@ public actor AppCoordinator {
             await runAudioPipeline()
         }
 
-        // Backfill: transcribe any saved batch audio files from previous sessions
-        if let backfill = await services.audioBackfill {
-            Task {
-                let result = await backfill.processAllPendingBatches()
-                if result.processedCount > 0 || result.silenceCount > 0 {
-                    Log.info("Audio backfill complete: \(result.processedCount) transcribed, \(result.silenceCount) silence, \(result.totalSentences) sentences", category: .app)
+        if Self.shouldStartAutomaticRefinementLoop() {
+            // Continuous refinement pipeline: backfill -> pass-2 -> pass-3, looping every 10 minutes.
+            refinementLoopTask?.cancel()
+            refinementLoopTask = Task.detached(priority: .background) { [services] in
+                let cycleInterval: Duration = .seconds(10 * 60)
+
+                // ONCE: Reset records from older pipeline versions so they get re-refined with current logic
+                if let db = await services.database.getConnection() {
+                    let queries = AudioTranscriptionQueries(db: db)
+                    do {
+                        let staleCount = try await queries.countStalePipelineRecords()
+                        if staleCount > 0 {
+                            Log.info("Pipeline version check: \(staleCount) records from older pipeline version - resetting for re-processing", category: .app)
+                            let result = try await queries.resetStalePipelineRecords()
+                            Log.info("Pipeline version reset: \(result.resetCount) sentences reset to pass-1, \(result.resetWords) stale words reset", category: .app)
+                        } else {
+                            Log.debug("Pipeline version check: all records up to date", category: .app)
+                        }
+                    } catch {
+                        Log.warning("Pipeline version check failed: \(error)", category: .app)
+                    }
                 }
+
+                while !Task.isCancelled {
+                    if let backfill = await services.audioBackfill {
+                        let result = await backfill.processAllPendingBatches()
+                        if result.processedCount > 0 || result.silenceCount > 0 {
+                            Log.info("Audio backfill complete: \(result.processedCount) transcribed, \(result.silenceCount) silence, \(result.totalSentences) sentences", category: .app)
+                        }
+                    }
+                    if Task.isCancelled { break }
+
+                    // Pass-2 refinement with turbo model.
+                    if let refinement = await services.audioRefinement {
+                        let result = await refinement.processAllPendingRefinements()
+                        if result.refinedCount > 0 {
+                            Log.info("Audio refinement (pass-2) complete: \(result.refinedCount) refined, \(result.totalSentences) sentences", category: .app)
+                        }
+                    }
+                    if Task.isCancelled { break }
+
+                    // Pass-3 contextual refinement (has internal idle gating).
+                    if let contextual = await services.audioContextualRefinement {
+                        let result = await contextual.processAllPendingRefinements()
+                        if result.refinedCount > 0 {
+                            Log.info("Contextual refinement (pass-3) complete: \(result.refinedCount) refined, \(result.totalSentences) sentences", category: .app)
+                        }
+                    }
+                    if Task.isCancelled { break }
+
+                    try? await Task.sleep(for: cycleInterval, clock: .continuous)
+                }
+                Log.info("Refinement loop stopped", category: .app)
             }
+        } else {
+            refinementLoopTask?.cancel()
+            refinementLoopTask = nil
+            Log.info("Automatic audio refinement loop disabled; use manual refinement to reprocess historical audio", category: .app)
         }
 
         // Save recording state for persistence across restarts
@@ -521,11 +813,19 @@ public actor AppCoordinator {
     /// - Parameter persistState: If true, saves recording state as stopped. Set to false during shutdown
     ///   so the app remembers recording was active and auto-starts on next launch.
     public func stopPipeline(persistState: Bool = true) async throws {
+        try await stopPipeline(persistState: persistState, reason: .normal)
+    }
+
+    private func stopPipeline(
+        persistState: Bool,
+        reason: PipelineStopReason
+    ) async throws {
         guard isRunning else {
             Log.warning("Pipeline not running", category: .app)
             return
         }
 
+        let stopPlan = PipelineStopTeardownPolicy.plan(for: reason, persistState: persistState)
         Log.info("Stopping capture pipeline...", category: .app)
 
         // Stop permission monitoring
@@ -536,20 +836,30 @@ public actor AppCoordinator {
         stopStorageHealthNotifications()
 
         // Stop screen capture
-        try await services.capture.stopCapture()
+        if stopPlan.stopScreenCapture {
+            try await services.capture.stopCapture()
+        }
 
         // Stop audio capture
-        do {
-            try await services.audioCapture.stopCapture()
-        } catch {
-            Log.warning("Audio capture stop failed: \(error)", category: .app)
+        if stopPlan.stopAudioCapture {
+            do {
+                try await services.audioCapture.stopCapture()
+            } catch {
+                Log.warning("Audio capture stop failed: \(error)", category: .app)
+            }
         }
 
         // Cancel pipeline tasks
-        captureTask?.cancel()
-        captureTask = nil
-        audioTask?.cancel()
-        audioTask = nil
+        if stopPlan.cancelPipelineTasks {
+            captureTask?.cancel()
+            captureTask = nil
+            audioTask?.cancel()
+            audioTask = nil
+        }
+        if stopPlan.cancelRefinementLoop {
+            refinementLoopTask?.cancel()
+            refinementLoopTask = nil
+        }
 
         // Wait for processing queue to drain
         await services.processing.waitForQueueDrain()
@@ -560,11 +870,58 @@ public actor AppCoordinator {
 
         // Only save recording state as stopped if explicitly requested (user clicked stop)
         // During shutdown, we want to preserve the "recording" state so it auto-starts next launch
-        if persistState {
+        if stopPlan.persistStoppedRecordingState {
             saveRecordingState(false)
         }
 
         Log.info("Capture pipeline stopped successfully", category: .app)
+    }
+
+    // MARK: - Whisper Model Management
+
+    /// Ensure the whisper model is downloaded; if not, download it and upgrade from mock to real transcription
+    private func ensureWhisperModel() async {
+        // Check if model already exists
+        if let _ = await services.modelManager.getWhisperModelPath() {
+            // Model exists — upgrade transcription service if still using mock
+            do {
+                try await services.upgradeToRealTranscription()
+            } catch {
+                Log.warning("[AppCoordinator] Failed to upgrade transcription service: \(error)", category: .app)
+            }
+        } else {
+            // Model missing — download it
+            Log.info("[AppCoordinator] Whisper model not found, downloading (~465MB)...", category: .app)
+            do {
+                let _ = try await services.modelManager.downloadModel(ModelManager.whisperModel) { progress in
+                    Log.debug("[AppCoordinator] Whisper download: \(Int(progress.percentage))%", category: .app)
+                }
+                Log.info("[AppCoordinator] Whisper model downloaded successfully", category: .app)
+                try await services.upgradeToRealTranscription()
+            } catch {
+                Log.warning("[AppCoordinator] Failed to download whisper model (audio will be recorded but not transcribed): \(error)", category: .app)
+            }
+        }
+
+        // Download turbo model in background for pass-2 refinement (non-blocking)
+        if await services.modelManager.getWhisperTurboModelPath() == nil {
+            Task {
+                Log.info("[AppCoordinator] Whisper turbo model not found, downloading (~1.6GB) in background...", category: .app)
+                do {
+                    let _ = try await services.modelManager.downloadModel(ModelManager.whisperTurboModel) { progress in
+                        if Int(progress.percentage) % 10 == 0 {
+                            Log.debug("[AppCoordinator] Whisper turbo download: \(Int(progress.percentage))%", category: .app)
+                        }
+                    }
+                    Log.info("[AppCoordinator] Whisper turbo model downloaded successfully", category: .app)
+                    if try await services.installAudioRefinementManagersIfAvailable() {
+                        Log.info("[AppCoordinator] Audio refinement managers installed after turbo download", category: .app)
+                    }
+                } catch {
+                    Log.warning("[AppCoordinator] Failed to download turbo model (refinement will not be available): \(error)", category: .app)
+                }
+            }
+        }
     }
 
     // MARK: - Storage Health Notifications
@@ -669,26 +1026,28 @@ public actor AppCoordinator {
         let powerSource = PowerStateMonitor.shared.getCurrentPowerSource()
         let isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
 
-        // Derive priority, FPS limit, and worker count from processing level
-        // Level 1: Efficiency  - background, 0.5 FPS, 1 worker
-        // Level 2: Light       - background, no limit, 2 workers
-        // Level 3: Balanced    - utility, no limit, 1 worker
-        // Level 4: Performance - medium, no limit, 1 worker
-        // Level 5: Max         - high, no limit, 2 workers
+        // Derive priority and OCR backfill rate from processing level.
+        // Keep this single-worker by default: OCR is durable backlog work, while
+        // capture/audio/dictation must remain responsive and memory-bounded.
+        // Level 1: Efficiency  - background, 0.25 FPS, 1 worker
+        // Level 2: Light       - background, 0.5 FPS, 1 worker
+        // Level 3: Balanced    - utility, 1 FPS, 1 worker
+        // Level 4: Performance - medium, 1.5 FPS, 1 worker
+        // Level 5: Max         - high, 2 FPS, 1 worker
         let taskPriority: TaskPriority
         let maxFPS: Double
         let workerCount: Int
         switch processingLevel {
         case 1:
-            taskPriority = .background; maxFPS = 0.5; workerCount = 1
+            taskPriority = .background; maxFPS = 0.25; workerCount = 1
         case 2:
-            taskPriority = .background; maxFPS = 0; workerCount = 2
+            taskPriority = .background; maxFPS = 0.5; workerCount = 1
         case 4:
-            taskPriority = .medium; maxFPS = 0; workerCount = 1
+            taskPriority = .medium; maxFPS = 1.5; workerCount = 1
         case 5:
-            taskPriority = .high; maxFPS = 0; workerCount = 2
+            taskPriority = .high; maxFPS = 2.0; workerCount = 1
         default: // 3 = Balanced (default)
-            taskPriority = .utility; maxFPS = 0; workerCount = 1
+            taskPriority = .utility; maxFPS = 1.0; workerCount = 1
         }
 
         // Update processing config - always prefer background processing for VNRecognizeTextRequest
@@ -735,16 +1094,12 @@ public actor AppCoordinator {
 
         Log.info("Capture stopped unexpectedly, cleaning up pipeline...", category: .app)
 
-        // Cancel pipeline tasks
-        captureTask?.cancel()
-        captureTask = nil
-
-        // Wait for processing queue to drain
-        await services.processing.waitForQueueDrain()
-
-        isRunning = false
-        statusHolder.update(isRunning: false)
-        Log.info("Pipeline cleanup complete after unexpected stop", category: .app)
+        do {
+            try await stopPipeline(persistState: true, reason: .unexpectedScreenCaptureStop)
+            Log.info("Pipeline cleanup complete after unexpected stop", category: .app)
+        } catch {
+            Log.error("Pipeline cleanup failed after unexpected stop: \(error)", category: .app)
+        }
     }
 
     // MARK: - Storage Health (delegated to StorageHealthMonitor)
@@ -1485,10 +1840,24 @@ public actor AppCoordinator {
         Log.info("Audio pipeline processing started", category: .app)
 
         // Get the audio stream from capture
-        let audioStream = await services.audioCapture.audioStream
+        let sourceAudioStream = await services.audioCapture.audioStream
+        let dictationManager = services.dictation
+        let (audioStream, continuation) = AudioPipelineBufferPolicy.makeStream()
+        let bridgeTask = Task {
+            for await audio in sourceAudioStream {
+                if Task.isCancelled { break }
+                await dictationManager.ingest(audio)
+                continuation.yield(audio)
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { @Sendable _ in
+            bridgeTask.cancel()
+        }
 
         // Start processing the stream (this will run until the stream ends)
         await services.audioProcessing.startProcessing(audioStream: audioStream)
+        bridgeTask.cancel()
 
         Log.info("Audio pipeline processing completed", category: .app)
     }

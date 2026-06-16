@@ -1,8 +1,8 @@
 # PROCESSING Agent Instructions
 
-You are responsible for the **Processing** module of Retrace. Your job is to implement text extraction from captured frames using Vision framework OCR and the Accessibility API.
+You are responsible for the **Processing** module of Retrace. Your job is to implement text extraction from captured frames using Vision framework OCR and the Accessibility API, plus local audio transcription/refinement.
 
-**Status**: ✅ Vision OCR and Accessibility API fully implemented. **No audio transcription yet** (planned for future release).
+**Status**: ✅ Vision OCR and Accessibility API fully implemented. Audio transcription is implemented with whisper.cpp integration, buffering, sentence segmentation, recall-first quality policy, enhancement retry, backfill, and contextual refinement.
 
 ## Your Directory
 
@@ -19,10 +19,28 @@ Processing/
 ├── TextMerger/
 │   ├── TextMerger.swift            # Combine OCR + AX results
 │   └── DeduplicationFilter.swift   # Remove duplicate text
+├── Audio/
+│   ├── AudioBackfillManager.swift  # Finds and processes untranscribed audio
+│   ├── AudioBufferManager.swift    # Buffers captured audio for batching
+│   ├── AudioContextualRefinementManager.swift # Context-aware transcript refinement
+│   ├── AudioEnhancer.swift         # Non-destructive audio normalization/boost retry variants
+│   ├── AudioProcessingManager.swift # Transcription pipeline coordinator
+│   ├── AudioRefinementManager.swift # Audio transcript refinement pass
+│   ├── AudioSpeechActivityPolicy.swift # Speech/silence metadata classifier; only empty audio is skipped
+│   ├── AudioTranscriptQualityPolicy.swift # Recall-first transcript quality/status classification
+│   ├── AudioTranscriptionRetryPipeline.swift # Enhancement + language-hint retry coordinator
+│   ├── MockTranscriptionService.swift # Test/dev transcription stub
+│   ├── SentenceSegmenter.swift     # Transcript sentence segmentation
+│   └── WhisperCppTranscriptionService.swift # whisper.cpp bridge
 ├── Queue/
 │   ├── ProcessingQueue.swift       # Background processing queue
 │   └── FrameProcessor.swift        # Single frame processor
 └── Tests/
+    ├── AudioEnhancementPolicyTests.swift
+    ├── AudioProcessingBackpressureTests.swift
+    ├── AudioRefinementSchedulingPolicyTests.swift
+    ├── AudioSpeechActivityPolicyTests.swift
+    ├── AudioTranscriptionCompletenessPolicyTests.swift
     ├── VisionOCRTests.swift
     ├── AccessibilityTests.swift
     └── TextMergerTests.swift

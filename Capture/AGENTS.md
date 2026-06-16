@@ -1,8 +1,8 @@
 # CAPTURE Agent Instructions
 
-You are responsible for the **Capture** module of Retrace. Your job is to implement screen capture using **CGWindowListCapture**, frame deduplication, and app metadata extraction.
+You are responsible for the **Capture** module of Retrace. Your job is to implement screen capture using **CGWindowListCapture**, frame deduplication, app metadata extraction, and local microphone/system audio capture.
 
-**Status**: ✅ Fully implemented using CGWindowListCapture API (legacy, no privacy indicator). No audio capture yet.
+**Status**: ✅ Screen capture fully implemented using CGWindowListCapture API (legacy, no privacy indicator). Audio capture is implemented for microphone and system audio, with user consent handling and meeting detection.
 
 ## Your Directory
 
@@ -21,8 +21,16 @@ Capture/
 ├── Metadata/
 │   ├── AppInfoProvider.swift      # Get active app info via NSWorkspace
 │   └── BrowserURLExtractor.swift  # Extract URL from browsers (AX API)
+├── Audio/
+│   ├── AudioCaptureManager.swift  # Dual-source audio capture coordinator
+│   ├── AudioFormatConverter.swift # PCM conversion helpers
+│   ├── ConsentDialogHelper.swift  # Audio recording consent dialog helpers
+│   ├── MeetingDetector.swift      # Meeting-app detection
+│   ├── MicrophoneAudioCapture.swift # Microphone capture
+│   └── SystemAudioCapture.swift   # System audio capture
 └── Tests/
     ├── AccessibilityInspectorTest.swift
+    ├── AudioStreamBufferingPolicyTests.swift
     ├── BrowserURLAppleScriptCoordinatorTests.swift
     └── DeduplicationTests.swift
 ```
@@ -453,7 +461,7 @@ throw CaptureError.captureSessionFailed(underlying: error.localizedDescription)
 - ❌ Handle video encoding (that's STORAGE's job)
 - ❌ Handle OCR or text extraction (that's PROCESSING's job)
 - ❌ Store frames to disk (that's STORAGE's job)
-- ❌ Implement audio capture (planned for future release)
+- ❌ Transcribe audio (that's PROCESSING's job)
 
 ## Performance Targets
 
@@ -465,7 +473,6 @@ throw CaptureError.captureSessionFailed(underlying: error.localizedDescription)
 
 ## Current Limitations
 
-- No audio capture (planned for future release)
 - CGWindowListCapture has no streaming API (polling only)
 - Limited private window detection (heuristic-based)
 - No multi-display support optimizations

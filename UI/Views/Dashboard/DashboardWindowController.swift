@@ -4,10 +4,10 @@ import App
 import Shared
 
 private enum DashboardWindowSizing {
-    static let defaultWidth: CGFloat = 1000
-    static let defaultHeight: CGFloat = 700
-    static let minWidth: CGFloat = 760
-    static let minHeight: CGFloat = 700
+    static let defaultWidth = DashboardVoiceLayoutPolicy.defaultWindowWidth
+    static let defaultHeight = DashboardVoiceLayoutPolicy.defaultWindowHeight
+    static let minWidth = DashboardVoiceLayoutPolicy.minWindowWidth
+    static let minHeight = DashboardVoiceLayoutPolicy.minWindowHeight
 }
 
 /// Manages the dashboard window as an on-demand window
@@ -266,9 +266,6 @@ struct DashboardContentView: View {
     /// Manager for launch on login reminder
     @StateObject private var launchOnLoginReminderManager: LaunchOnLoginReminderManager
 
-    /// Manager for milestone celebrations
-    @StateObject private var milestoneCelebrationManager: MilestoneCelebrationManager
-
     /// Dashboard view model - hoisted here so it persists across tab switches
     @StateObject private var dashboardViewModel: DashboardViewModel
 
@@ -286,7 +283,6 @@ struct DashboardContentView: View {
         self.coordinator = coordinator
         self._coordinatorWrapper = StateObject(wrappedValue: AppCoordinatorWrapper(coordinator: coordinator))
         self._launchOnLoginReminderManager = StateObject(wrappedValue: LaunchOnLoginReminderManager(coordinator: coordinator))
-        self._milestoneCelebrationManager = StateObject(wrappedValue: MilestoneCelebrationManager(coordinator: coordinator))
         self._dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(coordinator: coordinator))
     }
 
@@ -473,14 +469,14 @@ struct DashboardContentView: View {
                 viewModel: dashboardViewModel,
                 coordinator: coordinator,
                 launchOnLoginReminderManager: launchOnLoginReminderManager,
-                milestoneCelebrationManager: milestoneCelebrationManager,
                 hasLoadedInitialData: $hasLoadedDashboard
             )
 
         case .settings:
             SettingsView(
                 initialTab: initialSettingsTab,
-                initialScrollTargetID: initialSettingsScrollTargetID
+                initialScrollTargetID: initialSettingsScrollTargetID,
+                launchOnLoginReminderManager: launchOnLoginReminderManager
             )
             .environmentObject(coordinatorWrapper)
             .onDisappear {
