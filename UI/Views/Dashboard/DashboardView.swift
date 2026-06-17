@@ -79,7 +79,9 @@ public struct DashboardView: View {
     @State private var isLoadingMoreDictationSessions = false
     @State private var canLoadMoreDictationSessions = true
     @State private var expandedDictationSessionIDs: Set<UUID> = []
+    @State private var liveAudioRawRows: [DashboardLiveAudioRow] = []
     @State private var liveAudioRows: [DashboardLiveAudioRow] = []
+    @State private var liveAudioStatusRows: [DashboardLiveAudioRow] = []
     @State private var liveAudioError: String?
     @State private var isLoadingLiveAudio = false
     @State private var isLoadingMoreLiveAudio = false
@@ -1481,12 +1483,19 @@ public struct DashboardView: View {
                 .font(.retraceCaption2)
                 .foregroundColor(.retraceSecondary)
 
+            if !liveAudioStatusRows.isEmpty {
+                liveAudioStatusPanel
+            }
+
             if let liveAudioError {
                 Text(liveAudioError)
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.retraceWarning)
             } else if liveAudioRows.isEmpty {
-                Text("No continuous transcript yet.")
+                Text(liveAudioStatusRows.isEmpty
+                    ? "No continuous transcript yet."
+                    : "No readable transcript yet. First-pass speech will appear here as soon as words are decoded."
+                )
                     .font(.retraceCaptionMedium)
                     .foregroundColor(.retraceSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1502,7 +1511,15 @@ public struct DashboardView: View {
                         }
 
                         if canLoadMoreLiveAudioRows {
-                            loadOlderFooter(isLoading: isLoadingMoreLiveAudio)
+                            Button {
+                                Task { await loadMoreLiveAudioRows() }
+                            } label: {
+                                loadOlderFooter(
+                                    isLoading: isLoadingMoreLiveAudio,
+                                    idleText: "Scroll or click for older entries"
+                                )
+                            }
+                            .buttonStyle(.plain)
                                 .onAppear {
                                     Task { await loadMoreLiveAudioRows() }
                                 }
@@ -1758,14 +1775,14 @@ public struct DashboardView: View {
         }
     }
 
-    private func loadOlderFooter(isLoading: Bool) -> some View {
+    private func loadOlderFooter(isLoading: Bool, idleText: String = "Scroll for older entries") -> some View {
         HStack(spacing: 8) {
             if isLoading {
                 ProgressView()
                     .scaleEffect(0.55)
             }
 
-            Text(isLoading ? "Loading older entries..." : "Scroll for older entries")
+            Text(isLoading ? "Loading older entries..." : idleText)
                 .font(.retraceCaption2Medium)
                 .foregroundColor(.retraceSecondary.opacity(0.75))
         }
@@ -1780,6 +1797,107 @@ public struct DashboardView: View {
         } else {
             liveAudioTranscriptRow(row)
         }
+    }
+
+    private var liveAudioStatusPanel: some View {
+        let totalBatches = liveAudioStatusRows.reduce(0) { $0 + max($1.pendingBatchCount, 1) }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceWarning)
+
+                Text("Capture status")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Spacer(minLength: 0)
+
+                Text(totalBatches == 1 ? "1 batch" : "\(totalBatches) batches")
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retraceSecondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.055))
+                    .clipShape(Capsule())
+            }
+
+            Text("First-pass transcripts stay in the feed. Repair and catch-up state is tracked here.")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(liveAudioStatusRows.prefix(3))) { row in
+                    liveAudioStatusSummaryRow(row)
+                }
+
+                if liveAudioStatusRows.count > 3 {
+                    Text("+\(liveAudioStatusRows.count - 3) more status groups")
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary.opacity(0.8))
+                }
+            }
+        }
+        .padding(10)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.retraceWarning.opacity(0.08),
+                    Color.white.opacity(0.028)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.retraceWarning.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func liveAudioStatusSummaryRow(_ row: DashboardLiveAudioRow) -> some View {
+        let accent = row.isPendingSummary
+            ? Color.retraceAccent
+            : (row.isLowConfidenceSummary ? Color.retraceWarning : Color.retraceSecondary)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: summaryIconName(for: row))
+                .font(.retraceCaption2Medium)
+                .foregroundColor(accent)
+                .frame(width: 16, height: 16)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(summaryTitle(for: row))
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retracePrimary)
+
+                    Text(row.startedAt, style: .time)
+                        .font(.retraceCaption2)
+                        .foregroundColor(.retraceSecondary.opacity(0.8))
+                }
+
+                Text(statusSummaryDescription(for: row))
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(row.pendingBatchCount == 1 ? "1" : "\(row.pendingBatchCount)")
+                .font(.retraceCaption2Medium)
+                .foregroundColor(accent)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(accent.opacity(0.12))
+                .clipShape(Capsule())
+        }
+        .padding(8)
+        .background(Color.white.opacity(0.028))
+        .cornerRadius(9)
     }
 
     private func liveAudioPendingSummaryRow(_ row: DashboardLiveAudioRow) -> some View {
@@ -1853,12 +1971,22 @@ public struct DashboardView: View {
 
     private func summaryTitle(for row: DashboardLiveAudioRow) -> String {
         if row.isLowConfidenceSummary {
-            return "Audio under repair"
+            return "Repair queue"
         }
         if row.isPendingSummary {
-            return "Signal queue"
+            return "Transcribing"
         }
-        return "Repeated audio status"
+        return "Capture notice"
+    }
+
+    private func statusSummaryDescription(for row: DashboardLiveAudioRow) -> String {
+        if row.isLowConfidenceSummary {
+            return "Uncertain audio is preserved for repair; useful first-pass text remains in the feed."
+        }
+        if row.isPendingSummary {
+            return "Captured audio is decoding now."
+        }
+        return DashboardLiveAudioRow.statusText(status: row.transcriptStatus, qualityFlags: row.qualityFlags)
     }
 
     private func summaryIconName(for row: DashboardLiveAudioRow) -> String {
@@ -1884,7 +2012,15 @@ public struct DashboardView: View {
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.retraceAccent)
 
-                if !row.hasTranscriptText {
+                if row.isRepairingTranscript {
+                    Text("First pass")
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceWarning)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.retraceWarning.opacity(0.12))
+                        .clipShape(Capsule())
+                } else if !row.hasTranscriptText {
                     Text(row.statusBadgeText)
                         .font(.retraceCaption2Medium)
                         .foregroundColor(.retraceSecondary)
@@ -1904,11 +2040,16 @@ public struct DashboardView: View {
                 .textSelection(.enabled)
         }
         .padding(10)
-        .background(Color.white.opacity(0.035))
+        .background(row.isRepairingTranscript ? Color.retraceWarning.opacity(0.045) : Color.white.opacity(0.035))
         .cornerRadius(10)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isExpanded ? Color.retraceAccent.opacity(0.45) : Color.clear, lineWidth: 1)
+                .stroke(
+                    isExpanded
+                        ? Color.retraceAccent.opacity(0.45)
+                        : (row.isRepairingTranscript ? Color.retraceWarning.opacity(0.18) : Color.clear),
+                    lineWidth: 1
+                )
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -2164,13 +2305,14 @@ public struct DashboardView: View {
 
         do {
             guard let queries = await coordinatorWrapper.coordinator.getAudioTranscriptionQueries() else {
+                liveAudioRawRows = []
                 liveAudioRows = []
+                liveAudioStatusRows = []
                 liveAudioTranscriptOffset = 0
                 liveAudioError = "Transcript store is not available"
                 return
             }
 
-            let rows: [DashboardLiveAudioRow]
             let canLoadMore: Bool
             if reset {
                 let activityRows = try await fetchLiveAudioRows(
@@ -2185,7 +2327,8 @@ public struct DashboardView: View {
                     offset: 0,
                     includeActivityRows: false
                 )
-                rows = liveAudioRowsForPresentation(activityRows + transcriptRows)
+                liveAudioRawRows = normalizedLiveAudioRows(activityRows + transcriptRows)
+                updateLiveAudioPresentation()
                 liveAudioTranscriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
                     currentOffset: 0,
                     fetchedTranscriptRows: transcriptRows.count,
@@ -2194,19 +2337,14 @@ public struct DashboardView: View {
                 canLoadMore = transcriptRows.count == Self.transcriptPageSize
             } else {
                 let transcriptOffset = liveAudioTranscriptOffset
-                rows = try await fetchLiveAudioRows(
+                let rows = try await fetchLiveAudioRows(
                     queries: queries,
                     limit: Self.transcriptPageSize,
                     offset: transcriptOffset,
                     includeActivityRows: false
                 )
-                canLoadMore = rows.count == Self.transcriptPageSize
-            }
-
-            if reset {
-                liveAudioRows = rows
-            } else {
                 appendLiveAudioRows(rows)
+                canLoadMore = rows.count == Self.transcriptPageSize
                 liveAudioTranscriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
                     currentOffset: liveAudioTranscriptOffset,
                     fetchedTranscriptRows: rows.count,
@@ -2258,8 +2396,7 @@ public struct DashboardView: View {
                 offset: 0,
                 includeActivityRows: false
             )
-            let rows = liveAudioRowsForPresentation(activityRows + transcriptRows)
-            mergeLatestLiveAudioRows(rows)
+            mergeLatestLiveAudioRows(activityRows + transcriptRows)
             liveAudioTranscriptOffset = max(liveAudioTranscriptOffset, transcriptRows.count)
             if liveAudioRows.count <= Self.transcriptPageSize {
                 canLoadMoreLiveAudioRows = transcriptRows.count == Self.transcriptPageSize
@@ -2406,8 +2543,8 @@ public struct DashboardView: View {
         }
     }
 
-    private func liveAudioRowsForPresentation(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
-        let uniqueRows = Dictionary(grouping: rows, by: \.id)
+    private func normalizedLiveAudioRows(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
+        Dictionary(grouping: rows, by: \.id)
             .compactMap { _, rows in rows.first }
             .sorted {
                 if $0.startedAt != $1.startedAt {
@@ -2415,27 +2552,24 @@ public struct DashboardView: View {
                 }
                 return $0.id > $1.id
             }
-        return DashboardLiveAudioPresentationPolicy.rowsForDisplay(uniqueRows)
+    }
+
+    private func updateLiveAudioPresentation() {
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: liveAudioRawRows)
+        liveAudioRows = presentation.transcriptRows
+        liveAudioStatusRows = presentation.statusRows
     }
 
     private func appendLiveAudioRows(_ rows: [DashboardLiveAudioRow]) {
-        let existingIDs = Set(liveAudioRows.map(\.id))
-        let mergedRows = liveAudioRows + rows.filter { !existingIDs.contains($0.id) }
-        liveAudioRows = liveAudioRowsForPresentation(mergedRows)
+        let existingIDs = Set(liveAudioRawRows.map(\.id))
+        liveAudioRawRows = normalizedLiveAudioRows(liveAudioRawRows + rows.filter { !existingIDs.contains($0.id) })
+        updateLiveAudioPresentation()
     }
 
     private func mergeLatestLiveAudioRows(_ rows: [DashboardLiveAudioRow]) {
-        let retentionLimit = max(
-            DashboardLiveMemoryPolicy.passiveTranscriptRetentionLimit,
-            liveAudioRows.count
-        )
-        let mergedRows = DashboardLiveMemoryPolicy.mergedLatest(
-            rows,
-            into: liveAudioRows,
-            id: \.id,
-            maxCount: retentionLimit
-        )
-        liveAudioRows = liveAudioRowsForPresentation(mergedRows)
+        let latestIDs = Set(rows.map(\.id))
+        liveAudioRawRows = normalizedLiveAudioRows(rows + liveAudioRawRows.filter { !latestIDs.contains($0.id) })
+        updateLiveAudioPresentation()
     }
 
     private func appendLiveFrames(_ frames: [FrameWithVideoInfo]) {

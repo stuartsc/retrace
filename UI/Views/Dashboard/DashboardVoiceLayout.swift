@@ -290,9 +290,6 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         if isPendingSummary || isLowConfidenceSummary || isStatusSummary {
             return false
         }
-        if isRepairStatus {
-            return true
-        }
         if transcriptStatus == "probable_junk" {
             return true
         }
@@ -302,11 +299,20 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
                 return true
             }
         }
-        return (
-            transcriptStatus == "needs_review"
-                && detectedLanguage == "nn"
-                && Self.looksLikePhoneticNoiseArtifact(text)
-        ) || Self.looksLikeNonSpeechCaptionArtifact(text)
+        if Self.looksLikeNonSpeechCaptionArtifact(text) {
+            return true
+        }
+        if Self.looksLikePhoneticNoiseArtifact(text) {
+            return true
+        }
+        if Self.looksLikeUnsupportedScriptArtifact(text, detectedLanguage: detectedLanguage) {
+            return true
+        }
+        return !hasTranscriptText && isRepairStatus
+    }
+
+    var isRepairingTranscript: Bool {
+        hasTranscriptText && isRepairStatus && !isLowConfidenceArtifact
     }
 
     static func previewText(from text: String) -> String {
@@ -345,6 +351,27 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         guard signalScalars.count >= 4 else { return false }
         guard !signalScalars.contains(where: isPrimarySpeechScriptScalar) else { return false }
         return signalScalars.allSatisfy(isPhoneticArtifactScalar)
+    }
+
+    private static func looksLikeUnsupportedScriptArtifact(_ text: String, detectedLanguage: String?) -> Bool {
+        let normalizedLanguage = detectedLanguage?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let languageIsUntrusted = normalizedLanguage == nil
+            || normalizedLanguage == ""
+            || normalizedLanguage == "nn"
+            || normalizedLanguage == "und"
+            || normalizedLanguage == "unknown"
+            || normalizedLanguage == "auto"
+        guard languageIsUntrusted else { return false }
+
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+            .union(.punctuationCharacters)
+            .union(.symbols)
+            .union(CharacterSet(charactersIn: "\"'`"))
+        let signalScalars = text.unicodeScalars.filter { !ignoredScalars.contains($0) }
+        guard signalScalars.count >= 4 else { return false }
+        return !signalScalars.contains(where: isPrimarySpeechScriptScalar)
     }
 
     private static func looksLikeNonSpeechCaptionArtifact(_ text: String) -> Bool {
@@ -413,72 +440,75 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
     }
 }
 
+struct DashboardLiveAudioPresentation: Equatable {
+    let transcriptRows: [DashboardLiveAudioRow]
+    let statusRows: [DashboardLiveAudioRow]
+}
+
 enum DashboardLiveAudioPresentationPolicy {
-    static func rowsForDisplay(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
-        var presented: [DashboardLiveAudioRow] = []
-        var index = 0
+    static func presentation(for rows: [DashboardLiveAudioRow]) -> DashboardLiveAudioPresentation {
+        var transcriptRows: [DashboardLiveAudioRow] = []
+        var statusRows: [DashboardLiveAudioRow] = []
 
-        while index < rows.count {
-            let row = rows[index]
-            if row.isLowConfidenceArtifact {
-                var lowConfidenceGroup: [DashboardLiveAudioRow] = []
-                while index < rows.count, rows[index].isLowConfidenceArtifact {
-                    lowConfidenceGroup.append(rows[index])
-                    index += 1
-                }
-
-                if let newest = lowConfidenceGroup.first, let oldest = lowConfidenceGroup.last {
-                    presented.append(DashboardLiveAudioRow(
-                        id: syntheticLowConfidenceSummaryID(for: newest),
-                        text: "",
-                        startedAt: newest.startedAt,
-                        endedAt: oldest.endedAt,
-                        source: newest.source,
-                        confidence: nil,
-                        transcriptStatus: "probable_junk",
-                        detectedLanguage: newest.detectedLanguage,
-                        audioVariant: newest.audioVariant,
-                        qualityFlags: "low_confidence_summary",
-                        pendingBatchCount: lowConfidenceGroup.count,
-                        isLowConfidenceSummary: true
-                    ))
-                }
-                continue
-            }
-
-            guard row.isPendingCapturePlaceholder else {
-                presented.append(row)
-                index += 1
-                continue
-            }
-
-            var pendingGroup: [DashboardLiveAudioRow] = []
-            while index < rows.count, rows[index].isPendingCapturePlaceholder {
-                pendingGroup.append(rows[index])
-                index += 1
-            }
-
-            if pendingGroup.count == 1, let only = pendingGroup.first {
-                presented.append(only)
-            } else if let newest = pendingGroup.first, let oldest = pendingGroup.last {
-                presented.append(DashboardLiveAudioRow(
-                    id: syntheticPendingSummaryID(for: newest),
-                    text: "",
-                    startedAt: newest.startedAt,
-                    endedAt: oldest.endedAt,
-                    source: newest.source,
-                    confidence: nil,
-                    transcriptStatus: "pending",
-                    detectedLanguage: nil,
-                    audioVariant: newest.audioVariant,
-                    qualityFlags: "pending_summary",
-                    pendingBatchCount: pendingGroup.count,
-                    isPendingSummary: true
-                ))
+        for row in rows {
+            if belongsInStatusPanel(row) {
+                statusRows.append(row)
+            } else {
+                transcriptRows.append(row)
             }
         }
 
-        return coalescedRepeatedStatusRows(presented)
+        return DashboardLiveAudioPresentation(
+            transcriptRows: coalescedRepeatedTranscriptRows(transcriptRows),
+            statusRows: coalescedRepeatedStatusRows(statusRows)
+        )
+    }
+
+    static func rowsForDisplay(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
+        presentation(for: rows).transcriptRows
+    }
+
+    private static func belongsInStatusPanel(_ row: DashboardLiveAudioRow) -> Bool {
+        row.isPendingSummary
+            || row.isLowConfidenceSummary
+            || row.isStatusSummary
+            || row.isPendingCapturePlaceholder
+            || row.isLowConfidenceArtifact
+            || !row.hasTranscriptText
+    }
+
+    private static func coalescedRepeatedTranscriptRows(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
+        var coalesced: [DashboardLiveAudioRow] = []
+        var previousSignature: String?
+
+        for row in rows {
+            let signature = transcriptSignature(for: row)
+            guard !signature.isEmpty else {
+                previousSignature = nil
+                coalesced.append(row)
+                continue
+            }
+
+            if signature == previousSignature {
+                continue
+            }
+
+            previousSignature = signature
+            coalesced.append(row)
+        }
+
+        return coalesced
+    }
+
+    private static func transcriptSignature(for row: DashboardLiveAudioRow) -> String {
+        let edgeNoise = CharacterSet.whitespacesAndNewlines
+            .union(.punctuationCharacters)
+            .union(.symbols)
+        return DashboardTranscriptDisplayPolicy.copyText(row.text)
+            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .joined(separator: " ")
+            .trimmingCharacters(in: edgeNoise)
+            .lowercased()
     }
 
     private static func coalescedRepeatedStatusRows(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {

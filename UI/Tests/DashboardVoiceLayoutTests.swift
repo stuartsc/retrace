@@ -179,13 +179,14 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             qualityFlags: nil
         )
 
-        let presented = DashboardLiveAudioPresentationPolicy.rowsForDisplay(pendingRows + [transcript])
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: pendingRows + [transcript])
 
-        XCTAssertEqual(presented.count, 2)
-        XCTAssertTrue(presented[0].isPendingSummary)
-        XCTAssertEqual(presented[0].pendingBatchCount, 6)
-        XCTAssertTrue(presented[0].displayText.contains("6 audio batches captured"))
-        XCTAssertEqual(presented[1].text, "This is a real transcript.")
+        XCTAssertEqual(presentation.transcriptRows.count, 1)
+        XCTAssertEqual(presentation.transcriptRows[0].text, "This is a real transcript.")
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isPendingSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 6)
+        XCTAssertTrue(presentation.statusRows[0].displayText.contains("6 audio batches captured"))
     }
 
     func testLiveAudioPresentationGroupsRepeatedLowConfidenceArtifacts() {
@@ -218,13 +219,14 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             qualityFlags: nil
         )
 
-        let presented = DashboardLiveAudioPresentationPolicy.rowsForDisplay(noiseRows + [transcript])
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: noiseRows + [transcript])
 
-        XCTAssertEqual(presented.count, 2)
-        XCTAssertTrue(presented[0].isLowConfidenceSummary)
-        XCTAssertEqual(presented[0].pendingBatchCount, 5)
-        XCTAssertTrue(presented[0].displayText.contains("5 audio batches grouped for repair"))
-        XCTAssertEqual(presented[1].text, "This is the next useful transcript.")
+        XCTAssertEqual(presentation.transcriptRows.count, 1)
+        XCTAssertEqual(presentation.transcriptRows[0].text, "This is the next useful transcript.")
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 5)
+        XCTAssertTrue(presentation.statusRows[0].displayText.contains("5 audio batches grouped for repair"))
     }
 
     func testLiveAudioPresentationCoalescesRepeatedSummaryMessages() {
@@ -261,12 +263,12 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             ))
         }
 
-        let presented = DashboardLiveAudioPresentationPolicy.rowsForDisplay(rows)
-        let lowConfidenceSummaries = presented.filter { $0.isLowConfidenceSummary }
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+        let lowConfidenceSummaries = presentation.statusRows.filter { $0.isLowConfidenceSummary }
 
         XCTAssertEqual(lowConfidenceSummaries.count, 1)
         XCTAssertEqual(lowConfidenceSummaries.first?.pendingBatchCount, 60)
-        let pendingSummaries = presented.filter { $0.isPendingSummary }
+        let pendingSummaries = presentation.statusRows.filter { $0.isPendingSummary }
         XCTAssertEqual(pendingSummaries.count, 1)
         XCTAssertEqual(pendingSummaries.first?.pendingBatchCount, 3)
     }
@@ -307,17 +309,18 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             qualityFlags: nil
         )
 
-        let presented = DashboardLiveAudioPresentationPolicy.rowsForDisplay(repeatedArtifacts + [transcript])
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: repeatedArtifacts + [transcript])
 
-        XCTAssertEqual(presented.count, 2)
-        XCTAssertTrue(presented[0].isLowConfidenceSummary)
-        XCTAssertEqual(presented[0].pendingBatchCount, 6)
-        XCTAssertFalse(presented.contains { $0.text == "(Breathing)" })
-        XCTAssertFalse(presented.contains { $0.text == "*sound of wind*" })
-        XCTAssertEqual(presented[1].text, transcript.text)
+        XCTAssertEqual(presentation.transcriptRows.count, 1)
+        XCTAssertEqual(presentation.transcriptRows[0].text, transcript.text)
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 6)
+        XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "(Breathing)" })
+        XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "*sound of wind*" })
     }
 
-    func testLiveAudioPresentationCollapsesRepairStatusRowsEvenWhenTheyHaveText() {
+    func testLiveAudioPresentationKeepsPlausibleFirstPassRepairTextVisible() {
         let now = Date(timeIntervalSince1970: 1_781_555_000)
         let repairRows = [
             (text: "(Breathing)", status: "probable_junk", language: "nn", flags: "junk_pattern,variant:raw"),
@@ -352,16 +355,48 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             qualityFlags: nil
         )
 
-        let presented = DashboardLiveAudioPresentationPolicy.rowsForDisplay(repairRows + [cleanTranscript])
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: repairRows + [cleanTranscript])
 
-        XCTAssertEqual(presented.count, 2)
-        XCTAssertTrue(presented[0].isLowConfidenceSummary)
-        XCTAssertEqual(presented[0].pendingBatchCount, 5)
-        XCTAssertFalse(presented.contains { $0.text == "(Breathing)" })
-        XCTAssertFalse(presented.contains { $0.text == "No." })
-        XCTAssertFalse(presented.contains { $0.text == "ʻᵖᵗᵗᵗ" })
-        XCTAssertFalse(presented.contains { $0.text == "සැහාහින්න්" })
-        XCTAssertEqual(presented[1].text, cleanTranscript.text)
+        XCTAssertEqual(
+            presentation.transcriptRows.map(\.text),
+            ["No.", "[Observe the", cleanTranscript.text]
+        )
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 3)
+        XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "(Breathing)" })
+        XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "ʻᵖᵗᵗᵗ" })
+        XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "සැහාහින්න්" })
+    }
+
+    func testLiveAudioPresentationCollapsesConsecutiveDuplicateTranscriptText() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            "The water they use.",
+            "The water they use.",
+            "Data centers already operating in New South Wales.",
+            "Data centers already operating in New South Wales."
+        ].enumerated().map { index, text in
+            DashboardLiveAudioRow(
+                id: Int64(6_000 + index),
+                text: text,
+                startedAt: now.addingTimeInterval(Double(-index * 10)),
+                endedAt: now.addingTimeInterval(Double(-index * 10 + 8)),
+                source: .microphone,
+                confidence: 0.42,
+                transcriptStatus: index < 2 ? "needs_review" : "transcribed",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: index < 2 ? "short_text,variant:raw" : nil
+            )
+        }
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+
+        XCTAssertEqual(
+            presentation.transcriptRows.map(\.text),
+            ["The water they use.", "Data centers already operating in New South Wales."]
+        )
     }
 
     func testLiveAudioPresentationGroupsRepeatedGenericStatusRows() {
@@ -382,13 +417,14 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             ))
         }
 
-        let presented = DashboardLiveAudioPresentationPolicy.rowsForDisplay(failedRows)
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: failedRows)
 
-        XCTAssertEqual(presented.count, 1)
-        XCTAssertTrue(presented[0].isStatusSummary)
-        XCTAssertEqual(presented[0].pendingBatchCount, 4)
-        XCTAssertTrue(presented[0].displayText.contains("4 matching audio status rows"))
-        XCTAssertTrue(presented[0].displayText.contains("decoding failed"))
+        XCTAssertTrue(presentation.transcriptRows.isEmpty)
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isStatusSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 4)
+        XCTAssertTrue(presentation.statusRows[0].displayText.contains("4 matching audio status rows"))
+        XCTAssertTrue(presentation.statusRows[0].displayText.contains("decoding failed"))
     }
 
     func testLiveAudioPaginationOffsetTracksRawTranscriptRows() {
