@@ -76,6 +76,92 @@ final class AudioTranscriptionPaginationTests: XCTestCase {
         XCTAssertEqual(activityRows.first?.text, "")
     }
 
+    func testTranscriptionReadsReturnOnlyLatestPassPerBatch() async throws {
+        let queries = try await makeQueries()
+        let start = Date(timeIntervalSince1970: 9_000)
+        let batchPath = "audio/batch_9000_microphone_test.m4a"
+
+        _ = try await queries.insertTranscription(
+            sessionID: nil,
+            text: "first pass draft",
+            startTime: start,
+            endTime: start.addingTimeInterval(1),
+            source: .microphone,
+            confidence: 0.5,
+            words: [],
+            transcriptionPass: 1,
+            batchAudioPath: batchPath
+        )
+        _ = try await queries.insertTranscription(
+            sessionID: nil,
+            text: "second pass repair",
+            startTime: start.addingTimeInterval(1),
+            endTime: start.addingTimeInterval(2),
+            source: .microphone,
+            confidence: 0.7,
+            words: [],
+            transcriptionPass: 2,
+            batchAudioPath: batchPath
+        )
+        _ = try await queries.insertTranscription(
+            sessionID: nil,
+            text: "third pass final",
+            startTime: start.addingTimeInterval(2),
+            endTime: start.addingTimeInterval(3),
+            source: .microphone,
+            confidence: 0.9,
+            words: [],
+            transcriptionPass: 3,
+            batchAudioPath: batchPath
+        )
+
+        let rows = try await queries.getTranscriptions(
+            from: start.addingTimeInterval(-1),
+            to: start.addingTimeInterval(4),
+            limit: 10
+        )
+
+        XCTAssertEqual(rows.map(\.text), ["third pass final"])
+        XCTAssertEqual(rows.first?.transcriptionPass, 3)
+        XCTAssertEqual(rows.first?.batchAudioPath, batchPath)
+    }
+
+    func testSearchReturnsOnlyLatestPassPerBatch() async throws {
+        let queries = try await makeQueries()
+        let start = Date(timeIntervalSince1970: 9_100)
+        let batchPath = "audio/batch_9100_microphone_test.m4a"
+
+        _ = try await queries.insertTranscription(
+            sessionID: nil,
+            text: "oldpassonly draft",
+            startTime: start,
+            endTime: start.addingTimeInterval(1),
+            source: .microphone,
+            confidence: 0.5,
+            words: [],
+            transcriptionPass: 1,
+            batchAudioPath: batchPath
+        )
+        _ = try await queries.insertTranscription(
+            sessionID: nil,
+            text: "latestpassonly final",
+            startTime: start.addingTimeInterval(1),
+            endTime: start.addingTimeInterval(2),
+            source: .microphone,
+            confidence: 0.9,
+            words: [],
+            transcriptionPass: 3,
+            batchAudioPath: batchPath
+        )
+
+        let oldMatches = try await queries.searchTranscriptions(query: "oldpassonly")
+        let latestMatches = try await queries.searchTranscriptions(query: "latestpassonly")
+
+        XCTAssertTrue(oldMatches.isEmpty)
+        XCTAssertEqual(latestMatches.map(\.text), ["latestpassonly final"])
+        XCTAssertEqual(latestMatches.first?.transcriptionPass, 3)
+    }
+
     private func makeQueries() async throws -> AudioTranscriptionQueries {
         guard let db = await database.getConnection() else {
             XCTFail("database connection missing")

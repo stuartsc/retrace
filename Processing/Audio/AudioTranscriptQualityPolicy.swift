@@ -59,6 +59,16 @@ public enum AudioTranscriptQualityPolicy {
             )
         }
 
+        if isPunctuationOnlyArtifact(normalizedText) {
+            flags.append("punctuation_artifact")
+            return AudioTranscriptQualityAssessment(
+                status: .probableJunk,
+                flags: flags,
+                shouldStoreText: true,
+                shouldRetryWithEnhancement: true
+            )
+        }
+
         if isLikelyPhoneticVocalizationArtifact(normalizedText) {
             flags.append("vocalization_artifact")
             return AudioTranscriptQualityAssessment(
@@ -71,6 +81,16 @@ public enum AudioTranscriptQualityPolicy {
 
         if isLikelyWhisperJunk(normalizedText) {
             flags.append("junk_pattern")
+            return AudioTranscriptQualityAssessment(
+                status: .probableJunk,
+                flags: flags,
+                shouldStoreText: true,
+                shouldRetryWithEnhancement: true
+            )
+        }
+
+        if isLikelyUnsupportedScriptArtifact(normalizedText, language: language) {
+            flags.append("unsupported_script_artifact")
             return AudioTranscriptQualityAssessment(
                 status: .probableJunk,
                 flags: flags,
@@ -123,6 +143,15 @@ public enum AudioTranscriptQualityPolicy {
             normalized == "unknown" ||
             normalized == "und" ||
             normalized == "nn"
+    }
+
+    private static func isPunctuationOnlyArtifact(_ text: String) -> Bool {
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+        let punctuationScalars = CharacterSet.punctuationCharacters
+            .union(.symbols)
+        let signalScalars = text.unicodeScalars.filter { !ignoredScalars.contains($0) }
+        guard !signalScalars.isEmpty else { return false }
+        return signalScalars.allSatisfy { punctuationScalars.contains($0) }
     }
 
     private static func isLikelyWhisperJunk(_ text: String) -> Bool {
@@ -189,6 +218,20 @@ public enum AudioTranscriptQualityPolicy {
         return signalScalars.allSatisfy(isPhoneticArtifactScalar)
     }
 
+    private static func isLikelyUnsupportedScriptArtifact(_ text: String, language: String?) -> Bool {
+        guard shouldTreatLanguageAsUncertain(language ?? "unknown") else { return false }
+        if text.contains("\u{FFFD}") { return true }
+
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+            .union(.punctuationCharacters)
+            .union(.symbols)
+            .union(CharacterSet(charactersIn: "\"'`"))
+        let signalScalars = text.unicodeScalars.filter { !ignoredScalars.contains($0) }
+        guard signalScalars.count >= 4 else { return false }
+
+        return signalScalars.contains { !isPrimarySpeechScriptScalar($0) }
+    }
+
     private static func isPrimarySpeechScriptScalar(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x0030...0x0039, // ASCII digits
@@ -230,16 +273,36 @@ public enum AudioTranscriptQualityPolicy {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let nonSpeechTerms = [
             "applause",
+            "alarm",
             "background",
             "beep",
+            "bell",
             "breathing",
+            "chime",
+            "click",
+            "clicking",
             "clapping",
             "cough",
+            "crackle",
+            "crackling",
+            "door",
+            "doorbell",
+            "fire",
+            "footstep",
+            "footsteps",
             "inaudible",
+            "keyboard",
+            "knock",
             "laugh",
             "laughter",
+            "mouse",
             "music",
+            "no audio",
+            "no sound",
             "noise",
+            "notification",
+            "ring",
+            "ringing",
             "silence",
             "sigh",
             "sound",
@@ -247,8 +310,29 @@ public enum AudioTranscriptQualityPolicy {
             "static",
             "typing",
             "waves",
-            "wind"
+            "wind",
+            "笑",
+            "笑い"
         ]
-        return nonSpeechTerms.contains { inner.contains($0) }
+        if nonSpeechTerms.contains(where: { inner.contains($0) }) {
+            return true
+        }
+
+        let words = inner
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map { String($0) }
+        let speechPronouns: Set<String> = [
+            "i",
+            "im",
+            "you",
+            "we",
+            "he",
+            "she",
+            "they"
+        ]
+
+        return words.count <= 4
+            && !words.contains(where: speechPronouns.contains)
+            && words.contains { $0.hasSuffix("ing") }
     }
 }

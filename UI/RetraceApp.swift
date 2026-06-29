@@ -159,8 +159,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let devDeeplinkEnvKey = "RETRACE_DEV_DEEPLINK_URL"
     private static let externalDashboardRevealNotification = Notification.Name("io.retrace.app.externalDashboardReveal")
     private static let quitConfirmationPreferenceKey = "quitConfirmationPreference"
-    private static let canonicalBundleIdentifier = "io.retrace.app"
+    nonisolated private static let canonicalBundleIdentifier = "io.retrace.app"
     private static let singleInstanceLockPath = "/tmp/io.retrace.app.instance.lock"
+    nonisolated private static let watchdogAutoRelaunchEnabledKey = "watchdogAutoRelaunchEnabled"
     nonisolated private static let watchdogSleepSuspensionSeconds: TimeInterval = 12 * 60 * 60
     nonisolated private static let watchdogWakeGracePeriodSeconds: TimeInterval = 60
 
@@ -326,8 +327,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            Log.critical("[Watchdog] Auto-quit threshold reached (\(blockedFor)s). Capturing diagnostics and attempting automatic relaunch.", category: .ui)
+            Log.critical("[Watchdog] Auto-quit threshold reached (\(blockedFor)s). Capturing diagnostics.", category: .ui)
             EmergencyDiagnostics.capture(trigger: "watchdog_auto_quit")
+
+            guard Self.isWatchdogAutoRelaunchEnabled() else {
+                Log.critical(
+                    "[Watchdog] Automatic relaunch is disabled. Diagnostics captured; suppressing watchdog quit/relaunch.",
+                    category: .ui
+                )
+                MainThreadWatchdog.shared.suspendAutoQuit(reason: "automatic relaunch disabled")
+                return
+            }
 
             let relaunchDecision = WatchdogRelaunchGuard.evaluateAndRecord()
             guard relaunchDecision.shouldRelaunch else {
@@ -347,6 +357,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Reuse the same restart path as Settings so watchdog quits auto-recover.
             AppRelaunch.relaunch()
         }
+    }
+
+    nonisolated private static func isWatchdogAutoRelaunchEnabled() -> Bool {
+        let defaults = UserDefaults(suiteName: canonicalBundleIdentifier) ?? .standard
+        return defaults.bool(forKey: watchdogAutoRelaunchEnabledKey)
     }
 
     nonisolated private static func activeDisplayCount() -> Int {

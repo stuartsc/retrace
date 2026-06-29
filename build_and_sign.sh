@@ -82,9 +82,10 @@ if [ -d "/Applications/$APP_NAME.app" ]; then
     # Kill the app if running
     pkill -x "$APP_NAME" 2>/dev/null || true
 
-    # Replace the app
+    # Replace the app. ditto preserves framework symlinks; cp -r can flatten
+    # Sparkle.framework and break strict codesign verification.
     rm -rf "/Applications/$APP_NAME.app"
-    cp -r "$APP_BUNDLE" /Applications/
+    ditto "$APP_BUNDLE" "/Applications/$APP_NAME.app"
 
     echo "✅ Updated /Applications/$APP_NAME.app"
     echo ""
@@ -92,7 +93,7 @@ if [ -d "/Applications/$APP_NAME.app" ]; then
     echo "  open /Applications/$APP_NAME.app"
 else
     echo "💡 For persistent permissions during development, install to /Applications/:"
-    echo "   cp -r $APP_BUNDLE /Applications/ && open /Applications/$APP_NAME.app"
+    echo "   ditto $APP_BUNDLE /Applications/$APP_NAME.app && open /Applications/$APP_NAME.app"
     echo ""
     echo "Or run from build directory (permissions reset on each rebuild):"
     echo "   open $APP_BUNDLE"

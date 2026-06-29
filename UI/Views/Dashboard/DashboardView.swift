@@ -260,7 +260,6 @@ public struct DashboardView: View {
                 await loadDictationDashboardData(reset: recentDictationSessions.isEmpty)
             case .live:
                 await loadLiveAudioDashboardData(reset: liveAudioRows.isEmpty)
-                await loadLiveFramesDashboardData(reset: liveFrames.isEmpty)
                 while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
                     loopTab: .live,
                     selectedTab: selectedDashboardTab,
@@ -274,6 +273,21 @@ public struct DashboardView: View {
                         isWindowVisible: viewModel.isWindowVisible
                     ) else { return }
                     await refreshLiveAudioDashboardData()
+                }
+            case .screenshots:
+                await loadLiveFramesDashboardData(reset: liveFrames.isEmpty)
+                while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
+                    loopTab: .screenshots,
+                    selectedTab: selectedDashboardTab,
+                    isWindowVisible: viewModel.isWindowVisible
+                ) {
+                    try? await Task.sleep(for: .seconds(8))
+                    guard !Task.isCancelled else { return }
+                    guard DashboardRefreshLoopPolicy.shouldContinue(
+                        loopTab: .screenshots,
+                        selectedTab: selectedDashboardTab,
+                        isWindowVisible: viewModel.isWindowVisible
+                    ) else { return }
                     await refreshLiveFramesDashboardData()
                 }
             case .appUsage:
@@ -303,6 +317,7 @@ public struct DashboardView: View {
                     await refreshDictationDashboardData()
                 } else if selectedDashboardTab == .live {
                     await refreshLiveAudioDashboardData()
+                } else if selectedDashboardTab == .screenshots {
                     await refreshLiveFramesDashboardData()
                 }
             }
@@ -1115,6 +1130,8 @@ public struct DashboardView: View {
                     appUsageDashboardCard(layoutSize: layoutSize)
                 case .live:
                     liveDashboardCard(layoutSize: layoutSize)
+                case .screenshots:
+                    screenshotsDashboardCard(layoutSize: layoutSize)
                 }
             }
             .transition(.opacity)
@@ -1193,6 +1210,9 @@ public struct DashboardView: View {
         } else if tab == .live {
             Task {
                 await refreshLiveAudioDashboardData()
+            }
+        } else if tab == .screenshots {
+            Task {
                 await refreshLiveFramesDashboardData()
             }
         }
@@ -1369,14 +1389,14 @@ public struct DashboardView: View {
                     case .threeColumn:
                         HStack(alignment: .top, spacing: DashboardLiveLayoutPolicy.columnSpacing) {
                             liveAudioPanel
-                                .frame(width: columns.audio)
+                                .frame(width: columns.transcript)
                                 .frame(maxHeight: .infinity)
 
-                            liveScreenshotsPanel
-                                .frame(width: columns.screenshots)
+                            liveIntelligencePanel
+                                .frame(width: columns.intelligence)
                                 .frame(maxHeight: .infinity)
 
-                            liveContextPanel
+                            liveConversationContextPanel
                                 .frame(width: columns.context)
                                 .frame(maxHeight: .infinity)
                         }
@@ -1384,10 +1404,80 @@ public struct DashboardView: View {
                         ScrollView(showsIndicators: false) {
                             VStack(spacing: 14) {
                                 liveAudioPanel
-                                liveScreenshotsPanel
-                                liveContextPanel
+                                liveIntelligencePanel
+                                liveConversationContextPanel
                             }
                             .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(themeBorderColor.opacity(1.2), lineWidth: 1.2)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func screenshotsDashboardCard(layoutSize _: LayoutSize) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.retraceAccent.opacity(0.12))
+                        .frame(width: 42, height: 42)
+
+                    Image(systemName: DashboardContentTab.screenshots.icon)
+                        .font(.retraceHeadline)
+                        .foregroundColor(.retraceAccent)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Screenshots")
+                        .font(.retraceHeadline)
+                        .foregroundColor(.retracePrimary)
+
+                    Text(DashboardContentTab.screenshots.subtitle)
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retraceSecondary)
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(viewModel.isRecording ? Color.retraceDanger : Color.retraceSecondary)
+                        .frame(width: 7, height: 7)
+
+                    Text(viewModel.isRecording ? "Recording" : "Paused")
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Capsule())
+            }
+
+            GeometryReader { geometry in
+                if geometry.size.width >= 900 {
+                    HStack(alignment: .top, spacing: DashboardLiveLayoutPolicy.columnSpacing) {
+                        liveScreenshotsPanel
+                            .frame(width: max((geometry.size.width - DashboardLiveLayoutPolicy.columnSpacing) * 0.58, 0))
+                            .frame(maxHeight: .infinity)
+
+                        screenshotContextPanel
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else {
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 14) {
+                            liveScreenshotsPanel
+                            screenshotContextPanel
                         }
                     }
                 }
@@ -1467,7 +1557,7 @@ public struct DashboardView: View {
                     .fill(viewModel.isRecording ? Color.retraceDanger : Color.retraceSecondary)
                     .frame(width: 7, height: 7)
 
-                Text("Live Audio")
+                Text("Live Transcript")
                     .font(.retraceCalloutMedium)
                     .foregroundColor(.retracePrimary)
 
@@ -1483,54 +1573,64 @@ public struct DashboardView: View {
                 .font(.retraceCaption2)
                 .foregroundColor(.retraceSecondary)
 
-            if !liveAudioStatusRows.isEmpty {
-                liveAudioStatusPanel
-            }
-
             if let liveAudioError {
                 Text(liveAudioError)
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.retraceWarning)
-            } else if liveAudioRows.isEmpty {
-                Text(liveAudioStatusRows.isEmpty
-                    ? "No continuous transcript yet."
-                    : "No readable transcript yet. First-pass speech will appear here as soon as words are decoded."
-                )
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
             } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(liveAudioRows) { row in
-                            liveAudioRow(row)
-                                .onAppear {
-                                    loadMoreLiveAudioRowsIfNeeded(current: row)
-                                }
-                        }
-
-                        if canLoadMoreLiveAudioRows {
-                            Button {
-                                Task { await loadMoreLiveAudioRows() }
-                            } label: {
-                                loadOlderFooter(
-                                    isLoading: isLoadingMoreLiveAudio,
-                                    idleText: "Scroll or click for older entries"
-                                )
-                            }
-                            .buttonStyle(.plain)
-                                .onAppear {
-                                    Task { await loadMoreLiveAudioRows() }
-                                }
-                        }
-                    }
-                }
+                liveAudioTranscriptHistory
             }
         }
         .padding(14)
         .background(Color.white.opacity(0.025))
         .cornerRadius(14)
+    }
+
+    private var liveAudioTranscriptHistory: some View {
+        ScrollView(showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                if liveAudioRows.isEmpty {
+                    Text(liveAudioStatusRows.isEmpty
+                        ? "No continuous transcript yet."
+                        : "No readable transcript in the newest page. Older readable transcripts may still be below."
+                    )
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                } else {
+                    ForEach(liveAudioRows) { row in
+                        liveAudioRow(row)
+                            .onAppear {
+                                loadMoreLiveAudioRowsIfNeeded(current: row)
+                            }
+                    }
+                }
+
+                if DashboardLiveAudioHistoryPolicy.shouldShowHistory(
+                    readableRowCount: liveAudioRows.count,
+                    canLoadMoreOlderRows: canLoadMoreLiveAudioRows,
+                    isLoadingOlderRows: isLoadingMoreLiveAudio
+                ) && canLoadMoreLiveAudioRows {
+                    Button {
+                        Task { await loadMoreLiveAudioRows() }
+                    } label: {
+                        loadOlderFooter(
+                            isLoading: isLoadingMoreLiveAudio,
+                            idleText: liveAudioRows.isEmpty ? "Load older readable transcripts" : "Scroll or click for older entries"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onAppear {
+                        if !liveAudioRows.isEmpty {
+                            Task { await loadMoreLiveAudioRows() }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var liveScreenshotsPanel: some View {
@@ -1597,7 +1697,177 @@ public struct DashboardView: View {
         .cornerRadius(14)
     }
 
-    private var liveContextPanel: some View {
+    private var liveIntelligencePanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceWarning)
+
+                Text("Live Intelligence Feed")
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Spacer()
+
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(Color.retraceSuccess)
+                        .frame(width: 6, height: 6)
+                    Text("Live")
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSecondary)
+                }
+            }
+
+            Text("Real-time intelligence and recommendations, updated as the conversation unfolds.")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+
+            ScrollView(showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(DashboardLiveIntelligencePolicy.defaultCards.enumerated()), id: \.element.id) { index, card in
+                        liveIntelligenceCard(card, index: index)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(14)
+    }
+
+    private func liveIntelligenceCard(_ card: DashboardLiveIntelligenceCard, index: Int) -> some View {
+        let accent = intelligenceAccentColor(card.accentName)
+
+        return HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(accent.opacity(0.18))
+                    .frame(width: 42, height: 42)
+
+                Image(systemName: card.iconName)
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(accent)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(card.title)
+                        .font(.retraceCaptionMedium)
+                        .foregroundColor(.retracePrimary)
+
+                    if let badge = card.badge {
+                        Text(badge)
+                            .font(.retraceCaption2Medium)
+                            .foregroundColor(.retraceAccent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Color.retraceAccent.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Text(card.detail)
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !card.bullets.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(card.bullets, id: \.self) { bullet in
+                            Text("- \(bullet)")
+                                .font(.retraceCaption2)
+                                .foregroundColor(.retraceSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 1)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            Text(liveIntelligenceTimestamp(for: index), style: .time)
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary.opacity(0.75))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    accent.opacity(0.07),
+                    Color.white.opacity(0.03)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(accent.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private var liveConversationContextPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.viewfinder")
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceAccent)
+
+                Text("Context")
+                    .font(.retraceCalloutMedium)
+                    .foregroundColor(.retracePrimary)
+
+                Spacer()
+
+                Text("Edit")
+                    .font(.retraceCaption2Medium)
+                    .foregroundColor(.retraceSecondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+            }
+
+            liveContextInsightCard(
+                iconName: "smallcircle.filled.circle",
+                title: "What user is doing",
+                body: liveUserActivitySummary
+            )
+
+            liveContextInsightCard(
+                iconName: "scope",
+                title: "Type of intel required",
+                body: "Meeting insight intel: helpful context, stakeholder background, prompts, and next-step guidance."
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                liveContextMetadataRow(iconName: "clock", label: "Time", value: formatDashboardTimestamp(liveContextReferenceDate))
+                liveContextMetadataRow(iconName: "app.dashed", label: "App", value: "Dashboard")
+                liveContextMetadataRow(iconName: "macwindow", label: "Window", value: "Live Intelligence Platform")
+                liveContextMetadataRow(iconName: "waveform", label: "Audio source", value: "Microphone")
+                liveContextMetadataRow(iconName: "person.2", label: "Participants", value: liveAudioRows.isEmpty ? "Listening" : "Detected")
+                liveContextMetadataRow(iconName: "checkmark.seal", label: "Confidence", value: liveContextConfidence)
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.035))
+            .cornerRadius(12)
+
+            if !liveAudioStatusRows.isEmpty {
+                liveAudioStatusPanel
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(14)
+    }
+
+    private var screenshotContextPanel: some View {
         let selectedFrame = selectedLiveFrame
 
         return VStack(alignment: .leading, spacing: 10) {
@@ -1760,6 +2030,113 @@ public struct DashboardView: View {
         .cornerRadius(10)
     }
 
+    private func liveContextInsightCard(iconName: String, title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: iconName)
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceAccent)
+                    .frame(width: 18)
+
+                Text(title)
+                    .font(.retraceCaptionMedium)
+                    .foregroundColor(.retraceSecondary)
+            }
+
+            Text(body)
+                .font(.retraceCaptionMedium)
+                .foregroundColor(.retracePrimary)
+                .lineLimit(5)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Color.white.opacity(0.035))
+                .cornerRadius(10)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.025))
+        .cornerRadius(12)
+    }
+
+    private func liveContextMetadataRow(iconName: String, label: String, value: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.retraceCaptionMedium)
+                .foregroundColor(.retraceSecondary.opacity(0.75))
+                .frame(width: 18)
+
+            Text(label)
+                .font(.retraceCaption2Medium)
+                .foregroundColor(.retraceSecondary)
+
+            Spacer(minLength: 8)
+
+            Text(value)
+                .font(.retraceCaption2Medium)
+                .foregroundColor(.retracePrimary)
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var liveUserActivitySummary: String {
+        if let latest = liveAudioRows.first,
+           !DashboardLiveAudioRow.previewText(from: latest.text).isEmpty,
+           DashboardLiveAudioRow.previewText(from: latest.text) != "No transcript text" {
+            return "Listening to live speech. Latest readable phrase: \(DashboardLiveAudioRow.previewText(from: latest.text))"
+        }
+
+        if viewModel.isRecording {
+            return "Listening for live speech and preserving raw audio while transcript repair catches up."
+        }
+
+        return "Recording is paused. Resume capture to rebuild live context."
+    }
+
+    private var liveContextReferenceDate: Date {
+        liveAudioRows.first?.startedAt
+            ?? liveAudioStatusRows.first?.startedAt
+            ?? Date()
+    }
+
+    private var liveContextConfidence: String {
+        if liveAudioError != nil {
+            return "Needs attention"
+        }
+
+        return liveAudioRows.isEmpty ? "Building" : "High"
+    }
+
+    private func liveIntelligenceTimestamp(for index: Int) -> Date {
+        Calendar.current.date(
+            byAdding: .minute,
+            value: -index,
+            to: liveContextReferenceDate
+        ) ?? liveContextReferenceDate
+    }
+
+    private func intelligenceAccentColor(_ name: String) -> Color {
+        switch name {
+        case "violet":
+            return Color.purple
+        case "blue":
+            return Color.retraceAccent
+        case "pink":
+            return Color.pink
+        case "red":
+            return Color.retraceDanger
+        case "indigo":
+            return Color.indigo
+        case "teal":
+            return Color.teal
+        case "amber":
+            return Color.retraceWarning
+        default:
+            return Color.retraceAccent
+        }
+    }
+
     private func metadataLine(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label.uppercased())
@@ -1800,26 +2177,31 @@ public struct DashboardView: View {
     }
 
     private var liveAudioStatusPanel: some View {
-        let totalBatches = liveAudioStatusRows.reduce(0) { $0 + max($1.pendingBatchCount, 1) }
+        let latestStatusDate = liveAudioStatusRows.map(\.startedAt).max()
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "waveform.path.ecg")
                     .font(.retraceCaptionMedium)
                     .foregroundColor(.retraceWarning)
 
-                Text("Capture status")
+                Text("Recent capture status")
                     .font(.retraceCaptionMedium)
                     .foregroundColor(.retracePrimary)
 
                 Spacer(minLength: 0)
 
-                Text(totalBatches == 1 ? "1 batch" : "\(totalBatches) batches")
+                if let latestStatusDate {
+                    HStack(spacing: 4) {
+                        Text("Updated")
+                        Text(latestStatusDate, style: .time)
+                    }
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.retraceSecondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Color.white.opacity(0.055))
                     .clipShape(Capsule())
+                }
             }
 
             Text("First-pass transcripts stay in the feed. Repair and catch-up state is tracked here.")
@@ -1970,6 +2352,9 @@ public struct DashboardView: View {
     }
 
     private func summaryTitle(for row: DashboardLiveAudioRow) -> String {
+        if row.ambientLabel != nil {
+            return "Ambient audio"
+        }
         if row.isLowConfidenceSummary {
             return "Repair queue"
         }
@@ -1980,6 +2365,9 @@ public struct DashboardView: View {
     }
 
     private func statusSummaryDescription(for row: DashboardLiveAudioRow) -> String {
+        if row.ambientLabel != nil {
+            return row.displayText
+        }
         if row.isLowConfidenceSummary {
             return "Uncertain audio is preserved for repair; useful first-pass text remains in the feed."
         }
@@ -1990,6 +2378,9 @@ public struct DashboardView: View {
     }
 
     private func summaryIconName(for row: DashboardLiveAudioRow) -> String {
+        if row.ambientLabel != nil {
+            return "waveform"
+        }
         if row.isLowConfidenceSummary {
             return "waveform.badge.exclamationmark"
         }
@@ -2012,7 +2403,15 @@ public struct DashboardView: View {
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.retraceAccent)
 
-                if row.isRepairingTranscript {
+                if row.isRepairedTranscript {
+                    Text(row.repairedBadgeText)
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.retraceSuccess)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.retraceSuccess.opacity(0.12))
+                        .clipShape(Capsule())
+                } else if row.isRepairingTranscript {
                     Text("First pass")
                         .font(.retraceCaption2Medium)
                         .foregroundColor(.retraceWarning)
@@ -2190,7 +2589,12 @@ public struct DashboardView: View {
     }
 
     private func loadMoreLiveAudioRowsIfNeeded(current row: DashboardLiveAudioRow) {
-        guard row.id == liveAudioRows.last?.id else { return }
+        guard DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
+            currentRowID: row.id,
+            lastRowID: liveAudioRows.last?.id,
+            canLoadMoreOlderRows: canLoadMoreLiveAudioRows,
+            isLoadingOlderRows: isLoadingMoreLiveAudio
+        ) else { return }
         Task { await loadMoreLiveAudioRows() }
     }
 
@@ -2327,30 +2731,109 @@ public struct DashboardView: View {
                     offset: 0,
                     includeActivityRows: false
                 )
-                liveAudioRawRows = normalizedLiveAudioRows(activityRows + transcriptRows)
-                updateLiveAudioPresentation()
-                liveAudioTranscriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
+                var mergedRows = normalizedLiveAudioRows(activityRows + transcriptRows)
+                var fetchedTranscriptRows = transcriptRows.count
+                var lastFetchedTranscriptRows = transcriptRows.count
+                var presentation = DashboardLiveAudioPresentationPolicy.presentation(
+                    for: mergedRows,
+                    statusRowLimit: DashboardLiveMemoryPolicy.recentStatusRowLimit
+                )
+                var transcriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
                     currentOffset: 0,
-                    fetchedTranscriptRows: transcriptRows.count,
+                    fetchedTranscriptRows: lastFetchedTranscriptRows,
                     reset: true
                 )
-                canLoadMore = transcriptRows.count == Self.transcriptPageSize
+
+                while DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+                    readableRowCount: presentation.transcriptRows.count,
+                    targetReadableRowCount: DashboardLiveMemoryPolicy.initialReadableTranscriptTarget,
+                    fetchedTranscriptRows: lastFetchedTranscriptRows,
+                    pageSize: Self.transcriptPageSize,
+                    canLoadMoreOlderRows: lastFetchedTranscriptRows == Self.transcriptPageSize
+                ) {
+                    let olderTranscriptRows = try await fetchLiveAudioRows(
+                        queries: queries,
+                        limit: Self.transcriptPageSize,
+                        offset: transcriptOffset,
+                        includeActivityRows: false
+                    )
+                    guard !olderTranscriptRows.isEmpty else {
+                        lastFetchedTranscriptRows = 0
+                        break
+                    }
+
+                    mergedRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
+                        existing: mergedRows,
+                        latest: olderTranscriptRows
+                    )
+                    lastFetchedTranscriptRows = olderTranscriptRows.count
+                    fetchedTranscriptRows += olderTranscriptRows.count
+                    transcriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
+                        currentOffset: transcriptOffset,
+                        fetchedTranscriptRows: olderTranscriptRows.count,
+                        reset: false
+                    )
+                    presentation = DashboardLiveAudioPresentationPolicy.presentation(
+                        for: mergedRows,
+                        statusRowLimit: DashboardLiveMemoryPolicy.recentStatusRowLimit
+                    )
+                }
+
+                liveAudioRawRows = mergedRows
+                updateLiveAudioPresentation()
+                liveAudioTranscriptOffset = fetchedTranscriptRows
+                canLoadMore = lastFetchedTranscriptRows == Self.transcriptPageSize
             } else {
-                let transcriptOffset = liveAudioTranscriptOffset
-                let rows = try await fetchLiveAudioRows(
-                    queries: queries,
-                    limit: Self.transcriptPageSize,
-                    offset: transcriptOffset,
-                    includeActivityRows: false
+                let targetReadableRows = liveAudioRows.count + DashboardLiveMemoryPolicy.olderReadableTranscriptTarget
+                var transcriptOffset = liveAudioTranscriptOffset
+                var fetchedTranscriptRows = 0
+                var lastFetchedTranscriptRows = Self.transcriptPageSize
+                var mergedRows = liveAudioRawRows
+                var presentation = DashboardLiveAudioPresentationPolicy.presentation(
+                    for: mergedRows,
+                    statusRowLimit: DashboardLiveMemoryPolicy.recentStatusRowLimit
                 )
-                appendLiveAudioRows(rows)
-                canLoadMore = rows.count == Self.transcriptPageSize
-                liveAudioTranscriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
-                    currentOffset: liveAudioTranscriptOffset,
-                    fetchedTranscriptRows: rows.count,
-                    reset: false
+
+                repeat {
+                    let rows = try await fetchLiveAudioRows(
+                        queries: queries,
+                        limit: Self.transcriptPageSize,
+                        offset: transcriptOffset,
+                        includeActivityRows: false
+                    )
+                    guard !rows.isEmpty else {
+                        lastFetchedTranscriptRows = 0
+                        break
+                    }
+
+                    mergedRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
+                        existing: mergedRows,
+                        latest: rows
+                    )
+                    lastFetchedTranscriptRows = rows.count
+                    fetchedTranscriptRows += rows.count
+                    transcriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
+                        currentOffset: transcriptOffset,
+                        fetchedTranscriptRows: rows.count,
+                        reset: false
+                    )
+                    presentation = DashboardLiveAudioPresentationPolicy.presentation(
+                        for: mergedRows,
+                        statusRowLimit: DashboardLiveMemoryPolicy.recentStatusRowLimit
+                    )
+                } while DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+                    readableRowCount: presentation.transcriptRows.count,
+                    targetReadableRowCount: targetReadableRows,
+                    fetchedTranscriptRows: lastFetchedTranscriptRows,
+                    pageSize: Self.transcriptPageSize,
+                    canLoadMoreOlderRows: lastFetchedTranscriptRows == Self.transcriptPageSize
                 )
-                if !rows.isEmpty {
+
+                liveAudioRawRows = mergedRows
+                updateLiveAudioPresentation()
+                canLoadMore = lastFetchedTranscriptRows == Self.transcriptPageSize
+                liveAudioTranscriptOffset = transcriptOffset
+                if fetchedTranscriptRows > 0 {
                     DashboardViewModel.recordDashboardTranscriptLoadOlder(
                         coordinator: coordinatorWrapper.coordinator,
                         surface: "live_audio"
@@ -2373,7 +2856,7 @@ public struct DashboardView: View {
 
     private func refreshLiveAudioDashboardData() async {
         guard !isLoadingLiveAudio && !isLoadingMoreLiveAudio else { return }
-        if liveAudioRows.isEmpty {
+        if liveAudioRawRows.isEmpty {
             await loadLiveAudioDashboardData(reset: true)
             return
         }
@@ -2538,37 +3021,39 @@ public struct DashboardView: View {
                 transcriptStatus: $0.transcriptStatus,
                 detectedLanguage: $0.detectedLanguage,
                 audioVariant: $0.audioVariant,
-                qualityFlags: $0.qualityFlags
+                qualityFlags: $0.qualityFlags,
+                transcriptionPass: $0.transcriptionPass,
+                batchAudioPath: $0.batchAudioPath
             )
         }
     }
 
     private func normalizedLiveAudioRows(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
-        Dictionary(grouping: rows, by: \.id)
-            .compactMap { _, rows in rows.first }
-            .sorted {
-                if $0.startedAt != $1.startedAt {
-                    return $0.startedAt > $1.startedAt
-                }
-                return $0.id > $1.id
-            }
+        DashboardLiveAudioPresentationPolicy.normalizedRows(rows)
     }
 
     private func updateLiveAudioPresentation() {
-        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: liveAudioRawRows)
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(
+            for: liveAudioRawRows,
+            statusRowLimit: DashboardLiveMemoryPolicy.recentStatusRowLimit
+        )
         liveAudioRows = presentation.transcriptRows
         liveAudioStatusRows = presentation.statusRows
     }
 
     private func appendLiveAudioRows(_ rows: [DashboardLiveAudioRow]) {
-        let existingIDs = Set(liveAudioRawRows.map(\.id))
-        liveAudioRawRows = normalizedLiveAudioRows(liveAudioRawRows + rows.filter { !existingIDs.contains($0.id) })
+        liveAudioRawRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
+            existing: liveAudioRawRows,
+            latest: rows
+        )
         updateLiveAudioPresentation()
     }
 
     private func mergeLatestLiveAudioRows(_ rows: [DashboardLiveAudioRow]) {
-        let latestIDs = Set(rows.map(\.id))
-        liveAudioRawRows = normalizedLiveAudioRows(rows + liveAudioRawRows.filter { !latestIDs.contains($0.id) })
+        liveAudioRawRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
+            existing: liveAudioRawRows,
+            latest: rows
+        )
         updateLiveAudioPresentation()
     }
 

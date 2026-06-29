@@ -188,6 +188,13 @@ public final class PipelineStatusHolder: @unchecked Sendable {
 /// Implements the core data pipeline: Capture → Storage → Processing → Database → Search
 /// Owner: APP integration
 public actor AppCoordinator {
+    private static let manualBackfillBatchLimit = 25
+    private static let manualPass2BatchLimit = 25
+    private static let manualPass3BatchLimit = 10
+    private static let automaticBackfillBatchLimit = 10
+    private static let automaticPass2BatchLimit = 10
+    private static let automaticPass3BatchLimit = 5
+
     static func shouldStartAutomaticRefinementLoop(
         defaultsValue: Bool?,
         environmentValue: String?
@@ -335,21 +342,24 @@ public actor AppCoordinator {
         var totalSentences = 0
 
         if let backfill = await services.audioBackfill {
-            let result = await backfill.processAllPendingBatches()
+            let result = await backfill.processAllPendingBatches(maxBatches: Self.manualBackfillBatchLimit)
             backfillProcessed = result.processedCount
             totalSentences += result.totalSentences
             Log.info("[AppCoordinator] Manual backfill: \(result.processedCount) transcribed, \(result.totalSentences) sentences", category: .app)
         }
 
         if let refinement = await services.audioRefinement {
-            let result = await refinement.processAllPendingRefinements()
+            let result = await refinement.processAllPendingRefinements(maxBatches: Self.manualPass2BatchLimit)
             pass2Refined = result.refinedCount
             totalSentences += result.totalSentences
             Log.info("[AppCoordinator] Manual pass-2: \(result.refinedCount) refined", category: .app)
         }
 
         if let contextual = await services.audioContextualRefinement {
-            let result = await contextual.processAllPendingRefinements(runMode: .manual)
+            let result = await contextual.processAllPendingRefinements(
+                runMode: .manual,
+                maxBatches: Self.manualPass3BatchLimit
+            )
             pass3Refined = result.refinedCount
             totalSentences += result.totalSentences
             Log.info("[AppCoordinator] Manual pass-3: \(result.refinedCount) refined", category: .app)
@@ -759,7 +769,7 @@ public actor AppCoordinator {
 
                 while !Task.isCancelled {
                     if let backfill = await services.audioBackfill {
-                        let result = await backfill.processAllPendingBatches()
+                        let result = await backfill.processAllPendingBatches(maxBatches: Self.automaticBackfillBatchLimit)
                         if result.processedCount > 0 || result.silenceCount > 0 {
                             Log.info("Audio backfill complete: \(result.processedCount) transcribed, \(result.silenceCount) silence, \(result.totalSentences) sentences", category: .app)
                         }
@@ -768,7 +778,7 @@ public actor AppCoordinator {
 
                     // Pass-2 refinement with turbo model.
                     if let refinement = await services.audioRefinement {
-                        let result = await refinement.processAllPendingRefinements()
+                        let result = await refinement.processAllPendingRefinements(maxBatches: Self.automaticPass2BatchLimit)
                         if result.refinedCount > 0 {
                             Log.info("Audio refinement (pass-2) complete: \(result.refinedCount) refined, \(result.totalSentences) sentences", category: .app)
                         }
@@ -777,7 +787,7 @@ public actor AppCoordinator {
 
                     // Pass-3 contextual refinement (has internal idle gating).
                     if let contextual = await services.audioContextualRefinement {
-                        let result = await contextual.processAllPendingRefinements()
+                        let result = await contextual.processAllPendingRefinements(maxBatches: Self.automaticPass3BatchLimit)
                         if result.refinedCount > 0 {
                             Log.info("Contextual refinement (pass-3) complete: \(result.refinedCount) refined, \(result.totalSentences) sentences", category: .app)
                         }
@@ -1571,9 +1581,15 @@ public actor AppCoordinator {
     private func resumeWriterState(from unfinalised: UnfinalisedVideo) async throws -> VideoWriterState {
         let writer = try await services.storage.createSegmentWriter()
 
-        // Get file size from filesystem for the old video
+        // Get file size from filesystem for the old video.
+        // Chunk files are stored extensionless under storageRoot/chunks/...; keep
+        // the .mp4 fallback only for legacy/dev data.
         let storageDir = await services.storage.getStorageDirectory()
-        let oldVideoPath = storageDir.appendingPathComponent(unfinalised.relativePath).appendingPathExtension("mp4")
+        let primaryVideoPath = storageDir.appendingPathComponent(unfinalised.relativePath)
+        let legacyVideoPath = primaryVideoPath.appendingPathExtension("mp4")
+        let oldVideoPath = FileManager.default.fileExists(atPath: primaryVideoPath.path)
+            ? primaryVideoPath
+            : legacyVideoPath
         let fileSize: Int64
         if let attrs = try? FileManager.default.attributesOfItem(atPath: oldVideoPath.path),
            let size = attrs[.size] as? Int64 {
@@ -1586,11 +1602,18 @@ public actor AppCoordinator {
         // The WAL directory is named with the segment timestampID (from relativePath), not the database ID
         // relativePath format: "chunks/YYYYMM/DD/{timestampID}" - extract the timestampID from the last component
         let timestampID = URL(fileURLWithPath: unfinalised.relativePath).lastPathComponent
-        let walDir = storageDir.deletingLastPathComponent().appendingPathComponent("wal")
+        let walDir = storageDir.appendingPathComponent("wal", isDirectory: true)
             .appendingPathComponent("active_segment_\(timestampID)")
         if FileManager.default.fileExists(atPath: walDir.path) {
-            try? FileManager.default.removeItem(at: walDir)
-            Log.info("Cleaned up WAL session for unfinalised video \(unfinalised.id) (timestampID: \(timestampID))", category: .app)
+            if fileSize > 0 {
+                try? FileManager.default.removeItem(at: walDir)
+                Log.info("Cleaned up WAL session for unfinalised video \(unfinalised.id) (timestampID: \(timestampID))", category: .app)
+            } else {
+                Log.warning(
+                    "Keeping WAL session for unfinalised video \(unfinalised.id) because encoded chunk is missing or empty: \(oldVideoPath.path)",
+                    category: .app
+                )
+            }
         }
 
         // Mark old video as finalized and start fresh

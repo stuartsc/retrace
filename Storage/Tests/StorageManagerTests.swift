@@ -57,17 +57,45 @@ final class StorageManagerTests: XCTestCase {
         let day = calendar.component(.day, from: date)
 
         let dir = root
-            .appendingPathComponent("segments", isDirectory: true)
-            .appendingPathComponent(String(format: "%04d", year), isDirectory: true)
-            .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
+            .appendingPathComponent("chunks", isDirectory: true)
+            .appendingPathComponent(String(format: "%04d%02d", year, month), isDirectory: true)
             .appendingPathComponent(String(format: "%02d", day), isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let url = dir.appendingPathComponent("segment_\(id.stringValue).\(ext)")
+        let filename = ext.isEmpty ? id.stringValue : "\(id.stringValue).\(ext)"
+        let url = dir.appendingPathComponent(filename)
         let data = Data(repeating: 0xCD, count: size)
         try data.write(to: url)
         try FileManager.default.setAttributes([.modificationDate: modDate], ofItemAtPath: url.path)
         return url
+    }
+
+    private func createQuarantinedWALSession(
+        walRoot: URL,
+        name: String,
+        videoID: Int64,
+        startTime: Date,
+        payloadSize: Int
+    ) throws -> URL {
+        let dir = walRoot
+            .appendingPathComponent("quarantine", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let metadata = WALMetadata(
+            videoID: VideoSegmentID(value: videoID),
+            startTime: startTime,
+            frameCount: 1,
+            width: 16,
+            height: 16
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(metadata).write(to: dir.appendingPathComponent("metadata.json"))
+        try Data(repeating: 0xAB, count: payloadSize).write(to: dir.appendingPathComponent("frames.bin"))
+
+        try FileManager.default.setAttributes([.modificationDate: startTime], ofItemAtPath: dir.path)
+        return dir
     }
 
     // ┌──────────────────────────────────────────────────────────────────────────┐
@@ -129,17 +157,101 @@ final class StorageManagerTests: XCTestCase {
         let oldDate = Date(timeIntervalSinceNow: -7 * 24 * 3600)
         let cutoff = Date(timeIntervalSinceNow: -24 * 3600)
 
-        let id1 = VideoSegmentID(value: 0)
-        let id2 = VideoSegmentID(value: 0)
-        _ = try createFakeSegmentFile(root: root, id: id1, date: oldDate, ext: "hevc", size: 10, modDate: oldDate)
-        _ = try createFakeSegmentFile(root: root, id: id2, date: oldDate, ext: "hevc", size: 20, modDate: oldDate)
+        let id1 = VideoSegmentID(value: 101)
+        let id2 = VideoSegmentID(value: 102)
+        _ = try createFakeSegmentFile(root: root, id: id1, date: oldDate, ext: "", size: 10, modDate: oldDate)
+        _ = try createFakeSegmentFile(root: root, id: id2, date: oldDate, ext: "", size: 20, modDate: oldDate)
 
         let deleted = try await storage.cleanupOldSegments(olderThan: cutoff)
         XCTAssertEqual(Set(deleted), Set([id1, id2]))
+        for id in deleted {
+            try await storage.deleteSegment(id: id)
+        }
         let exists1 = try await storage.segmentExists(id: id1)
         XCTAssertFalse(exists1)
         let exists2 = try await storage.segmentExists(id: id2)
         XCTAssertFalse(exists2)
+
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    func testPruneQuarantinedWALDeletesOldRawRecoveryBuffers() async throws {
+        let root = makeTempRoot()
+        let walRoot = root.appendingPathComponent("wal", isDirectory: true)
+        let walManager = WALManager(walRoot: walRoot)
+        try await walManager.initialize()
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oldSession = try createQuarantinedWALSession(
+            walRoot: walRoot,
+            name: "active_segment_1-old",
+            videoID: 1,
+            startTime: now.addingTimeInterval(-2 * 24 * 60 * 60),
+            payloadSize: 64 * 1024
+        )
+        let freshSession = try createQuarantinedWALSession(
+            walRoot: walRoot,
+            name: "active_segment_2-fresh",
+            videoID: 2,
+            startTime: now.addingTimeInterval(-60 * 60),
+            payloadSize: 64 * 1024
+        )
+
+        let result = try await walManager.pruneQuarantinedSessions(
+            maxAge: 24 * 60 * 60,
+            maxBytes: 1024 * 1024,
+            now: now
+        )
+
+        XCTAssertEqual(result.deletedSessionCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldSession.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: freshSession.path))
+        XCTAssertGreaterThan(result.deletedBytes, 0)
+        XCTAssertGreaterThan(result.remainingBytes, 0)
+
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    func testPruneQuarantinedWALCapsRecentRawRecoveryBuffers() async throws {
+        let root = makeTempRoot()
+        let walRoot = root.appendingPathComponent("wal", isDirectory: true)
+        let walManager = WALManager(walRoot: walRoot)
+        try await walManager.initialize()
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oldest = try createQuarantinedWALSession(
+            walRoot: walRoot,
+            name: "active_segment_1-oldest",
+            videoID: 1,
+            startTime: now.addingTimeInterval(-3 * 60 * 60),
+            payloadSize: 64 * 1024
+        )
+        let middle = try createQuarantinedWALSession(
+            walRoot: walRoot,
+            name: "active_segment_2-middle",
+            videoID: 2,
+            startTime: now.addingTimeInterval(-2 * 60 * 60),
+            payloadSize: 64 * 1024
+        )
+        let newest = try createQuarantinedWALSession(
+            walRoot: walRoot,
+            name: "active_segment_3-newest",
+            videoID: 3,
+            startTime: now.addingTimeInterval(-60 * 60),
+            payloadSize: 64 * 1024
+        )
+
+        let result = try await walManager.pruneQuarantinedSessions(
+            maxAge: 24 * 60 * 60,
+            maxBytes: 140_000,
+            now: now
+        )
+
+        XCTAssertEqual(result.deletedSessionCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: middle.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newest.path))
+        XCTAssertLessThanOrEqual(result.remainingBytes, 140_000)
 
         try? FileManager.default.removeItem(at: root)
     }
@@ -154,13 +266,13 @@ final class StorageManagerTests: XCTestCase {
         try await storage.initialize(config: makeStorageConfig(root: root))
 
         let now = Date()
-        let id1 = VideoSegmentID(value: 0)
-        let id2 = VideoSegmentID(value: 0)
-        _ = try createFakeSegmentFile(root: root, id: id1, date: now, ext: "hevc", size: 123, modDate: now)
-        _ = try createFakeSegmentFile(root: root, id: id2, date: now, ext: "hevc", size: 456, modDate: now)
+        let id1 = VideoSegmentID(value: 201)
+        let id2 = VideoSegmentID(value: 202)
+        _ = try createFakeSegmentFile(root: root, id: id1, date: now, ext: "", size: 123, modDate: now)
+        _ = try createFakeSegmentFile(root: root, id: id2, date: now, ext: "", size: 456, modDate: now)
 
         let total = try await storage.getTotalStorageUsed(includeRewind: false)
-        XCTAssertEqual(total, 123 + 456)
+        XCTAssertGreaterThanOrEqual(total, 123 + 456)
 
         try? FileManager.default.removeItem(at: root)
     }

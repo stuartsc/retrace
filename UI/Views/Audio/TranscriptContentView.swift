@@ -75,9 +75,9 @@ struct TranscriptContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(sortedTranscriptions, id: \.id) { transcription in
+                        ForEach(presentationRows) { row in
                             TranscriptionRow(
-                                transcription: transcription,
+                                row: row,
                                 storageRoot: storageRoot
                             )
                         }
@@ -90,8 +90,171 @@ struct TranscriptContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var sortedTranscriptions: [AudioTranscription] {
-        transcriptions.sorted { $0.startTime < $1.startTime }
+    private var presentationRows: [TranscriptPresentationRow] {
+        TranscriptPresentationPolicy.presentationRows(from: transcriptions)
+    }
+}
+
+// MARK: - Presentation Policy
+
+struct TranscriptPresentationRow: Identifiable {
+    let transcription: AudioTranscription
+    let repeatedCount: Int
+    let captionLabel: String?
+    let captionSignature: String?
+    let endedAt: Date
+
+    var id: Int64 { transcription.id }
+
+    var displayText: String {
+        if repeatedCount > 1, let captionLabel {
+            return "Ambient audio: \(captionLabel) (\(repeatedCount) entries)"
+        }
+        return TranscriptContentView.stripControlTokens(transcription.text)
+    }
+
+    var isCollapsedAmbientCaption: Bool {
+        repeatedCount > 1 && captionLabel != nil
+    }
+
+    func merged(with next: AudioTranscription, captionLabel: String) -> TranscriptPresentationRow {
+        TranscriptPresentationRow(
+            transcription: transcription,
+            repeatedCount: repeatedCount + 1,
+            captionLabel: captionLabel,
+            captionSignature: captionSignature,
+            endedAt: max(endedAt, next.endTime)
+        )
+    }
+}
+
+enum TranscriptPresentationPolicy {
+    private static let captionTerms: Set<String> = [
+        "alarm",
+        "applause",
+        "background",
+        "beep",
+        "bell",
+        "breathing",
+        "camera",
+        "chime",
+        "click",
+        "clicking",
+        "clapping",
+        "cough",
+        "crackle",
+        "crackling",
+        "door",
+        "doorbell",
+        "fire",
+        "footstep",
+        "footsteps",
+        "inaudible",
+        "keyboard",
+        "knock",
+        "laugh",
+        "laughter",
+        "mouse",
+        "music",
+        "noise",
+        "notification",
+        "ring",
+        "ringing",
+        "silence",
+        "sigh",
+        "sound",
+        "sounds",
+        "static",
+        "typing",
+        "waves",
+        "wind"
+    ]
+
+    static func presentationRows(from transcriptions: [AudioTranscription]) -> [TranscriptPresentationRow] {
+        let sorted = transcriptions.sorted { $0.startTime < $1.startTime }
+        var rows: [TranscriptPresentationRow] = []
+
+        for transcription in sorted {
+            if let caption = ambientCaption(for: transcription),
+               let last = rows.last,
+               last.captionSignature == caption.signature {
+                rows[rows.count - 1] = last.merged(
+                    with: transcription,
+                    captionLabel: caption.label
+                )
+                continue
+            }
+
+            let caption = ambientCaption(for: transcription)
+            rows.append(TranscriptPresentationRow(
+                transcription: transcription,
+                repeatedCount: 1,
+                captionLabel: caption?.label,
+                captionSignature: caption?.signature,
+                endedAt: transcription.endTime
+            ))
+        }
+
+        return rows
+    }
+
+    private static func ambientCaption(for transcription: AudioTranscription) -> (signature: String, label: String)? {
+        ambientCaptionSignature(for: transcription.text, transcriptStatus: transcription.transcriptStatus)
+    }
+
+    static func ambientCaptionSignature(for text: String, transcriptStatus: String) -> (signature: String, label: String)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let lower = trimmed.lowercased()
+        let hasCaptionMarker = lower.contains("*")
+            || (lower.hasPrefix("(") && lower.hasSuffix(")"))
+            || (lower.hasPrefix("[") && lower.hasSuffix("]"))
+        let isStatusRow = transcriptStatus.lowercased() != "transcribed"
+        guard hasCaptionMarker || isStatusRow else { return nil }
+
+        let tokens = normalizedTokens(from: lower)
+        guard !tokens.isEmpty else { return nil }
+
+        let canonicalTokens = repeatedPhraseCollapsed(tokens)
+        guard canonicalTokens.contains(where: captionTerms.contains) else { return nil }
+
+        let label = canonicalTokens.joined(separator: " ")
+        return ("ambient:\(label)", label)
+    }
+
+    private static func normalizedTokens(from text: String) -> [String] {
+        let separators = CharacterSet.alphanumerics.inverted
+        return text
+            .components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func repeatedPhraseCollapsed(_ tokens: [String]) -> [String] {
+        guard tokens.count > 1 else { return tokens }
+
+        for phraseLength in 1...max(1, tokens.count / 2) {
+            guard tokens.count % phraseLength == 0 else { continue }
+
+            let phrase = Array(tokens[0..<phraseLength])
+            var isRepeatedPhrase = true
+            var index = phraseLength
+            while index < tokens.count {
+                let nextPhrase = Array(tokens[index..<(index + phraseLength)])
+                if nextPhrase != phrase {
+                    isRepeatedPhrase = false
+                    break
+                }
+                index += phraseLength
+            }
+
+            if isRepeatedPhrase {
+                return phrase
+            }
+        }
+
+        return tokens
     }
 }
 
@@ -115,7 +278,7 @@ enum TranscriptCursorPolicy {
 // MARK: - Transcription Row
 
 private struct TranscriptionRow: View {
-    let transcription: AudioTranscription
+    let row: TranscriptPresentationRow
     let storageRoot: URL?
     @State private var isHovering = false
     @State private var didPushCursor = false
@@ -126,8 +289,12 @@ private struct TranscriptionRow: View {
         return f
     }()
 
+    private var transcription: AudioTranscription {
+        row.transcription
+    }
+
     private var duration: TimeInterval {
-        transcription.endTime.timeIntervalSince(transcription.startTime)
+        row.endedAt.timeIntervalSince(transcription.startTime)
     }
 
     private var formattedDuration: String {
@@ -157,7 +324,7 @@ private struct TranscriptionRow: View {
                 .frame(width: 36)
 
             // Content: transcript text or raw audio indicator
-            if transcription.text.isEmpty {
+            if row.displayText.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "waveform")
                         .font(.system(size: 11))
@@ -168,9 +335,9 @@ private struct TranscriptionRow: View {
                         .italic()
                 }
             } else {
-                Text(TranscriptContentView.stripControlTokens(transcription.text))
+                Text(row.displayText)
                     .font(.system(size: 13))
-                    .foregroundColor(.white.opacity(0.85))
+                    .foregroundColor(row.isCollapsedAmbientCaption ? .white.opacity(0.58) : .white.opacity(0.85))
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
             }

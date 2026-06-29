@@ -57,6 +57,35 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertTrue(assessment.shouldRetryWithEnhancement)
     }
 
+    func testCommonSoundEffectCaptionsAreStoredAsProbableJunkForManualReview() {
+        let captions = [
+            "(footsteps)",
+            "(footsteps) (bell rings)",
+            "(fire crackling)",
+            "( Meaning No audio )",
+            "[door closes]",
+            "*keyboard clicks*"
+        ]
+
+        for caption in captions {
+            let assessment = AudioTranscriptQualityPolicy.assess(
+                text: caption,
+                language: "en",
+                activity: .init(
+                    shouldTranscribe: true,
+                    isProbablySilence: false,
+                    fullBatchRMS: 0.01,
+                    activeWindowRMS: 0.012,
+                    activeDuration: 1.5
+                )
+            )
+
+            XCTAssertEqual(assessment.status, .probableJunk, caption)
+            XCTAssertTrue(assessment.shouldStoreText, caption)
+            XCTAssertTrue(assessment.shouldRetryWithEnhancement, caption)
+        }
+    }
+
     func testRepeatedPhoneticArtifactsAreStoredAsProbableJunkForManualReview() {
         let assessment = AudioTranscriptQualityPolicy.assess(
             text: "ɔːɔːɔːɔːɔːɔː",
@@ -72,6 +101,85 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
 
         XCTAssertEqual(assessment.status, .probableJunk)
         XCTAssertTrue(assessment.flags.contains("vocalization_artifact"))
+        XCTAssertTrue(assessment.shouldStoreText)
+        XCTAssertTrue(assessment.shouldRetryWithEnhancement)
+    }
+
+    func testParenthesizedJapaneseLaughCaptionIsStoredAsProbableJunkForManualReview() {
+        let assessment = AudioTranscriptQualityPolicy.assess(
+            text: "(笑)",
+            language: "nn",
+            activity: .init(
+                shouldTranscribe: true,
+                isProbablySilence: false,
+                fullBatchRMS: 0.004,
+                activeWindowRMS: 0.006,
+                activeDuration: 1.0
+            )
+        )
+
+        XCTAssertEqual(assessment.status, .probableJunk)
+        XCTAssertTrue(assessment.flags.contains("junk_pattern"))
+        XCTAssertTrue(assessment.shouldStoreText)
+        XCTAssertTrue(assessment.shouldRetryWithEnhancement)
+    }
+
+    func testParenthesizedSpeechWithPronounIsNotTreatedAsAmbientCaption() {
+        let assessment = AudioTranscriptQualityPolicy.assess(
+            text: "(I am here)",
+            language: "en",
+            activity: .init(
+                shouldTranscribe: true,
+                isProbablySilence: false,
+                fullBatchRMS: 0.02,
+                activeWindowRMS: 0.03,
+                activeDuration: 1.0
+            )
+        )
+
+        XCTAssertEqual(assessment.status, .transcribed)
+        XCTAssertTrue(assessment.shouldStoreText)
+        XCTAssertFalse(assessment.shouldRetryWithEnhancement)
+    }
+
+    func testPunctuationOnlyDecoderArtifactsAreStoredAsProbableJunkForManualReview() {
+        let artifacts = ["[", "]", "(", ")", "*", "..."]
+
+        for artifact in artifacts {
+            let assessment = AudioTranscriptQualityPolicy.assess(
+                text: artifact,
+                language: "en",
+                activity: .init(
+                    shouldTranscribe: true,
+                    isProbablySilence: false,
+                    fullBatchRMS: 0.01,
+                    activeWindowRMS: 0.012,
+                    activeDuration: 1.0
+                )
+            )
+
+            XCTAssertEqual(assessment.status, .probableJunk, artifact)
+            XCTAssertTrue(assessment.flags.contains("punctuation_artifact"), artifact)
+            XCTAssertTrue(assessment.shouldStoreText, artifact)
+            XCTAssertTrue(assessment.shouldRetryWithEnhancement, artifact)
+        }
+    }
+
+    func testUnsupportedScriptGarbageIsStoredAsProbableJunkForManualReview() {
+        let assessment = AudioTranscriptQualityPolicy.assess(
+            text: "සිසිසිස",
+            language: "nn",
+            activity: .init(
+                shouldTranscribe: true,
+                isProbablySilence: false,
+                fullBatchRMS: 0.004,
+                activeWindowRMS: 0.006,
+                activeDuration: 1.0
+            )
+        )
+
+        XCTAssertEqual(assessment.status, .probableJunk)
+        XCTAssertTrue(assessment.flags.contains("unsupported_script_artifact"))
         XCTAssertTrue(assessment.shouldStoreText)
         XCTAssertTrue(assessment.shouldRetryWithEnhancement)
     }
@@ -205,6 +313,60 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertEqual(decision.attempts, 3)
     }
 
+    func testLiveRetryProfileUsesEnglishHintAndRejectsJunkBeforeReturning() async throws {
+        let junk = DetailedTranscriptionResult(
+            text: "ɔːɔːɔːɔːɔːɔː",
+            words: [],
+            language: "nn",
+            duration: 1.0
+        )
+        let readable = Self.result("this is readable live English speech")
+        let service = ScriptedTranscriptionService(results: [junk, readable])
+        try await service.initialize()
+
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.02),
+            sampleRate: 16_000,
+            channels: 1,
+            transcriptionService: service,
+            wordLevel: true,
+            initialPrompt: nil,
+            profile: .liveFirstPass
+        )
+
+        let languageHints = await service.languageHintsSeen()
+        XCTAssertEqual(decision.transcription.text, readable.text)
+        XCTAssertEqual(decision.status, .transcribed)
+        XCTAssertEqual(decision.attempts, 2)
+        XCTAssertEqual(languageHints, ["en", "en"])
+    }
+
+    func testLiveRetryProfileRejectsSoundEffectCaptionsBeforeReturning() async throws {
+        let caption = DetailedTranscriptionResult(
+            text: "(fire crackling)",
+            words: [],
+            language: "en",
+            duration: 1.0
+        )
+        let readable = Self.result("this is the live transcript we should show")
+        let service = ScriptedTranscriptionService(results: [caption, readable])
+        try await service.initialize()
+
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.02),
+            sampleRate: 16_000,
+            channels: 1,
+            transcriptionService: service,
+            wordLevel: true,
+            initialPrompt: nil,
+            profile: .liveFirstPass
+        )
+
+        XCTAssertEqual(decision.transcription.text, readable.text)
+        XCTAssertEqual(decision.status, .transcribed)
+        XCTAssertEqual(decision.attempts, 2)
+    }
+
     func testSentenceSegmenterKeepsTextWhenWordTimingsAreMissing() {
         let sentences = SentenceSegmenter.segment(
             words: [],
@@ -257,6 +419,7 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
     private var isInitialized = false
     private var results: [DetailedTranscriptionResult]
     private var callIndex = 0
+    private var languageHints: [String] = []
 
     init(results: [DetailedTranscriptionResult]) {
         self.results = results
@@ -302,8 +465,13 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
         guard isInitialized else {
             throw TranscriptionError.notInitialized
         }
+        languageHints.append(languageHint ?? "nil")
         let result = results[min(callIndex, results.count - 1)]
         callIndex += 1
         return result
+    }
+
+    func languageHintsSeen() -> [String] {
+        languageHints
     }
 }

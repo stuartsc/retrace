@@ -7,12 +7,17 @@ final class DashboardVoiceLayoutTests: XCTestCase {
     }
 
     func testDashboardTabsAreVoiceFirst() {
-        XCTAssertEqual(DashboardContentTab.allCases, [.dictation, .appUsage, .live])
-        XCTAssertEqual(DashboardContentTab.allCases.map(\.title), ["Dictation", "App Usage", "Live"])
+        XCTAssertEqual(DashboardContentTab.allCases, [.dictation, .appUsage, .live, .screenshots])
+        XCTAssertEqual(DashboardContentTab.allCases.map(\.title), ["Dictation", "App Usage", "Live", "Screenshots"])
     }
 
     func testLiveTabHasDedicatedCaptureSurfaces() {
-        XCTAssertEqual(DashboardContentTab.live.subtitle, "Live audio, screenshots, OCR, and capture metadata")
+        XCTAssertEqual(DashboardContentTab.live.subtitle, "Live transcript, intelligence feed, and conversation context")
+    }
+
+    func testScreenshotsTabOwnsScreenHistory() {
+        XCTAssertEqual(DashboardContentTab.screenshots.subtitle, "Screen frames, OCR, and capture metadata")
+        XCTAssertEqual(DashboardContentTab.screenshots.icon, "rectangle.stack.fill")
     }
 
     func testVoiceDeskUsesSplitLayoutAtNormalWidths() {
@@ -53,10 +58,19 @@ final class DashboardVoiceLayoutTests: XCTestCase {
         XCTAssertEqual(DashboardLiveLayoutPolicy.contentMode(forWidth: 900), .stacked)
     }
 
-    func testLiveTabGivesAudioMoreHorizontalSpaceThanScreenshotsAndContext() {
+    func testLiveTabGivesIntelligenceFeedPrimaryWidth() {
         let columns = DashboardLiveLayoutPolicy.columnWidths(forWidth: DashboardVoiceLayoutPolicy.defaultContentWidth)
-        XCTAssertGreaterThan(columns.audio, columns.screenshots)
-        XCTAssertGreaterThan(columns.screenshots, columns.context)
+        XCTAssertGreaterThan(columns.intelligence, columns.transcript)
+        XCTAssertGreaterThan(columns.transcript, columns.context)
+    }
+
+    func testLiveIntelligenceFeedHasActionableDefaultCards() {
+        let titles = DashboardLiveIntelligencePolicy.defaultCards.map(\.title)
+
+        XCTAssertGreaterThanOrEqual(titles.count, 6)
+        XCTAssertTrue(titles.contains("Key people mentioned"))
+        XCTAssertTrue(titles.contains("Risks & objections"))
+        XCTAssertTrue(titles.contains("Questions to ask now"))
     }
 
     func testLiveScreenshotHistoryPageSizeSupportsLazyLoading() {
@@ -147,6 +161,151 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             DashboardLiveAudioRow.statusText(status: "needs_review", qualityFlags: "empty_text,speech_energy"),
             "Audio captured. No words decoded yet; queued for repair."
         )
+    }
+
+    func testLiveAudioHistoryRemainsAvailableWhenNewestPageHasNoReadableRows() {
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldShowHistory(
+            readableRowCount: 0,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: false
+        ))
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldShowHistory(
+            readableRowCount: 0,
+            canLoadMoreOlderRows: false,
+            isLoadingOlderRows: true
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldShowHistory(
+            readableRowCount: 0,
+            canLoadMoreOlderRows: false,
+            isLoadingOlderRows: false
+        ))
+    }
+
+    func testLiveAudioInitialLoadKeepsPagingUntilReadableRowsAreFilled() {
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+            readableRowCount: 0,
+            targetReadableRowCount: 12,
+            fetchedTranscriptRows: 20,
+            pageSize: 20,
+            canLoadMoreOlderRows: true
+        ))
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+            readableRowCount: 4,
+            targetReadableRowCount: 12,
+            fetchedTranscriptRows: 20,
+            pageSize: 20,
+            canLoadMoreOlderRows: true
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+            readableRowCount: 12,
+            targetReadableRowCount: 12,
+            fetchedTranscriptRows: 20,
+            pageSize: 20,
+            canLoadMoreOlderRows: true
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+            readableRowCount: 4,
+            targetReadableRowCount: 12,
+            fetchedTranscriptRows: 8,
+            pageSize: 20,
+            canLoadMoreOlderRows: true
+        ))
+    }
+
+    func testLiveAudioAutoLoadsOlderRowsOnlyAtEndOfReadableList() {
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
+            currentRowID: 42,
+            lastRowID: 42,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: false
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
+            currentRowID: 41,
+            lastRowID: 42,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: false
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
+            currentRowID: 42,
+            lastRowID: 42,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: true
+        ))
+    }
+
+    func testLiveAudioRepairedTranscriptBadgeUsesTranscriptionPass() {
+        let pass2 = DashboardLiveAudioRow(
+            id: 501,
+            text: "This text was repaired.",
+            startedAt: Date(timeIntervalSince1970: 1_781_555_000),
+            endedAt: Date(timeIntervalSince1970: 1_781_555_006),
+            source: .microphone,
+            confidence: 0.82,
+            transcriptStatus: "transcribed",
+            detectedLanguage: "en",
+            audioVariant: "raw",
+            qualityFlags: nil,
+            transcriptionPass: 2
+        )
+        let pass3 = DashboardLiveAudioRow(
+            id: 502,
+            text: "This text was context repaired.",
+            startedAt: Date(timeIntervalSince1970: 1_781_555_010),
+            endedAt: Date(timeIntervalSince1970: 1_781_555_016),
+            source: .microphone,
+            confidence: 0.86,
+            transcriptStatus: "transcribed",
+            detectedLanguage: "en",
+            audioVariant: "raw",
+            qualityFlags: nil,
+            transcriptionPass: 3
+        )
+
+        XCTAssertTrue(pass2.isRepairedTranscript)
+        XCTAssertEqual(pass2.repairedBadgeText, "Repaired")
+        XCTAssertTrue(pass3.isRepairedTranscript)
+        XCTAssertEqual(pass3.repairedBadgeText, "Context repaired")
+    }
+
+    func testLiveAudioRowsUseBatchKeyForPassReplacement() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let pass1 = DashboardLiveAudioRow(
+            id: 801,
+            text: "first pass draft",
+            startedAt: start,
+            endedAt: start.addingTimeInterval(8),
+            source: .microphone,
+            confidence: 0.48,
+            transcriptStatus: "needs_review",
+            detectedLanguage: "en",
+            audioVariant: "raw",
+            qualityFlags: "short_text,variant:raw",
+            transcriptionPass: 1,
+            batchAudioPath: "audio/batch_1781555000_microphone.m4a"
+        )
+        let pass3 = DashboardLiveAudioRow(
+            id: 802,
+            text: "third pass final",
+            startedAt: start,
+            endedAt: start.addingTimeInterval(8),
+            source: .microphone,
+            confidence: 0.91,
+            transcriptStatus: "transcribed",
+            detectedLanguage: "en",
+            audioVariant: "contextual",
+            qualityFlags: nil,
+            transcriptionPass: 3,
+            batchAudioPath: "audio/batch_1781555000_microphone.m4a"
+        )
+
+        let merged = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
+            existing: [pass1],
+            latest: [pass3]
+        )
+
+        XCTAssertEqual(merged.map(\.id), [802])
+        XCTAssertEqual(merged.first?.text, "third pass final")
+        XCTAssertEqual(merged.first?.transcriptionPass, 3)
     }
 
     func testLiveAudioPresentationGroupsRepeatedPendingRows() {
@@ -320,6 +479,41 @@ final class DashboardVoiceLayoutTests: XCTestCase {
         XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "*sound of wind*" })
     }
 
+    func testLiveAudioPresentationMovesHighConfidenceAmbientCaptionsToSpecificStatusSummary() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            "*sound of camera*",
+            "*sound of camera*",
+            "*typing* *typing* *typing* *typing*",
+            "*typing*"
+        ].enumerated().map { index, text in
+            DashboardLiveAudioRow(
+                id: Int64(8_100 + index),
+                text: text,
+                startedAt: now.addingTimeInterval(Double(-index * 10)),
+                endedAt: now.addingTimeInterval(Double(-index * 10 + 8)),
+                source: .microphone,
+                confidence: 0.84,
+                transcriptStatus: "transcribed",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: nil
+            )
+        }
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+
+        XCTAssertTrue(presentation.transcriptRows.isEmpty)
+        XCTAssertEqual(presentation.statusRows.count, 2)
+        XCTAssertEqual(
+            presentation.statusRows.map(\.displayText),
+            [
+                "Ambient audio: sound of camera (2 entries collapsed).",
+                "Ambient audio: typing (2 entries collapsed)."
+            ]
+        )
+    }
+
     func testLiveAudioPresentationKeepsPlausibleFirstPassRepairTextVisible() {
         let now = Date(timeIntervalSince1970: 1_781_555_000)
         let repairRows = [
@@ -359,14 +553,164 @@ final class DashboardVoiceLayoutTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.transcriptRows.map(\.text),
-            ["No.", "[Observe the", cleanTranscript.text]
+            ["No.", cleanTranscript.text]
         )
         XCTAssertEqual(presentation.statusRows.count, 1)
         XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
-        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 3)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 4)
         XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "(Breathing)" })
         XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "ʻᵖᵗᵗᵗ" })
         XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "සැහාහින්න්" })
+        XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "[Observe the" })
+    }
+
+    func testLiveAudioPresentationHidesLaughCaptionsAndLanguageUncertainGarbage() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            DashboardLiveAudioRow(
+                id: 7_000,
+                text: "(笑)",
+                startedAt: now,
+                endedAt: now.addingTimeInterval(8),
+                source: .microphone,
+                confidence: 0.18,
+                transcriptStatus: "needs_review",
+                detectedLanguage: "nn",
+                audioVariant: "raw",
+                qualityFlags: "short_text,variant:raw"
+            ),
+            DashboardLiveAudioRow(
+                id: 7_001,
+                text: "pomoc ommatechnic Օե ՠ� probably huh orit",
+                startedAt: now.addingTimeInterval(-10),
+                endedAt: now.addingTimeInterval(-2),
+                source: .microphone,
+                confidence: 0.18,
+                transcriptStatus: "language_uncertain",
+                detectedLanguage: "nn",
+                audioVariant: "raw",
+                qualityFlags: "language_uncertain,variant:raw"
+            ),
+            DashboardLiveAudioRow(
+                id: 7_002,
+                text: "No.",
+                startedAt: now.addingTimeInterval(-20),
+                endedAt: now.addingTimeInterval(-12),
+                source: .microphone,
+                confidence: 0.72,
+                transcriptStatus: "needs_review",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: "short_text,variant:raw"
+            )
+        ]
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+
+        XCTAssertEqual(presentation.transcriptRows.map(\.text), ["No."])
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 2)
+    }
+
+    func testLiveAudioPresentationHidesCommonSoundEffectCaptions() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            "(footsteps)",
+            "(footsteps) (bell rings)",
+            "(fire crackling)",
+            "( Meaning No audio )",
+            "[door closes]",
+            "*keyboard clicks*"
+        ].enumerated().map { index, text in
+            DashboardLiveAudioRow(
+                id: Int64(7_100 + index),
+                text: text,
+                startedAt: now.addingTimeInterval(Double(-index * 10)),
+                endedAt: now.addingTimeInterval(Double(-index * 10 + 8)),
+                source: .microphone,
+                confidence: 0.1,
+                transcriptStatus: "needs_review",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: "short_text,variant:raw"
+            )
+        }
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+
+        XCTAssertTrue(presentation.transcriptRows.isEmpty)
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 6)
+    }
+
+    func testLiveAudioPresentationHidesPunctuationOnlyDecoderArtifacts() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = ["[", "]", "*"].enumerated().map { index, text in
+            DashboardLiveAudioRow(
+                id: Int64(7_200 + index),
+                text: text,
+                startedAt: now.addingTimeInterval(Double(-index * 10)),
+                endedAt: now.addingTimeInterval(Double(-index * 10 + 8)),
+                source: .microphone,
+                confidence: 0.1,
+                transcriptStatus: "needs_review",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: "short_text,variant:raw"
+            )
+        }
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+
+        XCTAssertEqual(presentation.transcriptRows, [])
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertTrue(presentation.statusRows[0].isLowConfidenceSummary)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 3)
+    }
+
+    func testLiveAudioStatusPanelCanUseRecentStatusWindow() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        var statusRows: [DashboardLiveAudioRow] = []
+        for index in 0..<30 {
+            statusRows.append(DashboardLiveAudioRow(
+                id: Int64(7_300 + index),
+                text: "",
+                startedAt: now.addingTimeInterval(Double(-index * 10)),
+                endedAt: now.addingTimeInterval(Double(-index * 10 + 8)),
+                source: .microphone,
+                confidence: nil,
+                transcriptStatus: "probable_silence",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: "empty_text,low_energy"
+            ))
+        }
+        let transcript = DashboardLiveAudioRow(
+            id: 7_400,
+            text: "Readable transcript remains available.",
+            startedAt: now.addingTimeInterval(-400),
+            endedAt: now.addingTimeInterval(-392),
+            source: .microphone,
+            confidence: 0.8,
+            transcriptStatus: "transcribed",
+            detectedLanguage: "en",
+            audioVariant: "raw",
+            qualityFlags: nil
+        )
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(
+            for: statusRows + [transcript],
+            statusRowLimit: 8
+        )
+
+        XCTAssertEqual(
+            presentation.transcriptRows.map { $0.text },
+            ["Readable transcript remains available."]
+        )
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertEqual(presentation.statusRows[0].pendingBatchCount, 8)
     }
 
     func testLiveAudioPresentationCollapsesConsecutiveDuplicateTranscriptText() {

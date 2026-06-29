@@ -35,9 +35,14 @@ public actor AudioBackfillManager {
 
     /// Process all saved batch audio files that haven't been transcribed
     /// Returns a summary of what was processed
-    public func processAllPendingBatches() async -> BackfillResult {
+    public func processAllPendingBatches(maxBatches: Int? = nil) async -> BackfillResult {
         guard !isRunning else {
             Log.warning("[AudioBackfill] Already running, skipping", category: .processing)
+            return BackfillResult(processedCount: 0, silenceCount: 0, failedCount: 0, totalSentences: 0)
+        }
+
+        let batchLimit = maxBatches.map { max($0, 0) }
+        if batchLimit == 0 {
             return BackfillResult(processedCount: 0, silenceCount: 0, failedCount: 0, totalSentences: 0)
         }
 
@@ -48,14 +53,19 @@ public actor AudioBackfillManager {
         var totalSilence = 0
         var totalFailed = 0
         var totalSentences = 0
+        var attemptedBatches = 0
 
         // Process in pages of 10 to avoid loading too many at once
         let pageSize = 10
 
         while true {
+            if let batchLimit, attemptedBatches >= batchLimit { break }
+            let fetchLimit = batchLimit.map { min(pageSize, max($0 - attemptedBatches, 0)) } ?? pageSize
+            guard fetchLimit > 0 else { break }
+
             let batches: [UntranscribedBatch]
             do {
-                batches = try await transcriptionQueries.getUntranscribedBatches(limit: pageSize)
+                batches = try await transcriptionQueries.getUntranscribedBatches(limit: fetchLimit)
             } catch {
                 Log.error("[AudioBackfill] Failed to query untranscribed batches: \(error)", category: .processing)
                 break
@@ -66,6 +76,8 @@ public actor AudioBackfillManager {
             Log.info("[AudioBackfill] Processing \(batches.count) batch(es)...", category: .processing)
 
             for batch in batches {
+                if let batchLimit, attemptedBatches >= batchLimit { break }
+                attemptedBatches += 1
                 let result = await processSingleBatch(batch)
                 switch result {
                 case .transcribed(let sentenceCount):

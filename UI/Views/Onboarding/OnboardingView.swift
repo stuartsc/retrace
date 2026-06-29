@@ -167,8 +167,8 @@ public struct OnboardingView: View {
     // Encryption
     @State private var encryptionEnabled: Bool? = false
 
-    // Launch at login - defaults to true (recommended)
-    @State private var launchAtLogin: Bool = true
+    // Launch at login must be explicit; surprise auto-start is hostile for a recorder.
+    @State private var launchAtLogin: Bool = false
 
     let coordinator: AppCoordinator
     let onComplete: () -> Void
@@ -1386,7 +1386,7 @@ public struct OnboardingView: View {
                 .font(.retraceDisplay3)
                 .foregroundColor(.retracePrimary)
 
-            Text("We recommend launching Retrace at login so it's always running in the background, but you can turn this off if you prefer.")
+            Text("Start Retrace automatically when you log in only if you explicitly want always-on capture from startup.")
                 .font(.retraceBody)
                 .foregroundColor(.retraceSecondary)
                 .multilineTextAlignment(.center)

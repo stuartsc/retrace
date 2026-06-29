@@ -47,9 +47,17 @@ public actor AudioContextualRefinementManager {
     }
 
     /// Process all pass-2 transcriptions that can be contextually refined
-    public func processAllPendingRefinements(runMode: RunMode = .automatic) async -> RefinementResult {
+    public func processAllPendingRefinements(
+        runMode: RunMode = .automatic,
+        maxBatches: Int? = nil
+    ) async -> RefinementResult {
         guard !isRunning else {
             Log.warning("[ContextualRefinement] Already running, skipping", category: .processing)
+            return RefinementResult(refinedCount: 0, skippedCount: 0, failedCount: 0, totalSentences: 0)
+        }
+
+        let batchLimit = maxBatches.map { max($0, 0) }
+        if batchLimit == 0 {
             return RefinementResult(refinedCount: 0, skippedCount: 0, failedCount: 0, totalSentences: 0)
         }
 
@@ -62,8 +70,10 @@ public actor AudioContextualRefinementManager {
         var totalSentences = 0
         var batchesInCycle = 0
         var attemptedBatchPaths = Set<String>()
+        var attemptedBatches = 0
 
         while true {
+            if let batchLimit, attemptedBatches >= batchLimit { break }
             // Wait for idle conditions
             while runMode == .automatic && !isIdle() {
                 Log.debug("[ContextualRefinement] Not idle, waiting \(Int(idleCheckInterval))s", category: .processing)
@@ -74,7 +84,9 @@ public actor AudioContextualRefinementManager {
 
             let batchPaths: [String]
             do {
-                let candidates = try await transcriptionQueries.getDistinctBatchPathsForContextualRefinement(limit: 10)
+                let fetchLimit = batchLimit.map { min(10, max($0 - attemptedBatches, 0)) } ?? 10
+                guard fetchLimit > 0 else { break }
+                let candidates = try await transcriptionQueries.getDistinctBatchPathsForContextualRefinement(limit: fetchLimit)
                 batchPaths = candidates.filter { !attemptedBatchPaths.contains($0) }
             } catch {
                 Log.error("[ContextualRefinement] Failed to query candidates: \(error)", category: .processing)
@@ -88,7 +100,9 @@ public actor AudioContextualRefinementManager {
 
             for batchPath in batchPaths {
                 if Task.isCancelled { break }
+                if let batchLimit, attemptedBatches >= batchLimit { break }
                 attemptedBatchPaths.insert(batchPath)
+                attemptedBatches += 1
 
                 // Re-check idle before each batch
                 if runMode == .automatic && !isIdle() { break }

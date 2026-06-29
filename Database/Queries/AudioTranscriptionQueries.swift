@@ -15,7 +15,10 @@ import Shared
 /// - 4: Recall-first transcription: no pre-transcription silence gate, metadata status/provenance
 /// - 5: Recall-first whisper params: decoder no-speech gate disabled for quiet speech
 /// - 6: Auto language maps to multilingual transcription, not detect-language-only mode
-public let CURRENT_PIPELINE_VERSION: Int = 6
+/// - 7: Sound-effect captions stay out of live transcripts; refinement skips noise/review rows
+/// - 8: Short wrapped ambient captions like "(fire crackling)" are treated as repair artifacts
+/// - 9: Punctuation-only decoder artifacts like "[" and "]" are treated as junk
+public let CURRENT_PIPELINE_VERSION: Int = 9
 
 /// Database queries for audio transcription storage and retrieval
 /// Owner: DATABASE agent
@@ -247,40 +250,40 @@ public actor AudioTranscriptionQueries {
         }
     }
 
-    /// Atomically insert pass-2 rows and remove the prior pass-1 rows for a batch.
-    /// Existing pass-1 rows stay intact if any insert or delete step fails.
+    /// Insert pass-2 rows for a batch while preserving pass-1 rows for audit/debugging.
+    /// Product reads select the latest pass, so old passes are retained but not normally surfaced.
     @discardableResult
     public func replacePass1RecordsForBatch(
         batchAudioPath: String,
         with transcriptions: [TranscriptionBatchRecord]
     ) throws -> [Int64] {
-        try replaceRecordsForBatch(
+        try insertVersionedRecordsForBatch(
             batchAudioPath: batchAudioPath,
-            replacingPass: 1,
             with: transcriptions
         )
     }
 
-    /// Atomically insert pass-3 rows and remove the prior pass-2 rows for a batch.
-    /// Existing pass-2 rows stay intact if any insert or delete step fails.
+    /// Insert pass-3 rows for a batch while preserving pass-2 rows for audit/debugging.
+    /// Product reads select the latest pass, so old passes are retained but not normally surfaced.
     @discardableResult
     public func replacePass2RecordsForBatch(
         batchAudioPath: String,
         with transcriptions: [TranscriptionBatchRecord]
     ) throws -> [Int64] {
-        try replaceRecordsForBatch(
+        try insertVersionedRecordsForBatch(
             batchAudioPath: batchAudioPath,
-            replacingPass: 2,
             with: transcriptions
         )
     }
 
-    private func replaceRecordsForBatch(
+    private func insertVersionedRecordsForBatch(
         batchAudioPath: String,
-        replacingPass: Int,
         with transcriptions: [TranscriptionBatchRecord]
     ) throws -> [Int64] {
         guard !transcriptions.isEmpty else { return [] }
+        guard transcriptions.allSatisfy({ $0.batchAudioPath == batchAudioPath }) else {
+            throw DatabaseError.queryExecutionFailed("Replacement records must use the target batch audio path")
+        }
 
         try executeStatement("BEGIN TRANSACTION;")
         var insertedIDs: [Int64] = []
@@ -306,7 +309,6 @@ public actor AudioTranscriptionQueries {
                 insertedIDs.append(id)
             }
 
-            _ = try deleteRecordsForBatch(batchAudioPath: batchAudioPath, transcriptionPass: replacingPass)
             try executeStatement("COMMIT;")
             return insertedIDs
         } catch {
@@ -325,6 +327,21 @@ public actor AudioTranscriptionQueries {
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
         }
+    }
+
+    private static func latestBatchPassPredicate(alias: String) -> String {
+        """
+            AND (
+                \(alias).batch_audio_path IS NULL
+                OR \(alias).batch_audio_path = ''
+                OR \(alias).transcription_pass = (
+                    SELECT MAX(latest.transcription_pass)
+                    FROM audio_captures AS latest
+                    WHERE latest.batch_audio_path = \(alias).batch_audio_path
+                    AND latest.source != 'word'
+                )
+            )
+        """
     }
 
     /// Insert a raw audio batch record (before transcription)
@@ -377,7 +394,8 @@ public actor AudioTranscriptionQueries {
     ) throws -> [AudioTranscription] {
         var sql = """
             SELECT id, session_id, text, start_time, end_time, source, confidence, created_at,
-                   audio_path, transcript_status, detected_language, audio_variant, quality_flags
+                   audio_path, transcript_status, detected_language, audio_variant, quality_flags,
+                   transcription_pass, batch_audio_path
             FROM audio_captures
             WHERE start_time >= ? AND end_time <= ?
             AND source != 'word'
@@ -394,6 +412,7 @@ public actor AudioTranscriptionQueries {
             sql += " AND source = ?"
         }
 
+        sql += Self.latestBatchPassPredicate(alias: "audio_captures")
         sql += " ORDER BY start_time DESC LIMIT ? OFFSET ?;"
 
         var stmt: OpaquePointer?
@@ -429,6 +448,8 @@ public actor AudioTranscriptionQueries {
             let detectedLanguage = sqlite3_column_text(stmt, 10).map { String(cString: $0) }
             let audioVariant = sqlite3_column_text(stmt, 11).map { String(cString: $0) } ?? "raw"
             let qualityFlags = sqlite3_column_text(stmt, 12).map { String(cString: $0) }
+            let transcriptionPass = Int(sqlite3_column_int(stmt, 13))
+            let batchAudioPath = sqlite3_column_text(stmt, 14).map { String(cString: $0) }
 
             results.append(AudioTranscription(
                 id: id,
@@ -440,10 +461,12 @@ public actor AudioTranscriptionQueries {
                 confidence: confidence,
                 createdAt: createdAt,
                 audioPath: audioPath,
+                batchAudioPath: batchAudioPath,
                 transcriptStatus: transcriptStatus,
                 detectedLanguage: detectedLanguage,
                 audioVariant: audioVariant,
-                qualityFlags: qualityFlags
+                qualityFlags: qualityFlags,
+                transcriptionPass: transcriptionPass
             ))
         }
 
@@ -458,9 +481,12 @@ public actor AudioTranscriptionQueries {
         limit: Int = 50
     ) throws -> [AudioTranscription] {
         var sql = """
-            SELECT id, session_id, text, start_time, end_time, source, confidence, created_at
+            SELECT id, session_id, text, start_time, end_time, source, confidence, created_at,
+                   audio_path, transcript_status, detected_language, audio_variant, quality_flags,
+                   transcription_pass, batch_audio_path
             FROM audio_captures
             WHERE rowid IN (SELECT rowid FROM audio_captures_fts WHERE audio_captures_fts MATCH ?)
+            AND source != 'word'
             """
 
         var paramIndex: Int32 = 2
@@ -473,6 +499,7 @@ public actor AudioTranscriptionQueries {
             paramIndex += 1
         }
 
+        sql += Self.latestBatchPassPredicate(alias: "audio_captures")
         sql += " ORDER BY start_time DESC LIMIT ?;"
 
         var stmt: OpaquePointer?
@@ -505,6 +532,13 @@ public actor AudioTranscriptionQueries {
             let sourceRaw = String(cString: sqlite3_column_text(stmt, 5))
             let confidence = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 6)
             let createdAt = Schema.timestampToDate(sqlite3_column_int64(stmt, 7))
+            let audioPath = sqlite3_column_text(stmt, 8).map { String(cString: $0) }
+            let transcriptStatus = sqlite3_column_text(stmt, 9).map { String(cString: $0) } ?? "transcribed"
+            let detectedLanguage = sqlite3_column_text(stmt, 10).map { String(cString: $0) }
+            let audioVariant = sqlite3_column_text(stmt, 11).map { String(cString: $0) } ?? "raw"
+            let qualityFlags = sqlite3_column_text(stmt, 12).map { String(cString: $0) }
+            let transcriptionPass = Int(sqlite3_column_int(stmt, 13))
+            let batchAudioPath = sqlite3_column_text(stmt, 14).map { String(cString: $0) }
 
             results.append(AudioTranscription(
                 id: id,
@@ -514,7 +548,14 @@ public actor AudioTranscriptionQueries {
                 endTime: endTime,
                 source: AudioSource(rawValue: sourceRaw) ?? .microphone,
                 confidence: confidence,
-                createdAt: createdAt
+                createdAt: createdAt,
+                audioPath: audioPath,
+                batchAudioPath: batchAudioPath,
+                transcriptStatus: transcriptStatus,
+                detectedLanguage: detectedLanguage,
+                audioVariant: audioVariant,
+                qualityFlags: qualityFlags,
+                transcriptionPass: transcriptionPass
             ))
         }
 
@@ -523,12 +564,15 @@ public actor AudioTranscriptionQueries {
 
     /// Get transcriptions for a specific session
     public func getTranscriptions(forSession sessionID: String) throws -> [AudioTranscription] {
-        let sql = """
-            SELECT id, session_id, text, start_time, end_time, source, confidence, created_at
+        var sql = """
+            SELECT id, session_id, text, start_time, end_time, source, confidence, created_at,
+                   audio_path, transcript_status, detected_language, audio_variant, quality_flags,
+                   transcription_pass, batch_audio_path
             FROM audio_captures
             WHERE session_id = ?
-            ORDER BY start_time ASC;
             """
+        sql += Self.latestBatchPassPredicate(alias: "audio_captures")
+        sql += " ORDER BY start_time ASC;"
 
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -549,6 +593,13 @@ public actor AudioTranscriptionQueries {
             let sourceRaw = String(cString: sqlite3_column_text(stmt, 5))
             let confidence = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 6)
             let createdAt = Schema.timestampToDate(sqlite3_column_int64(stmt, 7))
+            let audioPath = sqlite3_column_text(stmt, 8).map { String(cString: $0) }
+            let transcriptStatus = sqlite3_column_text(stmt, 9).map { String(cString: $0) } ?? "transcribed"
+            let detectedLanguage = sqlite3_column_text(stmt, 10).map { String(cString: $0) }
+            let audioVariant = sqlite3_column_text(stmt, 11).map { String(cString: $0) } ?? "raw"
+            let qualityFlags = sqlite3_column_text(stmt, 12).map { String(cString: $0) }
+            let transcriptionPass = Int(sqlite3_column_int(stmt, 13))
+            let batchAudioPath = sqlite3_column_text(stmt, 14).map { String(cString: $0) }
 
             results.append(AudioTranscription(
                 id: id,
@@ -558,7 +609,14 @@ public actor AudioTranscriptionQueries {
                 endTime: endTime,
                 source: AudioSource(rawValue: sourceRaw) ?? .microphone,
                 confidence: confidence,
-                createdAt: createdAt
+                createdAt: createdAt,
+                audioPath: audioPath,
+                batchAudioPath: batchAudioPath,
+                transcriptStatus: transcriptStatus,
+                detectedLanguage: detectedLanguage,
+                audioVariant: audioVariant,
+                qualityFlags: qualityFlags,
+                transcriptionPass: transcriptionPass
             ))
         }
 
@@ -797,7 +855,31 @@ public actor AudioTranscriptionQueries {
             AND batch_audio_path IS NOT NULL
             AND source NOT IN ('word')
             AND text NOT IN ('', '[silence]', '[hallucination]', '[decode_error]')
-            AND COALESCE(transcript_status, '') NOT IN ('refinement_failed', 'refinement_skipped')
+            AND COALESCE(transcript_status, 'transcribed') = 'transcribed'
+            AND NOT EXISTS (
+                SELECT 1 FROM audio_captures AS newer
+                WHERE newer.batch_audio_path = audio_captures.batch_audio_path
+                AND newer.source NOT IN ('word')
+                AND newer.transcription_pass > 1
+            )
+            AND NOT (
+                substr(ltrim(text), 1, 1) IN ('(', '[', '*')
+                AND substr(rtrim(text), -1) IN (')', ']', '*')
+                AND (
+                    lower(text) LIKE '%footstep%'
+                    OR lower(text) LIKE '%bell%'
+                    OR lower(text) LIKE '%door%'
+                    OR lower(text) LIKE '%keyboard%'
+                    OR lower(text) LIKE '%click%'
+                    OR lower(text) LIKE '%chime%'
+                    OR lower(text) LIKE '%crackl%'
+                    OR lower(text) LIKE '%fire%'
+                    OR lower(text) LIKE '%notification%'
+                    OR lower(text) LIKE '%ring%'
+                    OR lower(text) LIKE '%no audio%'
+                    OR lower(text) LIKE '%no sound%'
+                )
+            )
             ORDER BY start_time ASC
             LIMIT ?;
             """
@@ -1065,7 +1147,31 @@ public actor AudioTranscriptionQueries {
             AND batch_audio_path IS NOT NULL
             AND source NOT IN ('word')
             AND text NOT IN ('', '[silence]', '[hallucination]', '[decode_error]')
-            AND COALESCE(transcript_status, '') NOT IN ('refinement_failed', 'refinement_skipped')
+            AND COALESCE(transcript_status, 'transcribed') = 'transcribed'
+            AND NOT EXISTS (
+                SELECT 1 FROM audio_captures AS newer
+                WHERE newer.batch_audio_path = audio_captures.batch_audio_path
+                AND newer.source NOT IN ('word')
+                AND newer.transcription_pass > 2
+            )
+            AND NOT (
+                substr(ltrim(text), 1, 1) IN ('(', '[', '*')
+                AND substr(rtrim(text), -1) IN (')', ']', '*')
+                AND (
+                    lower(text) LIKE '%footstep%'
+                    OR lower(text) LIKE '%bell%'
+                    OR lower(text) LIKE '%door%'
+                    OR lower(text) LIKE '%keyboard%'
+                    OR lower(text) LIKE '%click%'
+                    OR lower(text) LIKE '%chime%'
+                    OR lower(text) LIKE '%crackl%'
+                    OR lower(text) LIKE '%fire%'
+                    OR lower(text) LIKE '%notification%'
+                    OR lower(text) LIKE '%ring%'
+                    OR lower(text) LIKE '%no audio%'
+                    OR lower(text) LIKE '%no sound%'
+                )
+            )
             ORDER BY start_time ASC
             LIMIT ?;
             """
@@ -1116,7 +1222,7 @@ public actor AudioTranscriptionQueries {
         let targetTime = sqlite3_column_int64(timeStmt, 0)
 
         // Get preceding batch text (batch with max start_time < targetTime)
-        let precedingSql = """
+        var precedingSql = """
             SELECT GROUP_CONCAT(text, ' ') FROM audio_captures
             WHERE batch_audio_path = (
                 SELECT batch_audio_path FROM audio_captures
@@ -1129,8 +1235,9 @@ public actor AudioTranscriptionQueries {
             )
             AND source NOT IN ('word')
             AND text NOT IN ('', '[silence]', '[hallucination]', '[decode_error]')
-            ORDER BY start_time ASC;
             """
+        precedingSql += Self.latestBatchPassPredicate(alias: "audio_captures")
+        precedingSql += " ORDER BY start_time ASC;"
 
         var precStmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, precedingSql, -1, &precStmt, nil) == SQLITE_OK else {
@@ -1149,7 +1256,7 @@ public actor AudioTranscriptionQueries {
         }
 
         // Get following batch text (batch with min start_time > targetTime + 30s)
-        let followingSql = """
+        var followingSql = """
             SELECT GROUP_CONCAT(text, ' ') FROM audio_captures
             WHERE batch_audio_path = (
                 SELECT batch_audio_path FROM audio_captures
@@ -1162,8 +1269,9 @@ public actor AudioTranscriptionQueries {
             )
             AND source NOT IN ('word')
             AND text NOT IN ('', '[silence]', '[hallucination]', '[decode_error]')
-            ORDER BY start_time ASC;
             """
+        followingSql += Self.latestBatchPassPredicate(alias: "audio_captures")
+        followingSql += " ORDER BY start_time ASC;"
 
         var folStmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, followingSql, -1, &folStmt, nil) == SQLITE_OK else {
@@ -1238,10 +1346,12 @@ public struct AudioTranscription: Sendable {
     public let confidence: Double?
     public let createdAt: Date
     public let audioPath: String?
+    public let batchAudioPath: String?
     public let transcriptStatus: String
     public let detectedLanguage: String?
     public let audioVariant: String
     public let qualityFlags: String?
+    public let transcriptionPass: Int
 
     public init(
         id: Int64,
@@ -1253,10 +1363,12 @@ public struct AudioTranscription: Sendable {
         confidence: Double?,
         createdAt: Date,
         audioPath: String? = nil,
+        batchAudioPath: String? = nil,
         transcriptStatus: String = "transcribed",
         detectedLanguage: String? = nil,
         audioVariant: String = "raw",
-        qualityFlags: String? = nil
+        qualityFlags: String? = nil,
+        transcriptionPass: Int = 1
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -1267,10 +1379,12 @@ public struct AudioTranscription: Sendable {
         self.confidence = confidence
         self.createdAt = createdAt
         self.audioPath = audioPath
+        self.batchAudioPath = batchAudioPath
         self.transcriptStatus = transcriptStatus
         self.detectedLanguage = detectedLanguage
         self.audioVariant = audioVariant
         self.qualityFlags = qualityFlags
+        self.transcriptionPass = transcriptionPass
     }
 }
 

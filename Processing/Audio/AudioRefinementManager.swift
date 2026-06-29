@@ -77,9 +77,14 @@ public actor AudioRefinementManager {
     }
 
     /// Process all pass-1 transcriptions that can be refined
-    public func processAllPendingRefinements() async -> RefinementResult {
+    public func processAllPendingRefinements(maxBatches: Int? = nil) async -> RefinementResult {
         guard !isRunning else {
             Log.warning("[AudioRefinement] Already running, skipping", category: .processing)
+            return RefinementResult(refinedCount: 0, silenceCount: 0, failedCount: 0, totalSentences: 0)
+        }
+
+        let batchLimit = maxBatches.map { max($0, 0) }
+        if batchLimit == 0 {
             return RefinementResult(refinedCount: 0, silenceCount: 0, failedCount: 0, totalSentences: 0)
         }
 
@@ -92,8 +97,10 @@ public actor AudioRefinementManager {
         var totalSentences = 0
         var batchesInCycle = 0
         var attemptedBatchPaths = Set<String>()
+        var attemptedBatches = 0
 
         while !Task.isCancelled {
+            if let batchLimit, attemptedBatches >= batchLimit { break }
             if await yieldToPass1IfNeeded() {
                 continue
             }
@@ -101,7 +108,9 @@ public actor AudioRefinementManager {
 
             let batchPaths: [String]
             do {
-                let candidates = try await transcriptionQueries.getDistinctBatchPathsForRefinement(limit: 10)
+                let fetchLimit = batchLimit.map { min(10, max($0 - attemptedBatches, 0)) } ?? 10
+                guard fetchLimit > 0 else { break }
+                let candidates = try await transcriptionQueries.getDistinctBatchPathsForRefinement(limit: fetchLimit)
                 batchPaths = candidates.filter { !attemptedBatchPaths.contains($0) }
             } catch {
                 Log.error("[AudioRefinement] Failed to query refinement candidates: \(error)", category: .processing)
@@ -112,9 +121,11 @@ public actor AudioRefinementManager {
 
             for batchPath in batchPaths {
                 if Task.isCancelled { break }
+                if let batchLimit, attemptedBatches >= batchLimit { break }
                 if await yieldToPass1IfNeeded() { break }
                 if Task.isCancelled { break }
                 attemptedBatchPaths.insert(batchPath)
+                attemptedBatches += 1
 
                 let result = await processSingleBatch(batchPath)
                 switch result {

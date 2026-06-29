@@ -14,6 +14,9 @@ import Shared
 ///       ├── frames.bin      # Binary: [FrameHeader|PixelData][FrameHeader|PixelData]...
 ///       └── metadata.json   # Segment metadata (videoID, startTime, frameCount)
 public actor WALManager {
+    public static let defaultQuarantineMaxAge: TimeInterval = 24 * 60 * 60
+    public static let defaultQuarantineMaxBytes: Int64 = 2 * 1024 * 1024 * 1024
+
     private let walRootURL: URL
     private var frameOffsetIndexCache: [Int64: WALFrameOffsetIndex] = [:]
     private var frameIDOffsetIndexCache: [Int64: WALFrameIDOffsetIndex] = [:]
@@ -30,6 +33,8 @@ public actor WALManager {
                 withIntermediateDirectories: true
             )
         }
+
+        _ = try await pruneQuarantinedSessions()
     }
 
     // MARK: - Write Operations
@@ -264,7 +269,73 @@ public actor WALManager {
         frameOffsetIndexCache.removeValue(forKey: session.videoID.value)
         frameIDOffsetIndexCache.removeValue(forKey: session.videoID.value)
         Log.warning("[WAL] Quarantined WAL session \(session.videoID.value) to \(destination.path) reason=\(reason)", category: .storage)
+        _ = try? await pruneQuarantinedSessions()
         return destination
+    }
+
+    /// Bound quarantined raw WAL buffers so crash-recovery data cannot become an
+    /// untracked second archive. This never touches active WAL sessions or encoded
+    /// video chunks.
+    public func pruneQuarantinedSessions(
+        maxAge: TimeInterval = WALManager.defaultQuarantineMaxAge,
+        maxBytes: Int64 = WALManager.defaultQuarantineMaxBytes,
+        now: Date = Date()
+    ) async throws -> WALQuarantinePruneResult {
+        let quarantineRoot = walRootURL.appendingPathComponent("quarantine", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: quarantineRoot.path) else {
+            return WALQuarantinePruneResult(deletedSessionCount: 0, deletedBytes: 0, remainingBytes: 0)
+        }
+
+        var sessions = try quarantinedSessionRecords(in: quarantineRoot)
+        guard !sessions.isEmpty else {
+            return WALQuarantinePruneResult(deletedSessionCount: 0, deletedBytes: 0, remainingBytes: 0)
+        }
+
+        let cutoff = now.addingTimeInterval(-maxAge)
+        var deletedSessionCount = 0
+        var deletedBytes: Int64 = 0
+        var remainingSessions: [QuarantinedWALSessionRecord] = []
+
+        for session in sessions {
+            if session.referenceDate < cutoff {
+                try FileManager.default.removeItem(at: session.url)
+                deletedSessionCount += 1
+                deletedBytes += session.size
+            } else {
+                remainingSessions.append(session)
+            }
+        }
+
+        sessions = remainingSessions.sorted { lhs, rhs in
+            if lhs.referenceDate == rhs.referenceDate {
+                return lhs.url.lastPathComponent < rhs.url.lastPathComponent
+            }
+            return lhs.referenceDate < rhs.referenceDate
+        }
+
+        var remainingBytes = sessions.reduce(Int64(0)) { $0 + $1.size }
+        if maxBytes >= 0 && remainingBytes > maxBytes {
+            for session in sessions {
+                guard remainingBytes > maxBytes else { break }
+                try FileManager.default.removeItem(at: session.url)
+                deletedSessionCount += 1
+                deletedBytes += session.size
+                remainingBytes -= session.size
+            }
+        }
+
+        if deletedSessionCount > 0 {
+            Log.warning(
+                "[WAL] Pruned \(deletedSessionCount) quarantined WAL sessions, freed \(Self.formatBytes(deletedBytes)), remaining \(Self.formatBytes(max(0, remainingBytes)))",
+                category: .storage
+            )
+        }
+
+        return WALQuarantinePruneResult(
+            deletedSessionCount: deletedSessionCount,
+            deletedBytes: deletedBytes,
+            remainingBytes: max(0, remainingBytes)
+        )
     }
 
     /// Clear ALL WAL sessions (used when changing database location)
@@ -706,6 +777,66 @@ public actor WALManager {
         return String(data: data, encoding: .utf8)
     }
 
+    private func quarantinedSessionRecords(in quarantineRoot: URL) throws -> [QuarantinedWALSessionRecord] {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: quarantineRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]
+        )
+
+        var records: [QuarantinedWALSessionRecord] = []
+        for url in contents {
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+            guard values.isDirectory == true else { continue }
+
+            let size = try directorySize(at: url)
+            let metadataStart = try? loadMetadata(from: url).startTime
+            let referenceDate = metadataStart ?? values.contentModificationDate ?? Date.distantPast
+            records.append(QuarantinedWALSessionRecord(url: url, size: size, referenceDate: referenceDate))
+        }
+
+        return records
+    }
+
+    private func directorySize(at root: URL) throws -> Int64 {
+        let sizeKeys: Set<URLResourceKey> = [
+            .isDirectoryKey,
+            .fileAllocatedSizeKey,
+            .totalFileAllocatedSizeKey,
+            .fileSizeKey
+        ]
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(sizeKeys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: sizeKeys)
+            guard values.isDirectory != true else { continue }
+
+            let byteCount = values.totalFileAllocatedSize
+                ?? values.fileAllocatedSize
+                ?? values.fileSize
+                ?? 0
+            total += Int64(byteCount)
+        }
+
+        return total
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        return formatter.string(fromByteCount: max(0, bytes))
+    }
+
     private func saveMetadata(_ metadata: WALMetadata, to dir: URL) throws {
         let metadataURL = dir.appendingPathComponent("metadata.json")
         let encoder = JSONEncoder()
@@ -840,4 +971,22 @@ private struct WALFrameIDOffsetIndex {
 private struct WALFrameIDMapRecord {
     let frameID: Int64
     let frameOffset: UInt64
+}
+
+private struct QuarantinedWALSessionRecord {
+    let url: URL
+    let size: Int64
+    let referenceDate: Date
+}
+
+public struct WALQuarantinePruneResult: Sendable, Equatable {
+    public let deletedSessionCount: Int
+    public let deletedBytes: Int64
+    public let remainingBytes: Int64
+
+    public init(deletedSessionCount: Int, deletedBytes: Int64, remainingBytes: Int64) {
+        self.deletedSessionCount = deletedSessionCount
+        self.deletedBytes = deletedBytes
+        self.remainingBytes = remainingBytes
+    }
 }

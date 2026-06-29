@@ -21,11 +21,19 @@ public protocol TranscriptionProtocol: Actor {
     ///   - initialPrompt: Optional text from previous batch to help whisper continue sentences across boundaries
     /// - Returns: Detailed transcription with timestamps
     func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool, initialPrompt: String?) async throws -> DetailedTranscriptionResult
+
+    /// Transcribe with word-level timestamps and an optional Whisper language hint.
+    /// nil / "auto" keeps the implementation's default language behavior.
+    func transcribeWithTimestamps(
+        _ audioData: Data,
+        wordLevel: Bool,
+        initialPrompt: String?,
+        languageHint: String?
+    ) async throws -> DetailedTranscriptionResult
 }
 
 public extension TranscriptionProtocol {
-    /// Transcribe with an optional Whisper language hint. Implementations that do not
-    /// support language hints fall back to their default multilingual behavior.
+    /// Implementations that do not support language hints fall back to their default behavior.
     func transcribeWithTimestamps(
         _ audioData: Data,
         wordLevel: Bool,

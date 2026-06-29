@@ -86,7 +86,7 @@ public enum AudioTranscriptionRetryPipeline {
                 if isBetter(decision, than: bestDecision) {
                     bestDecision = decision
                 }
-                if profile == .liveFirstPass, assessment.shouldStoreText {
+                if profile == .liveFirstPass, isAcceptableLiveCandidate(decision) {
                     return AudioTranscriptionDecision(
                         transcription: transcription,
                         status: assessment.status,
@@ -150,7 +150,7 @@ public enum AudioTranscriptionRetryPipeline {
         profile: AudioTranscriptionProfile
     ) -> [AudioTranscriptionLanguageHint] {
         if profile == .liveFirstPass {
-            return bestDecision == nil || continueAfterTranscribed ? [.auto] : []
+            return bestDecision == nil || continueAfterTranscribed ? [.english] : []
         }
         guard let bestDecision else {
             return [.auto]
@@ -206,7 +206,7 @@ public enum AudioTranscriptionRetryPipeline {
         profile: AudioTranscriptionProfile
     ) -> Bool {
         if profile == .liveFirstPass {
-            return !decision.shouldStoreText
+            return !isAcceptableLiveCandidate(decision)
         }
 
         let text = decision.transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -226,5 +226,40 @@ public enum AudioTranscriptionRetryPipeline {
         }
 
         return false
+    }
+
+    private static func isAcceptableLiveCandidate(_ decision: AudioTranscriptionDecision) -> Bool {
+        let text = decision.transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+
+        switch decision.status {
+        case .transcribed:
+            return true
+        case .needsReview:
+            return isReadableShortLiveText(text, language: decision.transcription.language)
+        case .probableSilence, .probableJunk, .languageUncertain, .pending, .decodeFailed,
+             .refinementFailed, .refinementSkipped:
+            return false
+        }
+    }
+
+    private static func isReadableShortLiveText(_ text: String, language: String?) -> Bool {
+        let normalizedLanguage = language?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard normalizedLanguage == "en" || normalizedLanguage == "ja" || normalizedLanguage == "mn" else {
+            return false
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("\u{FFFD}") { return false }
+        if trimmed.hasPrefix("[") || trimmed.hasPrefix("*") { return false }
+        if trimmed.hasPrefix("("), trimmed.hasSuffix(")") {
+            let inner = trimmed
+                .trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if inner.count <= 8 { return false }
+        }
+        return true
     }
 }

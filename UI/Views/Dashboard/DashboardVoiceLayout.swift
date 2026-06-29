@@ -6,6 +6,7 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
     case dictation
     case appUsage = "app_usage"
     case live
+    case screenshots
 
     static let defaultTab: DashboardContentTab = .dictation
 
@@ -16,6 +17,7 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
         case .dictation: return "Dictation"
         case .appUsage: return "App Usage"
         case .live: return "Live"
+        case .screenshots: return "Screenshots"
         }
     }
 
@@ -24,6 +26,7 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
         case .dictation: return "mic.fill"
         case .appUsage: return "chart.bar.fill"
         case .live: return "waveform.and.magnifyingglass"
+        case .screenshots: return "rectangle.stack.fill"
         }
     }
 
@@ -34,7 +37,9 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
         case .appUsage:
             return "App usage and activity"
         case .live:
-            return "Live audio, screenshots, OCR, and capture metadata"
+            return "Live transcript, intelligence feed, and conversation context"
+        case .screenshots:
+            return "Screen frames, OCR, and capture metadata"
         }
     }
 }
@@ -64,8 +69,8 @@ enum DashboardLiveContentMode: Equatable {
 }
 
 struct DashboardLiveColumnWidths: Equatable {
-    let audio: CGFloat
-    let screenshots: CGFloat
+    let transcript: CGFloat
+    let intelligence: CGFloat
     let context: CGFloat
 }
 
@@ -81,16 +86,115 @@ enum DashboardLiveLayoutPolicy {
     static func columnWidths(forWidth width: CGFloat) -> DashboardLiveColumnWidths {
         let usableWidth = max(width - (columnSpacing * 2), 0)
         return DashboardLiveColumnWidths(
-            audio: usableWidth * 0.44,
-            screenshots: usableWidth * 0.34,
-            context: usableWidth * 0.22
+            transcript: usableWidth * 0.31,
+            intelligence: usableWidth * 0.46,
+            context: usableWidth * 0.23
         )
     }
+}
+
+struct DashboardLiveIntelligenceCard: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let badge: String?
+    let detail: String
+    let bullets: [String]
+    let iconName: String
+    let accentName: String
+
+    init(
+        id: String,
+        title: String,
+        badge: String? = nil,
+        detail: String,
+        bullets: [String] = [],
+        iconName: String,
+        accentName: String
+    ) {
+        self.id = id
+        self.title = title
+        self.badge = badge
+        self.detail = detail
+        self.bullets = bullets
+        self.iconName = iconName
+        self.accentName = accentName
+    }
+}
+
+enum DashboardLiveIntelligencePolicy {
+    static let defaultCards: [DashboardLiveIntelligenceCard] = [
+        DashboardLiveIntelligenceCard(
+            id: "people",
+            title: "Key people mentioned",
+            badge: "NEW",
+            detail: "Names, roles, and teams detected from live speech will appear here.",
+            iconName: "person.2.fill",
+            accentName: "violet"
+        ),
+        DashboardLiveIntelligenceCard(
+            id: "company",
+            title: "Company context",
+            detail: "FuseIntel can attach CRM, email, notes, and prior meeting context.",
+            iconName: "building.2.fill",
+            accentName: "blue"
+        ),
+        DashboardLiveIntelligenceCard(
+            id: "talking-points",
+            title: "Suggested talking points",
+            detail: "Keep the conversation moving with timely prompts.",
+            bullets: [
+                "Clarify scope, decision owner, and timing.",
+                "Confirm the pain point in the user's own words.",
+                "Ask what success must look like after rollout."
+            ],
+            iconName: "lightbulb.fill",
+            accentName: "pink"
+        ),
+        DashboardLiveIntelligenceCard(
+            id: "risks",
+            title: "Risks & objections",
+            detail: "Budget, implementation effort, unclear ownership, and integration risk.",
+            iconName: "exclamationmark.triangle.fill",
+            accentName: "red"
+        ),
+        DashboardLiveIntelligenceCard(
+            id: "background",
+            title: "Relevant background",
+            detail: "Prior decisions, related documents, and searchable memory will be surfaced here.",
+            iconName: "book.closed.fill",
+            accentName: "indigo"
+        ),
+        DashboardLiveIntelligenceCard(
+            id: "actions",
+            title: "Action items forming",
+            detail: "Commitments and next steps are tracked as they emerge.",
+            bullets: [
+                "Capture owner, due date, and dependency.",
+                "Separate confirmed actions from possible follow-ups."
+            ],
+            iconName: "checkmark.circle.fill",
+            accentName: "teal"
+        ),
+        DashboardLiveIntelligenceCard(
+            id: "questions",
+            title: "Questions to ask now",
+            detail: "Useful questions based on what was just said.",
+            bullets: [
+                "What needs to be true before this moves forward?",
+                "Who else needs to be involved in the decision?"
+            ],
+            iconName: "questionmark.circle.fill",
+            accentName: "amber"
+        )
+    ]
 }
 
 enum DashboardLiveMemoryPolicy {
     static let passiveScreenshotRetentionLimit = DashboardLiveLayoutPolicy.screenshotPageSize * 6
     static let passiveTranscriptRetentionLimit = 120
+    static let initialReadableTranscriptTarget = 12
+    static let olderReadableTranscriptTarget = 8
+    static let recentStatusRowLimit = 20
     static let thumbnailCacheLimit = DashboardLiveLayoutPolicy.screenshotPageSize * 3
     static let ocrCacheLimit = DashboardLiveLayoutPolicy.screenshotPageSize * 2
     static let thumbnailMaxPixelDimension = 320
@@ -149,6 +253,34 @@ enum DashboardLiveAudioPaginationPolicy {
     }
 }
 
+enum DashboardLiveAudioHistoryPolicy {
+    static func shouldShowHistory(readableRowCount: Int, canLoadMoreOlderRows: Bool, isLoadingOlderRows: Bool) -> Bool {
+        readableRowCount > 0 || canLoadMoreOlderRows || isLoadingOlderRows
+    }
+
+    static func shouldPrefetchMoreReadableRows(
+        readableRowCount: Int,
+        targetReadableRowCount: Int,
+        fetchedTranscriptRows: Int,
+        pageSize: Int,
+        canLoadMoreOlderRows: Bool
+    ) -> Bool {
+        guard readableRowCount < targetReadableRowCount else { return false }
+        guard canLoadMoreOlderRows else { return false }
+        return fetchedTranscriptRows >= pageSize
+    }
+
+    static func shouldAutoLoadOlderRows(
+        currentRowID: Int64,
+        lastRowID: Int64?,
+        canLoadMoreOlderRows: Bool,
+        isLoadingOlderRows: Bool
+    ) -> Bool {
+        guard canLoadMoreOlderRows && !isLoadingOlderRows else { return false }
+        return currentRowID == lastRowID
+    }
+}
+
 enum DashboardRefreshLoopPolicy {
     static func shouldContinue(
         loopTab: DashboardContentTab,
@@ -195,6 +327,8 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
     let detectedLanguage: String?
     let audioVariant: String
     let qualityFlags: String?
+    let transcriptionPass: Int
+    let batchAudioPath: String?
     let pendingBatchCount: Int
     let isPendingSummary: Bool
     let isLowConfidenceSummary: Bool
@@ -211,6 +345,8 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         detectedLanguage: String?,
         audioVariant: String,
         qualityFlags: String?,
+        transcriptionPass: Int = 1,
+        batchAudioPath: String? = nil,
         pendingBatchCount: Int = 0,
         isPendingSummary: Bool = false,
         isLowConfidenceSummary: Bool = false,
@@ -226,6 +362,8 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         self.detectedLanguage = detectedLanguage
         self.audioVariant = audioVariant
         self.qualityFlags = qualityFlags
+        self.transcriptionPass = transcriptionPass
+        self.batchAudioPath = batchAudioPath
         self.pendingBatchCount = pendingBatchCount
         self.isPendingSummary = isPendingSummary
         self.isLowConfidenceSummary = isLowConfidenceSummary
@@ -246,6 +384,10 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
             return "\(countText) grouped for repair. Likely background audio, uncertain speech, or decoder artifact; raw audio remains available."
         }
         if isStatusSummary {
+            if let ambientLabel {
+                let countText = pendingBatchCount == 1 ? "1 entry" : "\(pendingBatchCount) entries"
+                return "Ambient audio: \(ambientLabel) (\(countText) collapsed)."
+            }
             let countText = pendingBatchCount == 1 ? "1 matching audio status row" : "\(pendingBatchCount) matching audio status rows"
             return "\(countText) collapsed. \(Self.statusText(status: transcriptStatus, qualityFlags: qualityFlags))"
         }
@@ -261,6 +403,9 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
             return "Low confidence"
         }
         if isStatusSummary {
+            if ambientLabel != nil {
+                return "Ambient"
+            }
             return "Collapsed"
         }
         return transcriptStatus
@@ -293,19 +438,31 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         if transcriptStatus == "probable_junk" {
             return true
         }
+        if transcriptStatus == "language_uncertain" {
+            return true
+        }
         if let qualityFlags {
             let flags = qualityFlags.lowercased()
-            if flags.contains("junk_pattern") || flags.contains("vocalization_artifact") {
+            if flags.contains("junk_pattern")
+                || flags.contains("vocalization_artifact")
+                || flags.contains("unsupported_script_artifact")
+                || flags.contains("language_uncertain") {
                 return true
             }
         }
         if Self.looksLikeNonSpeechCaptionArtifact(text) {
             return true
         }
+        if Self.looksLikePunctuationOnlyArtifact(text) {
+            return true
+        }
         if Self.looksLikePhoneticNoiseArtifact(text) {
             return true
         }
         if Self.looksLikeUnsupportedScriptArtifact(text, detectedLanguage: detectedLanguage) {
+            return true
+        }
+        if Self.looksLikeCorruptDecoderArtifact(text, detectedLanguage: detectedLanguage) {
             return true
         }
         return !hasTranscriptText && isRepairStatus
@@ -315,12 +472,38 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         hasTranscriptText && isRepairStatus && !isLowConfidenceArtifact
     }
 
+    var isRepairedTranscript: Bool {
+        hasTranscriptText && transcriptStatus == "transcribed" && transcriptionPass > 1
+    }
+
+    var repairedBadgeText: String {
+        transcriptionPass >= 3 ? "Context repaired" : "Repaired"
+    }
+
+    var ambientLabel: String? {
+        guard let qualityFlags else { return nil }
+        let prefix = "ambient_caption_summary:"
+        guard qualityFlags.hasPrefix(prefix) else { return nil }
+        let label = String(qualityFlags.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? nil : label
+    }
+
     static func previewText(from text: String) -> String {
         let collapsed = text
             .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return collapsed.isEmpty ? "No transcript text" : collapsed
+    }
+
+    private static func looksLikePunctuationOnlyArtifact(_ text: String) -> Bool {
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+        let punctuationScalars = CharacterSet.punctuationCharacters
+            .union(.symbols)
+        let signalScalars = text.unicodeScalars.filter { !ignoredScalars.contains($0) }
+        guard !signalScalars.isEmpty else { return false }
+        return signalScalars.allSatisfy { punctuationScalars.contains($0) }
     }
 
     static func statusText(status: String, qualityFlags: String?) -> String {
@@ -374,6 +557,29 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         return !signalScalars.contains(where: isPrimarySpeechScriptScalar)
     }
 
+    private static func looksLikeCorruptDecoderArtifact(_ text: String, detectedLanguage: String?) -> Bool {
+        if text.contains("\u{FFFD}") { return true }
+
+        let normalizedLanguage = detectedLanguage?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let languageIsUntrusted = normalizedLanguage == nil
+            || normalizedLanguage == ""
+            || normalizedLanguage == "nn"
+            || normalizedLanguage == "und"
+            || normalizedLanguage == "unknown"
+            || normalizedLanguage == "auto"
+        guard languageIsUntrusted else { return false }
+
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+            .union(.punctuationCharacters)
+            .union(.symbols)
+            .union(CharacterSet(charactersIn: "\"'`"))
+        let signalScalars = text.unicodeScalars.filter { !ignoredScalars.contains($0) }
+        guard signalScalars.count >= 4 else { return false }
+        return signalScalars.contains { !isPrimarySpeechScriptScalar($0) }
+    }
+
     private static func looksLikeNonSpeechCaptionArtifact(_ text: String) -> Bool {
         let captionMarkers = CharacterSet(charactersIn: "*[]()")
         let trimmed = text
@@ -390,16 +596,36 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let nonSpeechTerms = [
             "applause",
+            "alarm",
             "background",
             "beep",
+            "bell",
             "breathing",
+            "chime",
+            "click",
+            "clicking",
             "clapping",
             "cough",
+            "crackle",
+            "crackling",
+            "door",
+            "doorbell",
+            "fire",
+            "footstep",
+            "footsteps",
             "inaudible",
+            "keyboard",
+            "knock",
             "laugh",
             "laughter",
+            "mouse",
             "music",
+            "no audio",
+            "no sound",
             "noise",
+            "notification",
+            "ring",
+            "ringing",
             "silence",
             "sigh",
             "sound",
@@ -407,9 +633,30 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
             "static",
             "typing",
             "waves",
-            "wind"
+            "wind",
+            "笑",
+            "笑い"
         ]
-        return nonSpeechTerms.contains { inner.contains($0) }
+        if nonSpeechTerms.contains(where: { inner.contains($0) }) {
+            return true
+        }
+
+        let words = inner
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map { String($0) }
+        let speechPronouns: Set<String> = [
+            "i",
+            "im",
+            "you",
+            "we",
+            "he",
+            "she",
+            "they"
+        ]
+
+        return words.count <= 4
+            && !words.contains(where: speechPronouns.contains)
+            && words.contains { $0.hasSuffix("ing") }
     }
 
     private static func isPrimarySpeechScriptScalar(_ scalar: Unicode.Scalar) -> Bool {
@@ -446,7 +693,36 @@ struct DashboardLiveAudioPresentation: Equatable {
 }
 
 enum DashboardLiveAudioPresentationPolicy {
-    static func presentation(for rows: [DashboardLiveAudioRow]) -> DashboardLiveAudioPresentation {
+    static func mergedRowsReplacingOlderPasses(
+        existing: [DashboardLiveAudioRow],
+        latest: [DashboardLiveAudioRow]
+    ) -> [DashboardLiveAudioRow] {
+        let latestIDs = Set(latest.map(\.id))
+        let latestBatchPaths = Set(latest.compactMap { normalizedBatchPath($0.batchAudioPath) })
+        let retainedExisting = existing.filter { row in
+            if latestIDs.contains(row.id) {
+                return false
+            }
+            if let batchPath = normalizedBatchPath(row.batchAudioPath),
+               latestBatchPaths.contains(batchPath) {
+                return false
+            }
+            return true
+        }
+
+        return normalizedRows(latest + retainedExisting)
+    }
+
+    static func normalizedRows(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
+        Dictionary(grouping: rows, by: \.id)
+            .compactMap { _, rows in rows.max(by: rowSortIsAscending) }
+            .sorted(by: rowSortIsDescending)
+    }
+
+    static func presentation(
+        for rows: [DashboardLiveAudioRow],
+        statusRowLimit: Int? = nil
+    ) -> DashboardLiveAudioPresentation {
         var transcriptRows: [DashboardLiveAudioRow] = []
         var statusRows: [DashboardLiveAudioRow] = []
 
@@ -456,6 +732,10 @@ enum DashboardLiveAudioPresentationPolicy {
             } else {
                 transcriptRows.append(row)
             }
+        }
+
+        if let statusRowLimit {
+            statusRows = Array(statusRows.prefix(max(statusRowLimit, 0)))
         }
 
         return DashboardLiveAudioPresentation(
@@ -469,7 +749,8 @@ enum DashboardLiveAudioPresentationPolicy {
     }
 
     private static func belongsInStatusPanel(_ row: DashboardLiveAudioRow) -> Bool {
-        row.isPendingSummary
+        ambientCaption(for: row) != nil
+            || row.isPendingSummary
             || row.isLowConfidenceSummary
             || row.isStatusSummary
             || row.isPendingCapturePlaceholder
@@ -538,8 +819,15 @@ enum DashboardLiveAudioPresentationPolicy {
     }
 
     private static func repeatedStatusSignature(for row: DashboardLiveAudioRow) -> String? {
+        if let caption = ambientCaption(for: row),
+           shouldUseAmbientCaptionSummary(for: row) {
+            return caption.signature
+        }
         if row.isLowConfidenceSummary || row.isLowConfidenceArtifact {
             return "low_confidence"
+        }
+        if let caption = ambientCaption(for: row) {
+            return caption.signature
         }
         if row.isPendingSummary || row.isPendingCapturePlaceholder {
             return "pending"
@@ -559,6 +847,24 @@ enum DashboardLiveAudioPresentationPolicy {
         signature: String
     ) -> DashboardLiveAudioRow {
         switch signature {
+        case let ambient where ambient.hasPrefix("ambient:"):
+            guard !row.isStatusSummary else { return row }
+            let label = String(ambient.dropFirst("ambient:".count))
+            return DashboardLiveAudioRow(
+                id: syntheticAmbientSummaryID(for: row),
+                text: label,
+                startedAt: row.startedAt,
+                endedAt: row.endedAt,
+                source: row.source,
+                confidence: nil,
+                transcriptStatus: "ambient_caption",
+                detectedLanguage: row.detectedLanguage,
+                audioVariant: row.audioVariant,
+                qualityFlags: "ambient_caption_summary:\(label)",
+                batchAudioPath: row.batchAudioPath,
+                pendingBatchCount: 1,
+                isStatusSummary: true
+            )
         case "low_confidence":
             guard !row.isLowConfidenceSummary else { return row }
             return DashboardLiveAudioRow(
@@ -572,6 +878,7 @@ enum DashboardLiveAudioPresentationPolicy {
                 detectedLanguage: row.detectedLanguage,
                 audioVariant: row.audioVariant,
                 qualityFlags: "low_confidence_summary",
+                batchAudioPath: row.batchAudioPath,
                 pendingBatchCount: 1,
                 isLowConfidenceSummary: true
             )
@@ -588,6 +895,7 @@ enum DashboardLiveAudioPresentationPolicy {
                     detectedLanguage: nil,
                     audioVariant: row.audioVariant,
                     qualityFlags: "pending_summary",
+                    batchAudioPath: row.batchAudioPath,
                     pendingBatchCount: 1,
                     isPendingSummary: true
                 )
@@ -606,6 +914,7 @@ enum DashboardLiveAudioPresentationPolicy {
                 detectedLanguage: row.detectedLanguage,
                 audioVariant: row.audioVariant,
                 qualityFlags: row.qualityFlags,
+                batchAudioPath: row.batchAudioPath,
                 pendingBatchCount: 1,
                 isStatusSummary: true
             )
@@ -621,6 +930,23 @@ enum DashboardLiveAudioPresentationPolicy {
         let mergedCount = max(existing.pendingBatchCount, 1) + max(nextNormalized.pendingBatchCount, 1)
 
         switch signature {
+        case let ambient where ambient.hasPrefix("ambient:"):
+            let label = String(ambient.dropFirst("ambient:".count))
+            return DashboardLiveAudioRow(
+                id: existing.id,
+                text: label,
+                startedAt: existing.startedAt,
+                endedAt: nextNormalized.endedAt,
+                source: existing.source,
+                confidence: nil,
+                transcriptStatus: "ambient_caption",
+                detectedLanguage: existing.detectedLanguage ?? nextNormalized.detectedLanguage,
+                audioVariant: existing.audioVariant,
+                qualityFlags: "ambient_caption_summary:\(label)",
+                batchAudioPath: existing.batchAudioPath ?? nextNormalized.batchAudioPath,
+                pendingBatchCount: mergedCount,
+                isStatusSummary: true
+            )
         case "low_confidence":
             return DashboardLiveAudioRow(
                 id: existing.id,
@@ -633,6 +959,7 @@ enum DashboardLiveAudioPresentationPolicy {
                 detectedLanguage: existing.detectedLanguage ?? nextNormalized.detectedLanguage,
                 audioVariant: existing.audioVariant,
                 qualityFlags: "low_confidence_summary",
+                batchAudioPath: existing.batchAudioPath ?? nextNormalized.batchAudioPath,
                 pendingBatchCount: mergedCount,
                 isLowConfidenceSummary: true
             )
@@ -648,6 +975,7 @@ enum DashboardLiveAudioPresentationPolicy {
                 detectedLanguage: nil,
                 audioVariant: existing.audioVariant,
                 qualityFlags: "pending_summary",
+                batchAudioPath: existing.batchAudioPath ?? nextNormalized.batchAudioPath,
                 pendingBatchCount: mergedCount,
                 isPendingSummary: true
             )
@@ -663,6 +991,7 @@ enum DashboardLiveAudioPresentationPolicy {
                 detectedLanguage: existing.detectedLanguage ?? nextNormalized.detectedLanguage,
                 audioVariant: existing.audioVariant,
                 qualityFlags: existing.qualityFlags ?? nextNormalized.qualityFlags,
+                batchAudioPath: existing.batchAudioPath ?? nextNormalized.batchAudioPath,
                 pendingBatchCount: mergedCount,
                 isStatusSummary: true
             )
@@ -679,5 +1008,45 @@ enum DashboardLiveAudioPresentationPolicy {
 
     private static func syntheticStatusSummaryID(for row: DashboardLiveAudioRow) -> Int64 {
         row.id > 0 ? -(row.id + 2_000_000_000) : row.id - 2_000_000_000
+    }
+
+    private static func syntheticAmbientSummaryID(for row: DashboardLiveAudioRow) -> Int64 {
+        row.id > 0 ? -(row.id + 3_000_000_000) : row.id - 3_000_000_000
+    }
+
+    private static func ambientCaption(for row: DashboardLiveAudioRow) -> (signature: String, label: String)? {
+        TranscriptPresentationPolicy.ambientCaptionSignature(
+            for: row.text,
+            transcriptStatus: row.transcriptStatus
+        )
+    }
+
+    private static func shouldUseAmbientCaptionSummary(for row: DashboardLiveAudioRow) -> Bool {
+        row.transcriptStatus == "transcribed" && (row.confidence ?? 1.0) >= 0.5
+    }
+
+    private static func normalizedBatchPath(_ path: String?) -> String? {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return nil
+        }
+        return path
+    }
+
+    private static func rowSortIsAscending(_ lhs: DashboardLiveAudioRow, _ rhs: DashboardLiveAudioRow) -> Bool {
+        if lhs.transcriptionPass != rhs.transcriptionPass {
+            return lhs.transcriptionPass < rhs.transcriptionPass
+        }
+        if lhs.startedAt != rhs.startedAt {
+            return lhs.startedAt < rhs.startedAt
+        }
+        return lhs.id < rhs.id
+    }
+
+    private static func rowSortIsDescending(_ lhs: DashboardLiveAudioRow, _ rhs: DashboardLiveAudioRow) -> Bool {
+        if lhs.startedAt != rhs.startedAt {
+            return lhs.startedAt > rhs.startedAt
+        }
+        return lhs.id > rhs.id
     }
 }

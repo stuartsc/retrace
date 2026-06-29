@@ -126,7 +126,7 @@ final class AudioRepairPolicyTests: XCTestCase {
         XCTAssertEqual(repairPending.map(\.id), [batchID])
     }
 
-    func testReplacingPass1BatchDeletesOldSentenceAndWordRowsAfterWritingReplacement() async throws {
+    func testPass2RefinementPreservesPass1RowsButRemovesBatchFromPass1Candidates() async throws {
         let queries = try await makeQueries()
         let start = Date(timeIntervalSince1970: 40_000)
         let batchPath = "audio/batch_40000000_microphone_test.m4a"
@@ -159,14 +159,16 @@ final class AudioRepairPolicyTests: XCTestCase {
         let oldWordCount = try await countAudioRows(where: "source = 'word' AND text = 'old'")
         let newSentenceCount = try await countAudioRows(where: "transcription_pass = 2 AND text = 'new pass two'")
         let newWordCount = try await countAudioRows(where: "source = 'word' AND batch_audio_path = '\(batchPath)' AND transcription_pass = 2 AND text = 'new'")
+        let candidates = try await queries.getDistinctBatchPathsForRefinement(limit: 10)
 
-        XCTAssertEqual(oldSentenceCount, 0)
-        XCTAssertEqual(oldWordCount, 0)
+        XCTAssertEqual(oldSentenceCount, 1)
+        XCTAssertEqual(oldWordCount, 1)
         XCTAssertEqual(newSentenceCount, 1)
         XCTAssertEqual(newWordCount, 1)
+        XCTAssertFalse(candidates.contains(batchPath))
     }
 
-    func testReplacingPass2BatchDeletesOldPass2SentenceAndWordRowsAfterWritingReplacement() async throws {
+    func testPass3RefinementPreservesPass2RowsButRemovesBatchFromPass2Candidates() async throws {
         let queries = try await makeQueries()
         let start = Date(timeIntervalSince1970: 50_000)
         let batchPath = "audio/batch_50000000_microphone_test.m4a"
@@ -199,11 +201,13 @@ final class AudioRepairPolicyTests: XCTestCase {
         let oldWordCount = try await countAudioRows(where: "source = 'word' AND text = 'stale'")
         let newSentenceCount = try await countAudioRows(where: "transcription_pass = 3 AND text = 'new pass three'")
         let newWordCount = try await countAudioRows(where: "source = 'word' AND batch_audio_path = '\(batchPath)' AND transcription_pass = 3 AND text = 'fresh'")
+        let candidates = try await queries.getDistinctBatchPathsForContextualRefinement(limit: 10)
 
-        XCTAssertEqual(oldSentenceCount, 0)
-        XCTAssertEqual(oldWordCount, 0)
+        XCTAssertEqual(oldSentenceCount, 1)
+        XCTAssertEqual(oldWordCount, 1)
         XCTAssertEqual(newSentenceCount, 1)
         XCTAssertEqual(newWordCount, 1)
+        XCTAssertFalse(candidates.contains(batchPath))
     }
 
     func testFailedPass1CandidateIsRetiredFromRefinementQuery() async throws {
@@ -266,6 +270,75 @@ final class AudioRepairPolicyTests: XCTestCase {
 
         let candidatesAfterMark = try await queries.getDistinctBatchPathsForContextualRefinement(limit: 10)
         XCTAssertEqual(candidatesAfterMark, [])
+    }
+
+    func testRefinementCandidatesExcludeNoiseAndReviewRows() async throws {
+        let queries = try await makeQueries()
+        let start = Date(timeIntervalSince1970: 72_000)
+
+        let rows: [(text: String, status: String, flags: String?, batchPath: String)] = [
+            ("readable speech should refine", "transcribed", nil, "audio/batch_72000000_microphone_clean.m4a"),
+            ("(footsteps)", "needs_review", "short_text,variant:raw", "audio/batch_72000001_microphone_review.m4a"),
+            ("(footsteps) (bell rings)", "probable_junk", "junk_pattern,variant:raw", "audio/batch_72000002_microphone_junk.m4a"),
+            ("Mills, ¿is it please, sir?", "language_uncertain", "language_uncertain,variant:raw", "audio/batch_72000003_microphone_uncertain.m4a"),
+            ("[silence]", "probable_silence", "low_energy", "audio/batch_72000004_microphone_silence.m4a"),
+            ("( Meaning No audio )", "transcribed", nil, "audio/batch_72000005_microphone_no_audio.m4a"),
+            ("(fire crackling)", "transcribed", nil, "audio/batch_72000006_microphone_fire.m4a")
+        ]
+
+        for (index, row) in rows.enumerated() {
+            _ = try await queries.insertTranscription(
+                sessionID: nil,
+                text: row.text,
+                startTime: start.addingTimeInterval(Double(index)),
+                endTime: start.addingTimeInterval(Double(index + 1)),
+                source: .microphone,
+                confidence: 0.6,
+                words: [],
+                transcriptionPass: 1,
+                batchAudioPath: row.batchPath,
+                transcriptStatus: row.status,
+                detectedLanguage: "en",
+                qualityFlags: row.flags
+            )
+        }
+
+        let candidates = try await queries.getDistinctBatchPathsForRefinement(limit: 10)
+
+        XCTAssertEqual(candidates, ["audio/batch_72000000_microphone_clean.m4a"])
+    }
+
+    func testContextualRefinementCandidatesExcludeNoiseAndReviewRows() async throws {
+        let queries = try await makeQueries()
+        let start = Date(timeIntervalSince1970: 73_000)
+
+        let rows: [(text: String, status: String, flags: String?, batchPath: String)] = [
+            ("readable pass two speech should refine", "transcribed", nil, "audio/batch_73000000_microphone_clean.m4a"),
+            ("No.", "needs_review", "short_text,variant:raw", "audio/batch_73000001_microphone_review.m4a"),
+            ("ʕ ʕ ʕ ʕ ʕ", "probable_junk", "vocalization_artifact,variant:raw", "audio/batch_73000002_microphone_junk.m4a"),
+            ("garbled language guess", "language_uncertain", "language_uncertain,variant:raw", "audio/batch_73000003_microphone_uncertain.m4a")
+        ]
+
+        for (index, row) in rows.enumerated() {
+            _ = try await queries.insertTranscription(
+                sessionID: nil,
+                text: row.text,
+                startTime: start.addingTimeInterval(Double(index)),
+                endTime: start.addingTimeInterval(Double(index + 1)),
+                source: .microphone,
+                confidence: 0.6,
+                words: [],
+                transcriptionPass: 2,
+                batchAudioPath: row.batchPath,
+                transcriptStatus: row.status,
+                detectedLanguage: "en",
+                qualityFlags: row.flags
+            )
+        }
+
+        let candidates = try await queries.getDistinctBatchPathsForContextualRefinement(limit: 10)
+
+        XCTAssertEqual(candidates, ["audio/batch_73000000_microphone_clean.m4a"])
     }
 
     func testResetStalePipelineRecordsPreservesWordRowsUntilReplacementSucceeds() async throws {
