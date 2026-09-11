@@ -1298,7 +1298,7 @@ public actor DataAdapter {
         let sql = """
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM (
                 SELECT id, createdAt, segmentId, videoId, videoFrameIndex, encodingStatus, \(subqueryProcessingStatus), \(subqueryRedactionReason)
                 FROM frame
@@ -1486,7 +1486,7 @@ public actor DataAdapter {
             \(combinedCTE)
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM frame f
             INNER JOIN segment s ON f.segmentId = s.id
             \(tagJoin)
@@ -1683,7 +1683,7 @@ public actor DataAdapter {
         let sql = """
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM frame f
             INNER JOIN segment s ON f.segmentId = s.id
             LEFT JOIN video v ON f.videoId = v.id
@@ -1885,7 +1885,7 @@ public actor DataAdapter {
             \(combinedCTE)
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM frame f
             INNER JOIN segment s ON f.segmentId = s.id
             \(tagJoin)
@@ -2107,7 +2107,7 @@ public actor DataAdapter {
             \(combinedCTE)
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM frame f
             INNER JOIN segment s ON f.segmentId = s.id
             \(tagJoin)
@@ -2331,7 +2331,7 @@ public actor DataAdapter {
             \(combinedCTE)
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM frame f
             INNER JOIN segment s ON f.segmentId = s.id
             \(tagJoin)
@@ -2451,7 +2451,7 @@ public actor DataAdapter {
         let sql = """
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM (
                 SELECT id, createdAt, segmentId, videoId, videoFrameIndex, encodingStatus, \(subqueryProcessingStatus), \(subqueryRedactionReason)
                 FROM frame
@@ -2539,7 +2539,7 @@ public actor DataAdapter {
         let sql = """
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM (
                 SELECT id, createdAt, segmentId, videoId, videoFrameIndex, encodingStatus, \(subqueryProcessingStatus), \(subqueryRedactionReason)
                 FROM frame
@@ -2600,7 +2600,7 @@ public actor DataAdapter {
         let sql = """
             SELECT f.id, f.createdAt, f.segmentId, f.videoId, f.videoFrameIndex, f.encodingStatus, \(processingStatusColumn), \(redactionReasonColumn),
                    s.bundleID, s.windowName, s.browserUrl,
-                   v.path, v.frameRate, v.width, v.height
+                   v.path, v.frameRate, v.width, v.height, \(videoProcessingStateColumn(for: config))
             FROM frame f
             LEFT JOIN segment s ON f.segmentId = s.id
             LEFT JOIN video v ON f.videoId = v.id
@@ -2624,7 +2624,8 @@ public actor DataAdapter {
         config: DatabaseConfig
     ) throws -> FrameVideoInfo? {
         let sql = """
-            SELECT v.id, v.path, v.width, v.height, v.frameRate, f.videoFrameIndex
+            SELECT v.id, v.path, v.width, v.height, v.frameRate, f.videoFrameIndex,
+                   \(videoProcessingStateColumn(for: config))
             FROM frame f
             LEFT JOIN video v ON f.videoId = v.id
             WHERE f.createdAt = ?
@@ -2644,6 +2645,7 @@ public actor DataAdapter {
         let height = Int(sqlite3_column_int(statement, 3))
         let frameRate = sqlite3_column_double(statement, 4)
         let frameIndex = Int(sqlite3_column_int(statement, 5))
+        let videoProcessingState = Int(sqlite3_column_int(statement, 6))
 
         let fullPath = "\(config.storageRoot)/\(relativePath)"
 
@@ -2652,7 +2654,8 @@ public actor DataAdapter {
             frameIndex: frameIndex,
             frameRate: frameRate,
             width: width,
-            height: height
+            height: height,
+            isVideoFinalized: videoProcessingState == 0
         )
     }
 
@@ -2710,6 +2713,7 @@ public actor DataAdapter {
                 n.topY,
                 n.width,
                 n.height,
+                n.text,
                 (COALESCE(sc.c0, '') || COALESCE(sc.c1, '')) as fullText,
                 n.frameId
             FROM node n
@@ -4715,6 +4719,12 @@ public actor DataAdapter {
 
     // MARK: - Row Parsing
 
+    private func videoProcessingStateColumn(for config: DatabaseConfig) -> String {
+        config.source == .rewind
+            ? "0 AS videoProcessingState"
+            : "v.processingState AS videoProcessingState"
+    }
+
     private func parseFrameWithVideoInfo(statement: OpaquePointer, config: DatabaseConfig) throws -> FrameWithVideoInfo {
         let id = FrameID(value: sqlite3_column_int64(statement, 0))
 
@@ -4740,6 +4750,9 @@ public actor DataAdapter {
         let frameRate = sqlite3_column_type(statement, 12) != SQLITE_NULL ? sqlite3_column_double(statement, 12) : nil
         let width = sqlite3_column_type(statement, 13) != SQLITE_NULL ? Int(sqlite3_column_int(statement, 13)) : nil
         let height = sqlite3_column_type(statement, 14) != SQLITE_NULL ? Int(sqlite3_column_int(statement, 14)) : nil
+        let videoProcessingState = sqlite3_column_count(statement) > 15
+            ? Int(sqlite3_column_int(statement, 15))
+            : 0
 
         let metadata = FrameMetadata(
             appBundleID: bundleID.isEmpty ? nil : bundleID,
@@ -4769,7 +4782,8 @@ public actor DataAdapter {
                 frameIndex: videoFrameIndex,
                 frameRate: rate,
                 width: w,
-                height: h
+                height: h,
+                isVideoFinalized: videoProcessingState == 0
             )
         } else {
             videoInfo = nil
@@ -4811,25 +4825,18 @@ public actor DataAdapter {
         let width = sqlite3_column_double(statement, 6)
         let height = sqlite3_column_double(statement, 7)
 
-        guard let fullTextCStr = sqlite3_column_text(statement, 8) else { return nil }
-        let fullText = String(cString: fullTextCStr)
+        let text: String
+        if let storedTextCStr = sqlite3_column_text(statement, 8) {
+            let storedText = String(cString: storedTextCStr)
+            text = storedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? Self.legacyNodeText(statement: statement, column: 9, textOffset: textOffset, textLength: textLength)
+                : storedText
+        } else {
+            text = Self.legacyNodeText(statement: statement, column: 9, textOffset: textOffset, textLength: textLength)
+        }
 
-        // Column 9: frameId for debugging
-        let frameId = sqlite3_column_int64(statement, 9)
-
-        let startIndex = fullText.index(
-            fullText.startIndex,
-            offsetBy: textOffset,
-            limitedBy: fullText.endIndex
-        ) ?? fullText.endIndex
-
-        let endIndex = fullText.index(
-            startIndex,
-            offsetBy: textLength,
-            limitedBy: fullText.endIndex
-        ) ?? fullText.endIndex
-
-        let text = String(fullText[startIndex..<endIndex])
+        // Column 10: frameId for debugging
+        let frameId = sqlite3_column_int64(statement, 10)
 
         return OCRNodeWithText(
             id: id,
@@ -4840,6 +4847,32 @@ public actor DataAdapter {
             height: height,
             text: text
         )
+    }
+
+    private static func legacyNodeText(
+        statement: OpaquePointer,
+        column: Int32,
+        textOffset: Int,
+        textLength: Int
+    ) -> String {
+        guard let fullTextCStr = sqlite3_column_text(statement, column) else { return "" }
+        let fullText = String(cString: fullTextCStr)
+
+        let startIndex = fullText.index(
+            fullText.startIndex,
+            offsetBy: textOffset,
+            limitedBy: fullText.endIndex
+        ) ?? fullText.endIndex
+
+        let remainingLength = max(fullText.distance(from: startIndex, to: fullText.endIndex), 0)
+        let safeLength = min(textLength, remainingLength)
+        let endIndex = fullText.index(
+            startIndex,
+            offsetBy: safeLength,
+            limitedBy: fullText.endIndex
+        ) ?? fullText.endIndex
+
+        return String(fullText[startIndex..<endIndex])
     }
 
     private func getTextOrNil(_ statement: OpaquePointer, _ column: Int32) -> String? {

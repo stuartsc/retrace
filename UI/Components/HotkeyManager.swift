@@ -3,6 +3,8 @@ import Carbon.HIToolbox
 import Shared
 
 enum HotkeyHoldReleasePolicy {
+    static let shortTriggerTapGraceSeconds: TimeInterval = 0.45
+
     static func shouldSkipBeforeKeyTranslation(
         eventType: CGEventType,
         hasModifierLessHotkey: Bool,
@@ -16,12 +18,30 @@ enum HotkeyHoldReleasePolicy {
         return !hasModifierLessHotkey && !hasRelevantModifiers
     }
 
-    static func shouldReleaseActiveHold(
+    static func shouldReleaseActiveHoldOnKeyUp(
         eventType: CGEventType,
         keyMatches: Bool,
-        isActiveHold: Bool
+        isActiveHold: Bool,
+        requiredModifiersStillPressed: Bool,
+        elapsedSeconds: TimeInterval
     ) -> Bool {
-        eventType == .keyUp && keyMatches && isActiveHold
+        guard eventType == .keyUp && keyMatches && isActiveHold else {
+            return false
+        }
+
+        if requiredModifiersStillPressed && elapsedSeconds < shortTriggerTapGraceSeconds {
+            return false
+        }
+
+        return true
+    }
+
+    static func shouldReleaseActiveHoldOnModifierChange(
+        eventType: CGEventType,
+        isActiveHold: Bool,
+        requiredModifiersStillPressed: Bool
+    ) -> Bool {
+        eventType == .flagsChanged && isActiveHold && !requiredModifiersStillPressed
     }
 }
 
@@ -57,6 +77,7 @@ public class HotkeyManager: NSObject {
     /// Uses character-based matching to support non-QWERTY keyboard layouts (DVORAK, Colemak, etc.)
     private var hotkeys: [HotkeyRegistration] = []
     private var activeHoldIDs: Set<UUID> = []
+    private var activeHoldStartedAt: [UUID: Date] = [:]
 
     /// Whether hotkeys are pending registration (waiting for permissions)
     private var pendingSetup = false
@@ -159,6 +180,7 @@ public class HotkeyManager: NSObject {
         withStateLock {
             hotkeys.removeAll()
             activeHoldIDs.removeAll()
+            activeHoldStartedAt.removeAll()
         }
     }
 
@@ -255,7 +277,9 @@ public class HotkeyManager: NSObject {
     }
 
     private func setupEventTapOnBackgroundRunLoop() {
-        let eventMask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        let eventMask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -324,12 +348,12 @@ public class HotkeyManager: NSObject {
         }
 
         // Only handle key down/up events
-        guard type == .keyDown || type == .keyUp else {
+        guard type == .keyDown || type == .keyUp || type == .flagsChanged else {
             return Unmanaged.passUnretained(event)
         }
 
-        let (hotkeysSnapshot, activeHoldIDsSnapshot) = withStateLock {
-            (hotkeys, activeHoldIDs)
+        let (hotkeysSnapshot, activeHoldIDsSnapshot, activeHoldStartedAtSnapshot) = withStateLock {
+            (hotkeys, activeHoldIDs, activeHoldStartedAt)
         }
         guard !hotkeysSnapshot.isEmpty else {
             return Unmanaged.passUnretained(event)
@@ -337,13 +361,52 @@ public class HotkeyManager: NSObject {
 
         let flags = event.flags
         let relevantModifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+        let eventModifiers = modifierFlags(from: flags)
+
+        if type == .flagsChanged {
+            for hotkey in hotkeysSnapshot {
+                guard case .hold(_, let onKeyUp) = hotkey.kind else {
+                    continue
+                }
+
+                let isActiveHold = activeHoldIDsSnapshot.contains(hotkey.id)
+                let modifiersStillPressed = requiredModifiersStillPressed(
+                    required: hotkey.modifiers,
+                    current: eventModifiers,
+                    relevantModifiers: relevantModifiers
+                )
+                guard HotkeyHoldReleasePolicy.shouldReleaseActiveHoldOnModifierChange(
+                    eventType: type,
+                    isActiveHold: isActiveHold,
+                    requiredModifiersStillPressed: modifiersStillPressed
+                ) else {
+                    continue
+                }
+
+                withStateLock {
+                    activeHoldIDs.remove(hotkey.id)
+                    activeHoldStartedAt.removeValue(forKey: hotkey.id)
+                }
+
+                Log.debug(
+                    "[HotkeyManager] Hold hotkey released by modifier change: key='\(hotkey.key)' modifiers=\(modifierDescription(eventModifiers))",
+                    category: .ui
+                )
+                DispatchQueue.main.async {
+                    onKeyUp()
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
+            return Unmanaged.passUnretained(event)
+        }
 
         // Fast path: if all registered hotkeys require modifiers and this event has
         // no relevant modifiers, skip expensive keyboard-layout translation work.
         let hasModifierLessHotkey = hotkeysSnapshot.contains {
             $0.modifiers.intersection(relevantModifiers).isEmpty
         }
-        let hasRelevantModifiers = !modifierFlags(from: flags).intersection(relevantModifiers).isEmpty
+        let hasRelevantModifiers = !eventModifiers.intersection(relevantModifiers).isEmpty
         if HotkeyHoldReleasePolicy.shouldSkipBeforeKeyTranslation(
             eventType: type,
             hasModifierLessHotkey: hasModifierLessHotkey,
@@ -357,8 +420,6 @@ public class HotkeyManager: NSObject {
         // Get the character for this key event, respecting keyboard layout
         let pressedKey = characterForEvent(event, keyCode: keyCode)
 
-        let eventModifiers = modifierFlags(from: flags)
-
         let isAutoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
         if type == .keyUp {
@@ -369,16 +430,36 @@ public class HotkeyManager: NSObject {
 
                 let keysMatch = pressedKey.lowercased() == hotkey.key.lowercased()
                 let isActiveHold = activeHoldIDsSnapshot.contains(hotkey.id)
-                guard HotkeyHoldReleasePolicy.shouldReleaseActiveHold(
+                let modifiersStillPressed = requiredModifiersStillPressed(
+                    required: hotkey.modifiers,
+                    current: eventModifiers,
+                    relevantModifiers: relevantModifiers
+                )
+                let elapsedSeconds = activeHoldStartedAtSnapshot[hotkey.id].map {
+                    Date().timeIntervalSince($0)
+                } ?? .infinity
+
+                if keysMatch && isActiveHold && modifiersStillPressed && elapsedSeconds < HotkeyHoldReleasePolicy.shortTriggerTapGraceSeconds {
+                    Log.debug(
+                        "[HotkeyManager] Ignoring short trigger key release while modifier remains held: key='\(hotkey.key)' elapsed=\(String(format: "%.3f", elapsedSeconds))s",
+                        category: .ui
+                    )
+                    return nil
+                }
+
+                guard HotkeyHoldReleasePolicy.shouldReleaseActiveHoldOnKeyUp(
                     eventType: type,
                     keyMatches: keysMatch,
-                    isActiveHold: isActiveHold
+                    isActiveHold: isActiveHold,
+                    requiredModifiersStillPressed: modifiersStillPressed,
+                    elapsedSeconds: elapsedSeconds
                 ) else {
                     continue
                 }
 
                 withStateLock {
                     activeHoldIDs.remove(hotkey.id)
+                    activeHoldStartedAt.removeValue(forKey: hotkey.id)
                 }
 
                 Log.debug(
@@ -414,6 +495,7 @@ public class HotkeyManager: NSObject {
 
                     withStateLock {
                         activeHoldIDs.insert(hotkey.id)
+                        activeHoldStartedAt[hotkey.id] = Date()
                     }
 
                     Log.debug(
@@ -432,6 +514,18 @@ public class HotkeyManager: NSObject {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func requiredModifiersStillPressed(
+        required: NSEvent.ModifierFlags,
+        current: NSEvent.ModifierFlags,
+        relevantModifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        let requiredRelevantModifiers = required.intersection(relevantModifiers)
+        guard !requiredRelevantModifiers.isEmpty else {
+            return true
+        }
+        return current.intersection(requiredRelevantModifiers) == requiredRelevantModifiers
     }
 
     private func modifierFlags(from flags: CGEventFlags) -> NSEvent.ModifierFlags {

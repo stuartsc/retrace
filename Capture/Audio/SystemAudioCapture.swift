@@ -47,6 +47,7 @@ public actor SystemAudioCapture: NSObject {
         self._audioStream = stream
         self.audioContinuation = continuation
         muteState.set(isMuted)
+        formatConverter.reset()
 
         // Get shareable content
         Log.info("[SystemAudioCapture] Requesting shareable content...", category: .capture)
@@ -110,19 +111,20 @@ public actor SystemAudioCapture: NSObject {
 
     /// Stop capturing
     public func stopCapture() async throws {
-        guard isRunning else { return }
-
+        // Even if ScreenCaptureKit reports a stop error, end the local source
+        // stream so the coordinator can drain queued samples without hanging.
+        defer {
+            streamOutput?.finish()
+            stream = nil
+            streamOutput = nil
+            isRunning = false
+            audioContinuation?.finish()
+            audioContinuation = nil
+            _audioStream = nil
+        }
         if let stream = stream {
             try await stream.stopCapture()
         }
-
-        stream = nil
-        streamOutput = nil
-        isRunning = false
-
-        audioContinuation?.finish()
-        audioContinuation = nil
-        _audioStream = nil
     }
 
     /// Get audio stream
@@ -146,7 +148,11 @@ public actor SystemAudioCapture: NSObject {
     /// Set mute state (for privacy during meetings)
     public func setMuted(_ muted: Bool) {
         self.isMuted = muted
-        muteState.set(muted)
+        if let streamOutput {
+            streamOutput.setMuted(muted)
+        } else {
+            muteState.set(muted)
+        }
     }
 
     /// Get current mute state
@@ -175,11 +181,16 @@ public actor SystemAudioCapture: NSObject {
 // MARK: - Stream Output Handler
 
 /// Handles audio samples from SCStream
-private class SystemAudioStreamOutput: NSObject, SCStreamOutput {
-
+final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private let continuation: AsyncStream<CapturedAudio>.Continuation
     private let formatConverter: AudioFormatConverter
     private let muteState: SystemAudioMuteState
+    private let stateLock = NSLock()
+    private var isFinished = false
+    private var wasMuted = false
+    private var pendingStart: Date?
+    private var lastOutputEnd: Date?
+    private var reportedConversionFailure = false
 
     init(
         continuation: AsyncStream<CapturedAudio>.Continuation,
@@ -198,88 +209,77 @@ private class SystemAudioStreamOutput: NSObject, SCStreamOutput {
         of outputType: SCStreamOutputType
     ) {
         guard outputType == .audio else { return }
-        guard !muteState.get() else { return }
-
-        processAudioBuffer(sampleBuffer)
+        receive(sampleBuffer, receivedAt: Date())
     }
 
-    private func processAudioBuffer(_ sampleBuffer: CMSampleBuffer) {
+    func receive(_ sampleBuffer: CMSampleBuffer, receivedAt: Date) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !isFinished else { return }
+        if muteState.get() {
+            if !wasMuted {
+                // Never carry retained samples across a recording-consent boundary.
+                formatConverter.reset()
+                pendingStart = nil
+                lastOutputEnd = nil
+            }
+            wasMuted = true
+            return
+        }
+        wasMuted = false
+        if pendingStart == nil { pendingStart = receivedAt }
         do {
-            // Get format description
-            guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
-                return
-            }
-
-            let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
-            guard let asbd = audioStreamBasicDescription?.pointee else {
-                return
-            }
-
-            // Extract audio buffer list with retained block buffer
-            var audioBufferList = AudioBufferList()
-            var blockBuffer: CMBlockBuffer?
-
-            let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-                sampleBuffer,
-                bufferListSizeNeededOut: nil,
-                bufferListOut: &audioBufferList,
-                bufferListSize: MemoryLayout<AudioBufferList>.size,
-                blockBufferAllocator: nil,
-                blockBufferMemoryAllocator: nil,
-                flags: 0,
-                blockBufferOut: &blockBuffer
-            )
-
-            guard status == noErr else {
-                Log.error("[SystemAudioCapture] Error getting audio buffer list: \(status)", category: .capture)
-                return
-            }
-
-            // Keep blockBuffer alive while processing audio data
-            // The blockBuffer owns the memory that audioBufferList points to
-            _ = try withExtendedLifetime(blockBuffer) {
-                // Process each buffer in the buffer list
-                let buffers = UnsafeMutableAudioBufferListPointer(&audioBufferList)
-
-                for audioBuffer in buffers {
-                    guard let data = audioBuffer.mData else { continue }
-
-                    let convertedData = try formatConverter.convertToStandardFormat(
-                        inputData: data,
-                        inputLength: Int(audioBuffer.mDataByteSize),
-                        inputSampleRate: asbd.mSampleRate,
-                        inputChannels: Int(asbd.mChannelsPerFrame),
-                        inputFormat: audioFormatType(from: asbd.mFormatFlags)
-                    )
-
-                    let duration = Double(CMSampleBufferGetNumSamples(sampleBuffer)) / asbd.mSampleRate
-
-                    let capturedAudio = CapturedAudio(
-                        timestamp: Date(),
-                        audioData: convertedData,
-                        duration: duration,
-                        source: .system,
-                        sampleRate: formatConverter.targetSampleRate,
-                        channels: formatConverter.targetChannels
-                    )
-
-                    continuation.yield(capturedAudio)
-                }
-            }
-
+            let data = try formatConverter.convert(sampleBuffer: sampleBuffer)
+            emit(data, at: pendingStart ?? receivedAt)
+            reportedConversionFailure = false
         } catch {
-            Log.error("[SystemAudioCapture] Error converting system audio: \(error)", category: .capture)
+            formatConverter.reset()
+            pendingStart = nil
+            lastOutputEnd = nil
+            if !reportedConversionFailure {
+                Log.warning("[SystemAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
+                reportedConversionFailure = true
+            }
         }
     }
 
-    private func audioFormatType(from flags: AudioFormatFlags) -> AudioFormatType {
-        if flags & kAudioFormatFlagIsFloat != 0 {
-            return .float32
-        } else if flags & kAudioFormatFlagIsSignedInteger != 0 {
-            return .int16  // Assuming 16-bit
-        } else {
-            return .int16  // Default
+    func setMuted(_ muted: Bool) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        muteState.set(muted)
+        if muted {
+            formatConverter.reset()
+            pendingStart = nil
+            lastOutputEnd = nil
         }
+        wasMuted = muted
+    }
+
+    func finish() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !isFinished else { return }
+        isFinished = true
+        if muteState.get() {
+            formatConverter.reset()
+            return
+        }
+        do {
+            emit(try formatConverter.finish(), at: lastOutputEnd ?? pendingStart ?? Date())
+        } catch {
+            Log.warning("[SystemAudioCapture] Could not drain final audio conversion samples", category: .capture)
+        }
+    }
+
+    private func emit(_ data: Data, at timestamp: Date) {
+        guard !data.isEmpty else { return }
+        let duration = Double(data.count) / Double(formatConverter.targetSampleRate * MemoryLayout<Int16>.size)
+        continuation.yield(CapturedAudio(
+            timestamp: timestamp, audioData: data, duration: duration, source: .system,
+            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels
+        ))
+        lastOutputEnd = timestamp.addingTimeInterval(duration)
+        pendingStart = nil
     }
 }
 
@@ -288,7 +288,7 @@ enum SystemAudioCaptureConcurrencyPolicy {
     static let usesPerSampleTasks = false
 }
 
-private final class SystemAudioMuteState: @unchecked Sendable {
+final class SystemAudioMuteState: @unchecked Sendable {
     private let lock = NSLock()
     private var muted = false
 

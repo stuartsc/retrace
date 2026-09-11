@@ -35,13 +35,22 @@ public class AppNameResolver {
 
         // Return from memory cache if available
         if let cached = cache[bundleID] {
+            if let refreshed = refreshedInstalledName(for: bundleID, replacing: cached) {
+                cache[bundleID] = refreshed
+                saveToDiskAsync(bundleID: bundleID, name: refreshed)
+                return refreshed
+            }
             return cached
         }
 
         // Return from disk cache if available
         if let stored = diskCache[bundleID] {
-            cache[bundleID] = stored
-            return stored
+            let resolved = refreshedInstalledName(for: bundleID, replacing: stored) ?? stored
+            cache[bundleID] = resolved
+            if resolved != stored {
+                saveToDiskAsync(bundleID: bundleID, name: resolved)
+            }
+            return resolved
         }
 
         // Resolve the name
@@ -57,10 +66,7 @@ public class AppNameResolver {
     /// Resolve bundle ID to app name using multiple strategies
     private func resolveAppName(for bundleID: String) -> String {
         // Strategy 1: Look up the actual app name from the system
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
-           let bundle = Bundle(url: appURL),
-           let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-                   ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
+        if let name = installedAppName(for: bundleID) {
             return name
         }
 
@@ -84,6 +90,32 @@ public class AppNameResolver {
 
         // Strategy 4: Clean up and return as-is for other cases
         return cleanupName(bundleID)
+    }
+
+    static func isGenericBundleSuffixName(_ name: String, bundleID: String) -> Bool {
+        guard let suffix = bundleID.split(separator: ".").last, !suffix.isEmpty else {
+            return false
+        }
+        let fallback = suffix.prefix(1).uppercased() + suffix.dropFirst()
+        return name.caseInsensitiveCompare(fallback) == .orderedSame
+    }
+
+    private func refreshedInstalledName(for bundleID: String, replacing cachedName: String) -> String? {
+        guard Self.isGenericBundleSuffixName(cachedName, bundleID: bundleID),
+              let installedName = installedAppName(for: bundleID),
+              installedName.caseInsensitiveCompare(cachedName) != .orderedSame else {
+            return nil
+        }
+        return installedName
+    }
+
+    private func installedAppName(for bundleID: String) -> String? {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
+              let bundle = Bundle(url: appURL) else {
+            return nil
+        }
+        return bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
     }
 
     /// Check if a string looks like a random/generated identifier

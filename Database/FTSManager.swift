@@ -145,9 +145,14 @@ public actor FTSManager: FTSProtocol {
 
         // Execute and collect results
         var matches: [FTSMatch] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
             let match = try parseSearchResult(statement: statement!)
             matches.append(match)
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
         }
 
         return matches
@@ -225,7 +230,7 @@ public actor FTSManager: FTSProtocol {
         }
 
         guard sqlite3_step(statement) == SQLITE_ROW else {
-            return 0
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
         }
 
         return Int(sqlite3_column_int(statement, 0))
@@ -303,7 +308,7 @@ public actor FTSManager: FTSProtocol {
         }
 
         if let excludedAppBundleIDs = filters.excludedAppBundleIDs, !excludedAppBundleIDs.isEmpty {
-            let placeholders = excludedAppBundleIDs.map { _ in "(s.bundleID NOT LIKE ? AND s.windowName NOT LIKE ?)" }.joined(separator: " AND ")
+            let placeholders = excludedAppBundleIDs.map { _ in "(COALESCE(s.bundleID, '') NOT LIKE ? AND COALESCE(s.windowName, '') NOT LIKE ?)" }.joined(separator: " AND ")
             sql += " AND (\(placeholders))"
         }
 
@@ -315,7 +320,7 @@ public actor FTSManager: FTSProtocol {
             sql += " AND s.browserUrl LIKE ?"
         }
 
-        sql += " ORDER BY rank LIMIT ? OFFSET ?"
+        sql += " ORDER BY rank, f.createdAt DESC, ds.frameId DESC LIMIT ? OFFSET ?"
 
         return sql
     }
@@ -345,7 +350,7 @@ public actor FTSManager: FTSProtocol {
         }
 
         if let excludedAppBundleIDs = filters.excludedAppBundleIDs, !excludedAppBundleIDs.isEmpty {
-            let placeholders = excludedAppBundleIDs.map { _ in "(s.bundleID NOT LIKE ? AND s.windowName NOT LIKE ?)" }.joined(separator: " AND ")
+            let placeholders = excludedAppBundleIDs.map { _ in "(COALESCE(s.bundleID, '') NOT LIKE ? AND COALESCE(s.windowName, '') NOT LIKE ?)" }.joined(separator: " AND ")
             sql += " AND (\(placeholders))"
         }
 

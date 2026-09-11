@@ -13,6 +13,79 @@ The system boundary is intentional:
 
 Together, they create a local-first capture layer plus a high-grade intelligence loop. Separately, each product has a clear job.
 
+## Screen Context For Agents
+
+**Requirement clarified by Stuart on 9 September 2026:** an agent using text alone should be able to understand what was visible on the Mac, which document or conversation contained it, and what activity the observations support. Exact screen coordinates are secondary. Screenshots remain evidence for inspection, while the normal intelligence input must be a self-contained textual account.
+
+This extends the capture layer's responsibility beyond recognizing words. Retrace should preserve the source, grouping, visible content and changes needed for later reasoning. FuseIntel remains responsible for broader activity interpretation and connecting those observations to people, projects and other sources. An observation can become an input to an episode; it does not replace the existing episode boundary.
+
+**Status:** this section records the product requirement and a proposed implementation direction. Build 2609.9.1 has basic frame/foreground-window metadata and OCR; it does not yet implement the full representation below. No installed capability follows from this roadmap update.
+
+### Required Information
+
+A screen observation should carry:
+
+- Capture time, stable observation identity, source-frame references and extraction revision.
+- Each included visible app/window, whether it had focus, and available document/conversation titles and identifiers. Preserve the source of each label and whether it was directly exposed or inferred. A window title alone is not a stable document identity.
+- Visible text grouped under its owning document, conversation or pane. Retain headings, chat speaker/turn labels, form labels and values, table headers and row relationships, code blocks, and status/error messages when supported by the source. Unknown ownership or roles must remain explicit.
+- A clear distinction between the visible excerpt and the entire document or conversation. Do not imply that unseen pages, collapsed panes or earlier messages were captured.
+- Observed changes between captures, linked to their evidence. App focus, text changes and an explicit delivery status are different observations.
+- Coverage limits: excluded surfaces, unavailable context, uncertain extraction and meaningful visual content that has no reliable text description.
+
+Use the same underlying record for structured retrieval and a readable text rendering. Agent-facing search and evidence exports must include the source context with the text; a standalone text extract must not depend on reconstructing missing metadata from another response. Internally, geometry remains useful for attribution, occlusion and reading order even when an agent does not receive coordinates.
+
+Illustrative rendering only; these are not observations of Stuart's actual activity:
+
+```text
+Captured: 10:42:18
+Foreground: ChatGPT
+
+ChatGPT / conversation: Supplier comparison
+Visible user message: Compare the two quoted delivery times.
+Visible assistant response: Supplier A quotes three weeks; Supplier B quotes five.
+Coverage: visible messages only; earlier conversation not captured.
+
+Microsoft Word / document: Proposal draft.docx / heading: Delivery
+Visible excerpt: The proposed delivery period is five weeks.
+State: visible in another window; not foreground.
+
+Observed change: focus moved from Word to ChatGPT since the previous observation.
+Optional FuseIntel interpretation: likely comparing delivery terms. This is an inference.
+```
+
+### Evidence And Interpretation
+
+Record what is visible before attempting to explain what it means. A foreground document does not prove that Stuart read it. Changed text does not establish who authored it; it could result from scrolling, generation, synchronisation or another person. A visible Send control or an attempted send does not establish successful delivery. Inferred activities should name the supporting observations and remain separate from those facts.
+
+For charts, diagrams, images and other meaningful visual content, preserve available labels and relationships. Where a visual model is needed, store its description as a separately sourced interpretation with limitations; do not replace the original extracted text with an unchecked summary. This is proposed enrichment, not a claim that current OCR understands every visual element.
+
+### Proposed Implementation Order
+
+1. **Preserve context at capture time.** Snapshot per-window identity and metadata alongside the accepted frame, with acquisition timing and consistency checks. Keep earlier context immutable when titles or URLs change. Context-only changes must survive image deduplication. Late OCR must use the saved context, never the current desktop as a substitute for an old capture.
+2. **Attribute and structure visible content.** Combine captured window information with bounded accessibility labels and OCR. Apply visibility/occlusion checks and the same exclusions to every extraction path. Keep uncertain blocks unassigned rather than attributing an entire display to its foreground app.
+3. **Provide one agent-facing representation.** Persist context, text and relationships together and render complete structured/text observations through a documented bridge. Preserve the last usable observation until a retry commits; retries must not look like repeated user activity. Captured source text must stay delimited as data when an agent consumes it.
+4. **Build temporal intelligence on those observations.** Group changes into candidate episodes, then let FuseIntel infer activities and connect them to external evidence. Optional richer visual interpretation can follow once its accuracy and cost are measured.
+
+macOS exposes window ownership and titles through native window metadata, providing a starting point for attribution; this does not establish complete document or pane understanding. See [Apple SCWindow ownership](https://developer.apple.com/documentation/screencapturekit/scwindow/owningapplication). The initial work should reuse suitable native facilities and existing capture data rather than assume that a new capture backend or model is required.
+
+Keep collection outside the UI thread and bound its time, node count and memory. Reuse unchanged context/content only while identity and freshness are valid, while materialising complete records for consumers. Avoid making a second model pass on every frame mandatory before measuring it. Historical gaps must remain labelled when their missing capture-time context cannot be recovered reliably.
+
+### Acceptance
+
+Use real Mac surfaces and independently annotated screenshot/event evidence. Give a reviewing agent only the generated text, withholding the images. Check whether it can correctly identify the visible sources and contents, explain supported changes, and acknowledge unknowns.
+
+Required scenarios include:
+
+- TextEdit visible while Voice Memos has focus: TextEdit text must retain TextEdit ownership.
+- ChatGPT with a conversation and a Canvas or embedded pane: preserve supported groupings and mark missing titles/roles.
+- Word with a named or unsaved document, rename and scroll: preserve each observed title and visible excerpt.
+- Browser navigation between different URLs with the same title: later navigation must not rewrite earlier context.
+- A generated answer, an unsent draft and a failed delivery: do not invent authorship, intent or successful sending.
+- Overlapping windows, an inaccessible pane and a chart: represent coverage and uncertainty honestly.
+- Exclusions and extraction retries: no excluded content enters the text record, and retries do not create duplicate apparent activity.
+
+Measure attribution and content accuracy, unsupported activity claims, missing context, capture-to-agent-text p50/p95, queue growth, memory and bytes per observation. Compare structured and plain-text exports for the same context coverage. A passing OCR test or valid JSON alone is not acceptance; performance and storage improvements require measured workloads on the actual Mac.
+
 ## Layer Model
 
 ### Retrace: Active Input And Computer Recording Layer
@@ -246,8 +319,9 @@ Success criteria:
 
 ### Phase 2: Harden The Computer Recording Layer
 
-Goal: make Retrace the trusted raw evidence layer.
+Goal: make Retrace the trusted evidence layer, including agent-readable screen context.
 
+- Preserve immutable capture-time source context and group visible text by its owning document/conversation/window.
 - Improve timeline replay, search, and transcript alignment.
 - Ensure screen OCR and audio transcript results always link to source moments.
 - Add evidence export for selected time ranges.
@@ -258,12 +332,13 @@ Success criteria:
 
 - A user can recover a seen or heard detail in under 10 seconds.
 - Any result can be traced back to a timestamped screen/audio source.
+- A text-only agent can reconstruct visible content and supported changes using the acceptance checks under Screen Context For Agents.
 
 ### Phase 3: Define The Retrace-FuseIntel Bridge
 
 Goal: make the product boundary explicit and technically clean.
 
-- Define a local event/evidence API from Retrace to FuseIntel.
+- Define a local event/evidence API from Retrace to FuseIntel, carrying complete screen observations in both structured and readable text forms.
 - Define a FuseIntel insight feed back into Retrace.
 - Create stable IDs for moments, episodes, apps, windows, transcript spans, screenshots, and exports.
 - Add permission gates for FuseIntel access to Retrace data.

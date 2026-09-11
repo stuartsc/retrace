@@ -78,20 +78,16 @@ public actor FullFrameOCRCache {
     /// Find regions that intersect with any of the given changed tiles
     /// Returns (affectedRegions, unaffectedRegions)
     public func findAffectedRegions(changedTiles: [TileInfo]) -> (affected: [TextRegion], unaffected: [TextRegion]) {
+        findAffectedRegions(intersecting: changedTiles.map(\.pixelBounds))
+    }
+
+    /// Invalidate against final OCR crops, including text touched by crop expansion.
+    func findAffectedRegions(intersecting bounds: [CGRect]) -> (affected: [TextRegion], unaffected: [TextRegion]) {
         var affected: [TextRegion] = []
         var unaffected: [TextRegion] = []
 
-        // Create a set of changed tile coordinates for fast lookup
-        let changedTileSet = Set(changedTiles.map { "\($0.col)_\($0.row)" })
-
         for region in cachedRegions {
-            // Check if this region intersects any changed tile
-            let regionIntersectsChanged = cachedTileGrid.contains { tile in
-                // Only check changed tiles
-                guard changedTileSet.contains(tile.cacheKey) else { return false }
-                // Check if region bounds intersect this tile's pixel bounds
-                return region.bounds.intersects(tile.pixelBounds)
-            }
+            let regionIntersectsChanged = bounds.contains { $0.intersects(region.bounds) }
 
             if regionIntersectsChanged {
                 affected.append(region)

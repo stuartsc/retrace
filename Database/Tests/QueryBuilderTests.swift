@@ -1,5 +1,5 @@
 import XCTest
-import SQLite3
+import SQLCipher
 import Shared
 @testable import Database
 
@@ -19,8 +19,8 @@ final class QueryBuilderTests: XCTestCase {
     private static var hasPrintedSeparator = false
 
     override func setUp() async throws {
-        sqlite3_open(":memory:", &db)
-        sqlite3_exec(db, "PRAGMA foreign_keys=ON;", nil, nil, nil)
+        XCTAssertEqual(sqlite3_open(":memory:", &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA foreign_keys=ON;", nil, nil, nil), SQLITE_OK)
 
         let runner = MigrationRunner(db: db!)
         try await runner.runMigrations()
@@ -84,43 +84,42 @@ final class QueryBuilderTests: XCTestCase {
         let segment = makeSegment(
             startTime: Date(timeIntervalSince1970: 1702406400),
             endTime: Date(timeIntervalSince1970: 1702406700),
-            frameCount: 150,
+            frameCount: 73,
             fileSizeBytes: 52428800,
             relativePath: "segments/2024/01/test.mp4"
         )
 
         let insertedID = try SegmentQueries.insert(db: db!, segment: segment)
 
-        // Verify with raw SQL - query the video table (not segments)
-        let sql = "SELECT * FROM video WHERE id = ?"
+        let sql = "SELECT height, width, path, fileSize, frameCount, processingState FROM video WHERE id = ?"
         var statement: OpaquePointer?
-        sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_prepare_v2(db, sql, -1, &statement, nil), SQLITE_OK)
         sqlite3_bind_int64(statement, 1, insertedID)
 
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
 
-        // Check fields - video table has: id, height, width, path, fileSize, frameRate, processingState
-        let height = sqlite3_column_int(statement, 1)
-        let width = sqlite3_column_int(statement, 2)
-        let path = String(cString: sqlite3_column_text(statement, 3))
-        let fileSize = sqlite3_column_int64(statement, 4)
+        let height = sqlite3_column_int(statement, 0)
+        let width = sqlite3_column_int(statement, 1)
+        let path = String(cString: sqlite3_column_text(statement, 2))
+        let fileSize = sqlite3_column_int64(statement, 3)
 
         XCTAssertEqual(height, 1080)
         XCTAssertEqual(width, 1920)
         XCTAssertEqual(path, "segments/2024/01/test.mp4")
         XCTAssertEqual(fileSize, 52428800)
-
-        sqlite3_finalize(statement)
+        XCTAssertEqual(sqlite3_column_int(statement, 4), 73)
+        XCTAssertEqual(sqlite3_column_int(statement, 5), 1, "New video rows remain in progress until finalized")
     }
 
     func testSegmentQueries_GetByID_ReturnsCorrectSegment() throws {
         let segment = makeSegment(frameCount: 100, fileSizeBytes: 1024000)
-        try SegmentQueries.insert(db: db!, segment: segment)
+        let videoID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: segment))
 
-        let retrieved = try SegmentQueries.getByID(db: db!, id: segment.id)
+        let retrieved = try SegmentQueries.getByID(db: db!, id: videoID)
 
         XCTAssertNotNil(retrieved)
-        XCTAssertEqual(retrieved?.id.stringValue, segment.id.stringValue)
+        XCTAssertEqual(retrieved?.id, videoID)
         XCTAssertEqual(retrieved?.frameCount, 100)
         XCTAssertEqual(retrieved?.fileSizeBytes, 1024000)
         XCTAssertEqual(retrieved?.width, 1920)
@@ -132,23 +131,30 @@ final class QueryBuilderTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testSegmentQueries_GetByTimestamp_FindsContainingSegment() throws {
-        let startTime = Date()
+    func testSegmentQueries_GetByTimestamp_FindsVideoForExactFrameTimestamp() throws {
+        let startTime = Date(timeIntervalSince1970: 1702406400)
         let segment = makeSegment(startTime: startTime, endTime: startTime.addingTimeInterval(300))
-        try SegmentQueries.insert(db: db!, segment: segment)
+        let videoID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: segment))
+        let appSegmentID = try createTestSegment()
 
-        // Query in middle of segment
         let midpoint = startTime.addingTimeInterval(150)
+        _ = try FrameQueries.insert(db: db!, frame: makeFrame(timestamp: midpoint, segmentID: appSegmentID, videoID: videoID))
         let result = try SegmentQueries.getByTimestamp(db: db!, timestamp: midpoint)
 
         XCTAssertNotNil(result)
-        XCTAssertEqual(result?.id.stringValue, segment.id.stringValue)
+        XCTAssertEqual(result?.id, videoID)
+        XCTAssertEqual(result?.frameCount, 100)
+        XCTAssertNil(try SegmentQueries.getByTimestamp(db: db!, timestamp: midpoint.addingTimeInterval(0.001)),
+                     "A video lookup needs a frame at the exact millisecond")
     }
 
     func testSegmentQueries_GetByTimestamp_ReturnsNilOutsideRange() throws {
-        let startTime = Date()
+        let startTime = Date(timeIntervalSince1970: 1702406400)
         let segment = makeSegment(startTime: startTime, endTime: startTime.addingTimeInterval(300))
-        try SegmentQueries.insert(db: db!, segment: segment)
+        let videoID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: segment))
+        let appSegmentID = try createTestSegment()
+        _ = try FrameQueries.insert(db: db!, frame: makeFrame(timestamp: startTime, segmentID: appSegmentID, videoID: videoID))
+        XCTAssertEqual(try SegmentQueries.getByTimestamp(db: db!, timestamp: startTime)?.id, videoID)
 
         // Query outside segment
         let beforeStart = startTime.addingTimeInterval(-100)
@@ -157,7 +163,7 @@ final class QueryBuilderTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testSegmentQueries_GetByTimeRange_ReturnsOverlappingSegments() throws {
+    func testSegmentQueries_GetByTimeRange_ReturnsDistinctVideosWithFramesInRange() throws {
         let seg1 = makeSegment(
             startTime: Date(timeIntervalSince1970: 1000),
             endTime: Date(timeIntervalSince1970: 1300),
@@ -174,27 +180,37 @@ final class QueryBuilderTests: XCTestCase {
             relativePath: "seg3.mp4"
         )
 
-        try SegmentQueries.insert(db: db!, segment: seg1)
-        try SegmentQueries.insert(db: db!, segment: seg2)
-        try SegmentQueries.insert(db: db!, segment: seg3)
+        let videoIDs = try [seg1, seg2, seg3].map {
+            VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: $0))
+        }
+        let appSegmentID = try createTestSegment()
+        for (index, entry) in [(videoIDs[0], 1200.0), (videoIDs[0], 1300.0),
+                               (videoIDs[1], 1600.0), (videoIDs[2], 5000.0)].enumerated() {
+            _ = try FrameQueries.insert(db: db!, frame: makeFrame(
+                timestamp: Date(timeIntervalSince1970: entry.1), segmentID: appSegmentID,
+                videoID: entry.0, frameIndex: index))
+        }
 
-        // Query range: 1200-1600 (overlaps seg1 end and seg2 start)
+        // Both endpoints are inclusive; two matching frames do not duplicate a video.
         let results = try SegmentQueries.getByTimeRange(
             db: db!,
             from: Date(timeIntervalSince1970: 1200),
             to: Date(timeIntervalSince1970: 1600)
         )
 
-        XCTAssertEqual(results.count, 2, "Should find 2 overlapping segments")
+        XCTAssertEqual(results.map(\.id), Array(videoIDs.prefix(2)))
+        XCTAssertEqual(results.map(\.frameCount), [100, 100])
     }
 
     func testSegmentQueries_Delete_RemovesSegment() throws {
         let segment = makeSegment(relativePath: "to-delete.mp4")
-        try SegmentQueries.insert(db: db!, segment: segment)
+        let videoID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: segment))
+        let survivorID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: makeSegment(relativePath: "keep.mp4")))
 
-        XCTAssertNotNil(try SegmentQueries.getByID(db: db!, id: segment.id))
-        try SegmentQueries.delete(db: db!, id: segment.id)
-        XCTAssertNil(try SegmentQueries.getByID(db: db!, id: segment.id))
+        XCTAssertNotNil(try SegmentQueries.getByID(db: db!, id: videoID))
+        try SegmentQueries.delete(db: db!, id: videoID)
+        XCTAssertNil(try SegmentQueries.getByID(db: db!, id: videoID))
+        XCTAssertEqual(try SegmentQueries.getByID(db: db!, id: survivorID)?.relativePath, "keep.mp4")
     }
 
     func testSegmentQueries_GetCount_ReturnsCorrectCount() throws {
@@ -228,36 +244,56 @@ final class QueryBuilderTests: XCTestCase {
         XCTAssertEqual(total, 15000)
     }
 
+    func testSegmentQueries_UpdateAndFinalize_ReturnPersistedFrameCounts() throws {
+        let videoID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: makeSegment(frameCount: 0)))
+        XCTAssertEqual(try SegmentQueries.getByID(db: db!, id: videoID)?.frameCount, 0)
+        XCTAssertEqual(try SegmentQueries.getUnfinalisedByResolution(db: db!, width: 1920, height: 1080)?.frameCount, 0)
+
+        try SegmentQueries.update(db: db!, id: videoID.value, width: 1920, height: 1080, fileSize: 2048, frameCount: 17)
+        XCTAssertEqual(try SegmentQueries.getByID(db: db!, id: videoID)?.frameCount, 17)
+        try SegmentQueries.update(db: db!, id: videoID.value, width: 1920, height: 1080, fileSize: 3072)
+        XCTAssertEqual(try SegmentQueries.getByID(db: db!, id: videoID)?.frameCount, 17, "An omitted count preserves the last persisted count")
+
+        try SegmentQueries.markFinalized(db: db!, id: videoID.value, frameCount: 23, fileSize: 4096)
+        let finalized = try SegmentQueries.getByID(db: db!, id: videoID)
+        XCTAssertEqual(finalized?.frameCount, 23)
+        XCTAssertEqual(finalized?.fileSizeBytes, 4096)
+        XCTAssertTrue(try SegmentQueries.getAllUnfinalised(db: db!).isEmpty)
+    }
+
     // ╔═════════════════════════════════════════════════════════════════════════╗
     // ║                       FRAME QUERIES TESTS                               ║
     // ╚═════════════════════════════════════════════════════════════════════════╝
 
-    private func createTestSegment() throws -> AppSegmentID {
-        // Create video segment first
-        let videoSegment = makeSegment(
-            startTime: Date().addingTimeInterval(-3600),
-            endTime: Date().addingTimeInterval(3600)
-        )
-        try SegmentQueries.insert(db: db!, segment: videoSegment)
-
-        // Create app segment
+    private func createTestSegment(
+        bundleID: String = "com.test.app",
+        windowName: String? = nil,
+        browserURL: String? = nil
+    ) throws -> AppSegmentID {
         let appSegmentID = try AppSegmentQueries.insert(
             db: db!,
-            bundleID: "com.test.app",
-            startDate: Date().addingTimeInterval(-3600),
-            endDate: Date().addingTimeInterval(3600),
-            windowName: nil,
-            browserUrl: nil,
+            bundleID: bundleID,
+            startDate: Date(timeIntervalSince1970: 0),
+            endDate: Date(timeIntervalSince1970: 4102444800),
+            windowName: windowName,
+            browserUrl: browserURL,
             type: 0
         )
         return AppSegmentID(value: appSegmentID)
     }
 
     func testFrameQueries_Insert_StoresAllFields() throws {
-        let segmentID = try createTestSegment()
+        let segmentID = try createTestSegment(bundleID: "com.apple.Safari", windowName: "GitHub - retrace", browserURL: "https://github.com/retrace")
+        // Video file identity is independent of the app session identity.
+        _ = try SegmentQueries.insert(db: db!, segment: makeSegment(relativePath: "unrelated.mp4"))
+        let videoID = VideoSegmentID(value: try SegmentQueries.insert(db: db!, segment: makeSegment()))
+        XCTAssertNotEqual(segmentID.value, videoID.value)
+        let timestamp = Date(timeIntervalSince1970: 1702406400.123)
 
         let frame = makeFrame(
+            timestamp: timestamp,
             segmentID: segmentID,
+            videoID: videoID,
             frameIndex: 42,
             metadata: FrameMetadata(
                 appBundleID: "com.apple.Safari",
@@ -267,13 +303,17 @@ final class QueryBuilderTests: XCTestCase {
             )
         )
 
-        try FrameQueries.insert(db: db!, frame: frame)
+        let frameID = FrameID(value: try FrameQueries.insert(db: db!, frame: frame))
 
-        let retrieved = try FrameQueries.getByID(db: db!, id: frame.id)
+        let retrieved = try FrameQueries.getByID(db: db!, id: frameID)
         XCTAssertNotNil(retrieved)
+        XCTAssertEqual(retrieved?.id, frameID)
+        XCTAssertEqual(retrieved?.segmentID, segmentID)
+        XCTAssertEqual(retrieved?.videoID, videoID)
+        XCTAssertEqual(try XCTUnwrap(retrieved).timestamp.timeIntervalSince1970, timestamp.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(retrieved?.frameIndexInSegment, 42)
         XCTAssertEqual(retrieved?.metadata.appBundleID, "com.apple.Safari")
-        XCTAssertEqual(retrieved?.metadata.appName, "Safari")
+        XCTAssertNil(retrieved?.metadata.appName, "App display names are not persisted in the session schema")
         XCTAssertEqual(retrieved?.metadata.windowName, "GitHub - retrace")
         XCTAssertEqual(retrieved?.metadata.browserURL, "https://github.com/retrace")
     }
@@ -282,16 +322,17 @@ final class QueryBuilderTests: XCTestCase {
         let segmentID = try createTestSegment()
         let frame = makeFrame(segmentID: segmentID, metadata: FrameMetadata())
 
-        try FrameQueries.insert(db: db!, frame: frame)
+        let frameID = FrameID(value: try FrameQueries.insert(db: db!, frame: frame))
 
-        let retrieved = try FrameQueries.getByID(db: db!, id: frame.id)
-        XCTAssertNil(retrieved?.metadata.appBundleID)
+        let retrieved = try FrameQueries.getByID(db: db!, id: frameID)
+        XCTAssertNotNil(retrieved)
+        XCTAssertEqual(retrieved?.metadata.appBundleID, "com.test.app", "Frame context comes from its linked app session")
         XCTAssertNil(retrieved?.metadata.appName)
         XCTAssertNil(retrieved?.metadata.windowName)
         XCTAssertNil(retrieved?.metadata.browserURL)
     }
 
-    func testFrameQueries_GetByTimeRange_ReturnsOrderedByTimestampDesc() throws {
+    func testFrameQueries_GetByTimeRange_ReturnsOrderedByTimestampAsc() throws {
         let segmentID = try createTestSegment()
         let timestamps = [100.0, 300.0, 200.0, 500.0, 400.0]
 
@@ -313,12 +354,7 @@ final class QueryBuilderTests: XCTestCase {
 
         XCTAssertEqual(results.count, 5)
 
-        for i in 0..<(results.count - 1) {
-            XCTAssertGreaterThan(
-                results[i].timestamp.timeIntervalSince1970,
-                results[i + 1].timestamp.timeIntervalSince1970
-            )
-        }
+        XCTAssertEqual(results.map { $0.timestamp.timeIntervalSince1970 }, timestamps.sorted())
     }
 
     func testFrameQueries_GetByTimeRange_RespectsLimit() throws {
@@ -344,17 +380,19 @@ final class QueryBuilderTests: XCTestCase {
     }
 
     func testFrameQueries_GetByApp_FiltersCorrectly() throws {
-        let segmentID = try createTestSegment()
         let apps = ["com.apple.Safari", "com.apple.Xcode", "com.apple.Safari", "com.apple.Terminal"]
+        var expectedSafariIDs: [FrameID] = []
 
         for (i, app) in apps.enumerated() {
+            let segmentID = try createTestSegment(bundleID: app)
             let frame = makeFrame(
                 timestamp: Date().addingTimeInterval(Double(i)),
                 segmentID: segmentID,
                 frameIndex: i,
                 metadata: FrameMetadata(appBundleID: app)
             )
-            try FrameQueries.insert(db: db!, frame: frame)
+            let frameID = FrameID(value: try FrameQueries.insert(db: db!, frame: frame))
+            if app == "com.apple.Safari" { expectedSafariIDs.append(frameID) }
         }
 
         let safariFrames = try FrameQueries.getByApp(
@@ -365,6 +403,7 @@ final class QueryBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(safariFrames.count, 2)
+        XCTAssertEqual(Set(safariFrames.map(\.id)), Set(expectedSafariIDs))
         for frame in safariFrames {
             XCTAssertEqual(frame.metadata.appBundleID, "com.apple.Safari")
         }
@@ -405,11 +444,14 @@ final class QueryBuilderTests: XCTestCase {
     // ║                      DOCUMENT QUERIES TESTS                             ║
     // ╚═════════════════════════════════════════════════════════════════════════╝
 
-    private func createTestFrame() throws -> FrameID {
-        let segmentID = try createTestSegment()
-        let frame = makeFrame(segmentID: segmentID)
-        try FrameQueries.insert(db: db!, frame: frame)
-        return frame.id
+    private func createTestFrame(
+        timestamp: Date = Date(),
+        windowName: String? = nil,
+        browserURL: String? = nil
+    ) throws -> FrameID {
+        let segmentID = try createTestSegment(windowName: windowName, browserURL: browserURL)
+        let frame = makeFrame(timestamp: timestamp, segmentID: segmentID)
+        return FrameID(value: try FrameQueries.insert(db: db!, frame: frame))
     }
 
     func testDocumentQueries_Insert_ReturnsAutoIncrementID() throws {
@@ -430,27 +472,33 @@ final class QueryBuilderTests: XCTestCase {
 
         let id2 = try DocumentQueries.insert(db: db!, document: document2)
         XCTAssertGreaterThan(id2, id1)
+        XCTAssertEqual(try DocumentQueries.getByFrameID(db: db!, frameID: frameID)?.id, id1)
+        XCTAssertEqual(try DocumentQueries.getByFrameID(db: db!, frameID: frameID2)?.id, id2)
     }
 
     func testDocumentQueries_Insert_StoresAllFields() throws {
-        let frameID = try createTestFrame()
+        let timestamp = Date(timeIntervalSince1970: 1702406400.123)
+        let frameID = try createTestFrame(timestamp: timestamp, windowName: "GitHub Page", browserURL: "https://github.com")
 
         let document = IndexedDocument(
             id: 0,
             frameID: frameID,
-            timestamp: Date(timeIntervalSince1970: 1702406400),
+            timestamp: timestamp,
             content: "Full document content here",
             appName: "Safari",
             windowName: "GitHub Page",
             browserURL: "https://github.com"
         )
 
-        _ = try DocumentQueries.insert(db: db!, document: document)
+        let docID = try DocumentQueries.insert(db: db!, document: document)
 
         let retrieved = try DocumentQueries.getByFrameID(db: db!, frameID: frameID)
         XCTAssertNotNil(retrieved)
+        XCTAssertEqual(retrieved?.id, docID)
+        XCTAssertEqual(retrieved?.frameID, frameID)
+        XCTAssertEqual(try XCTUnwrap(retrieved).timestamp.timeIntervalSince1970, timestamp.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(retrieved?.content, "Full document content here")
-        XCTAssertEqual(retrieved?.appName, "Safari")
+        XCTAssertNil(retrieved?.appName, "Document context is read from the source frame and session")
         XCTAssertEqual(retrieved?.windowName, "GitHub Page")
         XCTAssertEqual(retrieved?.browserURL, "https://github.com")
     }
@@ -465,6 +513,8 @@ final class QueryBuilderTests: XCTestCase {
 
         let retrieved = try DocumentQueries.getByFrameID(db: db!, frameID: frameID)
         XCTAssertEqual(retrieved?.content, "Updated content")
+        XCTAssertEqual(retrieved?.id, docID)
+        XCTAssertEqual(try DocumentQueries.getCount(db: db!), 1)
     }
 
     func testDocumentQueries_Delete_RemovesDocument() throws {
@@ -476,6 +526,7 @@ final class QueryBuilderTests: XCTestCase {
         XCTAssertNotNil(try DocumentQueries.getByFrameID(db: db!, frameID: frameID))
         try DocumentQueries.delete(db: db!, id: docID)
         XCTAssertNil(try DocumentQueries.getByFrameID(db: db!, frameID: frameID))
+        XCTAssertNotNil(try FrameQueries.getByID(db: db!, id: frameID), "Deleting indexed text preserves its source frame")
     }
 
     func testDocumentQueries_GetCount_ReturnsCorrectCount() throws {

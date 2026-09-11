@@ -21,6 +21,7 @@ public actor CGWindowListCapture {
     /// Track if array-based capture has been tested and found broken
     /// Once we know it's broken, skip directly to fallback masking
     private var arrayCaptureBroken = false
+    private var isCaptureInFlight = false
 
     /// Callback when frame is captured
     nonisolated(unsafe) var onFrameCaptured: (@Sendable (CapturedFrame) -> Void)?
@@ -158,6 +159,12 @@ public actor CGWindowListCapture {
     /// Capture a single frame with real-time filtering of excluded apps and private windows
     private func captureFrame(displayID: CGWindowID) async {
         guard isActive, let config = currentConfig else { return }
+        guard !isCaptureInFlight else {
+            Log.debug("[CGWindowListCapture] Skipping capture because another capture is still in flight", category: .capture)
+            return
+        }
+        isCaptureInFlight = true
+        defer { isCaptureInFlight = false }
 
         // Compute excluded window IDs for THIS capture (real-time filtering)
         let exclusionResult = await computeExcludedWindowIDs(config: config, displayID: displayID)
@@ -848,30 +855,29 @@ public actor CGWindowListCapture {
         let bytesPerRow = width * 4 // BGRA = 4 bytes per pixel
         let dataSize = bytesPerRow * height
 
-        // Allocate buffer
-        var pixelData = Data(count: dataSize)
+        guard width > 0, height > 0, dataSize > 0 else { return nil }
 
-        // Create bitmap context and draw within the same closure to ensure pointer validity
-        let success = pixelData.withUnsafeMutableBytes { rawBufferPointer -> Bool in
-            guard let baseAddress = rawBufferPointer.baseAddress else { return false }
+        let pixelBuffer = UnsafeMutableRawPointer.allocate(byteCount: dataSize, alignment: 64)
+        pixelBuffer.initializeMemory(as: UInt8.self, repeating: 0, count: dataSize)
 
-            guard let context = CGContext(
-                data: baseAddress,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-            ) else {
-                return false
-            }
-
-            // Draw the image into the context (converts to BGRA)
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
+        guard let context = CGContext(
+            data: pixelBuffer,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            pixelBuffer.deallocate()
+            return nil
         }
 
-        return success ? pixelData : nil
+        // Draw into manually-owned memory rather than Swift Data's mutable storage.
+        // Crash reports showed CoreGraphics aborting inside this draw during rapid
+        // window-change captures; a stable raw buffer avoids Data storage movement.
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        return Data(bytesNoCopy: pixelBuffer, count: dataSize, deallocator: .free)
     }
 }

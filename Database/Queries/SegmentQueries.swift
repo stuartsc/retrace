@@ -14,8 +14,8 @@ enum SegmentQueries {
         // We use relativePath for the same purpose
         let sql = """
             INSERT INTO video (
-                height, width, path, fileSize, frameRate, processingState
-            ) VALUES (?, ?, ?, ?, ?, ?);
+                height, width, path, fileSize, frameRate, processingState, frameCount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
             """
 
         var statement: OpaquePointer?
@@ -39,6 +39,7 @@ enum SegmentQueries {
         sqlite3_bind_double(statement, 5, 30.0)
         // processingState: 1 = in progress (still being written to), 0 = completed
         sqlite3_bind_int(statement, 6, 1)
+        sqlite3_bind_int64(statement, 7, Int64(segment.frameCount))
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw DatabaseError.queryFailed(
@@ -274,7 +275,7 @@ enum SegmentQueries {
 
     static func getByID(db: OpaquePointer, id: VideoSegmentID) throws -> VideoSegment? {
         let sql = """
-            SELECT id, height, width, path, fileSize, frameRate
+            SELECT id, height, width, path, fileSize, frameRate, frameCount
             FROM video
             WHERE id = ?;
             """
@@ -306,7 +307,7 @@ enum SegmentQueries {
     static func getByTimestamp(db: OpaquePointer, timestamp: Date) throws -> VideoSegment? {
         // Query through frames to find the video
         let sql = """
-            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameRate
+            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameRate, v.frameCount
             FROM video v
             INNER JOIN frame f ON f.videoId = v.id
             WHERE f.createdAt = ?
@@ -344,7 +345,7 @@ enum SegmentQueries {
         to endDate: Date
     ) throws -> [VideoSegment] {
         let sql = """
-            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameRate
+            SELECT DISTINCT v.id, v.height, v.width, v.path, v.fileSize, v.frameRate, v.frameCount
             FROM video v
             INNER JOIN frame f ON f.videoId = v.id
             WHERE f.createdAt >= ? AND f.createdAt <= ?
@@ -451,7 +452,7 @@ enum SegmentQueries {
     // MARK: - Helpers
 
     /// Parse a video row from the video table
-    /// Expected columns: id, height, width, path, fileSize, frameRate
+    /// Expected columns: id, height, width, path, fileSize, frameRate, frameCount
     private static func parseVideoRow(statement: OpaquePointer) throws -> VideoSegment {
         // Column 0: id (INTEGER)
         let videoId = sqlite3_column_int64(statement, 0)
@@ -472,15 +473,13 @@ enum SegmentQueries {
         // Column 4: fileSize (nullable)
         let fileSizeBytes = sqlite3_column_int64(statement, 4)
 
-        // Column 5: frameRate
-        let frameRate = sqlite3_column_double(statement, 5)
+        // Column 6: persisted count, including partially written or recovered chunks.
+        let frameCount = Int(sqlite3_column_int64(statement, 6))
 
-        // Note: The video table doesn't have startTime/endTime/frameCount
-        // Those need to be queried from the frames table if needed
-        // For now, use placeholder values (will be computed from frames when needed)
+        // The video table does not store capture start/end times. Preserve the
+        // legacy placeholders; timestamp lookups use the associated frame rows.
         let startTime = Date(timeIntervalSince1970: 0)
         let endTime = Date(timeIntervalSince1970: 0)
-        let frameCount = 150 // Standard 150 frames per video (5 seconds @ 30 FPS)
 
         return VideoSegment(
             id: id,

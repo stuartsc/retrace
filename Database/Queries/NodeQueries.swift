@@ -6,7 +6,7 @@ import CoreGraphics
 // MARK: - Node Queries
 
 /// SQL queries for node table (Rewind-compatible)
-/// Handles OCR text bounding boxes with textOffset/textLength references into searchRanking_content
+/// Handles OCR text bounding boxes with direct text and legacy textOffset/textLength fallback.
 enum NodeQueries {
 
     // MARK: - Batch Insert
@@ -16,15 +16,15 @@ enum NodeQueries {
     static func insertBatch(
         db: OpaquePointer,
         frameID: FrameID,
-        nodes: [(textOffset: Int, textLength: Int, bounds: CGRect, windowIndex: Int?)],
+        nodes: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)],
         frameWidth: Int,
         frameHeight: Int
     ) throws {
         let sql = """
             INSERT INTO node (
                 frameId, nodeOrder, textOffset, textLength,
-                leftX, topY, width, height, windowIndex
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                leftX, topY, width, height, windowIndex, text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
 
         var statement: OpaquePointer?
@@ -60,6 +60,12 @@ enum NodeQueries {
                 sqlite3_bind_int(statement, 9, Int32(windowIndex))
             } else {
                 sqlite3_bind_null(statement, 9)
+            }
+
+            if let text = node.text, !text.isEmpty {
+                sqlite3_bind_text(statement, 10, text, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(statement, 10)
             }
 
             guard sqlite3_step(statement) == SQLITE_DONE else {
@@ -135,7 +141,8 @@ enum NodeQueries {
                 n.width,
                 n.height,
                 n.windowIndex,
-                sc.c0
+                n.text,
+                (COALESCE(sc.c0, '') || COALESCE(sc.c1, '')) AS fullText
             FROM node n
             JOIN doc_segment ds ON n.frameId = ds.frameId
             JOIN searchRanking_content sc ON ds.docid = sc.id
@@ -165,11 +172,19 @@ enum NodeQueries {
                 frameHeight: frameHeight
             )
 
-            // Extract text substring using textOffset and textLength
-            guard let fullTextCStr = sqlite3_column_text(statement, 9) else {
+            if let storedTextCStr = sqlite3_column_text(statement, 9) {
+                let storedText = String(cString: storedTextCStr)
+                if !storedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    results.append((node, storedText))
+                    continue
+                }
+            }
+
+            // Legacy fallback for rows created before node.text existed.
+            guard let fullTextCStr = sqlite3_column_text(statement, 10) else {
                 throw DatabaseError.queryFailed(
                     query: sql,
-                    underlying: "Missing searchRanking_content.c0"
+                    underlying: "Missing searchRanking_content text"
                 )
             }
             let fullText = String(cString: fullTextCStr)

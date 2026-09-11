@@ -41,9 +41,6 @@ public actor AudioProcessingManager {
     private var audioWriter: AudioSegmentWriter?
     private var isProcessing = false
 
-    /// Text from the last successfully transcribed batch — used as initial_prompt for the next batch
-    private var previousBatchText: String?
-
     /// Trailing words from the last batch (in the overlap zone) — used to deduplicate
     private var previousBatchTrailingWords: [TranscriptionWord] = []
 
@@ -277,7 +274,7 @@ public actor AudioProcessingManager {
                 channels: batch.channels,
                 transcriptionService: transcriptionService,
                 wordLevel: config.enableWordLevelTimestamps,
-                initialPrompt: previousBatchText,
+                initialPrompt: nil,
                 profile: .liveFirstPass
             )
             let transcription = decision.transcription
@@ -378,27 +375,11 @@ public actor AudioProcessingManager {
                 return
             }
 
-            // Step 4: Write audio segments to disk first so we have paths for DB records
-            var sentenceAudioPaths: [String?] = Array(repeating: nil, count: sentences.count)
-            if let writer = audioWriter {
-                for (index, sentence) in sentences.enumerated() {
-                    do {
-                        let (filePath, _) = try await writer.writeAudioSegment(
-                            audioData: batch.audioData,
-                            startTime: sentence.startTime,
-                            endTime: sentence.endTime,
-                            sampleRate: batch.sampleRate,
-                            channels: batch.channels,
-                            timestamp: batch.startTimestamp.addingTimeInterval(sentence.startTime),
-                            source: batch.source
-                        )
-                        sentenceAudioPaths[index] = filePath
-                        Log.debug("[AudioProcessingManager] Wrote audio segment: \(filePath)", category: .processing)
-                    } catch {
-                        Log.error("[AudioProcessingManager] Failed to write audio segment: \(error)", category: .processing)
-                    }
-                }
-            }
+            // Sentence clips duplicate the raw batch. Store sentence timing in SQLite
+            // and resolve playback against the canonical batch file instead.
+            let transcriptAudioPath = AudioStoragePolicy.canonicalTranscriptPath(
+                batchAudioPath: savedBatchPath
+            )
 
             // Step 5: Build and batch insert all sentences with audio paths
             var transcriptionsBatch: [(
@@ -418,7 +399,7 @@ public actor AudioProcessingManager {
                 qualityFlags: String?
             )] = []
 
-            for (index, sentence) in sentences.enumerated() {
+            for sentence in sentences {
                 transcriptionsBatch.append((
                     sessionID: nil,
                     text: sentence.text,
@@ -427,7 +408,7 @@ public actor AudioProcessingManager {
                     source: batch.source,
                     confidence: sentence.confidence,
                     words: sentence.words,
-                    audioPath: sentenceAudioPaths[index],
+                    audioPath: transcriptAudioPath,
                     transcriptionPass: 1,
                     batchAudioPath: savedBatchPath,
                     transcriptStatus: decision.status.rawValue,
@@ -483,8 +464,8 @@ public actor AudioProcessingManager {
                 await callback(syntheticAudio, transcription)
             }
 
-            // Store this batch's text and trailing words for the next batch
-            previousBatchText = transcription.text
+            // Keep timing evidence for overlap deduplication. Live decoding deliberately
+            // remains context-free; contextual prompts are reserved for repair passes.
             previousBatchDuration = batch.duration
             // Keep words from the last 10 seconds for overlap deduplication
             previousBatchTrailingWords = transcription.words.filter {

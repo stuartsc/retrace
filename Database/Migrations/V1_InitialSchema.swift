@@ -107,6 +107,7 @@ struct V1_InitialSchema: Migration {
                 width       REAL NOT NULL,
                 height      REAL NOT NULL,
                 windowIndex INTEGER,
+                text        TEXT,
                 FOREIGN KEY (frameId) REFERENCES frame(id) ON DELETE CASCADE
             );
             """

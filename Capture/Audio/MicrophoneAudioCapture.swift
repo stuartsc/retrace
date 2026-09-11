@@ -66,8 +66,16 @@ public actor MicrophoneAudioCapture {
         self._audioStream = stream
         self.audioContinuation = continuation
 
+        // A restarted source must not inherit filter samples from its previous session.
+        formatConverter.reset()
+
         // Configure capture session
-        try configureCaptureSession(continuation: continuation)
+        do {
+            try configureCaptureSession(continuation: continuation)
+        } catch {
+            stopCapture()
+            throw error
+        }
         Log.info("[MicrophoneAudioCapture] Capture session configured", category: .capture)
 
         // Start on background queue (startRunning is synchronous and can block)
@@ -79,16 +87,23 @@ public actor MicrophoneAudioCapture {
             }
         }
 
-        let running = captureSession.isRunning
-        isRunning = running
-        Log.info("[MicrophoneAudioCapture] AVCaptureSession running=\(running) (shared mic, no Voice Processing)", category: .capture)
+        try finishStartingCapture()
+    }
+
+    func finishStartingCapture() throws {
+        guard captureSession.isRunning else {
+            stopCapture()
+            throw AudioCaptureError.captureSessionFailed("Microphone capture session did not start")
+        }
+        isRunning = true
+        Log.info("[MicrophoneAudioCapture] AVCaptureSession running=true (shared mic, no Voice Processing)", category: .capture)
     }
 
     /// Stop capturing
     public func stopCapture() {
-        guard isRunning else { return }
-
-        captureSession.stopRunning()
+        // A failed start or a preacquired stream still needs deterministic teardown.
+        if captureSession.isRunning { captureSession.stopRunning() }
+        audioOutput?.setSampleBufferDelegate(nil, queue: nil)
 
         // Remove inputs/outputs
         for input in captureSession.inputs {
@@ -98,6 +113,8 @@ public actor MicrophoneAudioCapture {
             captureSession.removeOutput(output)
         }
 
+        // Stop callbacks before draining the final native resampler samples.
+        delegate?.finish()
         isRunning = false
         audioContinuation?.finish()
         audioContinuation = nil
@@ -179,10 +196,15 @@ public actor MicrophoneAudioCapture {
 
 // MARK: - AVCaptureAudioDataOutput Delegate
 
-private final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
-
+final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let continuation: AsyncStream<CapturedAudio>.Continuation
     private let formatConverter: AudioFormatConverter
+    // Callback conversion and background shutdown share this bounded critical section.
+    private let stateLock = NSLock()
+    private var isFinished = false
+    private var pendingStart: Date?
+    private var lastOutputEnd: Date?
+    private var reportedConversionFailure = false
 
     init(continuation: AsyncStream<CapturedAudio>.Continuation, formatConverter: AudioFormatConverter) {
         self.continuation = continuation
@@ -191,60 +213,52 @@ private final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBu
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
-        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
-        guard let desc = asbd else { return }
+        receive(sampleBuffer, receivedAt: Date())
+    }
 
-        let sampleRate = desc.mSampleRate
-        let channels = Int(desc.mChannelsPerFrame)
-        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
-
-        guard frameCount > 0 else { return }
-
-        // Get raw audio data
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var lengthAtOffset: Int = 0
-        var totalLength: Int = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-
-        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: &lengthAtOffset, totalLengthOut: &totalLength, dataPointerOut: &dataPointer)
-        guard status == kCMBlockBufferNoErr, let rawData = dataPointer else { return }
-
+    func receive(_ sampleBuffer: CMSampleBuffer, receivedAt: Date) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !isFinished else { return }
+        if pendingStart == nil { pendingStart = receivedAt }
         do {
-            // Determine input format from ASBD
-            let inputFormat: AudioFormatType
-            if desc.mFormatFlags & kAudioFormatFlagIsFloat != 0 {
-                inputFormat = .float32
-            } else if desc.mBitsPerChannel == 16 {
-                inputFormat = .int16
-            } else {
-                inputFormat = .float32  // fallback
-            }
-
-            let convertedData = try formatConverter.convertToStandardFormat(
-                inputData: UnsafeRawPointer(rawData),
-                inputLength: totalLength,
-                inputSampleRate: sampleRate,
-                inputChannels: channels,
-                inputFormat: inputFormat
-            )
-
-            let duration = Double(frameCount) / sampleRate
-
-            let capturedAudio = CapturedAudio(
-                timestamp: Date(),
-                audioData: convertedData,
-                duration: duration,
-                source: .microphone,
-                sampleRate: formatConverter.targetSampleRate,
-                channels: formatConverter.targetChannels
-            )
-
-            continuation.yield(capturedAudio)
-
+            let data = try formatConverter.convert(sampleBuffer: sampleBuffer)
+            emit(data, at: pendingStart ?? receivedAt)
+            reportedConversionFailure = false
         } catch {
-            // Don't spam logs for every buffer
+            // A rejected packet is a discontinuity; retain neither filter history nor
+            // its wall-clock anchor. Empty successful output above is normal priming.
+            formatConverter.reset()
+            pendingStart = nil
+            lastOutputEnd = nil
+            if !reportedConversionFailure {
+                Log.warning("[MicrophoneAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
+                reportedConversionFailure = true
+            }
         }
+    }
+
+    func finish() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !isFinished else { return }
+        isFinished = true
+        do {
+            emit(try formatConverter.finish(), at: lastOutputEnd ?? pendingStart ?? Date())
+        } catch {
+            Log.warning("[MicrophoneAudioCapture] Could not drain final audio conversion samples", category: .capture)
+        }
+    }
+
+    private func emit(_ data: Data, at timestamp: Date) {
+        guard !data.isEmpty else { return }
+        let duration = Double(data.count) / Double(formatConverter.targetSampleRate * MemoryLayout<Int16>.size)
+        continuation.yield(CapturedAudio(
+            timestamp: timestamp, audioData: data, duration: duration, source: .microphone,
+            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels
+        ))
+        lastOutputEnd = timestamp.addingTimeInterval(duration)
+        pendingStart = nil
     }
 }
 

@@ -7,6 +7,7 @@ import Processing
 import Search
 import Migration
 import CoreGraphics
+import ImageIO
 
 enum AudioPipelineBufferPolicy {
     static let bridgeSampleLimit = 12_000
@@ -18,6 +19,56 @@ enum AudioPipelineBufferPolicy {
             of: CapturedAudio.self,
             bufferingPolicy: .bufferingNewest(limit)
         )
+    }
+}
+
+enum VideoSegmentSizingPolicy {
+    static let defaultMaxFramesPerSegment = 150
+    static let minimumMaxFramesPerSegment = 24
+    static let bytesPerPixel = 4
+    static let activeWALBudgetBytes: Int64 = 2 * 1024 * 1024 * 1024
+
+    static func maxFramesPerSegment(width: Int, height: Int) -> Int {
+        let rawBytesPerFrame = estimatedRawBytes(width: width, height: height, frames: 1)
+        guard rawBytesPerFrame > 0 else {
+            return defaultMaxFramesPerSegment
+        }
+
+        let budgetedFrames = Int(activeWALBudgetBytes / rawBytesPerFrame)
+        return min(
+            defaultMaxFramesPerSegment,
+            max(minimumMaxFramesPerSegment, budgetedFrames)
+        )
+    }
+
+    static func estimatedRawBytes(width: Int, height: Int, frames: Int) -> Int64 {
+        guard width > 0, height > 0, frames > 0 else { return 0 }
+        return Int64(width) * Int64(height) * Int64(bytesPerPixel) * Int64(frames)
+    }
+}
+
+enum FrameReadinessPolicy {
+    static func shouldMarkReadableAfterWALRegistration(_ didRegisterWALMapping: Bool) -> Bool {
+        didRegisterWALMapping
+    }
+
+    static func shouldBufferUntilVideoFlush(didRegisterWALMapping: Bool) -> Bool {
+        !didRegisterWALMapping
+    }
+}
+
+enum LiveFrameReadSource: Equatable {
+    case activeWAL
+    case video
+}
+
+enum LiveFrameReadPolicy {
+    static func orderedSources(
+        frameSource: FrameSource,
+        isVideoFinalized: Bool
+    ) -> [LiveFrameReadSource] {
+        guard frameSource == .native else { return [.video] }
+        return isVideoFinalized ? [.video, .activeWAL] : [.activeWAL, .video]
     }
 }
 
@@ -189,6 +240,9 @@ public final class PipelineStatusHolder: @unchecked Sendable {
 /// Owner: APP integration
 public actor AppCoordinator {
     private static let manualBackfillBatchLimit = 25
+    static let startupOCRNodeTextBackfillBatchLimit = 25
+    static let startupOCRNodeTextBackfillQueueCapacity = 25
+    static let startupOCRNodeTextBackfillPriority = -5
     private static let manualPass2BatchLimit = 25
     private static let manualPass3BatchLimit = 10
     private static let automaticBackfillBatchLimit = 10
@@ -246,7 +300,11 @@ public actor AppCoordinator {
     private var captureTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
     private var refinementLoopTask: Task<Void, Never>?
+    private var legacyOCRNodeTextMaintenanceTask: Task<Void, Never>?
     private var isRunning = false
+    /// Writer ownership exists before its first WAL append, so filesystem
+    /// enumeration alone cannot determine whether a video is orphaned.
+    private var liveVideoWriterPaths: Set<String> = []
 
     // Statistics
     private var pipelineStartTime: Date?
@@ -286,6 +344,7 @@ public actor AppCoordinator {
 
     // Periodic task to finalize orphaned videos (processingState stuck at 1)
     private var orphanedVideoCleanupTask: Task<Void, Never>?
+    private var startupRecoveryTask: Task<Void, Never>?
     private static let pipelineMemoryLogInterval: TimeInterval = 5.0
 
     // MARK: - Initialization
@@ -518,24 +577,39 @@ public actor AppCoordinator {
 
     // MARK: - Lifecycle
 
+    /// Keep startup recovery and worker activation in one owned lifecycle task.
+    func startFrameProcessingAfterRecovery(_ recover: @escaping @Sendable () async throws -> Void) {
+        guard startupRecoveryTask == nil else { return }
+        startupRecoveryTask = Task {
+            do {
+                try await recover()
+            } catch is CancellationError {
+                return
+            } catch {
+                Log.error("[AppCoordinator] Background crash recovery failed", category: .app, error: error)
+            }
+            guard !Task.isCancelled else { return }
+            if let queue = await services.processingQueue {
+                await queue.startWorkers()
+                Log.info("✓ Processing queue workers started after startup recovery", category: .app)
+            }
+            startLegacyOCRNodeTextMaintenance()
+        }
+    }
+
     /// Initialize all services
     public func initialize() async throws {
         Log.info("Initializing AppCoordinator...", category: .app)
         try await services.initialize()
 
-        // Run crash recovery from WAL in background (non-blocking)
-        Task {
-            do {
-                try await recoverFromCrash()
-            } catch {
-                Log.error("[AppCoordinator] Background crash recovery failed", category: .app, error: error)
-            }
-        }
-
         Log.info("AppCoordinator initialized successfully", category: .app)
 
-        // Apply power-aware OCR settings
+        // Configure the stopped queue before recovery; power updates cannot start
+        // or restart workers until startup recovery releases existing claims.
         await applyPowerSettings()
+        startFrameProcessingAfterRecovery { [self] in
+            try await recoverFromCrash()
+        }
 
         // Start periodic orphaned video cleanup (runs every 60s)
         startOrphanedVideoCleanup()
@@ -547,6 +621,7 @@ public actor AppCoordinator {
 
     /// Recover frames from write-ahead log (WAL) after a crash
     private func recoverFromCrash() async throws {
+        try Task.checkCancellation()
         // Skip crash recovery during first launch (onboarding) - there's nothing to recover
         // and the database may not be fully ready yet
         guard await services.onboardingManager.hasCompletedOnboarding else {
@@ -579,24 +654,19 @@ public actor AppCoordinator {
         }
 
         let result = try await recoveryManager.recoverAll()
+        try Task.checkCancellation()
 
         // Finalize any orphaned videos (processingState=1 but no active WAL session)
         // This cleans up videos left unfinalised due to dev restarts or crashes
-        let activeWALSessions = try await walManager.listActiveSessions()
-        let activeVideoIDs = try await resolveActiveDatabaseVideoIDs(from: activeWALSessions)
-        if !activeWALSessions.isEmpty && activeVideoIDs.isEmpty {
-            Log.warning(
-                "[Recovery] Skipping orphan video finalization: \(activeWALSessions.count) active WAL sessions but no matching unfinalised DB video IDs",
-                category: .app
-            )
-        } else {
-            let orphanedVideosFinalized = try await services.database.finalizeOrphanedVideos(activeVideoIDs: activeVideoIDs)
-            if orphanedVideosFinalized > 0 {
-                Log.warning("[Recovery] Finalized \(orphanedVideosFinalized) orphaned videos (processingState was stuck at 1)", category: .app)
-            }
+        let orphanedVideosFinalized = try await finalizeOrphanedVideoSnapshot {
+            try await walManager.listActiveSessions()
+        }
+        if orphanedVideosFinalized > 0 {
+            Log.warning("[Recovery] Finalized \(orphanedVideosFinalized) orphaned videos (processingState was stuck at 1)", category: .app)
         }
 
         // Re-enqueue frames that were processing during crash
+        try Task.checkCancellation()
         if let queue = await services.processingQueue {
             try await queue.requeueCrashedFrames()
         }
@@ -609,12 +679,13 @@ public actor AppCoordinator {
 
         // Re-enqueue orphaned frames (processingStatus=0 but not in queue)
         // These are frames that were captured but never enqueued due to app restart
-        await reEnqueueOrphanedFrames()
+        try await reEnqueueOrphanedFrames()
     }
 
     /// Re-enqueue frames that have processingStatus=0 but are not in the processing queue
     /// This happens when the app restarts before buffered frames were enqueued
-    private func reEnqueueOrphanedFrames() async {
+    private func reEnqueueOrphanedFrames() async throws {
+        try Task.checkCancellation()
         guard let queue = await services.processingQueue else {
             Log.warning("[ORPHAN-RECOVERY] Processing queue not available", category: .app)
             return
@@ -634,12 +705,14 @@ public actor AppCoordinator {
             var totalEnqueued = 0
 
             while true {
+                try Task.checkCancellation()
                 let frameIDs = try await services.database.getPendingFrameIDsNotInQueue(limit: batchSize)
                 if frameIDs.isEmpty {
                     break
                 }
 
                 for frameID in frameIDs {
+                    try Task.checkCancellation()
                     // Enqueue without frame data (will extract from video)
                     try await queue.enqueue(frameID: frameID, priority: -1) // Low priority so new frames process first
                 }
@@ -648,10 +721,12 @@ public actor AppCoordinator {
                 Log.info("[ORPHAN-RECOVERY] Enqueued batch of \(frameIDs.count) frames (total: \(totalEnqueued)/\(orphanedCount))", category: .app)
 
                 // Small delay between batches to avoid overwhelming the queue
-                try? await Task.sleep(for: .nanoseconds(Int64(100_000_000)), clock: .continuous) // 100ms
+                try await Task.sleep(for: .milliseconds(100), clock: .continuous)
             }
 
             Log.info("[ORPHAN-RECOVERY] Completed - enqueued \(totalEnqueued) orphaned frames for OCR processing", category: .app)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             Log.error("[ORPHAN-RECOVERY] Failed to re-enqueue orphaned frames", category: .app, error: error)
         }
@@ -967,6 +1042,14 @@ public actor AppCoordinator {
 
     /// Shutdown all services
     public func shutdown() async throws {
+        // Join recovery before stopping services/closing SQLite. A cancelled
+        // startup task must never start OCR workers after shutdown has begun.
+        startupRecoveryTask?.cancel()
+        legacyOCRNodeTextMaintenanceTask?.cancel()
+        await startupRecoveryTask?.value
+        startupRecoveryTask = nil
+        await stopLegacyOCRNodeTextMaintenance()
+
         if isRunning {
             // Don't persist state as stopped - we want to auto-start on next launch
             try await stopPipeline(persistState: false)
@@ -1039,8 +1122,10 @@ public actor AppCoordinator {
         // Derive priority and OCR backfill rate from processing level.
         // Keep this single-worker by default: OCR is durable backlog work, while
         // capture/audio/dictation must remain responsive and memory-bounded.
-        // Level 1: Efficiency  - background, 0.25 FPS, 1 worker
-        // Level 2: Light       - background, 0.5 FPS, 1 worker
+        // Keep Vision work at utility or above: background QoS caused prolonged
+        // native OCR stalls on-device. Lower levels still retain their FPS caps.
+        // Level 1: Efficiency  - utility, 0.25 FPS, 1 worker
+        // Level 2: Light       - utility, 0.5 FPS, 1 worker
         // Level 3: Balanced    - utility, 1 FPS, 1 worker
         // Level 4: Performance - medium, 1.5 FPS, 1 worker
         // Level 5: Max         - high, 2 FPS, 1 worker
@@ -1049,9 +1134,9 @@ public actor AppCoordinator {
         let workerCount: Int
         switch processingLevel {
         case 1:
-            taskPriority = .background; maxFPS = 0.25; workerCount = 1
+            taskPriority = .utility; maxFPS = 0.25; workerCount = 1
         case 2:
-            taskPriority = .background; maxFPS = 0.5; workerCount = 1
+            taskPriority = .utility; maxFPS = 0.5; workerCount = 1
         case 4:
             taskPriority = .medium; maxFPS = 1.5; workerCount = 1
         case 5:
@@ -1203,18 +1288,9 @@ public actor AppCoordinator {
             }
 
             let walManager = await storageManager.getWALManager()
-            let activeWALSessions = try await walManager.listActiveSessions()
-            let activeVideoIDs = try await resolveActiveDatabaseVideoIDs(from: activeWALSessions)
-
-            if !activeWALSessions.isEmpty && activeVideoIDs.isEmpty {
-                Log.warning(
-                    "[OrphanCleanup] Skipping orphan finalization: \(activeWALSessions.count) active WAL sessions but no matching unfinalised DB video IDs",
-                    category: .app
-                )
-                return
+            let orphanedCount = try await finalizeOrphanedVideoSnapshot {
+                try await walManager.listActiveSessions()
             }
-
-            let orphanedCount = try await services.database.finalizeOrphanedVideos(activeVideoIDs: activeVideoIDs)
             if orphanedCount > 0 {
                 Log.warning("[OrphanCleanup] Finalized \(orphanedCount) orphaned videos (processingState was stuck at 1)", category: .app)
             }
@@ -1223,40 +1299,38 @@ public actor AppCoordinator {
         }
     }
 
-    /// Map active WAL session path IDs to active DB video IDs.
-    /// WAL sessions are keyed by timestamp-based path IDs, while `video.id` is DB autoincrement.
-    private func resolveActiveDatabaseVideoIDs(from activeWALSessions: [WALSession]) async throws -> Set<Int64> {
-        guard !activeWALSessions.isEmpty else { return [] }
-
+    /// Finalize only known orphan candidates. Never let a stale WAL snapshot
+    /// apply a bulk update to a placeholder inserted while lookup was suspended.
+    func finalizeOrphanedVideoSnapshot(
+        readActiveWALSessions: @Sendable () async throws -> [WALSession]
+    ) async throws -> Int {
+        try Task.checkCancellation()
+        let candidates = try await services.database.getAllUnfinalisedVideos()
+        try Task.checkCancellation()
+        let activeWALSessions = try await readActiveWALSessions()
+        try Task.checkCancellation()
         let activeWALPathIDs = Set(activeWALSessions.map { $0.videoID.value })
-        let unfinalisedVideos = try await services.database.getAllUnfinalisedVideos()
+        var finalizedCount = 0
 
-        var activeDBVideoIDs: Set<Int64> = []
-        var matchedWALPathIDs: Set<Int64> = []
-
-        for video in unfinalisedVideos {
-            let pathIDString = URL(fileURLWithPath: video.relativePath).lastPathComponent
-            guard let pathID = Int64(pathIDString) else { continue }
-            if activeWALPathIDs.contains(pathID) {
-                activeDBVideoIDs.insert(video.id)
-                matchedWALPathIDs.insert(pathID)
-            }
-        }
-
-        let unmatchedWALPathIDs = activeWALPathIDs.subtracting(matchedWALPathIDs)
-        if !unmatchedWALPathIDs.isEmpty {
-            let sample = unmatchedWALPathIDs
-                .sorted()
-                .prefix(3)
-                .map(String.init)
-                .joined(separator: ", ")
-            Log.warning(
-                "[OrphanCleanup] \(unmatchedWALPathIDs.count) active WAL sessions had no matching unfinalised DB video path IDs (sample: \(sample))",
-                category: .app
+        for candidate in candidates {
+            try Task.checkCancellation()
+            guard !liveVideoWriterPaths.contains(candidate.relativePath) else { continue }
+            let pathName = URL(fileURLWithPath: candidate.relativePath)
+                .deletingPathExtension().lastPathComponent
+            // An unknown path cannot be proven unrelated to an active journal.
+            guard let pathID = Int64(pathName), !activeWALPathIDs.contains(pathID) else { continue }
+            guard let video = try await services.database.getVideoSegment(
+                id: VideoSegmentID(value: candidate.id)
+            ) else { continue }
+            try Task.checkCancellation()
+            // Actor reentrancy can publish writer ownership during any await.
+            guard !liveVideoWriterPaths.contains(candidate.relativePath) else { continue }
+            try await services.database.markVideoFinalized(
+                id: candidate.id, frameCount: video.frameCount, fileSize: video.fileSizeBytes
             )
+            finalizedCount += 1
         }
-
-        return activeDBVideoIDs
+        return finalizedCount
     }
 
     // MARK: - Pipeline Implementation
@@ -1288,7 +1362,6 @@ public actor AppCoordinator {
         let frameStream = await services.capture.frameStream
         var writersByResolution: [String: VideoWriterState] = [:]
         var lastPipelineMemoryLogAt = Date.distantPast
-        let maxFramesPerSegment = 150
         let videoUpdateInterval = 5
 
         func maybeLogPipelineMemory(reason: String) {
@@ -1338,6 +1411,10 @@ public actor AppCoordinator {
                 var writerState: VideoWriterState
 
                 if var existingState = writersByResolution[resolutionKey] {
+                    let maxFramesPerSegment = VideoSegmentSizingPolicy.maxFramesPerSegment(
+                        width: frame.width,
+                        height: frame.height
+                    )
                     if existingState.frameCount >= maxFramesPerSegment {
                         try await finalizeWriter(&existingState, processingQueue: await services.processingQueue)
                         writersByResolution.removeValue(forKey: resolutionKey)
@@ -1367,6 +1444,8 @@ public actor AppCoordinator {
                 if actualEncoderFrameCount != writerState.frameCount + 1 {
                     Log.error("[ENCODER-MISMATCH] Encoder frame count (\(actualEncoderFrameCount)) != expected (\(writerState.frameCount + 1)) - encoder may have failed/finalized. Removing broken writer for videoDBID=\(writerState.videoDBID), resolution=\(resolutionKey)", category: .app)
                     try? await writerState.writer.cancel()
+                    let cancelledWriterPath = await writerState.writer.relativePath
+                    liveVideoWriterPaths.remove(cancelledWriterPath)
                     writersByResolution.removeValue(forKey: resolutionKey)
                     continue
                 }
@@ -1399,6 +1478,7 @@ public actor AppCoordinator {
                 let frameID = try await services.database.insertFrame(frameRef)
 
                 // Persist WAL mapping for exact frameID -> raw frame lookup while segment is unfinalized.
+                var didRegisterWALMapping = false
                 if let storageManager = services.storage as? StorageManager {
                     let walVideoID = await writerState.writer.segmentID
                     let walManager = await storageManager.getWALManager()
@@ -1408,6 +1488,7 @@ public actor AppCoordinator {
                             frameID: frameID,
                             frameIndex: frameIndexInSegment
                         )
+                        didRegisterWALMapping = true
                     } catch {
                         Log.warning(
                             "[WAL] Failed to register frameID mapping for frame \(frameID) (video \(walVideoID.value), index \(frameIndexInSegment)): \(error)",
@@ -1440,8 +1521,14 @@ public actor AppCoordinator {
                 // Track frame in pending buffer until it's confirmed flushed/readable.
                 let bufferedFrame = BufferedFrame(frameID: frameID, frameIndexInSegment: frameIndexInSegment)
 
-                // Add frame to the pending buffer
-                writerState.pendingFrames.append(bufferedFrame)
+                if FrameReadinessPolicy.shouldMarkReadableAfterWALRegistration(didRegisterWALMapping) {
+                    // The processing queue and live dashboard can read active frames from WAL.
+                    // Waiting for encoded-video flush makes live capture appear stale.
+                    try await services.database.markFrameReadable(frameID: frameID)
+                    try await processingQueue.enqueue(frameID: frameID)
+                } else if FrameReadinessPolicy.shouldBufferUntilVideoFlush(didRegisterWALMapping: didRegisterWALMapping) {
+                    writerState.pendingFrames.append(bufferedFrame)
+                }
 
                 // Check if first fragment has been written (makes video readable at all)
                 if !writerState.isReadable {
@@ -1484,6 +1571,8 @@ public actor AppCoordinator {
                     if let brokenWriter = writersByResolution[resolutionKey] {
                         Log.warning("Removing broken writer for \(resolutionKey) due to write failure - will create fresh writer", category: .app)
                         try? await brokenWriter.writer.cancel()
+                        let cancelledWriterPath = await brokenWriter.writer.relativePath
+                        liveVideoWriterPaths.remove(cancelledWriterPath)
                         writersByResolution.removeValue(forKey: resolutionKey)
                     }
                 }
@@ -1550,6 +1639,19 @@ public actor AppCoordinator {
         return formatter.string(fromByteCount: max(0, bytes))
     }
 
+    /// Reserve ownership before publishing the DB placeholder. The first WAL
+    /// session is created only when appendFrame runs after this method returns.
+    func insertLiveVideoSegment(_ segment: VideoSegment) async throws -> Int64 {
+        liveVideoWriterPaths.insert(segment.relativePath)
+        do {
+            try Task.checkCancellation()
+            return try await services.database.insertVideoSegment(segment)
+        } catch {
+            liveVideoWriterPaths.remove(segment.relativePath)
+            throw error
+        }
+    }
+
     private func createNewWriterState(width: Int, height: Int) async throws -> VideoWriterState {
         let writer = try await services.storage.createSegmentWriter()
         let relativePath = await writer.relativePath
@@ -1564,7 +1666,13 @@ public actor AppCoordinator {
             width: width,
             height: height
         )
-        let videoDBID = try await services.database.insertVideoSegment(placeholderSegment)
+        let videoDBID: Int64
+        do {
+            videoDBID = try await insertLiveVideoSegment(placeholderSegment)
+        } catch {
+            try? await writer.cancel()
+            throw error
+        }
         Log.debug("New video segment created with DB ID: \(videoDBID) for resolution \(width)x\(height)", category: .app)
 
         return VideoWriterState(
@@ -1578,13 +1686,11 @@ public actor AppCoordinator {
         )
     }
 
-    private func resumeWriterState(from unfinalised: UnfinalisedVideo) async throws -> VideoWriterState {
-        let writer = try await services.storage.createSegmentWriter()
-
+    /// Inspect the interrupted chunk before rolling capture to a fresh writer.
+    static func interruptedVideoFileSize(from unfinalised: UnfinalisedVideo, storageDir: URL) -> Int64 {
         // Get file size from filesystem for the old video.
         // Chunk files are stored extensionless under storageRoot/chunks/...; keep
         // the .mp4 fallback only for legacy/dev data.
-        let storageDir = await services.storage.getStorageDirectory()
         let primaryVideoPath = storageDir.appendingPathComponent(unfinalised.relativePath)
         let legacyVideoPath = primaryVideoPath.appendingPathExtension("mp4")
         let oldVideoPath = FileManager.default.fileExists(atPath: primaryVideoPath.path)
@@ -1598,23 +1704,18 @@ public actor AppCoordinator {
             fileSize = 0
         }
 
-        // Clean up WAL session for the old unfinalised video (frames are already in the video file)
-        // The WAL directory is named with the segment timestampID (from relativePath), not the database ID
-        // relativePath format: "chunks/YYYYMM/DD/{timestampID}" - extract the timestampID from the last component
-        let timestampID = URL(fileURLWithPath: unfinalised.relativePath).lastPathComponent
-        let walDir = storageDir.appendingPathComponent("wal", isDirectory: true)
-            .appendingPathComponent("active_segment_\(timestampID)")
-        if FileManager.default.fileExists(atPath: walDir.path) {
-            if fileSize > 0 {
-                try? FileManager.default.removeItem(at: walDir)
-                Log.info("Cleaned up WAL session for unfinalised video \(unfinalised.id) (timestampID: \(timestampID))", category: .app)
-            } else {
-                Log.warning(
-                    "Keeping WAL session for unfinalised video \(unfinalised.id) because encoded chunk is missing or empty: \(oldVideoPath.path)",
-                    category: .app
-                )
-            }
-        }
+        // A nonempty interrupted chunk can contain fewer frames than its WAL.
+        // RecoveryManager owns source deletion after verifying all recovered
+        // output, database mappings and enqueue checkpoints. Capture rollover
+        // must leave that source untouched, including while recovery is running.
+        return fileSize
+    }
+
+    private func resumeWriterState(from unfinalised: UnfinalisedVideo) async throws -> VideoWriterState {
+        let writer = try await services.storage.createSegmentWriter()
+
+        let storageDir = await services.storage.getStorageDirectory()
+        let fileSize = Self.interruptedVideoFileSize(from: unfinalised, storageDir: storageDir)
 
         // Mark old video as finalized and start fresh
         // WARNING: This uses the frameCount from the database, which may differ from actual video file frames
@@ -1633,7 +1734,13 @@ public actor AppCoordinator {
             width: unfinalised.width,
             height: unfinalised.height
         )
-        let videoDBID = try await services.database.insertVideoSegment(placeholderSegment)
+        let videoDBID: Int64
+        do {
+            videoDBID = try await insertLiveVideoSegment(placeholderSegment)
+        } catch {
+            try? await writer.cancel()
+            throw error
+        }
 
         return VideoWriterState(
             writer: writer,
@@ -1646,6 +1753,17 @@ public actor AppCoordinator {
         )
     }
 
+    func finalizeLiveVideoWriter(_ writer: SegmentWriter, videoDBID: Int64, frameCount: Int) async throws {
+        _ = try await writer.finalize()
+        // Retain ownership while publishing metadata so a concurrent sweep cannot
+        // overwrite it, but release even if that database publication fails.
+        // Encoding has finished and this writer will not append more pixels.
+        let finalizedWriterPath = await writer.relativePath
+        defer { liveVideoWriterPaths.remove(finalizedWriterPath) }
+        let fileSize = await writer.currentFileSize
+        try await services.database.markVideoFinalized(id: videoDBID, frameCount: frameCount, fileSize: fileSize)
+    }
+
     private func finalizeWriter(_ writerState: inout VideoWriterState, processingQueue: FrameProcessingQueue?) async throws {
         // IMPORTANT: Finalize writer FIRST to ensure file is fully flushed to disk,
         // THEN mark as finalized in database. This prevents a race condition where
@@ -1655,9 +1773,8 @@ public actor AppCoordinator {
         let encoderFrameCount = await writerState.writer.frameCount
         Log.info("[FINALIZE-DEBUG] About to finalize videoDBID=\(writerState.videoDBID), writerState.frameCount=\(writerState.frameCount), encoderFrameCount=\(encoderFrameCount)", category: .app)
 
-        _ = try await writerState.writer.finalize()
+        try await finalizeLiveVideoWriter(writerState.writer, videoDBID: writerState.videoDBID, frameCount: writerState.frameCount)
         let fileSize = await writerState.writer.currentFileSize
-        try await services.database.markVideoFinalized(id: writerState.videoDBID, frameCount: writerState.frameCount, fileSize: fileSize)
         Log.info("[FINALIZE-DEBUG] Marked videoDBID=\(writerState.videoDBID) as finalized with frameCount=\(writerState.frameCount), fileSize=\(fileSize) bytes", category: .app)
 
         // After finalization, all frames are now readable from the video file
@@ -1995,6 +2112,122 @@ public actor AppCoordinator {
             frameRate: frameRate,
             source: source
         )
+    }
+
+    /// Get a dashboard-ready screenshot image for a frame, including active WAL-backed frames.
+    public func getLiveFrameCGImage(frameWithInfo item: FrameWithVideoInfo) async throws -> CGImage {
+        let frame = item.frame
+
+        if let videoInfo = item.videoInfo {
+            var firstError: Error?
+            for source in LiveFrameReadPolicy.orderedSources(
+                frameSource: frame.source,
+                isVideoFinalized: videoInfo.isVideoFinalized
+            ) {
+                do {
+                    switch source {
+                    case .activeWAL:
+                        return try await getActiveWALFrameCGImage(frame: frame, videoPath: videoInfo.videoPath)
+                    case .video:
+                        return try await getFrameCGImage(
+                            videoPath: videoInfo.videoPath,
+                            frameIndex: videoInfo.frameIndex,
+                            frameRate: videoInfo.frameRate,
+                            source: frame.source
+                        )
+                    }
+                } catch {
+                    firstError = firstError ?? error
+                }
+            }
+            throw firstError ?? NSError(
+                domain: "AppCoordinator",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "No readable backing found for frame \(frame.id.value)"]
+            )
+        }
+
+        let imageData = try await getFrameImageByIndex(
+            videoID: frame.videoID,
+            frameIndex: frame.frameIndexInSegment,
+            source: frame.source
+        )
+        return try cgImage(fromEncodedImageData: imageData)
+    }
+
+    private func getActiveWALFrameCGImage(frame: FrameReference, videoPath: String) async throws -> CGImage {
+        guard let storageManager = services.storage as? StorageManager else {
+            throw NSError(
+                domain: "AppCoordinator",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Storage manager does not expose WAL manager"]
+            )
+        }
+
+        let activeSegmentID = try activeWALSegmentID(from: videoPath)
+        let walManager = await storageManager.getWALManager()
+        let capturedFrame = try await walManager.readFrame(
+            videoID: activeSegmentID,
+            frameID: frame.id.value,
+            fallbackFrameIndex: frame.frameIndexInSegment
+        )
+        return try cgImage(fromRawBGRAFrame: capturedFrame)
+    }
+
+    private func activeWALSegmentID(from videoPath: String) throws -> VideoSegmentID {
+        let lastPathComponent = (videoPath as NSString).lastPathComponent
+        let stem = (lastPathComponent as NSString).deletingPathExtension
+        guard let segmentID = Int64(stem) else {
+            throw NSError(
+                domain: "AppCoordinator",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to parse active WAL segment ID from \(videoPath)"]
+            )
+        }
+        return VideoSegmentID(value: segmentID)
+    }
+
+    private func cgImage(fromRawBGRAFrame frame: CapturedFrame) throws -> CGImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue:
+            CGImageAlphaInfo.premultipliedFirst.rawValue |
+            CGBitmapInfo.byteOrder32Little.rawValue
+        )
+
+        guard let provider = CGDataProvider(data: frame.imageData as CFData),
+              let image = CGImage(
+                  width: frame.width,
+                  height: frame.height,
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: frame.bytesPerRow,
+                  space: colorSpace,
+                  bitmapInfo: bitmapInfo,
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: false,
+                  intent: .defaultIntent
+              ) else {
+            throw NSError(
+                domain: "AppCoordinator",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to create CGImage from active WAL frame"]
+            )
+        }
+
+        return image
+    }
+
+    private func cgImage(fromEncodedImageData data: Data) throws -> CGImage {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw NSError(
+                domain: "AppCoordinator",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to decode frame image data"]
+            )
+        }
+        return image
     }
 
     /// Get frame image directly using filename-based videoID (optimized, no database lookup)
@@ -2603,13 +2836,15 @@ public actor AppCoordinator {
     /// Delete a single frame from the database
     /// Note: For Rewind data, this only removes the database entry. Video files remain on disk.
     public func deleteFrame(frameID: FrameID, timestamp: Date, source: FrameSource) async throws {
+        if source == .native {
+            // Keep native frame, OCR, search-index and queue cleanup atomic even
+            // when the timeline has an adapter attached.
+            try await services.database.deleteFrame(id: frameID)
+            Log.info("[AppCoordinator] Deleted native frame \(frameID.stringValue)", category: .app)
+            return
+        }
+
         guard let adapter = await services.dataAdapter else {
-            // Fallback to direct database deletion for native frames
-            if source == .native {
-                try await services.database.deleteFrame(id: frameID)
-                Log.info("[AppCoordinator] Deleted native frame \(frameID.stringValue)", category: .app)
-                return
-            }
             throw AppError.notInitialized
         }
 
@@ -2745,6 +2980,61 @@ public actor AppCoordinator {
         // Check queue depth after enqueue
         let depthAfter = try await queue.getQueueDepth()
         Log.info("[OCR-REPROCESS] Frame \(frameID.value) enqueued with priority 100, queue depth now: \(depthAfter)", category: .processing)
+    }
+
+    /// Run legacy maintenance only after recovery releases the capture database.
+    /// Each tick visits a bounded, durable node page; empty pages do not mean the
+    /// whole library has been repaired. The first delay leaves startup work first.
+    func startLegacyOCRNodeTextMaintenance(interval: Duration = .seconds(60)) {
+        guard legacyOCRNodeTextMaintenanceTask == nil else { return }
+        legacyOCRNodeTextMaintenanceTask = Task(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: interval, clock: .continuous)
+                } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                await self.enqueueLegacyOCRNodeTextBackfillIfNeeded()
+            }
+        }
+    }
+
+    func stopLegacyOCRNodeTextMaintenance() async {
+        legacyOCRNodeTextMaintenanceTask?.cancel()
+        await legacyOCRNodeTextMaintenanceTask?.value
+        legacyOCRNodeTextMaintenanceTask = nil
+    }
+
+    /// Queue one bounded maintenance page without scanning/counting the library.
+    func enqueueLegacyOCRNodeTextBackfillIfNeeded() async {
+        do {
+            try Task.checkCancellation()
+            let limit = Self.startupOCRNodeTextBackfillBatchLimit
+            try? await recordMetricEvent(
+                metricType: .ocrNodeTextBackfillStarted,
+                metadata: "mode=maintenance;limit=\(limit);nodePageSize=1000"
+            )
+
+            let frameIDs = try await services.database.enqueueLegacyOCRNodeTextBackfill(
+                limit: limit,
+                priority: Self.startupOCRNodeTextBackfillPriority,
+                maxQueueDepth: Self.startupOCRNodeTextBackfillQueueCapacity,
+                nodePageSize: 1000
+            )
+            try? await recordMetricEvent(
+                metricType: .ocrNodeTextBackfillCompleted,
+                metadata: "mode=maintenance;enqueued=\(frameIDs.count);status=page_checked"
+            )
+
+            Log.info("[OCR-BACKFILL] Bounded maintenance page checked; enqueued=\(frameIDs.count)", category: .processing)
+        } catch is CancellationError {
+            return
+        } catch {
+            Log.error("[OCR-BACKFILL] Bounded OCR node-text maintenance failed", category: .processing, error: error)
+            try? await recordMetricEvent(
+                metricType: .ocrNodeTextBackfillCompleted,
+                metadata: "mode=maintenance;enqueued=0;status=failed;error=\(error.localizedDescription)"
+            )
+        }
     }
 
     // MARK: - Migration

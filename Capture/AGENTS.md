@@ -17,22 +17,28 @@ Capture/
 │   └── PermissionChecker.swift    # Screen recording permission
 ├── Deduplication/
 │   ├── FrameDeduplicator.swift    # DeduplicationProtocol implementation
-│   └── PerceptualHash.swift       # dHash (difference hash) for comparison
+│   └── PerceptualHash.swift       # dHash helper (not used by FrameDeduplicator)
 ├── Metadata/
 │   ├── AppInfoProvider.swift      # Get active app info via NSWorkspace
 │   └── BrowserURLExtractor.swift  # Extract URL from browsers (AX API)
 ├── Audio/
 │   ├── AudioCaptureManager.swift  # Dual-source audio capture coordinator
-│   ├── AudioFormatConverter.swift # PCM conversion helpers
+│   ├── AudioFormatConverter.swift # Stateful AVAudioConverter resampling and PCM layout conversion
 │   ├── ConsentDialogHelper.swift  # Audio recording consent dialog helpers
 │   ├── MeetingDetector.swift      # Meeting-app detection
 │   ├── MicrophoneAudioCapture.swift # Microphone capture
 │   └── SystemAudioCapture.swift   # System audio capture
 └── Tests/
     ├── AccessibilityInspectorTest.swift
+    ├── AudioFormatConverterTests.swift
     ├── AudioStreamBufferingPolicyTests.swift
     ├── BrowserURLAppleScriptCoordinatorTests.swift
-    └── DeduplicationTests.swift
+    ├── CaptureStreamLifecycleTests.swift # Real AsyncStream generation, cancellation and drain regressions
+    ├── DeduplicationTests.swift
+    ├── TestLogger.swift
+    ├── WindowChangeCapturePolicyTests.swift
+    └── _future/
+        └── PrivateWindowDetectorTests.swift
 ```
 
 ## System Requirements
@@ -194,73 +200,15 @@ public struct PermissionChecker {
 }
 ```
 
-### 3. Frame Deduplication (Perceptual Hashing)
+### 3. Frame Deduplication
 
-**Implementation**: dHash (difference hash) for ~95% deduplication rate
+`FrameDeduplicator` implements `DeduplicationProtocol` with sampled RGB pixel comparison, not the separate `PerceptualHash` dHash helper. Its hash method is a sampled RGB checksum; it does not guarantee unique hashes for different images.
 
-```swift
-public struct FrameDeduplicator {
-    public func shouldKeepFrame(
-        _ frame: CapturedFrame,
-        comparedTo reference: CapturedFrame?,
-        threshold: Double
-    ) -> Bool {
-        guard let reference = reference else { return true }
-
-        // Quick size check
-        if frame.width != reference.width || frame.height != reference.height {
-            return true
-        }
-
-        // Compare perceptual hashes
-        let similarity = computeSimilarity(frame, reference)
-
-        // Keep frame if dissimilar enough (inverse of threshold)
-        return similarity < threshold
-    }
-
-    public func computeHash(for frame: CapturedFrame) -> UInt64 {
-        // dHash (difference hash):
-        // 1. Resize to 9x8 (72 pixels)
-        // 2. Convert to grayscale
-        // 3. Compare adjacent pixels horizontally
-        // 4. Create 64-bit hash (8 rows × 8 comparisons)
-
-        let resized = resizeImage(frame.imageData, width: frame.width, height: frame.height, toSize: (9, 8))
-        let grayscale = toGrayscale(resized)
-
-        var hash: UInt64 = 0
-        for row in 0..<8 {
-            for col in 0..<8 {
-                let idx = row * 9 + col
-                let left = grayscale[idx]
-                let right = grayscale[idx + 1]
-
-                if left > right {
-                    let bitPosition = row * 8 + col
-                    hash |= (1 << bitPosition)
-                }
-            }
-        }
-
-        return hash
-    }
-
-    public func computeSimilarity(_ frame1: CapturedFrame, _ frame2: CapturedFrame) -> Double {
-        let hash1 = computeHash(for: frame1)
-        let hash2 = computeHash(for: frame2)
-
-        // Hamming distance (number of differing bits)
-        let xor = hash1 ^ hash2
-        let differentBits = xor.nonzeroBitCount
-
-        // Similarity = 1.0 (identical) to 0.0 (completely different)
-        return 1.0 - (Double(differentBits) / 64.0)
-    }
-}
-```
-
-**Performance**: ~95% of frames are duplicates and filtered out, drastically reducing storage and processing load.
+- Compare a uniform grid of pixels. A pixel matches only when each RGB channel differs by less than 13; similarity is the matching fraction.
+- Always retain the first frame and frames with changed dimensions.
+- Retain a same-size frame when `similarity <= threshold`. Higher thresholds preserve smaller changes; threshold 1 records every frame, matching the settings slider.
+- `DeduplicationTests` renders deterministic BGRA fixtures through CoreGraphics and checks color tolerance, exact threshold boundaries, small edited regions, dimensions and full-HD performance.
+- Deduplication percentages depend on the workload; they are not guaranteed storage savings.
 
 ### 4. App Info Provider
 
@@ -385,47 +333,25 @@ public actor PrivateWindowMonitor {
 }
 ```
 
+## Audio Conversion Lifecycle
+
+- Microphone and system callbacks each own a separate `AudioFormatConverter` instance and call `convert(sampleBuffer:)` on their existing background sample queues.
+- Copy PCM using `CMSampleBufferCopyPCMDataIntoAudioBufferList` with the actual `AVAudioFormat`; preserve planar/interleaved channel layout and real integer/float format.
+- Retain `AVAudioConverter` state across callback buffers. Use `.noDataNow` between buffers, native high-quality resampling, and downmix to 16 kHz mono Int16. Do not recreate the converter or end its stream for each packet.
+- Publish only actual output frames, calculating duration from emitted PCM bytes. Empty output while the resampler primes is normal.
+- A failed conversion clears filter history and the pending timestamp; the next valid packet starts fresh. Failed microphone startup throws and closes its stream. Source teardown also closes preacquired streams when the device never started.
+- Source shutdown drains the converter with `finish()` before finishing the source stream. The coordinator acquires source streams before scheduling forwarders and awaits both forwarders before finishing the combined stream. Restart and system-audio muting discard pending samples with `reset()` to prevent crossing privacy boundaries.
+- Converter and delegate locks protect background callback/shutdown transitions. Never call this synchronous conversion work from UI rendering or the main thread.
+- `AudioFormatConverterTests` exercises real AVFoundation/CoreMedia buffers for anti-alias filtering, irregular chunk continuity, channel layouts, format changes, and finite drain behavior. Wall-clock timestamp semantics remain unchanged; source-clock mapping is a separate integration change.
+
 ## Capture Manager Pipeline
 
-```swift
-public actor CaptureManager: CaptureProtocol {
-    private let cgCapture: CGWindowListCapture
-    private let deduplicator: FrameDeduplicator
-    private var lastFrame: CapturedFrame?
-    private var config: CaptureConfig = .default
-
-    private var frameContinuation: AsyncStream<CapturedFrame>.Continuation?
-
-    public func startCapture(config: CaptureConfig) async throws {
-        self.config = config
-
-        let (stream, continuation) = AsyncStream<CapturedFrame>.makeStream()
-        self.frameContinuation = continuation
-
-        // Start CGWindowListCapture with deduplication
-        try await cgCapture.startCapture(config: config, frameContinuation: continuation)
-
-        // Process frames with deduplication
-        Task {
-            for await frame in stream {
-                if config.deduplicationEnabled {
-                    if deduplicator.shouldKeepFrame(frame, comparedTo: lastFrame, threshold: config.deduplicationThreshold) {
-                        lastFrame = frame
-                        frameContinuation?.yield(frame)
-                    }
-                } else {
-                    frameContinuation?.yield(frame)
-                }
-            }
-        }
-    }
-
-    public func stopCapture() async throws {
-        try await cgCapture.stopCapture()
-        frameContinuation?.finish()
-    }
-}
-```
+- `CaptureManager` owns each raw/output stream pair and its forwarding task through `CaptureFrameStreamSession`.
+- Every worker yields to and finishes its own output continuation. Never read a mutable current-generation continuation after an async metadata lookup or when an older raw stream ends.
+- Starting/stopping capture is serialized across actor suspension points. Stop cancels the frame worker, finishes its raw input, and awaits completion before lifecycle teardown returns, including source-stop errors.
+- Check worker cancellation after metadata awaits before publishing pixels or changing capture statistics. Natural input completion drains accepted frames; capture cancellation discards unfinished work at the privacy boundary.
+- Display switches reuse the existing raw/output session. Their source stop/start operations enter the same lifecycle queue and recheck the captured session after admission; a stopped or replaced session cannot restart capture through a stale display-switch callback.
+- `CaptureStreamLifecycleTests` uses real AsyncStreams, CoreGraphics-rendered frames, and suspended metadata work to exercise old-worker completion during replacement, stop/join ordering, natural drain behavior, and serialized display-switch admission after a suspended lifecycle operation.
 
 ## Error Handling
 
@@ -480,7 +406,7 @@ throw CaptureError.captureSessionFailed(underlying: error.localizedDescription)
 ## Getting Started
 
 1. Read `CGWindowListCapture.swift` - main capture implementation
-2. Read `FrameDeduplicator.swift` + `PerceptualHash.swift` - deduplication logic
+2. Read `FrameDeduplicator.swift` for active pixel comparison; `PerceptualHash.swift` is a separate unused dHash helper
 3. Read `AppInfoProvider.swift` - metadata extraction
 4. Read `CaptureManager.swift` - protocol conformance + pipeline
 

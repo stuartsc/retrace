@@ -22,18 +22,40 @@ final class HotkeyHoldReleasePolicyTests: XCTestCase {
     }
 
     func testActiveHoldReleaseDoesNotRequireCurrentModifiersToMatch() {
-        XCTAssertTrue(HotkeyHoldReleasePolicy.shouldReleaseActiveHold(
+        XCTAssertTrue(HotkeyHoldReleasePolicy.shouldReleaseActiveHoldOnKeyUp(
             eventType: .keyUp,
             keyMatches: true,
-            isActiveHold: true
+            isActiveHold: true,
+            requiredModifiersStillPressed: false,
+            elapsedSeconds: 1.0
         ))
     }
 
     func testNonMatchingKeyUpDoesNotReleaseActiveHold() {
-        XCTAssertFalse(HotkeyHoldReleasePolicy.shouldReleaseActiveHold(
+        XCTAssertFalse(HotkeyHoldReleasePolicy.shouldReleaseActiveHoldOnKeyUp(
             eventType: .keyUp,
             keyMatches: false,
-            isActiveHold: true
+            isActiveHold: true,
+            requiredModifiersStillPressed: false,
+            elapsedSeconds: 1.0
+        ))
+    }
+
+    func testShortTriggerKeyTapDoesNotEndHoldWhileRequiredModifierIsStillPressed() {
+        XCTAssertFalse(HotkeyHoldReleasePolicy.shouldReleaseActiveHoldOnKeyUp(
+            eventType: .keyUp,
+            keyMatches: true,
+            isActiveHold: true,
+            requiredModifiersStillPressed: true,
+            elapsedSeconds: 0.18
+        ))
+    }
+
+    func testModifierReleaseEndsActiveHoldAfterShortTriggerKeyTap() {
+        XCTAssertTrue(HotkeyHoldReleasePolicy.shouldReleaseActiveHoldOnModifierChange(
+            eventType: .flagsChanged,
+            isActiveHold: true,
+            requiredModifiersStillPressed: false
         ))
     }
 }

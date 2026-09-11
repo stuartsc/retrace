@@ -46,6 +46,31 @@ final class AudioRepairPolicyTests: XCTestCase {
         XCTAssertEqual(rows.first?.qualityFlags, "short_text")
     }
 
+    func testWordTimingDoesNotCreateHiddenTranscriptRows() async throws {
+        let queries = try await makeQueries()
+        let start = Date(timeIntervalSince1970: 15_000)
+
+        _ = try await queries.insertTranscription(
+            sessionID: nil,
+            text: "keep the complete sentence",
+            startTime: start,
+            endTime: start.addingTimeInterval(2),
+            source: .microphone,
+            confidence: 0.9,
+            words: [
+                TranscriptionWord(word: "keep", start: 0, end: 0.4, confidence: 0.9),
+                TranscriptionWord(word: "sentence", start: 1, end: 1.8, confidence: 0.9)
+            ],
+            batchAudioPath: "audio/2026/08/26/batch_15000000_microphone_test.m4a"
+        )
+
+        let sentenceCount = try await countAudioRows(where: "source != 'word'")
+        let hiddenWordCount = try await countAudioRows(where: "source = 'word'")
+
+        XCTAssertEqual(sentenceCount, 1)
+        XCTAssertEqual(hiddenWordCount, 0)
+    }
+
     func testHistoricalPlaceholdersCanBeMarkedPendingForRepair() async throws {
         let queries = try await makeQueries()
         let start = Date(timeIntervalSince1970: 20_000)
@@ -162,9 +187,9 @@ final class AudioRepairPolicyTests: XCTestCase {
         let candidates = try await queries.getDistinctBatchPathsForRefinement(limit: 10)
 
         XCTAssertEqual(oldSentenceCount, 1)
-        XCTAssertEqual(oldWordCount, 1)
+        XCTAssertEqual(oldWordCount, 0)
         XCTAssertEqual(newSentenceCount, 1)
-        XCTAssertEqual(newWordCount, 1)
+        XCTAssertEqual(newWordCount, 0)
         XCTAssertFalse(candidates.contains(batchPath))
     }
 
@@ -204,9 +229,9 @@ final class AudioRepairPolicyTests: XCTestCase {
         let candidates = try await queries.getDistinctBatchPathsForContextualRefinement(limit: 10)
 
         XCTAssertEqual(oldSentenceCount, 1)
-        XCTAssertEqual(oldWordCount, 1)
+        XCTAssertEqual(oldWordCount, 0)
         XCTAssertEqual(newSentenceCount, 1)
-        XCTAssertEqual(newWordCount, 1)
+        XCTAssertEqual(newWordCount, 0)
         XCTAssertFalse(candidates.contains(batchPath))
     }
 
@@ -341,7 +366,7 @@ final class AudioRepairPolicyTests: XCTestCase {
         XCTAssertEqual(candidates, ["audio/batch_73000000_microphone_clean.m4a"])
     }
 
-    func testResetStalePipelineRecordsPreservesWordRowsUntilReplacementSucceeds() async throws {
+    func testResetStalePipelineRecordsDoesNotCreateWordRows() async throws {
         let queries = try await makeQueries()
         let start = Date(timeIntervalSince1970: 80_000)
         let batchPath = "audio/batch_80000000_microphone_test.m4a"
@@ -369,9 +394,9 @@ final class AudioRepairPolicyTests: XCTestCase {
         )
 
         XCTAssertEqual(result.resetCount, 1)
-        XCTAssertEqual(result.resetWords, 1)
+        XCTAssertEqual(result.resetWords, 0)
         XCTAssertEqual(resetSentenceCount, 1)
-        XCTAssertEqual(preservedWordCount, 1)
+        XCTAssertEqual(preservedWordCount, 0)
     }
 
     private func makeQueries() async throws -> AudioTranscriptionQueries {

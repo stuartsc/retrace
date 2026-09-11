@@ -16,8 +16,25 @@ enum AudioStreamBufferingPolicy {
     }
 }
 
+/// Own the source stream before a forwarding task can be scheduled. Shutdown
+/// finishes sources first, then awaits these tasks so queued filter tails survive.
+enum AudioStreamForwarding {
+    static func start(
+        _ stream: AsyncStream<CapturedAudio>,
+        receive: @escaping @Sendable (CapturedAudio) async -> Void
+    ) -> Task<Void, Never> {
+        Task {
+            for await audio in stream { await receive(audio) }
+        }
+    }
+
+    static func drain(_ tasks: [Task<Void, Never>?]) async {
+        for task in tasks { await task?.value }
+    }
+}
+
 /// Main coordinator for audio capture with dual-pipeline architecture
-/// Pipeline A: Microphone (with Voice Isolation)
+/// Pipeline A: Shared microphone capture with native PCM conversion
 /// Pipeline B: System Audio (privacy-aware, auto-muted during meetings)
 public actor AudioCaptureManager: AudioCaptureProtocol {
 
@@ -88,9 +105,19 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
 
         // Start microphone capture if enabled
         if config.microphoneEnabled {
-            try await microphoneCapture.startCapture()
-            microphoneStreamTask = Task {
-                await streamMicrophoneAudio()
+            do {
+                try await microphoneCapture.startCapture()
+            } catch {
+                await microphoneCapture.stopCapture()
+                await meetingDetector.stopMonitoring()
+                audioContinuation?.finish()
+                audioContinuation = nil
+                _audioStream = nil
+                throw error
+            }
+            let microphoneStream = await microphoneCapture.audioStream
+            microphoneStreamTask = AudioStreamForwarding.start(microphoneStream) { [weak self] audio in
+                await self?.receiveMicrophoneAudio(audio)
             }
         }
 
@@ -103,11 +130,13 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
                 let currentState = await meetingDetector.getCurrentState()
                 await updateSystemAudioMuteState(meetingState: currentState)
 
-                systemAudioStreamTask = Task {
-                    await streamSystemAudio()
+                let systemStream = await systemAudioCapture.audioStream
+                systemAudioStreamTask = AudioStreamForwarding.start(systemStream) { [weak self] audio in
+                    await self?.receiveSystemAudio(audio)
                 }
                 Log.info("[AudioCaptureManager] System audio capture started", category: .capture)
             } catch {
+                try? await systemAudioCapture.stopCapture()
                 Log.warning("[AudioCaptureManager] System audio capture failed (will continue with mic only): \(error)", category: .capture)
             }
         }
@@ -129,17 +158,24 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         guard isCapturing else { return }
 
         await microphoneCapture.stopCapture()
-        try await systemAudioCapture.stopCapture()
+        var systemStopError: Error?
+        do {
+            try await systemAudioCapture.stopCapture()
+        } catch {
+            systemStopError = error
+        }
         await meetingDetector.stopMonitoring()
 
+        // Source stop finishes its stream, including resampler tails. Cancelling
+        // these consumers would discard queued audio instead of forwarding it.
+        await AudioStreamForwarding.drain([microphoneStreamTask, systemAudioStreamTask])
         isCapturing = false
-        microphoneStreamTask?.cancel()
         microphoneStreamTask = nil
-        systemAudioStreamTask?.cancel()
         systemAudioStreamTask = nil
         audioContinuation?.finish()
         audioContinuation = nil
         _audioStream = nil
+        if let systemStopError { throw systemStopError }
     }
 
     public var audioStream: AsyncStream<CapturedAudio> {
@@ -191,44 +227,36 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
 
     // MARK: - Private Stream Merging
 
-    private func streamMicrophoneAudio() async {
-        let stream = await microphoneCapture.audioStream
+    private func receiveMicrophoneAudio(_ audio: CapturedAudio) {
+        audioContinuation?.yield(audio)
 
-        for await audio in stream {
-            audioContinuation?.yield(audio)
-
-            // Update statistics
-            statistics = AudioCaptureStatistics(
-                microphoneSamplesRecorded: statistics.microphoneSamplesRecorded + 1,
-                systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded,
-                microphoneDurationSeconds: statistics.microphoneDurationSeconds + audio.duration,
-                systemAudioDurationSeconds: statistics.systemAudioDurationSeconds,
-                captureStartTime: statistics.captureStartTime,
-                lastSampleTime: Date(),
-                meetingDetectedCount: statistics.meetingDetectedCount,
-                autoMuteCount: statistics.autoMuteCount
-            )
-        }
+        // Update statistics
+        statistics = AudioCaptureStatistics(
+            microphoneSamplesRecorded: statistics.microphoneSamplesRecorded + 1,
+            systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded,
+            microphoneDurationSeconds: statistics.microphoneDurationSeconds + audio.duration,
+            systemAudioDurationSeconds: statistics.systemAudioDurationSeconds,
+            captureStartTime: statistics.captureStartTime,
+            lastSampleTime: Date(),
+            meetingDetectedCount: statistics.meetingDetectedCount,
+            autoMuteCount: statistics.autoMuteCount
+        )
     }
 
-    private func streamSystemAudio() async {
-        let stream = await systemAudioCapture.audioStream
+    private func receiveSystemAudio(_ audio: CapturedAudio) {
+        audioContinuation?.yield(audio)
 
-        for await audio in stream {
-            audioContinuation?.yield(audio)
-
-            // Update statistics
-            statistics = AudioCaptureStatistics(
-                microphoneSamplesRecorded: statistics.microphoneSamplesRecorded,
-                systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded + 1,
-                microphoneDurationSeconds: statistics.microphoneDurationSeconds,
-                systemAudioDurationSeconds: statistics.systemAudioDurationSeconds + audio.duration,
-                captureStartTime: statistics.captureStartTime,
-                lastSampleTime: Date(),
-                meetingDetectedCount: statistics.meetingDetectedCount,
-                autoMuteCount: statistics.autoMuteCount
-            )
-        }
+        // Update statistics
+        statistics = AudioCaptureStatistics(
+            microphoneSamplesRecorded: statistics.microphoneSamplesRecorded,
+            systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded + 1,
+            microphoneDurationSeconds: statistics.microphoneDurationSeconds,
+            systemAudioDurationSeconds: statistics.systemAudioDurationSeconds + audio.duration,
+            captureStartTime: statistics.captureStartTime,
+            lastSampleTime: Date(),
+            meetingDetectedCount: statistics.meetingDetectedCount,
+            autoMuteCount: statistics.autoMuteCount
+        )
     }
 
     // MARK: - Privacy-Aware Muting Logic

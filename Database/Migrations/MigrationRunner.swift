@@ -104,7 +104,10 @@ actor MigrationRunner {
             V14_ContextualRefinement(),
             V15_PipelineVersion(),
             V16_DictationSessions(),
-            V17_AudioTranscriptMetadata()
+            V17_AudioTranscriptMetadata(),
+            V18_NodeText(),
+            V19_ProcessingQueueFrameIndex(),
+            V20_OCRBackfillState()
         ]
     }
 

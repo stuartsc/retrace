@@ -14,6 +14,7 @@ public actor DatabaseManager: DatabaseProtocol {
     private var db: OpaquePointer?
     private let databasePath: String
     private var isInitialized = false
+    private var consecutivePriorityClaims = 0
 
     /// Public accessor for the database connection (needed for query classes)
     public func getConnection() -> OpaquePointer? {
@@ -386,7 +387,8 @@ public actor DatabaseManager: DatabaseProtocol {
                 n.topY,
                 n.width,
                 n.height,
-                sc.c0,
+                n.text,
+                (COALESCE(sc.c0, '') || COALESCE(sc.c1, '')) AS fullText,
                 n.frameId
             FROM node n
             JOIN doc_segment ds ON n.frameId = ds.frameId
@@ -417,26 +419,18 @@ public actor DatabaseManager: DatabaseProtocol {
             let width = sqlite3_column_double(statement, 6)
             let height = sqlite3_column_double(statement, 7)
 
-            // Extract text substring
-            guard let fullTextCStr = sqlite3_column_text(statement, 8) else { continue }
-            let fullText = String(cString: fullTextCStr)
+            let text: String
+            if let storedTextCStr = sqlite3_column_text(statement, 8) {
+                let storedText = String(cString: storedTextCStr)
+                text = storedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? Self.legacyNodeText(statement: statement!, column: 9, textOffset: textOffset, textLength: textLength)
+                    : storedText
+            } else {
+                text = Self.legacyNodeText(statement: statement!, column: 9, textOffset: textOffset, textLength: textLength)
+            }
 
-            // Column 9: frameId for debugging
-            let nodeFrameId = sqlite3_column_int64(statement, 9)
-
-            let startIndex = fullText.index(
-                fullText.startIndex,
-                offsetBy: textOffset,
-                limitedBy: fullText.endIndex
-            ) ?? fullText.endIndex
-
-            let endIndex = fullText.index(
-                startIndex,
-                offsetBy: textLength,
-                limitedBy: fullText.endIndex
-            ) ?? fullText.endIndex
-
-            let text = String(fullText[startIndex..<endIndex])
+            // Column 10: frameId for debugging
+            let nodeFrameId = sqlite3_column_int64(statement, 10)
 
             results.append(OCRNodeWithText(
                 id: id,
@@ -493,7 +487,10 @@ public actor DatabaseManager: DatabaseProtocol {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
-        try SegmentQueries.delete(db: db, id: id)
+        try PipelineSQL.transaction(db) {
+            try FrameQueries.deleteForVideo(db: db, id: id)
+            try SegmentQueries.delete(db: db, id: id)
+        }
     }
 
     public func getTotalStorageBytes() async throws -> Int64 {
@@ -1785,7 +1782,7 @@ public actor DatabaseManager: DatabaseProtocol {
 
     public func insertNodes(
         frameID: FrameID,
-        nodes: [(textOffset: Int, textLength: Int, bounds: CGRect, windowIndex: Int?)],
+        nodes: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)],
         frameWidth: Int,
         frameHeight: Int
     ) async throws {
@@ -1799,6 +1796,32 @@ public actor DatabaseManager: DatabaseProtocol {
             frameWidth: frameWidth,
             frameHeight: frameHeight
         )
+    }
+
+    private nonisolated static func legacyNodeText(
+        statement: OpaquePointer,
+        column: Int32,
+        textOffset: Int,
+        textLength: Int
+    ) -> String {
+        guard let fullTextCStr = sqlite3_column_text(statement, column) else { return "" }
+        let fullText = String(cString: fullTextCStr)
+
+        let startIndex = fullText.index(
+            fullText.startIndex,
+            offsetBy: textOffset,
+            limitedBy: fullText.endIndex
+        ) ?? fullText.endIndex
+
+        let remainingLength = max(fullText.distance(from: startIndex, to: fullText.endIndex), 0)
+        let safeLength = min(textLength, remainingLength)
+        let endIndex = fullText.index(
+            startIndex,
+            offsetBy: safeLength,
+            limitedBy: fullText.endIndex
+        ) ?? fullText.endIndex
+
+        return String(fullText[startIndex..<endIndex])
     }
 
     public func getNodes(frameID: FrameID, frameWidth: Int, frameHeight: Int) async throws -> [OCRNode] {
@@ -1844,14 +1867,33 @@ public actor DatabaseManager: DatabaseProtocol {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
-        return try FTSQueries.indexFrame(
-            db: db,
-            mainText: mainText,
-            chromeText: chromeText,
-            windowTitle: windowTitle,
-            segmentId: segmentId,
-            frameId: frameId
-        )
+
+        func executeTransactionSQL(_ sql: String) throws {
+            var error: UnsafeMutablePointer<Int8>?
+            guard sqlite3_exec(db, sql, nil, nil, &error) == SQLITE_OK else {
+                let message = error.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(db))
+                sqlite3_free(error)
+                throw DatabaseError.queryFailed(query: sql, underlying: message)
+            }
+        }
+
+        try executeTransactionSQL("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            try FTSQueries.deleteForFrame(db: db, frameId: frameId)
+            let docid = try FTSQueries.indexFrame(
+                db: db,
+                mainText: mainText,
+                chromeText: chromeText,
+                windowTitle: windowTitle,
+                segmentId: segmentId,
+                frameId: frameId
+            )
+            try executeTransactionSQL("COMMIT;")
+            return docid
+        } catch {
+            try? executeTransactionSQL("ROLLBACK;")
+            throw error
+        }
     }
 
     public func getDocidForFrame(frameId: Int64) async throws -> Int64? {
@@ -2481,91 +2523,76 @@ public actor DatabaseManager: DatabaseProtocol {
 
     /// Enqueue a frame for OCR processing
     /// Only enqueues frames with processingStatus = 0 (pending)
-    public func enqueueFrameForProcessing(frameID: Int64, priority: Int = 0) async throws {
-        guard let db = db else {
-            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
-        }
-
-        // Only enqueue if processingStatus = 0 (pending)
-        let sql = """
-            INSERT INTO processing_queue (frameId, enqueuedAt, priority, retryCount)
-            SELECT ?, ?, ?, 0
-            FROM frame
-            WHERE id = ? AND processingStatus = 0;
-        """
-
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
-        }
-
-        sqlite3_bind_int64(stmt, 1, frameID)
-        sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
-        sqlite3_bind_int(stmt, 3, Int32(priority))
-        sqlite3_bind_int64(stmt, 4, frameID)
-
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
-        }
-
-        // Check if any row was actually inserted
-        let changes = sqlite3_changes(db)
-        if changes == 0 {
-            throw DatabaseError.queryFailed(query: sql, underlying: "Frame \(frameID) not eligible for processing (processingStatus != 0)")
+    @discardableResult
+    public func enqueueFrameForProcessing(frameID: Int64, priority: Int = 0) async throws -> Bool {
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
+        return try PipelineSQL.transaction(db) {
+            try PipelineSQL.enqueue(db, frameID: frameID, priority: priority)
         }
     }
 
-    /// Dequeue the next frame for processing (highest priority, oldest first)
-    /// Only dequeues frames with processingStatus = 0 (pending)
-    /// Returns tuple of (queueID, frameID, retryCount) or nil if queue is empty
+    /// Claim atomically: manual work first, then three current captures per historical turn.
+    /// Automatic priorities expire after 60 seconds; all historical work shares FIFO order.
     public func dequeueFrameForProcessing() async throws -> (queueID: Int64, frameID: Int64, retryCount: Int)? {
-        guard let db = db else {
-            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
+        enum Lane { case manual, current, historical }
+        let currentCutoff = Schema.dateToTimestamp(Date().addingTimeInterval(-60))
+        let selected = try PipelineSQL.transaction(db) { () -> (Int64, Int64, Int, Lane)? in
+            func candidate(_ lane: Lane) throws -> (Int64, Int64, Int, Lane)? {
+                let condition: String
+                let index: String
+                let order: String
+                let values: [PipelineSQL.Value]
+                switch lane {
+                case .manual:
+                    condition = "pq.priority > 10"
+                    index = "idx_processing_queue_priority"
+                    order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
+                    values = []
+                case .current:
+                    condition = "pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?"
+                    index = "idx_processing_queue_priority"
+                    order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
+                    values = [.integer(currentCutoff)]
+                case .historical:
+                    condition = """
+                        (pq.priority IS NULL OR pq.priority <= 0 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt < ?))
+                        AND NOT EXISTS (
+                            SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
+                            WHERE preferred.frameId=pq.frameId AND
+                                (preferred.priority > 10 OR (preferred.priority BETWEEN 1 AND 10 AND f.createdAt >= ?))
+                        )
+                        """
+                    index = "idx_processing_queue_enqueued"
+                    order = "pq.enqueuedAt ASC,pq.id ASC"
+                    values = [.integer(currentCutoff), .integer(currentCutoff)]
+                }
+                return try PipelineSQL.query(db, """
+                    SELECT pq.id,pq.frameId,pq.retryCount,pq.priority
+                    FROM processing_queue pq INDEXED BY \(index)
+                    CROSS JOIN frame f ON f.id=pq.frameId
+                    WHERE f.processingStatus=0 AND \(condition)
+                    ORDER BY \(order) LIMIT 1
+                    """, values) { (sqlite3_column_int64($0, 0), sqlite3_column_int64($0, 1), Int(sqlite3_column_int($0, 2)), lane) }.first
+            }
+            // Manual requests retain precedence without consuming the current/history budget.
+            var item = try candidate(.manual)
+            if item == nil && consecutivePriorityClaims >= 3 { item = try candidate(.historical) }
+            if item == nil { item = try candidate(.current) }
+            if item == nil && consecutivePriorityClaims < 3 { item = try candidate(.historical) }
+            guard let item else { return nil }
+            try PipelineSQL.execute(db, "UPDATE frame SET processingStatus=1 WHERE id=? AND processingStatus=0", [.integer(item.1)])
+            guard sqlite3_changes(db) == 1 else { throw PipelineSQL.failure("Frame was claimed concurrently") }
+            try PipelineSQL.execute(db, "DELETE FROM processing_queue WHERE frameId=?", [.integer(item.1)])
+            return item
         }
-
-        // Get highest priority item where frame still has processingStatus = 0
-        let selectSql = """
-            SELECT pq.id, pq.frameId, pq.retryCount
-            FROM processing_queue pq
-            INNER JOIN frame f ON pq.frameId = f.id
-            WHERE f.processingStatus = 0
-            ORDER BY pq.priority DESC, pq.enqueuedAt ASC
-            LIMIT 1;
-        """
-
-        var selectStmt: OpaquePointer?
-        defer { sqlite3_finalize(selectStmt) }
-
-        guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(query: selectSql, underlying: String(cString: sqlite3_errmsg(db)))
+        guard let selected else { return nil }
+        switch selected.3 {
+        case .manual: break
+        case .current: consecutivePriorityClaims = min(3, consecutivePriorityClaims + 1)
+        case .historical: consecutivePriorityClaims = 0
         }
-
-        guard sqlite3_step(selectStmt) == SQLITE_ROW else {
-            return nil // Queue empty
-        }
-
-        let queueID = sqlite3_column_int64(selectStmt, 0)
-        let frameID = sqlite3_column_int64(selectStmt, 1)
-        let retryCount = Int(sqlite3_column_int(selectStmt, 2))
-
-        // Delete from queue
-        let deleteSql = "DELETE FROM processing_queue WHERE id = ?;"
-        var deleteStmt: OpaquePointer?
-        defer { sqlite3_finalize(deleteStmt) }
-
-        guard sqlite3_prepare_v2(db, deleteSql, -1, &deleteStmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(query: deleteSql, underlying: String(cString: sqlite3_errmsg(db)))
-        }
-
-        sqlite3_bind_int64(deleteStmt, 1, queueID)
-
-        guard sqlite3_step(deleteStmt) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(query: deleteSql, underlying: String(cString: sqlite3_errmsg(db)))
-        }
-
-        return (queueID: queueID, frameID: frameID, retryCount: retryCount)
+        return (selected.0, selected.1, selected.2)
     }
 
     /// Get the current processing queue depth
@@ -2574,7 +2601,7 @@ public actor DatabaseManager: DatabaseProtocol {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
 
-        let sql = "SELECT COUNT(*) FROM processing_queue;"
+        let sql = "SELECT COUNT(DISTINCT pq.frameId) FROM processing_queue pq JOIN frame f ON f.id=pq.frameId WHERE f.processingStatus=0;"
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
 
@@ -2727,31 +2754,9 @@ public actor DatabaseManager: DatabaseProtocol {
 
     /// Retry a frame by re-adding it to the processing queue with incremented retry count
     public func retryFrameProcessing(frameID: Int64, retryCount: Int, errorMessage: String) async throws {
-        guard let db = db else {
-            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
-        }
-
-        let sql = """
-            INSERT INTO processing_queue (frameId, enqueuedAt, priority, retryCount, lastError)
-            VALUES (?, ?, 0, ?, ?);
-        """
-
-        var stmt: OpaquePointer?
-        defer { sqlite3_finalize(stmt) }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
-        }
-
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
-        sqlite3_bind_int64(stmt, 1, frameID)
-        sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
-        sqlite3_bind_int(stmt, 3, Int32(retryCount))
-        sqlite3_bind_text(stmt, 4, errorMessage, -1, SQLITE_TRANSIENT)
-
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
+        _ = try PipelineSQL.transaction(db) {
+            try PipelineSQL.enqueue(db, frameID: frameID, priority: 0, retryCount: retryCount, error: errorMessage)
         }
     }
 
@@ -2889,53 +2894,83 @@ public actor DatabaseManager: DatabaseProtocol {
         return sqlite3_step(stmt) == SQLITE_ROW
     }
 
-    /// Get the queue position for a frame (1-based, where 1 = next to be processed)
-    /// Returns nil if the frame is not in the queue
-    /// Queue is ordered by priority DESC, then enqueuedAt ASC
+    /// Estimate the frame's 1-based position using the current manual/current/history schedule.
+    /// New arrivals and capture aging may change it; claimed/completed frames have no position.
     public func getFrameQueuePosition(frameID: Int64) async throws -> Int? {
-        guard let db = db else {
-            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
+        let cutoff = Schema.dateToTimestamp(Date().addingTimeInterval(-60))
+        // A legacy duplicate may occupy several lanes. The frame belongs to its best lane.
+        let target = try PipelineSQL.query(db, """
+            SELECT pq.id,pq.priority,pq.enqueuedAt,
+                CASE WHEN pq.priority > 10 THEN 0
+                     WHEN pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ? THEN 1 ELSE 2 END AS lane
+            FROM processing_queue pq INDEXED BY idx_processing_queue_frame_id
+            CROSS JOIN frame f ON f.id=pq.frameId
+            WHERE pq.frameId=? AND f.processingStatus=0
+            ORDER BY lane ASC,
+                CASE WHEN pq.priority > 10 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?) THEN pq.priority ELSE 0 END DESC,
+                pq.enqueuedAt ASC,pq.id ASC LIMIT 1
+            """, [.integer(cutoff), .integer(frameID), .integer(cutoff)]) {
+                (id: sqlite3_column_int64($0, 0), priority: Int(sqlite3_column_int($0, 1)),
+                 enqueuedAt: sqlite3_column_double($0, 2), lane: Int(sqlite3_column_int($0, 3)))
+            }.first
+        guard let target else { return nil }
+
+        func count(lane: Int, ahead: Bool = false, limit: Int? = nil) throws -> Int {
+            if limit == 0 { return 0 }
+            let index = lane == 2 ? "idx_processing_queue_enqueued" : "idx_processing_queue_priority"
+            var values: [PipelineSQL.Value] = []
+            var condition: String
+            switch lane {
+            case 0:
+                condition = "pq.priority > 10"
+            case 1:
+                condition = """
+                    pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?
+                    AND NOT EXISTS (SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
+                        WHERE preferred.frameId=pq.frameId AND preferred.priority > 10)
+                    """
+                values = [.integer(cutoff)]
+            default:
+                condition = """
+                    (pq.priority IS NULL OR pq.priority <= 0 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt < ?))
+                    AND NOT EXISTS (SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
+                        WHERE preferred.frameId=pq.frameId AND
+                            (preferred.priority > 10 OR (preferred.priority BETWEEN 1 AND 10 AND f.createdAt >= ?)))
+                    """
+                values = [.integer(cutoff), .integer(cutoff)]
+            }
+            if ahead {
+                let fifo = "(pq.enqueuedAt < ? OR (pq.enqueuedAt = ? AND pq.id < ?))"
+                if lane == 2 {
+                    condition += " AND \(fifo)"
+                } else {
+                    condition += " AND (pq.priority > ? OR (pq.priority = ? AND \(fifo)))"
+                    values += [.integer(Int64(target.priority)), .integer(Int64(target.priority))]
+                }
+                values += [.real(target.enqueuedAt), .real(target.enqueuedAt), .integer(target.id)]
+            }
+            let bounded = limit == nil ? "" : "LIMIT ?"
+            if let limit { values.append(.integer(Int64(limit))) }
+            // DISTINCT consolidates legacy rows; LIMIT avoids counting irrelevant distant turns.
+            return Int(try PipelineSQL.integers(db, """
+                SELECT COUNT(*) FROM (
+                    SELECT DISTINCT pq.frameId FROM processing_queue pq INDEXED BY \(index)
+                    CROSS JOIN frame f ON f.id=pq.frameId
+                    WHERE f.processingStatus=0 AND \(condition) \(bounded)
+                )
+                """, values).first ?? 0)
         }
 
-        // Get the priority and enqueuedAt for the target frame
-        let targetSql = "SELECT priority, enqueuedAt FROM processing_queue WHERE frameId = ?;"
-        var targetStmt: OpaquePointer?
-        defer { sqlite3_finalize(targetStmt) }
-
-        guard sqlite3_prepare_v2(db, targetSql, -1, &targetStmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(query: targetSql, underlying: String(cString: sqlite3_errmsg(db)))
+        let rank = try count(lane: target.lane, ahead: true) + 1
+        if target.lane == 0 { return rank }
+        let manual = try count(lane: 0)
+        if target.lane == 1 {
+            let historicalTurns = (consecutivePriorityClaims + rank - 1) / 3
+            return manual + rank + (try count(lane: 2, limit: historicalTurns))
         }
-
-        sqlite3_bind_int64(targetStmt, 1, frameID)
-
-        guard sqlite3_step(targetStmt) == SQLITE_ROW else {
-            return nil // Frame not in queue
-        }
-
-        let priority = sqlite3_column_int(targetStmt, 0)
-        let enqueuedAt = sqlite3_column_double(targetStmt, 1)
-
-        // Count how many frames are ahead in the queue (higher priority, or same priority but earlier enqueue time)
-        let positionSql = """
-            SELECT COUNT(*) + 1 FROM processing_queue
-            WHERE priority > ? OR (priority = ? AND enqueuedAt < ?);
-        """
-        var positionStmt: OpaquePointer?
-        defer { sqlite3_finalize(positionStmt) }
-
-        guard sqlite3_prepare_v2(db, positionSql, -1, &positionStmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(query: positionSql, underlying: String(cString: sqlite3_errmsg(db)))
-        }
-
-        sqlite3_bind_int(positionStmt, 1, priority)
-        sqlite3_bind_int(positionStmt, 2, priority)
-        sqlite3_bind_double(positionStmt, 3, enqueuedAt)
-
-        guard sqlite3_step(positionStmt) == SQLITE_ROW else {
-            return nil
-        }
-
-        return Int(sqlite3_column_int(positionStmt, 0))
+        let currentTurns = (3 - consecutivePriorityClaims) + 3 * (rank - 1)
+        return manual + rank + (try count(lane: 1, limit: currentTurns))
     }
 
     /// Get all frame IDs with pending status (processingStatus=0) that are NOT in the processing queue
@@ -2967,6 +3002,72 @@ public actor DatabaseManager: DatabaseProtocol {
         }
 
         return frameIDs
+    }
+
+    /// Queue one frame for OCR rebuild without deleting its current OCR/search rows.
+    /// The worker replaces those rows only after it has a fresh OCR result.
+    public func enqueueFrameForOCRRebuild(frameID: Int64, priority: Int = 75) async throws -> Bool {
+        guard let db = db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+
+        func executeTransactionSQL(_ sql: String) throws {
+            var error: UnsafeMutablePointer<Int8>?
+            guard sqlite3_exec(db, sql, nil, nil, &error) == SQLITE_OK else {
+                let message = error.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(db))
+                sqlite3_free(error)
+                throw DatabaseError.queryFailed(query: sql, underlying: message)
+            }
+        }
+
+        try executeTransactionSQL("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            let updateSQL = "UPDATE frame SET processingStatus = 0 WHERE id = ? AND processingStatus IN (2, 3);"
+            var updateStmt: OpaquePointer?
+            defer { sqlite3_finalize(updateStmt) }
+
+            guard sqlite3_prepare_v2(db, updateSQL, -1, &updateStmt, nil) == SQLITE_OK else {
+                throw DatabaseError.queryFailed(query: updateSQL, underlying: String(cString: sqlite3_errmsg(db)))
+            }
+            sqlite3_bind_int64(updateStmt, 1, frameID)
+
+            guard sqlite3_step(updateStmt) == SQLITE_DONE else {
+                throw DatabaseError.queryFailed(query: updateSQL, underlying: String(cString: sqlite3_errmsg(db)))
+            }
+
+            let insertSQL = """
+                INSERT INTO processing_queue (frameId, enqueuedAt, priority, retryCount, lastError)
+                SELECT ?, ?, ?, 0, NULL
+                WHERE EXISTS (
+                    SELECT 1 FROM frame WHERE id = ? AND processingStatus = 0
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM processing_queue WHERE frameId = ?
+                );
+            """
+            var insertStmt: OpaquePointer?
+            defer { sqlite3_finalize(insertStmt) }
+
+            guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStmt, nil) == SQLITE_OK else {
+                throw DatabaseError.queryFailed(query: insertSQL, underlying: String(cString: sqlite3_errmsg(db)))
+            }
+            sqlite3_bind_int64(insertStmt, 1, frameID)
+            sqlite3_bind_double(insertStmt, 2, Date().timeIntervalSince1970)
+            sqlite3_bind_int(insertStmt, 3, Int32(priority))
+            sqlite3_bind_int64(insertStmt, 4, frameID)
+            sqlite3_bind_int64(insertStmt, 5, frameID)
+
+            guard sqlite3_step(insertStmt) == SQLITE_DONE else {
+                throw DatabaseError.queryFailed(query: insertSQL, underlying: String(cString: sqlite3_errmsg(db)))
+            }
+            let inserted = sqlite3_changes(db) > 0
+
+            try executeTransactionSQL("COMMIT;")
+            return inserted
+        } catch {
+            try? executeTransactionSQL("ROLLBACK;")
+            throw error
+        }
     }
 
     /// Count frames with pending status (processingStatus=0) that are NOT in the processing queue

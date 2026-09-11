@@ -8,20 +8,8 @@ You are responsible for the **Database** module of Retrace. Your job is to imple
 
 ```
 Database/
-├── DatabaseManager.swift      # Main DatabaseProtocol implementation
-├── FTSManager.swift           # FTSProtocol implementation
-├── Schema.swift               # Table definitions
 ├── Migrations/
-│   ├── MigrationRunner.swift  # Run migrations in order
-│   ├── V1_InitialSchema.swift # Initial schema migration
-│   ├── V2_UnfinalisedVideoTracking.swift
-│   ├── V3_TagSystem.swift
-│   ├── V4_DailyMetrics.swift
-│   ├── V5_FTSUnicode61.swift
-│   ├── V6_FrameProcessedAt.swift
-│   ├── V7_FrameRedactionReason.swift
-│   ├── V8_SegmentComments.swift
-│   ├── V9_SegmentCommentFrameAnchor.swift
+│   ├── MigrationRunner.swift
 │   ├── V10_SegmentCommentSearchIndex.swift
 │   ├── V11_SegmentCommentLinkCompositeIndex.swift
 │   ├── V12_AudioCaptures.swift
@@ -29,23 +17,55 @@ Database/
 │   ├── V14_ContextualRefinement.swift
 │   ├── V15_PipelineVersion.swift
 │   ├── V16_DictationSessions.swift
-│   └── V17_AudioTranscriptMetadata.swift
+│   ├── V17_AudioTranscriptMetadata.swift
+│   ├── V18_NodeText.swift
+│   ├── V19_ProcessingQueueFrameIndex.swift
+│   ├── V20_OCRBackfillState.swift
+│   ├── V1_InitialSchema.swift
+│   ├── V2_UnfinalisedVideoTracking.swift
+│   ├── V3_TagSystem.swift
+│   ├── V4_DailyMetrics.swift
+│   ├── V5_FTSUnicode61.swift
+│   ├── V6_FrameProcessedAt.swift
+│   ├── V7_FrameRedactionReason.swift
+│   ├── V8_SegmentComments.swift
+│   └── V9_SegmentCommentFrameAnchor.swift
 ├── Queries/
-│   ├── AppSegmentQueries.swift        # App/session aggregation queries
-│   ├── AudioTranscriptionQueries.swift # Audio transcript CRUD/search/refinement queries
-│   ├── DailyMetricsQueries.swift      # Daily product metrics aggregation
-│   ├── DictationSessionQueries.swift  # Push-to-dictate session history
-│   ├── DocumentQueries.swift          # Document/FTS operations
-│   ├── FTSQueries.swift               # SearchRanking FTS queries
-│   ├── FrameQueries.swift             # Frame CRUD operations
-│   ├── NodeQueries.swift              # OCR node CRUD operations
-│   └── SegmentQueries.swift           # Segment CRUD operations
-└── Tests/
-    ├── AudioRepairPolicyTests.swift
-    ├── AudioTranscriptionPaginationTests.swift
-    ├── DatabaseManagerTests.swift
-    ├── DictationSessionQueriesTests.swift
-    └── FTSManagerTests.swift
+│   ├── AppSegmentQueries.swift
+│   ├── AudioTranscriptionQueries.swift
+│   ├── DailyMetricsQueries.swift
+│   ├── DictationSessionQueries.swift
+│   ├── DocumentQueries.swift
+│   ├── FTSQueries.swift
+│   ├── FrameQueries.swift
+│   ├── NodeQueries.swift
+│   └── SegmentQueries.swift
+├── Tests/
+│   ├── _future/
+│   │   └── AudioTranscriptionQueriesTests.swift
+│   ├── AsyncQueuePipelineTests.swift
+│   ├── AudioRepairPolicyTests.swift
+│   ├── AudioTranscriptionPaginationTests.swift
+│   ├── DatabaseManagerTests.swift
+│   ├── DictationSessionQueriesTests.swift
+│   ├── EdgeCaseTests.swift
+│   ├── FTSManagerTests.swift
+│   ├── FramePipelinePersistenceTests.swift
+│   ├── IntegrationTests.swift
+│   ├── LegacyOCRBackfillPagingTests.swift
+│   ├── OCRPipelineTests.swift
+│   ├── QueryBuilderTests.swift
+│   ├── RetentionPersistenceTests.swift
+│   └── TestLogger.swift
+├── DatabaseConfig.swift
+├── DatabaseConnection.swift
+├── DatabaseManager.swift
+├── FTSManager.swift
+├── FramePipelinePersistence.swift
+├── IDMappingService.swift
+├── LegacyOCRBackfillPersistence.swift
+├── RetentionPersistence.swift
+└── Schema.swift
 ```
 
 ## Protocols You Must Implement
@@ -61,150 +81,28 @@ Database/
 - Match counting
 - Index maintenance
 
-## Schema Design
+## Capture and retention persistence
 
-### Tables
+`FramePipelinePersistence.swift` owns atomic OCR publication, claim release and idempotent WAL recovery. `RetentionPersistence.swift` deletes bounded expired-frame batches and rechecks finalized, unreferenced video identity inside the same transaction as a guarded unlink callback. Never pass the SQLite pointer to App for deletion. No awaits are allowed inside these transactions.
 
-```sql
--- Video segments (container files)
-CREATE TABLE segments (
-    id TEXT PRIMARY KEY,           -- SegmentID UUID
-    start_time INTEGER NOT NULL,   -- Unix timestamp ms
-    end_time INTEGER NOT NULL,     -- Unix timestamp ms
-    frame_count INTEGER NOT NULL,
-    file_size_bytes INTEGER NOT NULL,
-    relative_path TEXT NOT NULL,
-    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
-);
+V19 adds non-unique indexes for queue frame IDs, document IDs and video paths. Preserve existing records; duplicates are consolidated on enqueue/claim, not silently discarded by migration. Runtime retention does not vacuum the database. Frame IDs, app-segment IDs, database video IDs and storage path IDs are distinct.
 
--- Individual frames
-CREATE TABLE frames (
-    id TEXT PRIMARY KEY,           -- FrameID UUID
-    segment_id TEXT NOT NULL,      -- FK to segments
-    timestamp INTEGER NOT NULL,    -- Unix timestamp ms
-    frame_index INTEGER NOT NULL,  -- Index within segment
-    duration_ms INTEGER DEFAULT 2000,
-    app_bundle_id TEXT,
-    app_name TEXT,
-    window_title TEXT,
-    browser_url TEXT,
-    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
-    FOREIGN KEY (segment_id) REFERENCES segments(id) ON DELETE CASCADE
-);
+`LegacyOCRBackfillPersistence.swift` performs bounded, resumable node-text maintenance. V20 creates only a one-row cursor/watermark table, without scanning/indexing OCR text. Check capacity first using at most the configured number of pending/claimed rows from the status index. Then read at most 1,000 nodes by `node.id` keyset before filtering and enqueue at most 100 frames. Freeze each sweep's upper node ID with a one-row primary-key endpoint lookup, so ongoing captures cannot indefinitely postpone earlier revisits. Persist only the last inspected node when a batch fills. Cursor, watermark, queue and status changes share one synchronous cancellable transaction; old nodes and FTS remain until OCR replacement. An empty batch means no work enqueued this tick, not global completion. Never restore exact whole-library candidate counts or a filtered/sorted full-table query with a final LIMIT. `LegacyOCRBackfillPagingTests` checks real SQLite VM steps, query plans, sparse pages, restart, growing-tail revisits, capacity, rollback and readable text preservation.
 
--- Indexed documents for FTS
-CREATE TABLE documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    frame_id TEXT NOT NULL UNIQUE, -- FK to frames
-    content TEXT NOT NULL,         -- Full extracted text
-    app_name TEXT,
-    window_title TEXT,
-    browser_url TEXT,
-    timestamp INTEGER NOT NULL,
-    created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
-    FOREIGN KEY (frame_id) REFERENCES frames(id) ON DELETE CASCADE
-);
+OCR selection has three lanes: manual priorities above 10 always lead; automatic priorities 1–10 are current only while their frame capture is no older than 60 seconds; expired automatic, zero, negative and legacy NULL priorities share historical FIFO by enqueue time and queue ID. After three current claims, give history a turn when available. Manual claims preserve the fairness counter; historical claims reset it even when their stored priority is positive. Aging affects selection only and must not rewrite timestamps or recorded priority. A released/deferred claim rejoins the FIFO tail with its retry metadata.
 
--- FTS5 virtual table
-CREATE VIRTUAL TABLE documents_fts USING fts5(
-    content,
-    app_name,
-    window_title,
-    content='documents',
-    content_rowid='id',
-    tokenize='porter unicode61'
-);
+Keep claim selection inside its atomic transaction and mutate the fairness counter only after commit. Use the existing priority index for manual/current selection and enqueue-time index for history, with queue-driven frame primary-key lookups; do not add a migration or scan/sort the full frame table. `FramePipelinePersistenceTests` traces actual claim SQL and validates its SQLite plans. Queue-position estimates use the same lanes and fairness budget, count distinct pending frames and exclude claimed/completed rows; new arrivals and age changes can alter the displayed estimate.
 
--- Triggers to keep FTS in sync
-CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN
-    INSERT INTO documents_fts(rowid, content, app_name, window_title)
-    VALUES (new.id, new.content, new.app_name, new.window_title);
-END;
+## Active schema and access rules
 
-CREATE TRIGGER documents_ad AFTER DELETE ON documents BEGIN
-    INSERT INTO documents_fts(documents_fts, rowid, content, app_name, window_title)
-    VALUES ('delete', old.id, old.content, old.app_name, old.window_title);
-END;
-
-CREATE TRIGGER documents_au AFTER UPDATE ON documents BEGIN
-    INSERT INTO documents_fts(documents_fts, rowid, content, app_name, window_title)
-    VALUES ('delete', old.id, old.content, old.app_name, old.window_title);
-    INSERT INTO documents_fts(rowid, content, app_name, window_title)
-    VALUES (new.id, new.content, new.app_name, new.window_title);
-END;
-
--- Indexes
-CREATE INDEX idx_frames_timestamp ON frames(timestamp);
-CREATE INDEX idx_frames_segment ON frames(segment_id);
-CREATE INDEX idx_frames_app ON frames(app_bundle_id);
-CREATE INDEX idx_segments_time ON segments(start_time, end_time);
-CREATE INDEX idx_documents_timestamp ON documents(timestamp);
-```
-
-## Key Implementation Details
-
-### 1. Use SQLite Directly
-- Use the C SQLite API via Swift's bridging (or a lightweight wrapper like GRDB)
-- Enable WAL mode for concurrent reads during writes
-- Enable FTS5 extension
-
-```swift
-sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil)
-sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nil, nil, nil)
-```
-
-### 2. Actor-Based Thread Safety
-```swift
-public actor DatabaseManager: DatabaseProtocol {
-    private var db: OpaquePointer?
-
-    public func initialize() async throws {
-        // Open database
-        // Run migrations
-        // Enable WAL mode
-    }
-}
-```
-
-### 3. Migration System
-```swift
-protocol Migration {
-    static var version: Int { get }
-    static func migrate(db: OpaquePointer) throws
-}
-
-// Track applied migrations
-CREATE TABLE schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at INTEGER DEFAULT (strftime('%s', 'now') * 1000)
-);
-```
-
-### 4. FTS Search with Snippets
-```swift
-func search(query: String, limit: Int, offset: Int) async throws -> [FTSMatch] {
-    let sql = """
-        SELECT
-            d.id, d.frame_id, d.timestamp, d.app_name, d.window_title,
-            snippet(documents_fts, 0, '<mark>', '</mark>', '...', 32) as snippet,
-            bm25(documents_fts) as rank
-        FROM documents_fts
-        JOIN documents d ON documents_fts.rowid = d.id
-        WHERE documents_fts MATCH ?
-        ORDER BY rank
-        LIMIT ? OFFSET ?
-    """
-    // Execute and map results
-}
-```
-
-### 5. Date Handling
-- Store all dates as Unix timestamps in milliseconds (INTEGER)
-- Convert to/from Swift `Date` using:
-```swift
-let timestampMs = Int64(date.timeIntervalSince1970 * 1000)
-let date = Date(timeIntervalSince1970: Double(timestampMs) / 1000)
-```
+- `video` stores encoded container paths; `segment` stores app/window sessions; `frame` links both. IDs are integer database keys, distinct from numeric storage filenames.
+- `node` stores OCR bounds and raw text. `doc_segment` links frame/session IDs to the `searchRanking` FTS5 table. `processing_queue` holds durable OCR work.
+- `DocumentQueries` implements legacy document CRUD against these canonical FTS/link tables; there is no separate `documents` table. Metadata comes from the source frame/session, and duplicate insertion requires an explicit update instead.
+- Explicit frame deletion cleans OCR nodes, queue work and search links atomically, preserving documents with surviving frame/session links and detaching user-comment frame anchors. Public video deletion includes its associated frames in the same transaction. Storage filename IDs must never be passed as database video IDs.
+- Audio/transcript, tags, comments, daily metrics and dictation tables are already active. Inspect `Schema.swift` and ordered migrations for column definitions rather than copying historical schema sketches.
+- `DatabaseManager` owns its SQLite connection on an actor. Use prepared statements and bound parameters. Concrete transaction helpers must not suspend while owning a write transaction.
+- Dates in frame/session records use `Schema.dateToTimestamp` (milliseconds). Queue enqueue timestamps remain the existing seconds representation; do not mix units.
+- Keep `DatabaseProtocol` and Shared types authoritative for cross-module operations. Test migrations and queries against real temporary SQLCipher databases.
 
 ## Error Handling
 
@@ -364,18 +262,11 @@ swift test --filter testFullCaptureToSearchFlow  # Specific test
 - Database size: <500MB per month of metadata
 - Support 1M+ documents efficiently
 
-## Getting Started
+## Historical schema proposal (not the active schema)
 
-1. Create `Database/Schema.swift` with table definitions
-2. Create `Database/Migrations/V1_InitialSchema.swift`
-3. Implement `DatabaseManager` conforming to `DatabaseProtocol`
-4. Implement `FTSManager` conforming to `FTSProtocol`
-5. Write tests for all CRUD operations
-6. Write tests for FTS search
+The following is retained as design history only. Active audio tables are already implemented; use `Schema.swift` and V1–V20 migrations as the source of truth. These proposed table names, size forecasts and Intel assumptions do not describe the current product.
 
-Start with the schema and migrations, then build up the query layer.
-
-## Schema Updates (V3)
+### Original V3 proposal
 
 ### New Tables
 

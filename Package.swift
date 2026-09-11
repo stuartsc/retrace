@@ -106,7 +106,7 @@ let package = Package(
         ),
         .testTarget(
             name: "StorageTests",
-            dependencies: ["Storage", "Shared"],
+            dependencies: ["Storage", "Shared", "Database"],
             path: "Storage/Tests"
         ),
 

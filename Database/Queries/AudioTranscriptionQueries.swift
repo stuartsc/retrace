@@ -49,7 +49,8 @@ public actor AudioTranscriptionQueries {
 
     // MARK: - Insert Transcription
 
-    /// Insert a transcribed audio segment with word-level timestamps
+    /// Insert a transcribed sentence. Word timing is used upstream for segmentation
+    /// but is not duplicated into hidden FTS rows.
     public func insertTranscription(
         sessionID: String?,
         text: String,
@@ -128,64 +129,12 @@ public actor AudioTranscriptionQueries {
 
         let transcriptionID = sqlite3_last_insert_rowid(db)
 
-        // Insert individual words if provided
-        for word in words {
-            try insertWord(
-                transcriptionID: transcriptionID,
-                word: word.word,
-                startTime: startTime.addingTimeInterval(word.start),
-                endTime: startTime.addingTimeInterval(word.end),
-                confidence: word.confidence
-            )
-        }
+        // Raw audio plus sentence boundaries are canonical and can regenerate word
+        // timing. Production transcript/search queries exclude source='word', so
+        // persisting those rows only multiplies database and FTS storage.
+        _ = words
 
         return transcriptionID
-    }
-
-    /// Insert a single word (for word-level transcriptions)
-    private func insertWord(
-        transcriptionID: Int64,
-        word: String,
-        startTime: Date,
-        endTime: Date,
-        confidence: Double?
-    ) throws {
-        let sql = """
-            INSERT INTO audio_captures (
-                session_id, text, start_time, end_time, source, confidence,
-                transcription_pass, batch_audio_path, transcript_status, detected_language,
-                audio_variant, quality_flags, pipeline_version
-            )
-            SELECT
-                session_id, ?, ?, ?, 'word', ?,
-                transcription_pass, batch_audio_path, transcript_status, detected_language,
-                audio_variant, quality_flags, pipeline_version
-            FROM audio_captures
-            WHERE id = ?;
-            """
-
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
-        }
-        defer { sqlite3_finalize(stmt) }
-
-        sqlite3_bind_text(stmt, 1, word, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int64(stmt, 2, Schema.dateToTimestamp(startTime))
-        sqlite3_bind_int64(stmt, 3, Schema.dateToTimestamp(endTime))
-        if let confidence = confidence {
-            sqlite3_bind_double(stmt, 4, confidence)
-        } else {
-            sqlite3_bind_null(stmt, 4)
-        }
-        sqlite3_bind_int64(stmt, 5, transcriptionID)
-
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
-        }
-        guard sqlite3_changes(db) == 1 else {
-            throw DatabaseError.queryExecutionFailed("Parent transcription not found for word row")
-        }
     }
 
     /// Batch insert multiple transcriptions in a single transaction

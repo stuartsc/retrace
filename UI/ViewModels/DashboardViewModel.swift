@@ -827,6 +827,40 @@ public class DashboardViewModel: ObservableObject {
         recordMetric(coordinator: coordinator, type: .dashboardLiveFrameSelected, metadata: metadata)
     }
 
+    /// Record a user action in the visual-memory screenshot workspace.
+    public static func recordDashboardScreenshotAction(
+        coordinator: AppCoordinator,
+        action: String,
+        frameID: Int64?,
+        source: String?,
+        queryLength: Int?
+    ) {
+        var payload: [String: Any] = ["action": action]
+        if let frameID { payload["frameID"] = frameID }
+        if let source { payload["source"] = source }
+        if let queryLength { payload["queryLength"] = queryLength }
+        recordMetric(
+            coordinator: coordinator,
+            type: .dashboardScreenshotAction,
+            metadata: jsonMetadata(payload)
+        )
+    }
+
+    /// Record explicit interactions with the read-only FuseIntel dashboard integration.
+    public static func recordDashboardFuseIntelAction(
+        coordinator: AppCoordinator,
+        action: String,
+        section: String,
+        connectionState: String
+    ) {
+        let metadata = jsonMetadata([
+            "action": action,
+            "section": section,
+            "connectionState": connectionState
+        ])
+        recordMetric(coordinator: coordinator, type: .dashboardFuseIntelAction, metadata: metadata)
+    }
+
     public static func recordDateSearchSubmitted(
         coordinator: AppCoordinator,
         source: String,

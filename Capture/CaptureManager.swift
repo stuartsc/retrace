@@ -2,6 +2,23 @@ import Foundation
 import CoreGraphics
 import Shared
 
+enum WindowChangeCapturePolicy {
+    static let minimumIntervalSeconds: TimeInterval = 1.25
+
+    static func shouldCaptureWindowChange(lastCaptureAt: Date?, now: Date = Date()) -> Bool {
+        guard let lastCaptureAt else { return true }
+        return now.timeIntervalSince(lastCaptureAt) >= minimumIntervalSeconds
+    }
+}
+
+/// One raw/output pair and its worker, exposed internally for stream lifecycle tests.
+struct CaptureFrameStreamSession: Sendable {
+    let id: UUID
+    let input: AsyncStream<CapturedFrame>.Continuation
+    let output: AsyncStream<CapturedFrame>
+    let task: Task<Void, Never>
+}
+
 /// Main coordinator for screen capture
 /// Implements CaptureProtocol from Shared/Protocols
 public actor CaptureManager: CaptureProtocol {
@@ -22,6 +39,8 @@ public actor CaptureManager: CaptureProtocol {
     private var rawFrameContinuation: AsyncStream<CapturedFrame>.Continuation?
     private var dedupedFrameContinuation: AsyncStream<CapturedFrame>.Continuation?
     private var _frameStream: AsyncStream<CapturedFrame>?
+    private var frameProcessingSession: CaptureFrameStreamSession?
+    private var lifecycleOperation: (id: UUID, task: Task<Void, Error>)?
 
     // Statistics
     private var stats = CaptureStatistics(
@@ -43,7 +62,7 @@ public actor CaptureManager: CaptureProtocol {
     private var deferredDisplaySyncTask: Task<Void, Never>?
     private var currentCaptureDisplayID: UInt32?
     private var isDisplaySwitchInFlight = false
-    private static let windowChangeCaptureDelayMilliseconds = 100
+    private static let windowChangeCaptureDelayMilliseconds = 150
 
     /// Callback for accessibility permission warnings
     nonisolated(unsafe) public var onAccessibilityPermissionWarning: (() -> Void)?
@@ -73,6 +92,26 @@ public actor CaptureManager: CaptureProtocol {
     }
 
     public func startCapture(config: CaptureConfig) async throws {
+        try await runLifecycleOperation { try await self.startCaptureSession(config: config) }
+    }
+
+    /// Actor isolation alone does not serialize operations across permission/source awaits.
+    func runLifecycleOperation(_ operation: @escaping @Sendable () async throws -> Void) async throws {
+        let previous = lifecycleOperation?.task
+        let id = UUID()
+        let task = Task {
+            // A failed earlier operation must not prevent a later stop or retry.
+            _ = try? await previous?.value
+            try await operation()
+        }
+        lifecycleOperation = (id, task)
+        defer {
+            if lifecycleOperation?.id == id { lifecycleOperation = nil }
+        }
+        try await task.value
+    }
+
+    private func startCaptureSession(config: CaptureConfig) async throws {
         guard !_isCapturing else { return }
 
         // Check permission first
@@ -82,67 +121,77 @@ public actor CaptureManager: CaptureProtocol {
 
         self.currentConfig = config
 
-        // Create raw frame stream
-        let (rawStream, rawContinuation) = AsyncStream<CapturedFrame>.makeStream()
-        self.rawFrameContinuation = rawContinuation
-
-        // Create deduped frame stream for consumers
-        let (dedupedStream, dedupedContinuation) = AsyncStream<CapturedFrame>.makeStream()
-        self.dedupedFrameContinuation = dedupedContinuation
-        self._frameStream = dedupedStream
+        let session = startFrameProcessing { [weak self] frame in
+            await self?.enrichFrameMetadata(frame) ?? frame
+        }
 
         // Get the active display (the one containing the focused window)
         let activeDisplayID = await displayMonitor.getActiveDisplayID()
         currentCaptureDisplayID = activeDisplayID
 
-        // Start CGWindowList capture on the active display
-        try await cgWindowListCapture.startCapture(
-            config: config,
-            frameContinuation: rawContinuation,
-            displayID: activeDisplayID
-        )
+        do {
+            // Start CGWindowList capture on the active display.
+            try await cgWindowListCapture.startCapture(
+                config: config,
+                frameContinuation: session.input,
+                displayID: activeDisplayID
+            )
 
-        _isCapturing = true
-        stats = CaptureStatistics(
-            totalFramesCaptured: 0,
-            framesDeduped: 0,
-            averageFrameSizeBytes: 0,
-            captureStartTime: Date(),
-            lastFrameTime: nil
-        )
+            _isCapturing = true
+            stats = CaptureStatistics(
+                totalFramesCaptured: 0,
+                framesDeduped: 0,
+                averageFrameSizeBytes: 0,
+                captureStartTime: Date(),
+                lastFrameTime: nil
+            )
 
-        // Start monitoring for display switches
-        let initialDisplayID = await displayMonitor.getActiveDisplayID()
-        await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
-
-        // Process raw frames with deduplication
-        Task {
-            await processFrameStream(rawStream: rawStream)
+            let initialDisplayID = await displayMonitor.getActiveDisplayID()
+            await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
+        } catch {
+            // A failed source start must not leave a raw stream and its worker alive.
+            _isCapturing = false
+            session.task.cancel()
+            session.input.finish()
+            try? await cgWindowListCapture.stopCapture()
+            await stopFrameProcessing()
+            currentCaptureDisplayID = nil
+            throw error
         }
     }
 
     public func stopCapture() async throws {
-        guard _isCapturing else { return }
+        try await runLifecycleOperation { try await self.stopCaptureSession() }
+    }
 
-        // Stop display switch monitoring
-        await displaySwitchMonitor.stopMonitoring()
+    private func stopCaptureSession() async throws {
+        guard _isCapturing || frameProcessingSession != nil else { return }
 
-        // Stop capture
-        try await cgWindowListCapture.stopCapture()
-
+        // Invalidate callback work before the first suspension. A display-switch
+        // callback must not restart the source while shutdown is awaiting it.
         _isCapturing = false
-        rawFrameContinuation?.finish()
-        dedupedFrameContinuation?.finish()
-        rawFrameContinuation = nil
-        dedupedFrameContinuation = nil
+        frameProcessingSession?.task.cancel()
+        frameProcessingSession?.input.finish()
         windowChangeCaptureTask?.cancel()
         windowChangeCaptureTask = nil
         deferredDisplaySyncTask?.cancel()
         deferredDisplaySyncTask = nil
+
+        await displaySwitchMonitor.stopMonitoring()
+        var sourceError: Error?
+        do {
+            try await cgWindowListCapture.stopCapture()
+        } catch {
+            sourceError = error
+        }
+
+        // Always join the forwarding task, even if source teardown failed.
+        await stopFrameProcessing()
         lastKeptFrame = nil
         hasShownAccessibilityWarning = false
         currentCaptureDisplayID = nil
         isDisplaySwitchInFlight = false
+        if let sourceError { throw sourceError }
     }
 
     public var isCapturing: Bool {
@@ -262,12 +311,14 @@ public actor CaptureManager: CaptureProtocol {
             }
         }
 
-        // Debounce: minimum 200ms between window-change captures
-        if let lastTime = lastWindowChangeCaptureTime,
-           Date().timeIntervalSince(lastTime) < 0.2 {
+        let now = Date()
+        guard WindowChangeCapturePolicy.shouldCaptureWindowChange(
+            lastCaptureAt: lastWindowChangeCaptureTime,
+            now: now
+        ) else {
             return
         }
-        lastWindowChangeCaptureTime = Date()
+        lastWindowChangeCaptureTime = now
 
         // Update tracked title/bundle
         lastNormalizedTitle = currentTitle
@@ -285,6 +336,7 @@ public actor CaptureManager: CaptureProtocol {
 
     /// Handle display switch by restarting capture on the new display
     private func handleDisplaySwitch(from oldDisplayID: UInt32, to newDisplayID: UInt32) async {
+        guard let session = frameProcessingSession, _isCapturing else { return }
         // Notify listeners that display switched (used by TimelineWindowController to reposition window)
         await MainActor.run {
             NotificationCenter.default.post(
@@ -294,7 +346,7 @@ public actor CaptureManager: CaptureProtocol {
             )
         }
 
-        guard _isCapturing else { return }
+        guard _isCapturing, frameProcessingSession?.id == session.id else { return }
         guard oldDisplayID != newDisplayID else {
             currentCaptureDisplayID = newDisplayID
             return
@@ -302,25 +354,43 @@ public actor CaptureManager: CaptureProtocol {
         guard !isDisplaySwitchInFlight else { return }
 
         isDisplaySwitchInFlight = true
-        defer { isDisplaySwitchInFlight = false }
+        defer {
+            if frameProcessingSession?.id == session.id { isDisplaySwitchInFlight = false }
+        }
 
         do {
-            // Recreate raw frame continuation with same stream
-            guard let continuation = rawFrameContinuation else { return }
-
-            // Stop current capture
-            try await cgWindowListCapture.stopCapture()
-
-            // Start capture on new display
-            try await cgWindowListCapture.startCapture(
-                config: currentConfig,
-                frameContinuation: continuation,
-                displayID: newDisplayID
-            )
-            currentCaptureDisplayID = newDisplayID
+            try await runDisplaySwitchOperation(sessionID: session.id) {
+                try await self.switchCaptureSource(session: session, displayID: newDisplayID)
+            }
         } catch {
             Log.error("Failed to switch displays: \(error.localizedDescription)", category: .capture)
         }
+    }
+
+    /// Admit display source work only while its captured stream is current.
+    func runDisplaySwitchOperation(
+        sessionID: UUID,
+        operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await runLifecycleOperation {
+            // Validate after admission: a queued stop/restart may have replaced
+            // the source while this display callback was waiting its turn.
+            guard await self.frameProcessingSession?.id == sessionID else { return }
+            try await operation()
+        }
+    }
+
+    private func switchCaptureSource(session: CaptureFrameStreamSession, displayID: UInt32) async throws {
+        guard _isCapturing, frameProcessingSession?.id == session.id else { return }
+        try await cgWindowListCapture.stopCapture()
+        guard _isCapturing, frameProcessingSession?.id == session.id else { return }
+        try await cgWindowListCapture.startCapture(
+            config: currentConfig,
+            frameContinuation: session.input,
+            displayID: displayID
+        )
+        guard _isCapturing, frameProcessingSession?.id == session.id else { return }
+        currentCaptureDisplayID = displayID
     }
 
     /// Handle accessibility permission denial
@@ -341,21 +411,11 @@ public actor CaptureManager: CaptureProtocol {
 
         Log.info("Screen capture stream stopped unexpectedly", category: .capture)
 
-        // Reset capture state
-        _isCapturing = false
-        rawFrameContinuation?.finish()
-        dedupedFrameContinuation?.finish()
-        rawFrameContinuation = nil
-        dedupedFrameContinuation = nil
-        deferredDisplaySyncTask?.cancel()
-        deferredDisplaySyncTask = nil
-        lastKeptFrame = nil
-        hasShownAccessibilityWarning = false
-        currentCaptureDisplayID = nil
-        isDisplaySwitchInFlight = false
-
-        // Stop display switch monitoring
-        await displaySwitchMonitor.stopMonitoring()
+        do {
+            try await stopCapture()
+        } catch {
+            Log.error("Failed to stop capture after stream termination: \(error.localizedDescription)", category: .capture)
+        }
 
         // Notify listeners
         if let callback = onCaptureStopped {
@@ -365,12 +425,60 @@ public actor CaptureManager: CaptureProtocol {
 
     // MARK: - Private Helpers - Frame Processing
 
+    /// Set up the same stream path used by capture without starting a screen timer.
+    /// Lifecycle callers join stop before restart; generation ownership also protects
+    /// the output if an older, suspended worker outlives a replacement.
+    func startFrameProcessing(
+        enrich: @escaping @Sendable (CapturedFrame) async -> CapturedFrame
+    ) -> CaptureFrameStreamSession {
+        frameProcessingSession?.task.cancel()
+        frameProcessingSession?.input.finish()
+        dedupedFrameContinuation?.finish()
+        lastKeptFrame = nil
+        let id = UUID()
+        let (rawStream, rawContinuation) = AsyncStream<CapturedFrame>.makeStream()
+        let (output, outputContinuation) = AsyncStream<CapturedFrame>.makeStream()
+        rawFrameContinuation = rawContinuation
+        dedupedFrameContinuation = outputContinuation
+        _frameStream = output
+        let task = Task {
+            await processFrameStream(rawStream: rawStream, output: outputContinuation, enrich: enrich)
+        }
+        let session = CaptureFrameStreamSession(id: id, input: rawContinuation, output: output, task: task)
+        frameProcessingSession = session
+        Log.debug("[Capture-Stream] Started generation \(id)", category: .capture)
+        return session
+    }
+
+    func stopFrameProcessing() async {
+        // Detach only this generation before awaiting. A stale stop cannot clear
+        // a replacement's state after its old worker eventually resumes.
+        let session = frameProcessingSession
+        frameProcessingSession = nil
+        rawFrameContinuation?.finish()
+        rawFrameContinuation = nil
+        dedupedFrameContinuation = nil
+        _frameStream = nil
+        session?.task.cancel()
+        await session?.task.value
+        if let session {
+            Log.debug("[Capture-Stream] Joined generation \(session.id)", category: .capture)
+        }
+    }
+
     /// Process the raw frame stream with deduplication and metadata enrichment
-    private func processFrameStream(rawStream: AsyncStream<CapturedFrame>) async {
+    private func processFrameStream(
+        rawStream: AsyncStream<CapturedFrame>,
+        output: AsyncStream<CapturedFrame>.Continuation,
+        enrich: @Sendable (CapturedFrame) async -> CapturedFrame
+    ) async {
+        // Never finish the manager's mutable current-generation continuation.
+        defer { output.finish() }
         var totalBytes: Int64 = 0
         var totalFrames = 0
 
         for await frame in rawStream {
+            guard !Task.isCancelled else { break }
             totalFrames += 1
             totalBytes += Int64(frame.imageData.count)
 
@@ -386,8 +494,9 @@ public actor CaptureManager: CaptureProtocol {
                 if shouldKeep {
                     // Keep raw frame for future similarity checks. Metadata is not needed for dedup.
                     lastKeptFrame = frame
-                    let enrichedFrame = await enrichFrameMetadata(frame)
-                    dedupedFrameContinuation?.yield(enrichedFrame)
+                    let enrichedFrame = await enrich(frame)
+                    guard !Task.isCancelled else { break }
+                    output.yield(enrichedFrame)
 
                     // Update stats
                     stats = CaptureStatistics(
@@ -413,8 +522,9 @@ public actor CaptureManager: CaptureProtocol {
                 }
             } else {
                 // No deduplication - pass through all frames
-                let enrichedFrame = await enrichFrameMetadata(frame)
-                dedupedFrameContinuation?.yield(enrichedFrame)
+                let enrichedFrame = await enrich(frame)
+                guard !Task.isCancelled else { break }
+                output.yield(enrichedFrame)
 
                 stats = CaptureStatistics(
                     totalFramesCaptured: totalFrames,
@@ -426,8 +536,6 @@ public actor CaptureManager: CaptureProtocol {
             }
         }
 
-        // Stream ended
-        dedupedFrameContinuation?.finish()
     }
 
     /// Enrich frame with app metadata

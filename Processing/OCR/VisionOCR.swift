@@ -286,43 +286,37 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
             )
         }
 
-        // Find which cached regions are affected by the changed tiles
-        // Any region that intersects a changed tile needs to be re-OCR'd
-        // We don't need to expand to adjacent tiles - if text moved there, those tiles would also be changed
-        let (_, unaffectedRegions) = await cache.findAffectedRegions(changedTiles: changeResult.changedTiles)
-
-        // Calculate the bounding box covering changed tiles only
-        let reOCRBounds = calculateBoundingBox(for: changeResult.changedTiles)
-
-        // Perform OCR only on the affected region using regionOfInterest
-        let ocrStartTime = Date()
-        let newRegions = try await recognizeTextInRegion(
-            imageData: frame.imageData,
+        // A changed tile can intersect only part of a line. Expand each crop to
+        // complete cached text bounds, including any text touched by that expansion.
+        let cachedRegions = await cache.getCachedRegions()
+        let reOCRBounds = Self.incrementalCropBounds(
+            changedTiles: changeResult.changedTiles,
+            cachedRegions: cachedRegions,
             width: frame.width,
             height: frame.height,
-            bytesPerRow: frame.bytesPerRow,
-            region: reOCRBounds,
             config: config
         )
+        let (_, unaffectedRegions) = await cache.findAffectedRegions(intersecting: reOCRBounds)
+
+        let ocrStartTime = Date()
+        var newRegions: [TextRegion] = []
+        for bounds in reOCRBounds {
+            try Task.checkCancellation()
+            newRegions += try await recognizeTextInRegion(
+                imageData: frame.imageData,
+                width: frame.width,
+                height: frame.height,
+                bytesPerRow: frame.bytesPerRow,
+                region: bounds,
+                config: config
+            )
+        }
         let ocrTime = Date().timeIntervalSince(ocrStartTime) * 1000
 
-        // Merge unaffected cached regions with new OCR results
-        // Key insight: if a new region overlaps with an unaffected cached region,
-        // the cached region likely has the full paragraph text while the new one
-        // only has a partial view. Keep the cached version in that case.
+        // Every cached region intersecting a final crop was invalidated, so fresh
+        // text cannot be suppressed by a stale overlapping cached observation.
         let mergeStartTime = Date()
-
-        // Filter out new regions that overlap significantly with unaffected cached regions
-        let filteredNewRegions = newRegions.filter { newRegion in
-            // Check if this new region overlaps with any unaffected cached region
-            let overlapsWithCached = unaffectedRegions.contains { cachedRegion in
-                boundsOverlapSignificantly(newRegion.bounds, cachedRegion.bounds)
-            }
-            // Keep the new region only if it doesn't overlap with cached
-            return !overlapsWithCached
-        }
-
-        var mergedRegions = unaffectedRegions + filteredNewRegions
+        var mergedRegions = unaffectedRegions + newRegions
 
         // Sort by reading order: top-to-bottom, then left-to-right
         mergedRegions.sort { a, b in
@@ -336,12 +330,15 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         // Update cache with merged results
         let allTiles = changeDetector.createTileGrid(frameWidth: frame.width, frameHeight: frame.height)
         await cache.setFullFrameResults(regions: mergedRegions, tileGrid: allTiles)
+        let rereadTileCount = allTiles.filter { tile in
+            reOCRBounds.contains { $0.intersects(tile.pixelBounds) }
+        }.count
 
         return RegionOCRResult(
             regions: mergedRegions,
             stats: RegionOCRStats(
-                tilesOCRed: changeResult.changedTiles.count,
-                tilesCached: changeResult.unchangedTiles.count,
+                tilesOCRed: rereadTileCount,
+                tilesCached: allTiles.count - rereadTileCount,
                 totalTiles: changeResult.totalTiles,
                 changeDetectionTimeMs: changeResult.detectionTimeMs,
                 ocrTimeMs: ocrTime,
@@ -350,43 +347,84 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         )
     }
 
-    /// Check if two rectangles overlap by more than 30%
-    /// Used to detect when a new partial region overlaps with a cached full region
-    private func boundsOverlapSignificantly(_ a: CGRect, _ b: CGRect) -> Bool {
-        let intersection = a.intersection(b)
-        if intersection.isNull || intersection.isEmpty {
-            return false
+    /// Plan disjoint native-resolution crops with bounded request and pixel costs.
+    /// The full-frame discovery pass keeps its existing adaptive pixel budget.
+    static func incrementalCropBounds(
+        changedTiles: [TileInfo],
+        cachedRegions: [TextRegion],
+        width: Int,
+        height: Int,
+        config: ProcessingConfig
+    ) -> [CGRect] {
+        guard width > 0, height > 0, !changedTiles.isEmpty else { return [] }
+        let frameBounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let pixelBudget = (config.ocrAccuracyLevel == .fast ? targetMegapixelsFast : targetMegapixelsAccurate) * 1_000_000
+        let changedArea = changedTiles.reduce(CGFloat.zero) { $0 + $1.pixelBounds.width * $1.pixelBounds.height }
+        guard changedArea <= pixelBudget else { return [frameBounds] }
+
+        // First group adjacent changed tiles. This avoids bridging distant edits
+        // while keeping the grouping linear in the number of changed tiles.
+        var remaining: [String: TileInfo] = [:]
+        for tile in changedTiles { remaining[tile.cacheKey] = tile }
+        var crops: [CGRect] = []
+        let padding: CGFloat = 8
+        while let seed = remaining.values.first {
+            remaining.removeValue(forKey: seed.cacheKey)
+            var queue = [seed]
+            var next = 0
+            var bounds = seed.pixelBounds
+            while next < queue.count {
+                let tile = queue[next]
+                next += 1
+                for row in (tile.row - 1)...(tile.row + 1) {
+                    for col in (tile.col - 1)...(tile.col + 1) {
+                        if let neighbor = remaining.removeValue(forKey: "\(col)_\(row)") {
+                            queue.append(neighbor)
+                            bounds = bounds.union(neighbor.pixelBounds)
+                        }
+                    }
+                }
+            }
+            crops.append(bounds.insetBy(dx: -padding, dy: -padding).integral.intersection(frameBounds))
+            // Too many requests can cost more than one ordinary discovery pass.
+            if crops.count > 4 { return [frameBounds] }
         }
 
-        let intersectionArea = intersection.width * intersection.height
-        let smallerArea = min(a.width * a.height, b.width * b.height)
-
-        guard smallerArea > 0 else { return false }
-
-        // 30% overlap threshold - if significant portion overlaps, they're likely the same text
-        return intersectionArea / smallerArea > 0.3
-    }
-
-    /// Calculate the bounding box that covers all given tiles
-    private func calculateBoundingBox(for tiles: [TileInfo]) -> CGRect {
-        guard !tiles.isEmpty else { return .zero }
-
-        var minX = CGFloat.infinity
-        var minY = CGFloat.infinity
-        var maxX = CGFloat.zero
-        var maxY = CGFloat.zero
-
-        for tile in tiles {
-            minX = min(minX, tile.pixelBounds.minX)
-            minY = min(minY, tile.pixelBounds.minY)
-            maxX = max(maxX, tile.pixelBounds.maxX)
-            maxY = max(maxY, tile.pixelBounds.maxY)
+        // Reach a fixed point: expansion can touch another cached line or crop.
+        // Include that complete line as well, and coalesce overlapping requests.
+        var expanded = true
+        while expanded {
+            expanded = false
+            for index in crops.indices {
+                for region in cachedRegions where crops[index].intersects(region.bounds) {
+                    let completeBounds = region.bounds.insetBy(dx: -padding, dy: -padding).integral.intersection(frameBounds)
+                    let bounds = crops[index].union(completeBounds)
+                    if bounds != crops[index] {
+                        crops[index] = bounds
+                        expanded = true
+                    }
+                }
+            }
+            var index = 0
+            while index < crops.count {
+                var other = index + 1
+                while other < crops.count {
+                    if crops[index].intersects(crops[other]) {
+                        crops[index] = crops[index].union(crops.remove(at: other))
+                        expanded = true
+                    } else {
+                        other += 1
+                    }
+                }
+                index += 1
+            }
+            let cropArea = crops.reduce(CGFloat.zero) { $0 + $1.width * $1.height }
+            if cropArea > pixelBudget { return [frameBounds] }
         }
-
-        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        return crops.sorted { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY }
     }
 
-    /// Perform OCR on a specific region of the frame using regionOfInterest
+    /// Crop the original pixels before resizing; return bounds in full-frame coordinates.
     /// Returns TextRegions with bounds in full frame coordinates
     private func recognizeTextInRegion(
         imageData: Data,
@@ -413,36 +451,28 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
                 throw ProcessingError.imageConversionFailed
             }
 
-            let ocrImage: CGImage
-            let ocrScaleFactor = Self.calculateOCRScaleFactor(
-                width: width,
-                height: height,
-                config: config
-            )
-            if ocrScaleFactor < Self.maxOCRScaleFactor {
-                ocrImage = downscaleImage(cgImage, scale: ocrScaleFactor) ?? cgImage
-            } else {
-                ocrImage = cgImage
+            let frameBounds = CGRect(x: 0, y: 0, width: width, height: height)
+            let cropBounds = region.integral.intersection(frameBounds)
+            guard !cropBounds.isEmpty, !cropBounds.isNull else { return [] }
+            guard let cropImage = cgImage.cropping(to: cropBounds) else {
+                throw ProcessingError.imageConversionFailed
             }
 
-            // Convert pixel region to normalized coordinates for Vision.
-            let normalizedX = region.minX / CGFloat(width)
-            let normalizedWidth = region.width / CGFloat(width)
-            let normalizedHeight = region.height / CGFloat(height)
-            let normalizedY = 1.0 - (region.maxY / CGFloat(height))
-            let normalizedRegion = CGRect(
-                x: normalizedX,
-                y: normalizedY,
-                width: normalizedWidth,
-                height: normalizedHeight
+            let ocrScaleFactor = Self.calculateOCRScaleFactor(
+                width: cropImage.width,
+                height: cropImage.height,
+                config: config
             )
+            let ocrImage = ocrScaleFactor < Self.maxOCRScaleFactor
+                ? (downscaleImage(cropImage, scale: ocrScaleFactor) ?? cropImage)
+                : cropImage
 
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = Self.recognitionLevel(for: config)
             request.recognitionLanguages = recognitionLanguages
-            request.usesLanguageCorrection = config.ocrAccuracyLevel == .accurate
+            // Match the full-frame path: preserve identifiers and source spelling.
+            request.usesLanguageCorrection = false
             request.preferBackgroundProcessing = config.preferBackgroundProcessing
-            request.regionOfInterest = normalizedRegion
 
             let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
             do {
@@ -461,18 +491,14 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
                 let text = topCandidate.string
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
-                // Vision returns ROI-relative coordinates; remap them to full-frame pixels.
-                let roiBox = observation.boundingBox
-                let fullImageX = normalizedRegion.origin.x + (roiBox.origin.x * normalizedRegion.width)
-                let fullImageY = normalizedRegion.origin.y + (roiBox.origin.y * normalizedRegion.height)
-                let fullImageWidth = roiBox.width * normalizedRegion.width
-                let fullImageHeight = roiBox.height * normalizedRegion.height
-                let flippedY = 1.0 - fullImageY - fullImageHeight
+                // Vision sees only the cropped image, so its normalized bounds
+                // map once into the integral crop's original top-left pixel bounds.
+                let box = observation.boundingBox
                 let pixelBounds = CGRect(
-                    x: fullImageX * CGFloat(width),
-                    y: flippedY * CGFloat(height),
-                    width: fullImageWidth * CGFloat(width),
-                    height: fullImageHeight * CGFloat(height)
+                    x: cropBounds.minX + box.minX * cropBounds.width,
+                    y: cropBounds.minY + (1.0 - box.maxY) * cropBounds.height,
+                    width: box.width * cropBounds.width,
+                    height: box.height * cropBounds.height
                 )
 
                 return TextRegion(

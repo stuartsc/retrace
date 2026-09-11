@@ -1,18 +1,23 @@
-import Foundation
 import AVFoundation
-import Accelerate
+import CoreMedia
+import Foundation
 import Shared
 
-/// Converts audio to standard format for AI transcription
-/// Target: 16kHz, Mono, PCM Int16 (required by OpenAI Whisper and CoreML WhisperKit)
-public struct AudioFormatConverter: AudioFormatConverterProtocol {
+/// Stateful conversion to 16 kHz mono Int16 PCM, with native anti-alias filtering.
+/// Each capture source owns one instance. Its lock protects AVAudioConverter across
+/// serialized capture callbacks and background stop/reset calls; never call it from UI rendering.
+public final class AudioFormatConverter: AudioFormatConverterProtocol, @unchecked Sendable {
+    public let targetSampleRate = 16_000
+    public let targetChannels = 1
 
-    public let targetSampleRate: Int = 16000
-    public let targetChannels: Int = 1
+    private let lock = NSLock()
+    private var converter: AVAudioConverter?
+    private var inputFormat: AVAudioFormat?
 
     public init() {}
 
-    /// Convert audio to 16kHz mono PCM Int16
+    /// Compatibility entry point for interleaved raw PCM. Production callbacks use
+    /// convert(sampleBuffer:) so the real channel layout and bit depth are retained.
     public func convertToStandardFormat(
         inputData: UnsafeRawPointer,
         inputLength: Int,
@@ -20,169 +25,193 @@ public struct AudioFormatConverter: AudioFormatConverterProtocol {
         inputChannels: Int,
         inputFormat: AudioFormatType
     ) throws -> Data {
-
-        // Step 1: Convert to Float32 if not already
-        let float32Samples: [Float]
-        let sampleCount = inputLength / inputChannels / Self.bytesPerSample(format: inputFormat)
-
+        let commonFormat: AVAudioCommonFormat
+        let bytesPerSample: Int
         switch inputFormat {
-        case .float32:
-            float32Samples = Array(UnsafeBufferPointer(
-                start: inputData.assumingMemoryBound(to: Float.self),
-                count: sampleCount * inputChannels
-            ))
-
-        case .int16:
-            let int16Samples = Array(UnsafeBufferPointer(
-                start: inputData.assumingMemoryBound(to: Int16.self),
-                count: sampleCount * inputChannels
-            ))
-            // Use 32767 for symmetric conversion with Float→Int16
-            float32Samples = int16Samples.map { Float($0) / 32767.0 }
-
-        case .int32:
-            let int32Samples = Array(UnsafeBufferPointer(
-                start: inputData.assumingMemoryBound(to: Int32.self),
-                count: sampleCount * inputChannels
-            ))
-            float32Samples = int32Samples.map { Float($0) / 2147483648.0 }
+        case .float32: commonFormat = .pcmFormatFloat32; bytesPerSample = 4
+        case .int16: commonFormat = .pcmFormatInt16; bytesPerSample = 2
+        case .int32: commonFormat = .pcmFormatInt32; bytesPerSample = 4
         }
-
-        // Step 2: Convert to mono if needed
-        let monoSamples: [Float]
-        if inputChannels == 1 {
-            monoSamples = float32Samples
-        } else {
-            monoSamples = try convertToMono(samples: float32Samples, channels: inputChannels)
-        }
-
-        // Step 3: Resample to 16kHz if needed
-        let resampledSamples: [Float]
-        if abs(inputSampleRate - 16000.0) < 0.1 {
-            resampledSamples = monoSamples
-        } else {
-            resampledSamples = try resample(
-                samples: monoSamples,
-                fromRate: inputSampleRate,
-                toRate: 16000.0
-            )
-        }
-
-        // Step 4: Convert to Int16 PCM
-        // Use 32767 for symmetric conversion (standard audio practice)
-        let int16Samples = resampledSamples.map { sample -> Int16 in
-            let clampedSample = max(-1.0, min(1.0, sample))
-            return Int16(clampedSample * 32767.0)
-        }
-
-        // Step 5: Convert to Data
-        return Data(bytes: int16Samples, count: int16Samples.count * 2)
-    }
-
-    // MARK: - Private Helpers
-
-    private static func bytesPerSample(format: AudioFormatType) -> Int {
-        switch format {
-        case .float32: return 4
-        case .int16: return 2
-        case .int32: return 4
-        }
-    }
-
-    /// Convert multi-channel audio to mono by averaging channels
-    private func convertToMono(samples: [Float], channels: Int) throws -> [Float] {
-        guard channels > 1 else { return samples }
-
-        let frameCount = samples.count / channels
-        var monoSamples = [Float](repeating: 0.0, count: frameCount)
-
-        for frame in 0..<frameCount {
-            var sum: Float = 0.0
-            for channel in 0..<channels {
-                sum += samples[frame * channels + channel]
-            }
-            monoSamples[frame] = sum / Float(channels)
-        }
-
-        return monoSamples
-    }
-
-    /// Resample audio using linear interpolation
-    /// For production, consider using AVAudioConverter or vDSP for higher quality
-    private func resample(samples: [Float], fromRate: Double, toRate: Double) throws -> [Float] {
-        let ratio = fromRate / toRate
-        let outputLength = Int(Double(samples.count) / ratio)
-        var resampled = [Float](repeating: 0.0, count: outputLength)
-
-        for i in 0..<outputLength {
-            let sourceIndex = Double(i) * ratio
-
-            let index0 = Int(floor(sourceIndex))
-            let index1 = min(index0 + 1, samples.count - 1)
-            let fraction = Float(sourceIndex - Double(index0))
-
-            // Linear interpolation
-            resampled[i] = samples[index0] * (1.0 - fraction) + samples[index1] * fraction
-        }
-
-        return resampled
-    }
-}
-
-// MARK: - AVAudioConverter Extension
-
-extension AudioFormatConverter {
-
-    /// High-quality resampling using AVAudioConverter
-    /// This is preferred over linear interpolation for production use
-    public func resampleWithAVAudioConverter(
-        buffer: AVAudioPCMBuffer,
-        targetSampleRate: Double
-    ) throws -> AVAudioPCMBuffer {
-
-        let inputFormat = buffer.format
-        guard let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: targetSampleRate,
-            channels: 1,
-            interleaved: true
-        ) else {
+        guard inputChannels > 0, inputChannels <= Int(UInt32.max),
+              inputChannels <= Int.max / bytesPerSample,
+              inputSampleRate.isFinite, inputSampleRate > 0 else {
             throw AudioCaptureError.formatConversionFailed
         }
-
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            throw AudioCaptureError.formatConversionFailed
-        }
-
-        let inputFrameCount = buffer.frameLength
-        let ratio = targetSampleRate / inputFormat.sampleRate
-        let outputFrameCount = AVAudioFrameCount(Double(inputFrameCount) * ratio)
-
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: outputFrameCount
-        ) else {
+        let bytesPerFrame = inputChannels * bytesPerSample
+        guard inputLength > 0, inputLength.isMultiple(of: bytesPerFrame),
+              inputLength / bytesPerFrame <= Int(UInt32.max),
+              let format = AVAudioFormat(
+                commonFormat: commonFormat, sampleRate: inputSampleRate,
+                channels: AVAudioChannelCount(inputChannels), interleaved: true
+              ) else { throw AudioCaptureError.formatConversionFailed }
+        let frames = AVAudioFrameCount(inputLength / bytesPerFrame)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
             throw AudioCaptureError.bufferAllocationFailed
         }
+        buffer.frameLength = frames
+        guard let destination = buffer.mutableAudioBufferList.pointee.mBuffers.mData else {
+            throw AudioCaptureError.bufferAllocationFailed
+        }
+        memcpy(destination, inputData, inputLength)
+        return try convert(buffer: buffer)
+    }
 
-        var inputConsumed = false
+    /// Copies the actual PCM layout, including every noninterleaved channel plane.
+    /// CoreMedia also handles segmented CMBlockBuffers; no borrowed pointers escape.
+    public func convert(sampleBuffer: CMSampleBuffer) throws -> Data {
+        let count = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard CMSampleBufferDataIsReady(sampleBuffer), count > 0, count <= Int(Int32.max),
+              let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+              CMFormatDescriptionGetMediaType(description) == kCMMediaType_Audio else {
+            throw AudioCaptureError.formatConversionFailed
+        }
+        let format = AVAudioFormat(cmAudioFormatDescription: description)
+        guard format.commonFormat != .otherFormat,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else {
+            throw AudioCaptureError.formatConversionFailed
+        }
+        buffer.frameLength = AVAudioFrameCount(count)
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer, at: 0, frameCount: Int32(count), into: buffer.mutableAudioBufferList
+        )
+        guard status == noErr else { throw AudioCaptureError.formatConversionFailed }
+        return try convert(buffer: buffer)
+    }
 
-        try converter.convert(to: outputBuffer, error: nil) { inNumPackets, outStatus in
-            if inputConsumed {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-
-            inputConsumed = true
-            outStatus.pointee = .haveData
-            return buffer
+    /// Successive buffers belong to one continuous source. Returning no bytes while
+    /// the filter primes is valid; callers publish only the frames actually emitted.
+    public func convert(buffer: AVAudioPCMBuffer) throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        guard buffer.frameLength > 0, buffer.format.sampleRate.isFinite,
+              buffer.format.sampleRate > 0, buffer.format.commonFormat != .otherFormat else {
+            throw AudioCaptureError.formatConversionFailed
         }
 
-        return outputBuffer
+        var output = Data()
+        if inputFormat != buffer.format {
+            if let oldFormat = inputFormat {
+                output.append(try finishLocked())
+                Log.info("[AudioFormatConverter] Audio format changed: \(oldFormat) -> \(buffer.format)", category: .capture)
+            }
+            let target = try outputFormat(sampleRate: Double(targetSampleRate))
+            guard let fresh = AVAudioConverter(from: buffer.format, to: target) else {
+                throw AudioCaptureError.formatConversionFailed
+            }
+            fresh.downmix = buffer.format.channelCount > 1
+            fresh.sampleRateConverterQuality = AVAudioQuality.high.rawValue
+            converter = fresh
+            inputFormat = buffer.format
+        }
+        guard let converter else { throw AudioCaptureError.formatConversionFailed }
+        let capacity = try outputCapacity(for: buffer, sampleRate: Double(targetSampleRate))
+        guard let converted = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {
+            throw AudioCaptureError.bufferAllocationFailed
+        }
+        var consumed = false
+        var error: NSError?
+        let status = converter.convert(to: converted, error: &error) { _, inputStatus in
+            guard !consumed else {
+                // An end-of-stream here would reset filter/phase state every callback.
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, error == nil else {
+            resetLocked()
+            throw AudioCaptureError.formatConversionFailed
+        }
+        output.append(try data(from: converted))
+        return output
+    }
+
+    /// Drain filter samples on source shutdown, then permit a fresh stream.
+    public func finish() throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return try finishLocked()
+    }
+
+    /// Discard pending samples at a privacy boundary or when capture restarts.
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        resetLocked()
+    }
+
+    private func finishLocked() throws -> Data {
+        guard let converter else { return Data() }
+        defer { resetLocked() }
+        var result = Data()
+        while true {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: 4_096) else {
+                throw AudioCaptureError.bufferAllocationFailed
+            }
+            var error: NSError?
+            let status = converter.convert(to: buffer, error: &error) { _, inputStatus in
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            guard status != .error, error == nil else { throw AudioCaptureError.formatConversionFailed }
+            result.append(try data(from: buffer))
+            if status == .endOfStream || buffer.frameLength == 0 { break }
+        }
+        return result
+    }
+
+    private func resetLocked() {
+        converter = nil
+        inputFormat = nil
+    }
+
+    private func data(from buffer: AVAudioPCMBuffer) throws -> Data {
+        guard buffer.frameLength > 0 else { return Data() }
+        guard let samples = buffer.int16ChannelData?[0] else { throw AudioCaptureError.formatConversionFailed }
+        return Data(bytes: samples, count: Int(buffer.frameLength) * MemoryLayout<Int16>.size)
+    }
+
+    private func outputFormat(sampleRate: Double) throws -> AVAudioFormat {
+        guard sampleRate.isFinite, sampleRate > 0,
+              let format = AVAudioFormat(
+                commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true
+              ) else { throw AudioCaptureError.formatConversionFailed }
+        return format
+    }
+
+    private func outputCapacity(for buffer: AVAudioPCMBuffer, sampleRate: Double) throws -> AVAudioFrameCount {
+        let frames = ceil(Double(buffer.frameLength) * sampleRate / buffer.format.sampleRate) + 4_096
+        guard frames.isFinite, frames > 0, frames <= Double(UInt32.max) else {
+            throw AudioCaptureError.bufferAllocationFailed
+        }
+        return AVAudioFrameCount(frames)
+    }
+
+    /// Finite-buffer compatibility helper; live capture uses the persistent converter above.
+    public func resampleWithAVAudioConverter(
+        buffer: AVAudioPCMBuffer, targetSampleRate: Double
+    ) throws -> AVAudioPCMBuffer {
+        let format = try outputFormat(sampleRate: targetSampleRate)
+        guard let converter = AVAudioConverter(from: buffer.format, to: format),
+              let output = AVAudioPCMBuffer(
+                pcmFormat: format, frameCapacity: try outputCapacity(for: buffer, sampleRate: targetSampleRate)
+              ) else { throw AudioCaptureError.formatConversionFailed }
+        converter.downmix = buffer.format.channelCount > 1
+        converter.sampleRateConverterQuality = AVAudioQuality.high.rawValue
+        var consumed = false
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, inputStatus in
+            guard !consumed else { inputStatus.pointee = .endOfStream; return nil }
+            consumed = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, error == nil else { throw AudioCaptureError.formatConversionFailed }
+        return output
     }
 }
-
-// MARK: - Audio Capture Errors
 
 public enum AudioCaptureError: Error, Sendable {
     case permissionDenied

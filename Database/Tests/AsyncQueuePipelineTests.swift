@@ -228,6 +228,7 @@ final class AsyncQueuePipelineTests: XCTestCase {
         // Finalize video segment
         let videoSegment = try await segmentWriter.finalize()
         let videoID = try await database.insertVideoSegment(videoSegment)
+        try await database.markVideoFinalized(id: videoID, frameCount: videoSegment.frameCount, fileSize: videoSegment.fileSizeBytes)
         videoSegmentsCreated += 1
 
         print("   ✓ Video segment \(batchIndex + 1) saved: \(videoSegment.relativePath) (\(videoSegment.fileSizeBytes / 1024) KB)")
@@ -243,6 +244,9 @@ final class AsyncQueuePipelineTests: XCTestCase {
 
         // Enqueue frames for async processing
         for frameID in enqueuedFrameIDs {
+            // Match the production finalization handoff: inserted frames start at
+            // status 4 until their backing pixels are confirmed readable.
+            try await database.markFrameReadable(frameID: frameID)
             try await processingQueue.enqueue(frameID: frameID)
         }
 

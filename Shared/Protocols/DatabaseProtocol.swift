@@ -73,6 +73,15 @@ public protocol DatabaseProtocol: Actor {
     /// Insert a new video segment (150-frame video chunk) and return the auto-generated ID
     func insertVideoSegment(_ segment: VideoSegment) async throws -> Int64
 
+    /// Atomically publish a bounded recovered video chunk using durable WAL frame identities.
+    /// Original indices refer to the source WAL; returned IDs follow the output frame order.
+    func commitRecoveredFrames(
+        video: VideoSegment,
+        originalVideoPathID: VideoSegmentID,
+        originalFrameIndices: [Int],
+        frames: [FrameReference]
+    ) async throws -> [Int64]
+
     /// Get video segment by ID
     func getVideoSegment(id: VideoSegmentID) async throws -> VideoSegment?
 
@@ -165,11 +174,12 @@ public protocol DatabaseProtocol: Actor {
 
     // MARK: - OCR Node Operations (Rewind-compatible)
 
-    /// Insert OCR nodes for a frame with text already in searchRanking_content
-    /// Nodes must have textOffset/textLength that reference the FTS content
+    /// Insert OCR nodes for a frame with text already in searchRanking_content.
+    /// Store raw OCR node text directly when available so Accessibility-enriched
+    /// indexed text cannot corrupt per-region snippets.
     func insertNodes(
         frameID: FrameID,
-        nodes: [(textOffset: Int, textLength: Int, bounds: CGRect, windowIndex: Int?)],
+        nodes: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)],
         frameWidth: Int,
         frameHeight: Int
     ) async throws
@@ -184,6 +194,14 @@ public protocol DatabaseProtocol: Actor {
 
     /// Delete all OCR nodes for a frame
     func deleteNodes(frameID: FrameID) async throws
+
+    /// Replace all OCR/search evidence and complete the frame in one atomic write.
+    func commitFrameOCR(
+        frameID: FrameID,
+        text: ExtractedText,
+        frameWidth: Int,
+        frameHeight: Int
+    ) async throws -> Int64
 
     // MARK: - FTS Content Operations (Rewind-compatible)
 

@@ -443,12 +443,11 @@ struct MilestoneCelebrationView: View {
             return image
         }
 
-#if SWIFT_PACKAGE
-        if let image = Bundle.module.image(forResource: imageName) {
-            Log.info("\(logContext) Loaded CreatorProfile via Bundle.module.image(forResource:)", category: .ui)
+        let resourceBundle = AppResourceBundle.bundle
+        if let image = resourceBundle.image(forResource: imageName) {
+            Log.info("\(logContext) Loaded CreatorProfile via app resource bundle", category: .ui)
             return image
         }
-#endif
 
         let fileManager = FileManager.default
         let resourcePath = Bundle.main.resourcePath ?? ""
@@ -465,8 +464,7 @@ struct MilestoneCelebrationView: View {
             }
         }
 
-#if SWIFT_PACKAGE
-        let moduleResourcePath = Bundle.module.resourcePath ?? ""
+        let moduleResourcePath = resourceBundle.resourcePath ?? ""
         let moduleCandidates: [(label: String, path: String)] = [
             ("module/CreatorProfile.png", "\(moduleResourcePath)/CreatorProfile.png"),
             ("module/haseab.png", "\(moduleResourcePath)/haseab.png"),
@@ -474,12 +472,10 @@ struct MilestoneCelebrationView: View {
         ]
         for candidate in moduleCandidates where fileManager.fileExists(atPath: candidate.path) {
             if let image = NSImage(contentsOfFile: candidate.path) {
-                Log.warning("\(logContext) Loaded creator profile via SwiftPM module file fallback \(candidate.label)", category: .ui)
+                Log.warning("\(logContext) Loaded creator profile via resource bundle file fallback \(candidate.label)", category: .ui)
                 return image
             }
         }
-#endif
-
         let debugWorkingTreePath = "\(fileManager.currentDirectoryPath)/UI/Assets.xcassets/CreatorProfile.imageset/haseab.png"
         if fileManager.fileExists(atPath: debugWorkingTreePath),
            let image = NSImage(contentsOfFile: debugWorkingTreePath) {

@@ -2,211 +2,52 @@ import Foundation
 import SQLCipher
 import Shared
 
-/// CRUD operations for documents table
+/// Compatibility CRUD for IndexedDocument, backed by the canonical FTS5 tables.
+/// Frame time and app/window metadata remain authoritative on frame/segment.
+/// Native OCR uses commitFrameOCR; this API does not change processing status.
 enum DocumentQueries {
-
-    // MARK: - Insert
-
     static func insert(db: OpaquePointer, document: IndexedDocument) throws -> Int64 {
-        let sql = """
-            INSERT INTO documents (
-                frame_id, content, app_name, window_name, browser_url, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?);
-            """
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
+        try PipelineSQL.transaction(db) {
+            guard let frame = try FrameQueries.getByID(db: db, id: document.frameID),
+                  try AppSegmentQueries.getByID(db: db, id: frame.segmentID.value) != nil else {
+                throw PipelineSQL.failure("Cannot index a document without its frame and app segment")
+            }
+            guard try FTSQueries.getDocidForFrame(db: db, frameId: document.frameID.value) == nil else {
+                throw PipelineSQL.failure("Frame already has a document; update it or use atomic OCR replacement")
+            }
+            return try FTSQueries.indexFrame(db: db, mainText: document.content, chromeText: nil,
+                windowTitle: frame.metadata.windowName, segmentId: frame.segmentID.value,
+                frameId: document.frameID.value)
         }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        // Bind parameters
-        sqlite3_bind_text(statement, 1, document.frameID.stringValue, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(statement, 2, document.content, -1, SQLITE_TRANSIENT)
-        bindTextOrNull(statement, 3, document.appName)
-        bindTextOrNull(statement, 4, document.windowName)
-        bindTextOrNull(statement, 5, document.browserURL)
-        sqlite3_bind_int64(statement, 6, Schema.dateToTimestamp(document.timestamp))
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        // Return the rowid of the inserted document
-        return sqlite3_last_insert_rowid(db)
     }
-
-    // MARK: - Update
 
     static func update(db: OpaquePointer, id: Int64, content: String) throws {
-        let sql = "UPDATE documents SET content = ? WHERE id = ?;"
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        sqlite3_bind_text(statement, 1, content, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int64(statement, 2, id)
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
+        try PipelineSQL.transaction(db) {
+            // Legacy updates have no replacement bounding boxes. Old offsets/raw
+            // node text must not remain attached to different indexed content.
+            try PipelineSQL.execute(db, "DELETE FROM node WHERE frameId IN (SELECT frameId FROM doc_segment WHERE docid=?)", [.integer(id)])
+            try PipelineSQL.execute(db, "UPDATE searchRanking SET text=?, otherText=NULL WHERE rowid=?", [.text(content), .integer(id)])
         }
     }
-
-    // MARK: - Delete
 
     static func delete(db: OpaquePointer, id: Int64) throws {
-        let sql = "DELETE FROM documents WHERE id = ?;"
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        sqlite3_bind_int64(statement, 1, id)
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
+        try PipelineSQL.transaction(db) {
+            try PipelineSQL.execute(db, "DELETE FROM node WHERE frameId IN (SELECT frameId FROM doc_segment WHERE docid=?)", [.integer(id)])
+            try PipelineSQL.execute(db, "DELETE FROM doc_segment WHERE docid=?", [.integer(id)])
+            try PipelineSQL.execute(db, "DELETE FROM searchRanking WHERE rowid=?", [.integer(id)])
         }
     }
-
-    // MARK: - Select by Frame ID
 
     static func getByFrameID(db: OpaquePointer, frameID: FrameID) throws -> IndexedDocument? {
-        let sql = """
-            SELECT id, frame_id, content, app_name, window_name, browser_url, timestamp
-            FROM documents
-            WHERE frame_id = ?;
-            """
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        sqlite3_bind_text(statement, 1, frameID.stringValue, -1, SQLITE_TRANSIENT)
-
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
-
-        return try parseDocumentRow(statement: statement!)
+        guard let frame = try FrameQueries.getByID(db: db, id: frameID),
+              let docid = try FTSQueries.getDocidForFrame(db: db, frameId: frameID.value),
+              let content = try FTSQueries.getContent(db: db, docid: docid) else { return nil }
+        return IndexedDocument(id: docid, frameID: frameID, timestamp: frame.timestamp,
+            content: content.mainText, appName: frame.metadata.appName,
+            windowName: frame.metadata.windowName, browserURL: frame.metadata.browserURL)
     }
-
-    // MARK: - Count
 
     static func getCount(db: OpaquePointer) throws -> Int {
-        // Use Rewind-compatible table name
-        let sql = "SELECT COUNT(*) FROM searchRanking_content;"
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return 0
-        }
-
-        return Int(sqlite3_column_int(statement, 0))
-    }
-
-    // MARK: - Helpers
-
-    private static func parseDocumentRow(statement: OpaquePointer) throws -> IndexedDocument {
-        // Column 0: id
-        let id = sqlite3_column_int64(statement, 0)
-
-        // Column 1: frame_id
-        guard let frameIDString = sqlite3_column_text(statement, 1) else {
-            throw DatabaseError.queryFailed(query: "parseDocumentRow", underlying: "Missing frame ID")
-        }
-        guard let frameID = FrameID(string: String(cString: frameIDString)) else {
-            throw DatabaseError.queryFailed(query: "parseDocumentRow", underlying: "Invalid frame ID")
-        }
-
-        // Column 2: content
-        guard let contentText = sqlite3_column_text(statement, 2) else {
-            throw DatabaseError.queryFailed(query: "parseDocumentRow", underlying: "Missing content")
-        }
-        let content = String(cString: contentText)
-
-        // Columns 3-5: nullable metadata
-        let appName = getTextOrNil(statement, 3)
-        let windowName = getTextOrNil(statement, 4)
-        let browserURL = getTextOrNil(statement, 5)
-
-        // Column 6: timestamp
-        let timestampMs = sqlite3_column_int64(statement, 6)
-        let timestamp = Schema.timestampToDate(timestampMs)
-
-        return IndexedDocument(
-            id: id,
-            frameID: frameID,
-            timestamp: timestamp,
-            content: content,
-            appName: appName,
-            windowName: windowName,
-            browserURL: browserURL
-        )
-    }
-
-    private static func bindTextOrNull(_ statement: OpaquePointer?, _ index: Int32, _ value: String?) {
-        if let value = value {
-            sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT)
-        } else {
-            sqlite3_bind_null(statement, index)
-        }
-    }
-
-    private static func getTextOrNil(_ statement: OpaquePointer, _ index: Int32) -> String? {
-        guard let text = sqlite3_column_text(statement, index) else {
-            return nil
-        }
-        return String(cString: text)
+        Int(try PipelineSQL.integers(db, "SELECT COUNT(*) FROM searchRanking").first ?? 0)
     }
 }

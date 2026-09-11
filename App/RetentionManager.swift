@@ -4,9 +4,6 @@ import Database
 import Storage
 import Search
 
-/// SQLITE_TRANSIENT constant - tells SQLite to make its own copy of the string
-private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
 /// Manages data retention policy enforcement
 /// Periodically cleans up old frames, video segments, and related data based on user settings
 /// Owner: APP integration
@@ -19,7 +16,9 @@ public actor RetentionManager {
     private let search: SearchManager
 
     private var cleanupTask: Task<Void, Never>?
+    private var inFlightCleanup: Task<RetentionCleanupResult, Never>?
     private var isRunning = false
+    private var isStopping = false
 
     /// Interval between cleanup checks (default: 1 hour)
     private let cleanupInterval: TimeInterval = 3600
@@ -46,7 +45,7 @@ public actor RetentionManager {
 
     /// Start the retention manager (runs cleanup periodically)
     public func start() async {
-        guard !isRunning else {
+        guard !isRunning, !isStopping else {
             Log.warning("[RetentionManager] Already running", category: .app)
             return
         }
@@ -75,11 +74,20 @@ public actor RetentionManager {
 
     /// Stop the retention manager
     public func stop() async {
-        guard isRunning else { return }
+        if isStopping {
+            if let inFlightCleanup { _ = await inFlightCleanup.value }
+            return
+        }
+        guard isRunning || inFlightCleanup != nil else { return }
+        isStopping = true
+        defer { isStopping = false }
 
         cleanupTask?.cancel()
         cleanupTask = nil
         isRunning = false
+        let pending = inFlightCleanup
+        pending?.cancel()
+        if let pending { _ = await pending.value }
 
         Log.info("[RetentionManager] Stopped", category: .app)
     }
@@ -155,386 +163,121 @@ public actor RetentionManager {
         await runCleanup()
     }
 
-    /// Run the cleanup process
+    /// Coalesce periodic and manually requested cleanup into one background operation.
     @discardableResult
     public func runCleanup() async -> RetentionCleanupResult {
-        guard let cutoffDate = getCutoffDate() else {
-            Log.debug("[RetentionManager] Retention set to Forever - no cleanup needed", category: .app)
-            return RetentionCleanupResult(
-                deletedFrames: 0,
-                deletedVideoSegments: 0,
-                deletedAppSegments: 0,
-                reclaimedBytes: 0,
-                cutoffDate: nil,
-                success: true,
-                error: nil
-            )
+        if let inFlightCleanup { return await inFlightCleanup.value }
+        guard !isStopping else {
+            return RetentionCleanupResult(deletedFrames: 0, deletedVideoSegments: 0, deletedAppSegments: 0,
+                reclaimedBytes: 0, cutoffDate: nil, success: false, error: "Retention cleanup is stopping")
         }
+        let task = Task { await self.performCleanup() }
+        inFlightCleanup = task
+        defer { inFlightCleanup = nil }
+        return await task.value
+    }
 
-        Log.info("[RetentionManager] Starting cleanup for data older than \(cutoffDate)", category: .app)
+    private func performCleanup() async -> RetentionCleanupResult {
+        guard let cutoff = getCutoffDate() else {
+            return RetentionCleanupResult(deletedFrames: 0, deletedVideoSegments: 0, deletedAppSegments: 0,
+                                          reclaimedBytes: 0, cutoffDate: nil, success: true, error: nil)
+        }
         lastCleanupTime = Date()
-
-        // Get exclusions
-        let excludedApps = getExcludedApps()
-        let excludedTagIds = getExcludedTagIds()
-        let excludeHidden = shouldExcludeHidden()
-
-        if !excludedApps.isEmpty {
-            Log.info("[RetentionManager] Excluding \(excludedApps.count) apps from cleanup", category: .app)
-        }
-        if !excludedTagIds.isEmpty {
-            Log.info("[RetentionManager] Excluding \(excludedTagIds.count) tags from cleanup", category: .app)
-        }
-        if excludeHidden {
-            Log.info("[RetentionManager] Excluding hidden items from cleanup", category: .app)
-        }
-
+        var deletedFrames = 0
+        var deletedSegments = 0
+        var deletedVideos = 0
+        var reclaimedBytes: Int64 = 0
+        var failures: [String] = []
+        var attemptedVideoIDs: Set<VideoSegmentID> = []
+        let root = await storage.getStorageDirectory()
         do {
-            // Step 1: Get video segments that will be affected (for cleanup)
-            let videoSegmentsToDelete = try await getVideoSegmentsOlderThan(cutoffDate, excludingApps: excludedApps, excludingTagIds: excludedTagIds, excludeHidden: excludeHidden)
-
-            // Step 2: Delete frames from database (this cascades to FTS entries via triggers)
-            let deletedFrameCount = try await deleteFrames(olderThan: cutoffDate, excludingApps: excludedApps, excludingTagIds: excludedTagIds, excludeHidden: excludeHidden)
-            Log.info("[RetentionManager] Deleted \(deletedFrameCount) frames from database", category: .app)
-
-            // Step 3: Delete old app segments (sessions)
-            let deletedSegmentCount = try await deleteAppSegmentsOlderThan(cutoffDate, excludingApps: excludedApps, excludingTagIds: excludedTagIds, excludeHidden: excludeHidden)
-            Log.info("[RetentionManager] Deleted \(deletedSegmentCount) app segments", category: .app)
-
-            // Step 4: Delete orphaned video segments and their files
-            var reclaimedBytes: Int64 = 0
-            var deletedVideoCount = 0
-
-            for videoSegment in videoSegmentsToDelete {
-                do {
-                    // Get file size before deletion
-                    let segmentPath = try await storage.getSegmentPath(id: videoSegment)
-                    if let attrs = try? FileManager.default.attributesOfItem(atPath: segmentPath.path),
-                       let size = attrs[.size] as? Int64 {
-                        reclaimedBytes += size
+            // Keep each SQLite transaction short and cap work per scheduled run.
+            for _ in 0..<20 {
+                try Task.checkCancellation()
+                let batch = try await database.performRetentionBatch(olderThan: cutoff,
+                    excludingApps: getExcludedApps(), excludingTagIDs: getExcludedTagIds(),
+                    excludeHidden: shouldExcludeHidden())
+                deletedFrames += batch.deletedFrames
+                deletedSegments += batch.deletedAppSegments
+                for candidate in batch.videos where attemptedVideoIDs.insert(candidate.id).inserted {
+                    try Task.checkCancellation()
+                    do {
+                        let targets = try Self.validatedVideoURLs(root: root, relativePath: candidate.relativePath)
+                        let bytes = try await database.completeRetentionVideoDeletion(candidate: candidate) {
+                            // Recheck both filenames under the database guard. At
+                            // most two metadata lookups/unlinks are needed, no scan.
+                            try Self.deleteValidatedVideoFiles(root: root, relativePath: candidate.relativePath,
+                                                              expectedURLs: targets)
+                        }
+                        if let bytes {
+                            deletedVideos += 1
+                            reclaimedBytes += bytes
+                        }
+                    } catch {
+                        failures.append("Video \(candidate.id.value): \(error.localizedDescription)")
+                        Log.warning("[RetentionManager] Keeping video cleanup candidate \(candidate.id.value): \(error)", category: .app)
                     }
-
-                    // Delete from storage (file)
-                    try await storage.deleteSegment(id: videoSegment)
-
-                    // Delete from database
-                    try await database.deleteVideoSegment(id: videoSegment)
-
-                    deletedVideoCount += 1
-                } catch {
-                    Log.warning("[RetentionManager] Failed to delete video segment \(videoSegment.value): \(error)", category: .app)
                 }
+                if batch.deletedFrames < 500 { break }
+                await Task.yield()
             }
-            Log.info("[RetentionManager] Deleted \(deletedVideoCount) video segments, reclaimed \(formatBytes(reclaimedBytes))", category: .app)
-
-            // Step 5: Clean up orphaned nodes (OCR data) for deleted frames
-            let deletedNodesCount = try await cleanupOrphanedNodes()
-            if deletedNodesCount > 0 {
-                Log.info("[RetentionManager] Cleaned up \(deletedNodesCount) orphaned OCR nodes", category: .app)
-            }
-
-            // Step 6: Vacuum database to reclaim space (do this less frequently)
-            if deletedFrameCount > 1000 || deletedVideoCount > 10 {
-                try await database.vacuum()
-                Log.info("[RetentionManager] Database vacuumed", category: .app)
-            }
-
-            Log.info("[RetentionManager] Cleanup complete. Frames: \(deletedFrameCount), Videos: \(deletedVideoCount), Segments: \(deletedSegmentCount), Reclaimed: \(formatBytes(reclaimedBytes))", category: .app)
-
-            return RetentionCleanupResult(
-                deletedFrames: deletedFrameCount,
-                deletedVideoSegments: deletedVideoCount,
-                deletedAppSegments: deletedSegmentCount,
-                reclaimedBytes: reclaimedBytes,
-                cutoffDate: cutoffDate,
-                success: true,
-                error: nil
-            )
-
         } catch {
-            Log.error("[RetentionManager] Cleanup failed: \(error)", category: .app)
-            return RetentionCleanupResult(
-                deletedFrames: 0,
-                deletedVideoSegments: 0,
-                deletedAppSegments: 0,
-                reclaimedBytes: 0,
-                cutoffDate: cutoffDate,
-                success: false,
-                error: error.localizedDescription
-            )
+            failures.append(error.localizedDescription)
+            Log.error("[RetentionManager] Cleanup stopped with committed work preserved: \(error)", category: .app)
         }
+        if deletedVideos > 0 { await storage.invalidateAllCaches() }
+        Log.info("[RetentionManager] Cleanup: \(deletedFrames) frames, \(deletedSegments) sessions, \(deletedVideos) videos, \(reclaimedBytes) file bytes reclaimed", category: .app)
+        return RetentionCleanupResult(deletedFrames: deletedFrames, deletedVideoSegments: deletedVideos,
+            deletedAppSegments: deletedSegments, reclaimedBytes: reclaimedBytes, cutoffDate: cutoff,
+            success: failures.isEmpty, error: failures.isEmpty ? nil : failures.joined(separator: "; "))
     }
 
-    // MARK: - Private Helpers
-
-    /// Get video segments that have no frames newer than the cutoff date, excluding protected segments
-    private func getVideoSegmentsOlderThan(_ cutoffDate: Date, excludingApps: Set<String>, excludingTagIds: Set<Int64>, excludeHidden: Bool) async throws -> [VideoSegmentID] {
-        // Video segments where all frames are older than cutoff
-        // We use the storage cleanup method which checks file modification dates
-        // Note: Storage-level cleanup doesn't know about app/tag exclusions, so we filter after
-        let candidates = try await storage.cleanupOldSegments(olderThan: cutoffDate)
-
-        // If no exclusions, return all candidates
-        if excludingApps.isEmpty && excludingTagIds.isEmpty && !excludeHidden {
-            return candidates
+    nonisolated static func validatedVideoURL(root: URL, relativePath: String) throws -> URL {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !relativePath.hasPrefix("/"), components.first == "chunks", components.count >= 2,
+              !components.contains(".."), !components.contains("."), !components.contains("") else {
+            throw RetentionError.unsafeStoragePath(relativePath)
         }
-
-        // Filter out segments that belong to excluded apps or have excluded tags
-        var filtered: [VideoSegmentID] = []
-        for videoSegmentId in candidates {
-            let isExcluded = try await isVideoSegmentExcluded(videoSegmentId, excludingApps: excludingApps, excludingTagIds: excludingTagIds, excludeHidden: excludeHidden)
-            if !isExcluded {
-                filtered.append(videoSegmentId)
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw RetentionError.storageUnavailable
+        }
+        let proposed = resolvedRoot.appendingPathComponent(relativePath).standardizedFileURL
+        let resolved = proposed.resolvingSymlinksInPath()
+        guard resolved.path.hasPrefix(resolvedRoot.path + "/"), resolved == proposed else {
+            throw RetentionError.unsafeStoragePath(relativePath)
+        }
+        if FileManager.default.fileExists(atPath: resolved.path) {
+            let attributes = try FileManager.default.attributesOfItem(atPath: resolved.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw RetentionError.unsafeStoragePath(relativePath)
             }
         }
-
-        return filtered
+        return resolved
     }
 
-    /// Check if a video segment should be excluded from cleanup
-    private func isVideoSegmentExcluded(_ videoSegmentId: VideoSegmentID, excludingApps: Set<String>, excludingTagIds: Set<Int64>, excludeHidden: Bool) async throws -> Bool {
-        guard let db = await database.getConnection() else {
-            throw RetentionError.databaseNotConnected
-        }
-
-        // Check if any frame in this video segment belongs to an excluded app
-        if !excludingApps.isEmpty {
-            let placeholders = excludingApps.map { _ in "?" }.joined(separator: ", ")
-            let appCheckSql = """
-                SELECT 1 FROM frame f
-                JOIN segment s ON f.segmentId = s.id
-                WHERE f.videoId = ? AND s.bundleID IN (\(placeholders))
-                LIMIT 1;
-            """
-
-            var statement: OpaquePointer?
-            defer { sqlite3_finalize(statement) }
-
-            guard sqlite3_prepare_v2(db, appCheckSql, -1, &statement, nil) == SQLITE_OK else {
-                throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-            }
-
-            sqlite3_bind_int64(statement, 1, videoSegmentId.value)
-            for (index, bundleID) in excludingApps.enumerated() {
-                sqlite3_bind_text(statement, Int32(index + 2), bundleID, -1, SQLITE_TRANSIENT)
-            }
-
-            if sqlite3_step(statement) == SQLITE_ROW {
-                return true // Found a frame from excluded app
-            }
-        }
-
-        // Check if any segment associated with frames in this video segment has excluded tags
-        if !excludingTagIds.isEmpty {
-            let placeholders = excludingTagIds.map { _ in "?" }.joined(separator: ", ")
-            let tagCheckSql = """
-                SELECT 1 FROM frame f
-                JOIN segment_tag st ON f.segmentId = st.segmentId
-                WHERE f.videoId = ? AND st.tagId IN (\(placeholders))
-                LIMIT 1;
-            """
-
-            var statement: OpaquePointer?
-            defer { sqlite3_finalize(statement) }
-
-            guard sqlite3_prepare_v2(db, tagCheckSql, -1, &statement, nil) == SQLITE_OK else {
-                throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-            }
-
-            sqlite3_bind_int64(statement, 1, videoSegmentId.value)
-            for (index, tagId) in excludingTagIds.enumerated() {
-                sqlite3_bind_int64(statement, Int32(index + 2), tagId)
-            }
-
-            if sqlite3_step(statement) == SQLITE_ROW {
-                return true // Found a frame with excluded tag
-            }
-        }
-
-        // Check if any segment associated with frames in this video segment has the "hidden" tag
-        if excludeHidden {
-            let hiddenTagSql = """
-                SELECT 1 FROM frame f
-                JOIN segment_tag st ON f.segmentId = st.segmentId
-                JOIN tag t ON st.tagId = t.id
-                WHERE f.videoId = ? AND LOWER(t.name) = 'hidden'
-                LIMIT 1;
-            """
-
-            var statement: OpaquePointer?
-            defer { sqlite3_finalize(statement) }
-
-            guard sqlite3_prepare_v2(db, hiddenTagSql, -1, &statement, nil) == SQLITE_OK else {
-                throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-            }
-
-            sqlite3_bind_int64(statement, 1, videoSegmentId.value)
-
-            if sqlite3_step(statement) == SQLITE_ROW {
-                return true // Found a segment with hidden tag
-            }
-        }
-
-        return false
+    /// Matches ImageExtractor's bounded primary / appended-.mp4 reader fallback.
+    /// Validate both before deleting either, including when the primary is missing.
+    nonisolated static func validatedVideoURLs(root: URL, relativePath: String) throws -> [URL] {
+        try [relativePath, relativePath + ".mp4"].map { try validatedVideoURL(root: root, relativePath: $0) }
     }
 
-    /// Delete frames older than the cutoff date, excluding frames from protected apps/tags/hidden
-    private func deleteFrames(olderThan cutoffDate: Date, excludingApps: Set<String>, excludingTagIds: Set<Int64>, excludeHidden: Bool) async throws -> Int {
-        guard let db = await database.getConnection() else {
-            throw RetentionError.databaseNotConnected
+    nonisolated static func deleteValidatedVideoFiles(root: URL, relativePath: String, expectedURLs: [URL]) throws -> Int64 {
+        let current = try validatedVideoURLs(root: root, relativePath: relativePath)
+        guard current == expectedURLs else { throw RetentionError.unsafeStoragePath(relativePath) }
+        var removedBytes: Int64 = 0
+        for url in current {
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw RetentionError.unsafeStoragePath(relativePath)
+            }
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            try FileManager.default.removeItem(at: url)
+            removedBytes += size
         }
-
-        let cutoffMs = Int64(cutoffDate.timeIntervalSince1970 * 1000)
-
-        // Build SQL with exclusions
-        var conditions: [String] = ["f.createdAt < ?"]
-
-        // Exclude frames from protected apps
-        if !excludingApps.isEmpty {
-            let placeholders = excludingApps.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("s.bundleID NOT IN (\(placeholders))")
-        }
-
-        // Exclude frames from segments with protected tags
-        if !excludingTagIds.isEmpty {
-            let placeholders = excludingTagIds.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("f.segmentId NOT IN (SELECT segmentId FROM segment_tag WHERE tagId IN (\(placeholders)))")
-        }
-
-        // Exclude segments tagged with the "hidden" tag (tag name = 'hidden')
-        if excludeHidden {
-            conditions.append("f.segmentId NOT IN (SELECT st.segmentId FROM segment_tag st JOIN tag t ON st.tagId = t.id WHERE LOWER(t.name) = 'hidden')")
-        }
-
-        let whereClause = conditions.joined(separator: " AND ")
-        let sql = """
-            DELETE FROM frame WHERE id IN (
-                SELECT f.id FROM frame f
-                JOIN segment s ON f.segmentId = s.id
-                WHERE \(whereClause)
-            );
-        """
-
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-        }
-
-        // Bind all values
-        var bindIndex: Int32 = 1
-        sqlite3_bind_int64(statement, bindIndex, cutoffMs)
-        bindIndex += 1
-
-        for bundleID in excludingApps {
-            sqlite3_bind_text(statement, bindIndex, bundleID, -1, SQLITE_TRANSIENT)
-            bindIndex += 1
-        }
-
-        for tagId in excludingTagIds {
-            sqlite3_bind_int64(statement, bindIndex, tagId)
-            bindIndex += 1
-        }
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-        }
-
-        return Int(sqlite3_changes(db))
-    }
-
-    /// Delete app segments (sessions) older than the cutoff date, excluding protected apps/tags/hidden
-    private func deleteAppSegmentsOlderThan(_ cutoffDate: Date, excludingApps: Set<String>, excludingTagIds: Set<Int64>, excludeHidden: Bool) async throws -> Int {
-        guard let db = await database.getConnection() else {
-            throw RetentionError.databaseNotConnected
-        }
-
-        let cutoffMs = Int64(cutoffDate.timeIntervalSince1970 * 1000)
-
-        // Build SQL with exclusions
-        var conditions: [String] = ["endDate < ?"]
-
-        // Exclude segments from protected apps
-        if !excludingApps.isEmpty {
-            let placeholders = excludingApps.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("bundleID NOT IN (\(placeholders))")
-        }
-
-        // Exclude segments with protected tags
-        if !excludingTagIds.isEmpty {
-            let placeholders = excludingTagIds.map { _ in "?" }.joined(separator: ", ")
-            conditions.append("id NOT IN (SELECT segmentId FROM segment_tag WHERE tagId IN (\(placeholders)))")
-        }
-
-        // Exclude segments tagged with the "hidden" tag (tag name = 'hidden')
-        if excludeHidden {
-            conditions.append("id NOT IN (SELECT st.segmentId FROM segment_tag st JOIN tag t ON st.tagId = t.id WHERE LOWER(t.name) = 'hidden')")
-        }
-
-        let whereClause = conditions.joined(separator: " AND ")
-        let sql = "DELETE FROM segment WHERE \(whereClause);"
-
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-        }
-
-        // Bind all values
-        var bindIndex: Int32 = 1
-        sqlite3_bind_int64(statement, bindIndex, cutoffMs)
-        bindIndex += 1
-
-        for bundleID in excludingApps {
-            sqlite3_bind_text(statement, bindIndex, bundleID, -1, SQLITE_TRANSIENT)
-            bindIndex += 1
-        }
-
-        for tagId in excludingTagIds {
-            sqlite3_bind_int64(statement, bindIndex, tagId)
-            bindIndex += 1
-        }
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-        }
-
-        return Int(sqlite3_changes(db))
-    }
-
-    /// Clean up OCR nodes that reference deleted frames
-    private func cleanupOrphanedNodes() async throws -> Int {
-        guard let db = await database.getConnection() else {
-            throw RetentionError.databaseNotConnected
-        }
-
-        // Delete nodes where frameId doesn't exist in frame table
-        let sql = """
-            DELETE FROM node WHERE frameId NOT IN (SELECT id FROM frame);
-        """
-
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-        }
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw RetentionError.queryFailed(String(cString: sqlite3_errmsg(db)))
-        }
-
-        return Int(sqlite3_changes(db))
-    }
-
-    /// Format bytes into human-readable string
-    private func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
+        return removedBytes
     }
 }
 
@@ -555,7 +298,6 @@ public struct RetentionCleanupResult: Sendable {
 public enum RetentionError: Error {
     case databaseNotConnected
     case queryFailed(String)
+    case unsafeStoragePath(String)
+    case storageUnavailable
 }
-
-// Need SQLite for direct queries
-import SQLCipher

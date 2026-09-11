@@ -8,42 +8,54 @@ You are responsible for the **Processing** module of Retrace. Your job is to imp
 
 ```
 Processing/
-├── ProcessingManager.swift        # Main ProcessingProtocol implementation
-├── OCR/
-│   ├── VisionOCR.swift            # Vision framework OCR implementation
-│   └── TextRecognitionConfig.swift # OCR configuration
 ├── Accessibility/
-│   ├── AccessibilityService.swift  # AccessibilityProtocol implementation
-│   ├── AXTreeWalker.swift          # Walk accessibility tree
-│   └── TextElementFilter.swift     # Filter relevant text elements
-├── TextMerger/
-│   ├── TextMerger.swift            # Combine OCR + AX results
-│   └── DeduplicationFilter.swift   # Remove duplicate text
+│   └── AccessibilityService.swift
 ├── Audio/
-│   ├── AudioBackfillManager.swift  # Finds and processes untranscribed audio
-│   ├── AudioBufferManager.swift    # Buffers captured audio for batching
-│   ├── AudioContextualRefinementManager.swift # Context-aware transcript refinement
-│   ├── AudioEnhancer.swift         # Non-destructive audio normalization/boost retry variants
-│   ├── AudioProcessingManager.swift # Transcription pipeline coordinator
-│   ├── AudioRefinementManager.swift # Audio transcript refinement pass
-│   ├── AudioSpeechActivityPolicy.swift # Speech/silence metadata classifier; only empty audio is skipped
-│   ├── AudioTranscriptQualityPolicy.swift # Recall-first transcript quality/status classification
-│   ├── AudioTranscriptionRetryPipeline.swift # Enhancement + language-hint retry coordinator
-│   ├── MockTranscriptionService.swift # Test/dev transcription stub
-│   ├── SentenceSegmenter.swift     # Transcript sentence segmentation
-│   └── WhisperCppTranscriptionService.swift # whisper.cpp bridge
-├── Queue/
-│   ├── ProcessingQueue.swift       # Background processing queue
-│   └── FrameProcessor.swift        # Single frame processor
-└── Tests/
-    ├── AudioEnhancementPolicyTests.swift
-    ├── AudioProcessingBackpressureTests.swift
-    ├── AudioRefinementSchedulingPolicyTests.swift
-    ├── AudioSpeechActivityPolicyTests.swift
-    ├── AudioTranscriptionCompletenessPolicyTests.swift
-    ├── VisionOCRTests.swift
-    ├── AccessibilityTests.swift
-    └── TextMergerTests.swift
+│   ├── AudioBackfillManager.swift
+│   ├── AudioBufferManager.swift
+│   ├── AudioContextualRefinementManager.swift
+│   ├── AudioEnhancer.swift
+│   ├── AudioProcessingManager.swift
+│   ├── AudioRefinementManager.swift
+│   ├── AudioSpeechActivityPolicy.swift
+│   ├── AudioStoragePolicy.swift
+│   ├── AudioTranscriptQualityPolicy.swift
+│   ├── AudioTranscriptionRetryPipeline.swift
+│   ├── MockTranscriptionService.swift
+│   ├── NativeSpeechTranscriptionService.swift
+│   ├── SentenceSegmenter.swift
+│   └── WhisperCppTranscriptionService.swift
+├── OCR/
+│   ├── FullFrameOCRCache.swift
+│   ├── OCRTileCache.swift
+│   ├── RegionOCRMerger.swift
+│   ├── RegionOCRResult.swift
+│   ├── TileChangeDetector.swift
+│   ├── TileGridConfig.swift
+│   ├── TileOCRProcessor.swift
+│   └── VisionOCR.swift
+├── Tests/
+│   ├── _future/
+│   │   ├── AccessibilityTests.swift
+│   │   └── VisionOCRTests.swift
+│   ├── AudioEnhancementPolicyTests.swift
+│   ├── AudioProcessingBackpressureTests.swift
+│   ├── AudioRefinementSchedulingPolicyTests.swift
+│   ├── AudioSpeechActivityPolicyTests.swift
+│   ├── AudioStoragePolicyTests.swift
+│   ├── AudioTranscriptionCompletenessPolicyTests.swift
+│   ├── FrameProcessingWakeSignalTests.swift
+│   ├── FrameProcessingSourceReadinessTests.swift
+│   ├── NativeSpeechTranscriptionServiceTests.swift
+│   ├── TestLogger.swift
+│   ├── VisionOCRIncrementalTests.swift
+│   └── WhisperModelResidencyTests.swift
+├── TextMerger/
+│   └── TextMerger.swift
+├── FrameProcessingQueue.swift
+├── FrameProcessingWakeSignal.swift
+├── ProcessingManager.swift
+└── URLExtractor.swift
 ```
 
 ## Protocols You Must Implement
@@ -60,379 +72,17 @@ Processing/
 - Permission checking
 - Text extraction from AX tree
 
-## Key Implementation Details
-
-### 1. Vision Framework OCR
-
-```swift
-import Vision
-
-struct VisionOCR: OCRProtocol {
-    func recognizeText(
-        imageData: Data,
-        width: Int,
-        height: Int,
-        config: ProcessingConfig
-    ) async throws -> [TextRegion] {
-        // Create CGImage from raw data
-        guard let cgImage = createCGImage(from: imageData, width: width, height: height) else {
-            throw ProcessingError.imageConversionFailed
-        }
-
-        // Create request
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = config.ocrAccuracyLevel == .accurate ? .accurate : .fast
-        request.recognitionLanguages = config.recognitionLanguages
-        request.usesLanguageCorrection = true
-
-        // Perform recognition
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-
-        return try await withCheckedThrowingContinuation { continuation in
-            do {
-                try handler.perform([request])
-
-                guard let observations = request.results else {
-                    continuation.resume(returning: [])
-                    return
-                }
-
-                let regions = observations.compactMap { observation -> TextRegion? in
-                    guard observation.confidence >= config.minimumConfidence else { return nil }
-
-                    let text = observation.topCandidates(1).first?.string ?? ""
-                    let box = observation.boundingBox
-
-                    return TextRegion(
-                        text: text,
-                        confidence: observation.confidence,
-                        boundingBox: NormalizedRect(
-                            x: box.origin.x,
-                            y: box.origin.y,
-                            width: box.width,
-                            height: box.height
-                        ),
-                        source: .ocr
-                    )
-                }
-
-                continuation.resume(returning: regions)
-            } catch {
-                continuation.resume(throwing: ProcessingError.ocrFailed(underlying: error.localizedDescription))
-            }
-        }
-    }
-
-    private func createCGImage(from data: Data, width: Int, height: Int) -> CGImage? {
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-
-        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
-
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: width * 4,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo,
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
-    }
-}
-```
-
-### 2. Accessibility API Text Extraction
-
-```swift
-import ApplicationServices
-
-actor AccessibilityService: AccessibilityProtocol {
-    func hasPermission() -> Bool {
-        return AXIsProcessTrusted()
-    }
-
-    func requestPermission() {
-        // Open System Preferences to Accessibility
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
-    }
-
-    func getFocusedAppText() async throws -> AccessibilityResult {
-        guard hasPermission() else {
-            throw ProcessingError.accessibilityPermissionDenied
-        }
-
-        // Get frontmost app
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
-            throw ProcessingError.accessibilityQueryFailed(underlying: "No frontmost app")
-        }
-
-        return try await getAppText(bundleID: frontApp.bundleIdentifier ?? "")
-    }
-
-    func getAppText(bundleID: String) async throws -> AccessibilityResult {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) else {
-            throw ProcessingError.accessibilityQueryFailed(underlying: "App not found: \(bundleID)")
-        }
-
-        let appRef = AXUIElementCreateApplication(app.processIdentifier)
-        let textElements = try extractTextElements(from: appRef)
-
-        let appInfo = AppInfo(
-            bundleID: bundleID,
-            name: app.localizedName ?? "",
-            windowTitle: getWindowTitle(from: appRef),
-            browserURL: nil
-        )
-
-        return AccessibilityResult(
-            appInfo: appInfo,
-            textElements: textElements
-        )
-    }
-
-    private func extractTextElements(from element: AXUIElement, depth: Int = 0) throws -> [AccessibilityTextElement] {
-        guard depth < 10 else { return [] }  // Prevent infinite recursion
-
-        var results: [AccessibilityTextElement] = []
-
-        // Get role
-        var roleValue: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue)
-        let role = roleValue as? String
-
-        // Get value (text content)
-        var valueValue: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueValue)
-
-        if let textValue = valueValue as? String, !textValue.isEmpty {
-            results.append(AccessibilityTextElement(
-                text: textValue,
-                role: role,
-                label: nil,
-                isEditable: role == "AXTextField" || role == "AXTextArea"
-            ))
-        }
-
-        // Get title (for buttons, labels, etc.)
-        var titleValue: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleValue)
-
-        if let title = titleValue as? String, !title.isEmpty {
-            results.append(AccessibilityTextElement(
-                text: title,
-                role: role,
-                label: "title",
-                isEditable: false
-            ))
-        }
-
-        // Recurse into children
-        var childrenValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-           let children = childrenValue as? [AXUIElement] {
-            for child in children {
-                results.append(contentsOf: try extractTextElements(from: child, depth: depth + 1))
-            }
-        }
-
-        return results
-    }
-
-    private func getWindowTitle(from appRef: AXUIElement) -> String? {
-        var windowValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appRef, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
-              let window = windowValue else { return nil }
-
-        var titleValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &titleValue) == .success,
-              let title = titleValue as? String else { return nil }
-
-        return title
-    }
-}
-```
-
-### 3. Text Merger (Combine OCR + Accessibility)
-
-```swift
-struct TextMerger {
-    func merge(ocrRegions: [TextRegion], accessibilityResult: AccessibilityResult?) -> ExtractedText {
-        var allRegions: [TextRegion] = ocrRegions
-
-        // Add accessibility text as regions
-        if let axResult = accessibilityResult {
-            for element in axResult.textElements {
-                // Check if this text already exists in OCR results (dedup)
-                let isDuplicate = ocrRegions.contains { region in
-                    textSimilarity(region.text, element.text) > 0.9
-                }
-
-                if !isDuplicate {
-                    allRegions.append(TextRegion(
-                        text: element.text,
-                        confidence: 1.0,  // AX text is always accurate
-                        boundingBox: .zero,  // AX doesn't give positions
-                        source: .accessibility
-                    ))
-                }
-            }
-        }
-
-        // Build full text (prioritize AX text as it's more accurate)
-        let axText = accessibilityResult?.textElements.map(\.text).joined(separator: " ") ?? ""
-        let ocrText = ocrRegions.map(\.text).joined(separator: " ")
-
-        // Combine: AX text first, then unique OCR text
-        let fullText = mergeTexts(primary: axText, secondary: ocrText)
-
-        return ExtractedText(
-            frameID: FrameID(),  // Will be set by caller
-            timestamp: Date(),
-            regions: allRegions,
-            fullText: fullText
-        )
-    }
-
-    private func textSimilarity(_ a: String, _ b: String) -> Double {
-        let setA = Set(a.lowercased().split(separator: " "))
-        let setB = Set(b.lowercased().split(separator: " "))
-
-        let intersection = setA.intersection(setB).count
-        let union = setA.union(setB).count
-
-        return union > 0 ? Double(intersection) / Double(union) : 0
-    }
-
-    private func mergeTexts(primary: String, secondary: String) -> String {
-        // Simple merge: combine both, removing obvious duplicates
-        let primaryWords = Set(primary.lowercased().split(separator: " ").map(String.init))
-        let secondaryUniqueWords = secondary.split(separator: " ").filter { word in
-            !primaryWords.contains(word.lowercased())
-        }
-
-        if secondaryUniqueWords.isEmpty {
-            return primary
-        }
-
-        return primary + " " + secondaryUniqueWords.joined(separator: " ")
-    }
-}
-```
-
-### 4. Processing Queue
-
-```swift
-public actor ProcessingManager: ProcessingProtocol {
-    private let ocr: VisionOCR
-    private let accessibility: AccessibilityService
-    private let merger: TextMerger
-    private var config: ProcessingConfig
-
-    private var processingQueue: [(CapturedFrame, (Result<ExtractedText, ProcessingError>) -> Void)] = []
-    private var isProcessing = false
-
-    public var queuedFrameCount: Int { processingQueue.count }
-
-    public func extractText(from frame: CapturedFrame) async throws -> ExtractedText {
-        // OCR
-        let ocrRegions = try await ocr.recognizeText(
-            imageData: frame.imageData,
-            width: frame.width,
-            height: frame.height,
-            config: config
-        )
-
-        // Accessibility (if enabled and permitted)
-        var axResult: AccessibilityResult? = nil
-        if config.accessibilityEnabled && accessibility.hasPermission() {
-            axResult = try? await accessibility.getFocusedAppText()
-        }
-
-        // Merge results
-        var extractedText = merger.merge(ocrRegions: ocrRegions, accessibilityResult: axResult)
-
-        // Set frame ID and metadata
-        extractedText = ExtractedText(
-            frameID: frame.id,
-            timestamp: frame.timestamp,
-            regions: extractedText.regions,
-            fullText: extractedText.fullText,
-            metadata: frame.metadata
-        )
-
-        return extractedText
-    }
-
-    public func queueFrame(
-        _ frame: CapturedFrame,
-        completion: @escaping @Sendable (Result<ExtractedText, ProcessingError>) -> Void
-    ) async {
-        processingQueue.append((frame, completion))
-
-        if !isProcessing {
-            await processQueue()
-        }
-    }
-
-    private func processQueue() async {
-        isProcessing = true
-
-        while !processingQueue.isEmpty {
-            let (frame, completion) = processingQueue.removeFirst()
-
-            do {
-                let text = try await extractText(from: frame)
-                completion(.success(text))
-            } catch let error as ProcessingError {
-                completion(.failure(error))
-            } catch {
-                completion(.failure(.ocrFailed(underlying: error.localizedDescription)))
-            }
-        }
-
-        isProcessing = false
-    }
-
-    public func waitForQueueDrain() async {
-        while !processingQueue.isEmpty || isProcessing {
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-        }
-    }
-}
-```
-
-### 5. Handling Different Image Formats
-
-The CAPTURE module sends raw pixel data. You may need to handle different formats:
-
-```swift
-extension VisionOCR {
-    func createCGImage(from frame: CapturedFrame) -> CGImage? {
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-
-        // Assume BGRA format from ScreenCaptureKit
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-
-        guard let context = CGContext(
-            data: UnsafeMutableRawPointer(mutating: (frame.imageData as NSData).bytes),
-            width: frame.width,
-            height: frame.height,
-            bitsPerComponent: 8,
-            bytesPerRow: frame.bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo.rawValue
-        ) else { return nil }
-
-        return context.makeImage()
-    }
-}
-```
+## Current Implementation
+
+- `VisionOCR` uses Apple's Vision framework, an accurate full-frame cache and bounded native-pixel region crops. Expand changed crops to cover complete cached text regions before invalidation. Preserve coordinate transforms and the actual row stride for each frame.
+- Full-frame and incremental OCR both disable language correction to preserve identifiers. The incremental crop pixel fraction is a work-area estimate, not a measured energy saving.
+- `FrameProcessingQueue` is the existing cross-module integration boundary. Database claims are atomic. Automatic priorities 1–10 are current only for captures made within 60 seconds; older automatic work joins priority 0, negative and NULL-priority work in historical enqueue order. One historical claim follows three current automatic claims when available. Manual priorities above 10 take precedence without consuming or resetting that fairness counter. Displayed positions use the same schedule and count distinct pending frames. The wake signal prevents idle polling latency without losing enqueues during registration.
+- Publish OCR text, highlight nodes and completed status through `DatabaseManager.commitFrameOCR` in one transaction. Return deferred/cancelled claims through `releaseFrameProcessingClaim`. Never split those writes into separate awaits.
+- Prefer a readable exact-frame-ID WAL over encoded video even when database metadata says finalized: an active container can still be empty or return an earlier frame. Missing/incomplete live WAL or nonfinalized sources defer at automatic priority 10 without consuming error retries, retaining the 0.5-second backoff; capture-age expiry still sends old work to historical FIFO. An unreadable retained WAL from a prior process falls back to strict encoded reads when metadata is finalized, so damaged evidence cannot cause endless retries. Missing finalized media still reaches the existing terminal failure path without deleting the retained WAL. The source-readiness tests exercise real WAL pixels, SQLite claims, fresh-retry precedence over backlog, restart ownership and completion through the production worker.
+- `AudioStoragePolicy` preserves canonical batch recordings and prevents duplicate sentence files. Whisper remains the production transcription backend.
+- `NativeSpeechTranscriptionService` is an opt-in macOS 26 batch comparison backend, not a production routing change. Exact module asset readiness must be checked in the calling app; locale support alone is insufficient. Tests may explicitly prepare assets for comparison.
+- Root-owned capture freshness metrics use `Log.recordLatency` for OCR processing and recent/backlog capture-to-search latency. New product actions must also emit `daily_metrics` as required by the root guide.
+- Use continuous-clock duration sleeps, actors for mutable state and background execution for expensive I/O/OCR. Preserve cancellation and drain worker tasks before service teardown.
 
 ## Error Handling
 
@@ -455,13 +105,13 @@ throw ProcessingError.imageConversionFailed
 ## Dependencies
 
 - **Input from**: CAPTURE module (CapturedFrame)
-- **Output to**: DATABASE (ExtractedText for indexing via SEARCH)
+- **Output to**: DATABASE (atomic OCR text, nodes and queue completion)
 - **Uses types**: `CapturedFrame`, `ExtractedText`, `TextRegion`, `ProcessingConfig`, `AppInfo`
 
 ## DO NOT
 
 - Modify any files outside `Processing/`
-- Import from other module directories (only `Shared/`)
+- Introduce new cross-module imports outside the existing queue integration boundary without root coordination
 - Handle storage (that's STORAGE's job)
 - Handle search indexing (that's SEARCH's job)
 - Handle screen capture (that's CAPTURE's job)
@@ -473,12 +123,6 @@ throw ProcessingError.imageConversionFailed
 - Memory: <200MB during OCR (Vision manages its own memory)
 - Queue: Process frames without falling behind at 0.5fps
 
-## Getting Started
+## Validation
 
-1. Create `Processing/OCR/VisionOCR.swift` with Vision framework
-2. Create `Processing/Accessibility/AccessibilityService.swift`
-3. Create `Processing/TextMerger/TextMerger.swift`
-4. Create `Processing/ProcessingManager.swift` conforming to `ProcessingProtocol`
-5. Write tests with sample images
-
-Start with Vision OCR since it's the core functionality, then add Accessibility support.
+Run `swift test --filter 'VisionOCRIncrementalTests|FrameProcessingWakeSignalTests|NativeSpeechTranscriptionServiceTests'`. Vision tests render actual CoreText images and exercise the real Vision API. Native audio comparison requires explicit local fixture/model paths; the normal test run skips those cases.

@@ -16,7 +16,7 @@ public struct RegionOCRStats: Sendable {
     /// Time spent on merging results (ms)
     public let mergeTimeMs: Double
 
-    /// Estimated energy savings compared to full-frame OCR (0-1)
+    /// Fraction of tile area reused (0-1); the historical name is not an energy measurement.
     public var energySavings: Double {
         guard totalTiles > 0 else { return 0 }
         return 1.0 - (Double(tilesOCRed) / Double(totalTiles))
@@ -78,6 +78,6 @@ public struct RegionOCRResult: Sendable {
 extension RegionOCRStats: CustomStringConvertible {
     public var description: String {
         let savings = Int(energySavings * 100)
-        return "RegionOCR: \(tilesOCRed)/\(totalTiles) tiles OCR'd, \(tilesCached) cached (\(savings)% energy saved), \(String(format: "%.1f", totalTimeMs))ms total"
+        return "RegionOCR: \(tilesOCRed)/\(totalTiles) tiles OCR'd, \(tilesCached) cached (\(savings)% tile area reused), \(String(format: "%.1f", totalTimeMs))ms total"
     }
 }

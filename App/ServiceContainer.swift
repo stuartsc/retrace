@@ -346,10 +346,9 @@ public actor ServiceContainer {
         isInitialized = true
         Log.info("All services initialized successfully", category: .app)
 
-        // Start processing queue workers immediately after initialization
-        // Safe to run anytime since all DB operations go through DatabaseManager actor
-        await queue.startWorkers()
-        Log.info("✓ Processing queue workers started (\(ProcessingQueueConfig.default.workerCount) workers)", category: .app)
+        // AppCoordinator starts workers after WAL/interrupted-claim recovery.
+        // Starting here lets recovery mistake this process's live claims for
+        // interrupted work and reset them while OCR is still running.
     }
 
     /// Install pass-2/pass-3 audio refinement managers once the turbo Whisper model is available.
@@ -373,9 +372,9 @@ public actor ServiceContainer {
         let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
         let turboService = WhisperCppTranscriptionService(
             modelPath: turboPath.path,
-            samplingStrategy: .beamSearch(beamSize: 5)
+            samplingStrategy: .beamSearch(beamSize: 5),
+            modelResidency: .onDemand(idleTimeout: .seconds(45))
         )
-        try await turboService.initialize()
 
         if audioRefinement == nil {
             let refinement = AudioRefinementManager(
@@ -389,7 +388,7 @@ public actor ServiceContainer {
                 await processingRef.isCurrentlyProcessing
             }
             self.audioRefinement = refinement
-            Log.info("✓ Audio refinement manager initialized (turbo model)", category: .app)
+            Log.info("✓ Audio refinement manager initialized (turbo model loads on demand)", category: .app)
         }
 
         if audioContextualRefinement == nil {

@@ -7,6 +7,7 @@ import CWhisper
 /// Uses whisper.cpp C library for on-device speech-to-text
 /// Owner: PROCESSING agent
 public actor WhisperCppTranscriptionService: TranscriptionProtocol {
+    internal static let defaultUseGPU = false
     internal static let recallFirstNoSpeechThreshold: Float = 1.0
     internal static let recallFirstLogprobThreshold: Float = -10.0
     internal static let recallFirstEntropyThreshold: Float = 8.0
@@ -19,28 +20,46 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         case beamSearch(beamSize: Int)
     }
 
+    /// Controls whether model weights remain resident between transcription jobs.
+    public enum ModelResidency: Sendable {
+        case resident
+        case onDemand(idleTimeout: Duration)
+    }
+
     private var whisperContext: OpaquePointer?
     private let modelPath: String
     private let coreMLModelPath: String?
     private let samplingStrategy: SamplingStrategy
+    private let modelResidency: ModelResidency
+    internal nonisolated let useGPU: Bool
     private var isInitialized = false
+    private var idleUnloadTask: Task<Void, Never>?
 
-    public init(modelPath: String, coreMLModelPath: String? = nil, samplingStrategy: SamplingStrategy = .greedy) {
+    public init(
+        modelPath: String,
+        coreMLModelPath: String? = nil,
+        samplingStrategy: SamplingStrategy = .greedy,
+        useGPU: Bool = false,
+        modelResidency: ModelResidency = .resident
+    ) {
         self.modelPath = modelPath
         self.coreMLModelPath = coreMLModelPath
         self.samplingStrategy = samplingStrategy
+        self.useGPU = useGPU
+        self.modelResidency = modelResidency
     }
 
     // MARK: - Initialization
 
     /// Initialize whisper.cpp with the specified model
     public func initialize() async throws {
+        cancelScheduledUnload()
         guard !isInitialized else { return }
 
         let expandedPath = NSString(string: modelPath).expandingTildeInPath
 
         var params = whisper_context_default_params()
-        params.use_gpu = true
+        params.use_gpu = useGPU
 
         whisperContext = whisper_init_from_file_with_params(expandedPath, params)
 
@@ -49,11 +68,19 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         }
 
         isInitialized = true
-        Log.info("[WhisperCppTranscriptionService] Initialized with model: \(expandedPath)", category: .processing)
+        Log.info(
+            "[WhisperCppTranscriptionService] Initialized with model: \(expandedPath), backend=\(useGPU ? "gpu" : "cpu")",
+            category: .processing
+        )
     }
 
     /// Cleanup
     public func cleanup() {
+        cancelScheduledUnload()
+        unloadModel()
+    }
+
+    private func unloadModel() {
         if let ctx = whisperContext {
             whisper_free(ctx)
             whisperContext = nil
@@ -65,13 +92,8 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
 
     /// Transcribe audio data (must be 16kHz mono Float32 or PCM Int16)
     public func transcribe(_ audioData: Data) async throws -> TranscriptionResult {
-        guard isInitialized else {
-            throw TranscriptionError.notInitialized
-        }
-
-        guard let ctx = whisperContext else {
-            throw TranscriptionError.notInitialized
-        }
+        let ctx = try await prepareForTranscription()
+        defer { scheduleIdleUnloadIfNeeded() }
 
         // Convert PCM Int16 to Float32 for whisper.cpp
         let samples = convertToFloat32(audioData)
@@ -127,13 +149,8 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         initialPrompt: String? = nil,
         languageHint: String?
     ) async throws -> DetailedTranscriptionResult {
-        guard isInitialized else {
-            throw TranscriptionError.notInitialized
-        }
-
-        guard let ctx = whisperContext else {
-            throw TranscriptionError.notInitialized
-        }
+        let ctx = try await prepareForTranscription()
+        defer { scheduleIdleUnloadIfNeeded() }
 
         let samples = convertToFloat32(audioData)
 
@@ -257,9 +274,8 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         wordLevel: Bool = true,
         initialPrompt: String
     ) async throws -> DetailedTranscriptionResult {
-        guard isInitialized, let ctx = whisperContext else {
-            throw TranscriptionError.notInitialized
-        }
+        let ctx = try await prepareForTranscription()
+        defer { scheduleIdleUnloadIfNeeded() }
 
         let samples = convertToFloat32(audioData)
 
@@ -373,6 +389,54 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
             params.beam_search.beam_size = Int32(beamSize)
             return params
         }
+    }
+
+    private func prepareForTranscription() async throws -> OpaquePointer {
+        cancelScheduledUnload()
+
+        if !isInitialized {
+            switch modelResidency {
+            case .resident:
+                throw TranscriptionError.notInitialized
+            case .onDemand:
+                try await initialize()
+            }
+        }
+
+        guard let whisperContext else {
+            throw TranscriptionError.notInitialized
+        }
+        return whisperContext
+    }
+
+    private func cancelScheduledUnload() {
+        idleUnloadTask?.cancel()
+        idleUnloadTask = nil
+    }
+
+    private func scheduleIdleUnloadIfNeeded() {
+        guard case .onDemand(let idleTimeout) = modelResidency else { return }
+
+        cancelScheduledUnload()
+        idleUnloadTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: idleTimeout, clock: .continuous)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.unloadAfterIdle()
+        }
+    }
+
+    private func unloadAfterIdle() {
+        idleUnloadTask = nil
+        guard isInitialized else { return }
+        unloadModel()
+        Log.info(
+            "[WhisperCppTranscriptionService] Released on-demand model after refinement became idle",
+            category: .processing
+        )
     }
 
     /// The outer audio pipeline decides whether a batch is silence after decoding.

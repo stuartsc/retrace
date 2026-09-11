@@ -1,4 +1,5 @@
 import XCTest
+import Shared
 @testable import Retrace
 
 final class DashboardVoiceLayoutTests: XCTestCase {
@@ -12,7 +13,7 @@ final class DashboardVoiceLayoutTests: XCTestCase {
     }
 
     func testLiveTabHasDedicatedCaptureSurfaces() {
-        XCTAssertEqual(DashboardContentTab.live.subtitle, "Live transcript, intelligence feed, and conversation context")
+        XCTAssertEqual(DashboardContentTab.live.subtitle, "Live transcript, operating brief, and activity pulse")
     }
 
     func testScreenshotsTabOwnsScreenHistory() {
@@ -64,17 +65,208 @@ final class DashboardVoiceLayoutTests: XCTestCase {
         XCTAssertGreaterThan(columns.transcript, columns.context)
     }
 
-    func testLiveIntelligenceFeedHasActionableDefaultCards() {
-        let titles = DashboardLiveIntelligencePolicy.defaultCards.map(\.title)
-
-        XCTAssertGreaterThanOrEqual(titles.count, 6)
-        XCTAssertTrue(titles.contains("Key people mentioned"))
-        XCTAssertTrue(titles.contains("Risks & objections"))
-        XCTAssertTrue(titles.contains("Questions to ask now"))
-    }
-
     func testLiveScreenshotHistoryPageSizeSupportsLazyLoading() {
         XCTAssertGreaterThanOrEqual(DashboardLiveLayoutPolicy.screenshotPageSize, 12)
+    }
+
+    func testLiveActivityHistoryUsesOneBoundedBackfillThenSmallRefreshes() {
+        XCTAssertEqual(DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit, 72)
+        XCTAssertEqual(DashboardLiveLayoutPolicy.activityRefreshFrameFetchLimit, 24)
+        XCTAssertLessThanOrEqual(DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit, 96)
+        XCTAssertGreaterThan(
+            DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit,
+            DashboardLiveLayoutPolicy.activityRefreshFrameFetchLimit
+        )
+    }
+
+    func testTranscriptConfidenceLabelOmitsMissingOrZeroConfidence() {
+        XCTAssertEqual(
+            DashboardTranscriptConfidencePolicy.displayLabel(transcriptionPass: 1, confidence: nil),
+            "First pass"
+        )
+        XCTAssertEqual(
+            DashboardTranscriptConfidencePolicy.displayLabel(transcriptionPass: 1, confidence: 0),
+            "First pass"
+        )
+        XCTAssertEqual(
+            DashboardTranscriptConfidencePolicy.displayLabel(transcriptionPass: 3, confidence: 0.82),
+            "Pass 3 · 82%"
+        )
+    }
+
+    func testScreenshotTabKeepsListAndContextInSeparateHitRegions() {
+        let columns = DashboardScreenshotLayoutPolicy.columnWidths(forWidth: 1_200)
+
+        XCTAssertEqual(
+            columns.screenshots + columns.context + DashboardLiveLayoutPolicy.columnSpacing,
+            1_200,
+            accuracy: 0.01
+        )
+        XCTAssertGreaterThan(columns.screenshots, columns.context)
+        XCTAssertGreaterThanOrEqual(
+            columns.screenshots,
+            DashboardScreenshotLayoutPolicy.minimumInteractiveListWidth
+        )
+    }
+
+    func testScreenshotTabStacksWhenListWouldBeTooNarrowForReliableRowSelection() {
+        XCTAssertEqual(DashboardScreenshotLayoutPolicy.contentMode(forWidth: 899), .stacked)
+        XCTAssertEqual(DashboardScreenshotLayoutPolicy.contentMode(forWidth: 900), .split)
+    }
+
+    func testScreenshotWorkspaceGivesPreviewMostOfTheDefaultWidth() {
+        let columns = DashboardScreenshotWorkspacePolicy.columnWidths(
+            forWidth: DashboardVoiceLayoutPolicy.defaultContentWidth
+        )
+
+        XCTAssertEqual(
+            columns.momentRail + columns.preview + columns.inspector
+                + (DashboardLiveLayoutPolicy.columnSpacing * 2),
+            DashboardVoiceLayoutPolicy.defaultContentWidth,
+            accuracy: 0.01
+        )
+        XCTAssertGreaterThan(columns.preview, columns.inspector)
+        XCTAssertGreaterThan(columns.inspector, columns.momentRail)
+        XCTAssertGreaterThanOrEqual(columns.preview, 620)
+    }
+
+    func testScreenshotWorkspaceStacksBeforeAnyPaneBecomesUnusable() {
+        XCTAssertEqual(DashboardScreenshotWorkspacePolicy.contentMode(forWidth: 1_049), .stacked)
+        XCTAssertEqual(DashboardScreenshotWorkspacePolicy.contentMode(forWidth: 1_050), .threeColumn)
+    }
+
+    func testScreenshotFilterSearchesMetadataAndCapturedText() {
+        XCTAssertTrue(DashboardScreenshotFilterPolicy.matches(
+            query: "renewal",
+            appName: "Microsoft Outlook",
+            windowName: "Acme account",
+            browserURL: nil,
+            ocrText: "Confirm the renewal budget with Julia"
+        ))
+        XCTAssertTrue(DashboardScreenshotFilterPolicy.matches(
+            query: "outlook acme",
+            appName: "Microsoft Outlook",
+            windowName: "Acme account",
+            browserURL: nil,
+            ocrText: nil
+        ))
+        XCTAssertFalse(DashboardScreenshotFilterPolicy.matches(
+            query: "notion",
+            appName: "Microsoft Outlook",
+            windowName: "Acme account",
+            browserURL: nil,
+            ocrText: "Renewal budget"
+        ))
+    }
+
+    func testScreenshotNavigationMovesThroughNewestFirstMoments() {
+        let ids: [Int64] = [40, 30, 20, 10]
+
+        XCTAssertEqual(
+            DashboardScreenshotNavigationPolicy.adjacentID(
+                from: 30,
+                direction: .older,
+                orderedIDs: ids
+            ),
+            20
+        )
+        XCTAssertEqual(
+            DashboardScreenshotNavigationPolicy.adjacentID(
+                from: 30,
+                direction: .newer,
+                orderedIDs: ids
+            ),
+            40
+        )
+        XCTAssertNil(DashboardScreenshotNavigationPolicy.adjacentID(
+            from: 10,
+            direction: .older,
+            orderedIDs: ids
+        ))
+    }
+
+    func testScreenshotRetryPolicyBoundsTransientDecodeRetries() {
+        XCTAssertTrue(DashboardScreenshotRetryPolicy.shouldRetry(attemptCount: 0))
+        XCTAssertTrue(DashboardScreenshotRetryPolicy.shouldRetry(attemptCount: 2))
+        XCTAssertFalse(DashboardScreenshotRetryPolicy.shouldRetry(attemptCount: 3))
+    }
+
+    func testScreenshotPaginationRequiresARealDownwardScrollNearTheEnd() {
+        XCTAssertFalse(DashboardScreenshotPaginationPolicy.shouldLoadOlder(
+            previousOffsetY: 0,
+            currentOffsetY: 0,
+            contentHeight: 320,
+            containerHeight: 420,
+            boundaryID: 18,
+            lastRequestedBoundaryID: nil,
+            canLoadMore: true,
+            isLoading: false
+        ))
+
+        XCTAssertFalse(DashboardScreenshotPaginationPolicy.shouldLoadOlder(
+            previousOffsetY: 80,
+            currentOffsetY: 120,
+            contentHeight: 1_200,
+            containerHeight: 400,
+            boundaryID: 18,
+            lastRequestedBoundaryID: nil,
+            canLoadMore: true,
+            isLoading: false
+        ))
+
+        XCTAssertTrue(DashboardScreenshotPaginationPolicy.shouldLoadOlder(
+            previousOffsetY: 620,
+            currentOffsetY: 680,
+            contentHeight: 1_200,
+            containerHeight: 400,
+            boundaryID: 18,
+            lastRequestedBoundaryID: nil,
+            canLoadMore: true,
+            isLoading: false
+        ))
+
+        XCTAssertFalse(DashboardScreenshotPaginationPolicy.shouldLoadOlder(
+            previousOffsetY: 620,
+            currentOffsetY: 680,
+            contentHeight: 1_200,
+            containerHeight: 400,
+            boundaryID: 18,
+            lastRequestedBoundaryID: 18,
+            canLoadMore: true,
+            isLoading: false
+        ))
+    }
+
+    func testScreenshotOCRContextGroupsNodesIntoReadableLines() {
+        let nodes = [
+            OCRNodeWithText(id: 2, frameId: 10, x: 0.38, y: 0.10, width: 0.10, height: 0.02, text: "World"),
+            OCRNodeWithText(id: 1, frameId: 10, x: 0.10, y: 0.10, width: 0.22, height: 0.02, text: "Hello"),
+            OCRNodeWithText(id: 3, frameId: 10, x: 0.10, y: 0.18, width: 0.20, height: 0.02, text: "Second")
+        ]
+
+        let lines = DashboardOCRContextPolicy.readableLines(from: nodes)
+
+        XCTAssertEqual(lines.map(\.text), ["Hello World", "Second"])
+        XCTAssertEqual(DashboardOCRContextPolicy.fullText(from: nodes), "Hello World\nSecond")
+    }
+
+    func testScreenshotOCRContextKeepsAllReadableLines() {
+        let nodes = (0..<30).map { index in
+            OCRNodeWithText(
+                id: index,
+                frameId: 11,
+                x: 0.10,
+                y: CGFloat(index) * 0.03,
+                width: 0.30,
+                height: 0.02,
+                text: "Line \(index)"
+            )
+        }
+
+        let lines = DashboardOCRContextPolicy.readableLines(from: nodes)
+
+        XCTAssertEqual(lines.count, 30)
+        XCTAssertEqual(lines.last?.text, "Line 29")
     }
 
     func testLivePassiveRefreshKeepsRecentItemsBounded() {
@@ -108,6 +300,32 @@ final class DashboardVoiceLayoutTests: XCTestCase {
             loopTab: .dictation,
             selectedTab: .live,
             isWindowVisible: true
+        ))
+    }
+
+    func testDashboardTabReentryRefreshesInsteadOfLoadingOlderHistory() {
+        XCTAssertEqual(
+            DashboardTabEntryLoadPolicy.action(hasLoadedItems: false),
+            .initialLoad
+        )
+        XCTAssertEqual(
+            DashboardTabEntryLoadPolicy.action(hasLoadedItems: true),
+            .refresh
+        )
+    }
+
+    func testAppNameResolverRecognizesGenericBundleSuffixCacheEntries() {
+        XCTAssertTrue(AppNameResolver.isGenericBundleSuffixName(
+            "App",
+            bundleID: "io.retrace.app"
+        ))
+        XCTAssertTrue(AppNameResolver.isGenericBundleSuffixName(
+            "Chrome",
+            bundleID: "com.google.Chrome"
+        ))
+        XCTAssertFalse(AppNameResolver.isGenericBundleSuffixName(
+            "Retrace",
+            bundleID: "io.retrace.app"
         ))
     }
 
@@ -216,18 +434,68 @@ final class DashboardVoiceLayoutTests: XCTestCase {
         XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
             currentRowID: 42,
             lastRowID: 42,
+            lastRequestedBoundaryRowID: nil,
             canLoadMoreOlderRows: true,
             isLoadingOlderRows: false
         ))
         XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
             currentRowID: 41,
             lastRowID: 42,
+            lastRequestedBoundaryRowID: nil,
             canLoadMoreOlderRows: true,
             isLoadingOlderRows: false
         ))
         XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
             currentRowID: 42,
             lastRowID: 42,
+            lastRequestedBoundaryRowID: nil,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: true
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
+            currentRowID: 42,
+            lastRowID: 42,
+            lastRequestedBoundaryRowID: 42,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: false
+        ))
+    }
+
+    func testLiveAudioHistoryCapsWorkPerformedByOnePaginationTrigger() {
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+            readableRowCount: 0,
+            targetReadableRowCount: 8,
+            fetchedTranscriptRows: 20,
+            fetchedPageCount: DashboardLiveAudioHistoryPolicy.maximumPagesPerLoad - 1,
+            pageSize: 20,
+            canLoadMoreOlderRows: true
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
+            readableRowCount: 0,
+            targetReadableRowCount: 8,
+            fetchedTranscriptRows: 20,
+            fetchedPageCount: DashboardLiveAudioHistoryPolicy.maximumPagesPerLoad,
+            pageSize: 20,
+            canLoadMoreOlderRows: true
+        ))
+    }
+
+    func testLiveAudioFooterContinuesOnceForEachPaginationOffset() {
+        XCTAssertTrue(DashboardLiveAudioHistoryPolicy.shouldAutoContinueFromVisibleFooter(
+            currentOffset: 120,
+            lastRequestedOffset: 60,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: false
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoContinueFromVisibleFooter(
+            currentOffset: 120,
+            lastRequestedOffset: 120,
+            canLoadMoreOlderRows: true,
+            isLoadingOlderRows: false
+        ))
+        XCTAssertFalse(DashboardLiveAudioHistoryPolicy.shouldAutoContinueFromVisibleFooter(
+            currentOffset: 120,
+            lastRequestedOffset: nil,
             canLoadMoreOlderRows: true,
             isLoadingOlderRows: true
         ))
@@ -564,6 +832,30 @@ final class DashboardVoiceLayoutTests: XCTestCase {
         XCTAssertFalse(presentation.transcriptRows.contains { $0.text == "[Observe the" })
     }
 
+    func testLiveAudioPresentationHidesTruncatedCaptionArtifacts() {
+        let now = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = ["[Loud", "Click]", "*music", "typing*"].enumerated().map { index, text in
+            DashboardLiveAudioRow(
+                id: Int64(5_100 + index),
+                text: text,
+                startedAt: now.addingTimeInterval(Double(-index * 10)),
+                endedAt: now.addingTimeInterval(Double(-index * 10 + 8)),
+                source: .microphone,
+                confidence: 0.1,
+                transcriptStatus: "needs_review",
+                detectedLanguage: "en",
+                audioVariant: "raw",
+                qualityFlags: "short_text,variant:raw"
+            )
+        }
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: rows)
+
+        XCTAssertTrue(presentation.transcriptRows.isEmpty)
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertEqual(presentation.statusRows.first?.pendingBatchCount, 4)
+    }
+
     func testLiveAudioPresentationHidesLaughCaptionsAndLanguageUncertainGarbage() {
         let now = Date(timeIntervalSince1970: 1_781_555_000)
         let rows = [
@@ -787,6 +1079,241 @@ final class DashboardVoiceLayoutTests: XCTestCase {
                 reset: false
             ),
             40
+        )
+    }
+
+    func testLiveTranscriptBlocksMergeAdjacentRowsIntoChronologicalText() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            makeLiveTranscriptRow(id: 3, text: "See you, mate.", startedAt: start.addingTimeInterval(20)),
+            makeLiveTranscriptRow(id: 2, text: "No worries.", startedAt: start.addingTimeInterval(10)),
+            makeLiveTranscriptRow(id: 1, text: "Just shut the gate.", startedAt: start)
+        ]
+
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: rows)
+
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].rowCount, 3)
+        XCTAssertEqual(blocks[0].oldestRowID, 1)
+        XCTAssertEqual(blocks[0].newestRowID, 3)
+        XCTAssertEqual(blocks[0].text, "Just shut the gate. No worries. See you, mate.")
+    }
+
+    func testLiveTranscriptBlocksSplitAtMeaningfulPause() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            makeLiveTranscriptRow(id: 2, text: "A later conversation.", startedAt: start.addingTimeInterval(30)),
+            makeLiveTranscriptRow(id: 1, text: "The first conversation.", startedAt: start)
+        ]
+
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: rows)
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks.map(\.text), ["A later conversation.", "The first conversation."])
+    }
+
+    func testLiveTranscriptBlocksRemoveExactOverlapBetweenCaptureWindows() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            makeLiveTranscriptRow(
+                id: 2,
+                text: "Okay no worries. See you, mate.",
+                startedAt: start.addingTimeInterval(10)
+            ),
+            makeLiveTranscriptRow(
+                id: 1,
+                text: "Just shut the gate. Okay, no worries.",
+                startedAt: start
+            )
+        ]
+
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: rows)
+
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(
+            blocks[0].text,
+            "Just shut the gate. Okay, no worries. See you, mate."
+        )
+    }
+
+    func testLiveTranscriptBlocksRemoveFullyRepeatedCaptureWindow() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            makeLiveTranscriptRow(
+                id: 2,
+                text: "Question five, yes, I sign off on them.",
+                startedAt: start.addingTimeInterval(10)
+            ),
+            makeLiveTranscriptRow(
+                id: 1,
+                text: "Definitely question four. Question five, yes, I sign off on them.",
+                startedAt: start
+            )
+        ]
+
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: rows)
+
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(
+            blocks[0].text,
+            "Definitely question four. Question five, yes, I sign off on them."
+        )
+    }
+
+    func testLiveTranscriptBlocksLimitContinuousPassageDuration() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = (0..<11).map { index in
+            makeLiveTranscriptRow(
+                id: Int64(index + 1),
+                text: "Thought \(index + 1).",
+                startedAt: start.addingTimeInterval(Double(index * 10))
+            )
+        }
+
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: rows)
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertLessThanOrEqual(
+            blocks.map { $0.endedAt.timeIntervalSince($0.startedAt) }.max() ?? .infinity,
+            DashboardLiveTranscriptBlockPolicy.maximumBlockDuration
+        )
+    }
+
+    func testLiveTranscriptBlocksOnlyUseLatestPassForAnAudioBatch() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let firstPass = makeLiveTranscriptRow(
+            id: 1,
+            text: "Wrong first-pass text.",
+            startedAt: start,
+            transcriptionPass: 1,
+            batchAudioPath: "audio/batch-001.m4a"
+        )
+        let repairedPass = makeLiveTranscriptRow(
+            id: 2,
+            text: "Correct repaired text.",
+            startedAt: start,
+            transcriptionPass: 2,
+            batchAudioPath: "audio/batch-001.m4a"
+        )
+
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: [firstPass, repairedPass])
+
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].text, "Correct repaired text.")
+        XCTAssertEqual(blocks[0].rows.map(\.transcriptionPass), [2])
+    }
+
+    func testLiveAudioPresentationQuarantinesRepeatedFirstPassDecoderLoop() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = (0..<4).map { index in
+            makeLiveTranscriptRow(
+                id: Int64(index + 1),
+                text: "I'm going to run an EMD job at the same time.",
+                startedAt: start.addingTimeInterval(Double(index * 10)),
+                transcriptionPass: 1,
+                batchAudioPath: "audio/batch-00\(index).m4a"
+            )
+        }.reversed()
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: Array(rows))
+
+        XCTAssertTrue(presentation.transcriptRows.isEmpty)
+        XCTAssertEqual(presentation.statusRows.count, 1)
+        XCTAssertEqual(presentation.statusRows.first?.isLowConfidenceSummary, true)
+        XCTAssertEqual(presentation.statusRows.first?.pendingBatchCount, 4)
+    }
+
+    func testLiveAudioPresentationKeepsRepeatedRepairedText() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = (0..<3).map { index in
+            makeLiveTranscriptRow(
+                id: Int64(index + 1),
+                text: "A repaired pass confirmed this sentence.",
+                startedAt: start.addingTimeInterval(Double(index * 10)),
+                transcriptionPass: 2,
+                batchAudioPath: "audio/batch-00\(index).m4a"
+            )
+        }.reversed()
+
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(for: Array(rows))
+
+        XCTAssertEqual(presentation.transcriptRows.count, 1)
+        XCTAssertTrue(presentation.statusRows.isEmpty)
+    }
+
+    func testLiveTranscriptBlockIdentityStaysStableAsNewSpeechArrives() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let initialRows = [
+            makeLiveTranscriptRow(id: 2, text: "Second thought.", startedAt: start.addingTimeInterval(10)),
+            makeLiveTranscriptRow(id: 1, text: "First thought.", startedAt: start)
+        ]
+        let updatedRows = [
+            makeLiveTranscriptRow(id: 3, text: "Third thought.", startedAt: start.addingTimeInterval(20))
+        ] + initialRows
+
+        let initialBlock = DashboardLiveTranscriptBlockPolicy.blocks(from: initialRows)[0]
+        let updatedBlock = DashboardLiveTranscriptBlockPolicy.blocks(from: updatedRows)[0]
+
+        XCTAssertEqual(initialBlock.id, updatedBlock.id)
+        XCTAssertEqual(updatedBlock.text, "First thought. Second thought. Third thought.")
+    }
+
+    func testLiveTranscriptBlockIdentityStaysStableWhenRefinementReplacesOldestRow() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let firstPass = makeLiveTranscriptRow(
+            id: 11,
+            text: "A rough first pass.",
+            startedAt: start,
+            batchAudioPath: "audio/batch-001.wav"
+        )
+        let repairedPass = makeLiveTranscriptRow(
+            id: 91,
+            text: "A cleaner repaired pass.",
+            startedAt: start,
+            batchAudioPath: "audio/batch-001.wav"
+        )
+
+        let firstPassBlock = DashboardLiveTranscriptBlockPolicy.blocks(from: [firstPass])[0]
+        let repairedBlock = DashboardLiveTranscriptBlockPolicy.blocks(from: [repairedPass])[0]
+
+        XCTAssertEqual(firstPassBlock.id, repairedBlock.id)
+    }
+
+    func testCopyLoadedLiveTranscriptUsesOldestToNewestConversationOrder() {
+        let start = Date(timeIntervalSince1970: 1_781_555_000)
+        let rows = [
+            makeLiveTranscriptRow(id: 3, text: "Newest block.", startedAt: start.addingTimeInterval(240)),
+            makeLiveTranscriptRow(id: 2, text: "Still in the first block.", startedAt: start.addingTimeInterval(10)),
+            makeLiveTranscriptRow(id: 1, text: "Oldest block.", startedAt: start)
+        ]
+        let blocks = DashboardLiveTranscriptBlockPolicy.blocks(from: rows)
+
+        XCTAssertEqual(
+            DashboardLiveTranscriptBlockPolicy.copyText(from: blocks),
+            "Oldest block. Still in the first block.\n\nNewest block."
+        )
+    }
+
+    private func makeLiveTranscriptRow(
+        id: Int64,
+        text: String,
+        startedAt: Date,
+        transcriptionPass: Int = 1,
+        batchAudioPath: String? = nil
+    ) -> DashboardLiveAudioRow {
+        DashboardLiveAudioRow(
+            id: id,
+            text: text,
+            startedAt: startedAt,
+            endedAt: startedAt.addingTimeInterval(8),
+            source: .microphone,
+            confidence: 0.88,
+            transcriptStatus: "transcribed",
+            detectedLanguage: "en",
+            audioVariant: "raw",
+            qualityFlags: nil,
+            transcriptionPass: transcriptionPass,
+            batchAudioPath: batchAudioPath
         )
     }
 }

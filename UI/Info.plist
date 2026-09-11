@@ -46,6 +46,13 @@
     <key>NSHighResolutionCapable</key>
     <true/>
 
+    <!-- Read-only FuseIntel BFF is loopback-only and never exposes Retrace data externally. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+
     <!-- Privacy - Screen Recording Usage Description -->
     <key>NSScreenCaptureUsageDescription</key>
     <string>Retrace needs screen recording permission to capture your screen history. All data stays local and encrypted on your Mac.</string>

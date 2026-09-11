@@ -117,11 +117,12 @@ public struct CaptureConfig: Codable, Sendable {
     public let adaptiveCaptureEnabled: Bool
 
     /// Similarity threshold for frame deduplication (0-1)
-    /// - Frames with similarity >= threshold are discarded as duplicates
+    /// - Frames with similarity > threshold are discarded as duplicates
     /// - Examples:
-    ///   - 0.9985 (recommended): discard if 99.85%+ of sampled pixels are identical
-    ///   - 0.997: discard if 99.7%+ of sampled pixels are identical
-    ///   - 0.995 (more sensitive): discard if 99.5%+ of sampled pixels are identical
+    ///   - 0.9985 (recommended): discard if more than 99.85% of sampled pixels match
+    ///   - 0.997: discard if more than 99.7% of sampled pixels match
+    ///   - 0.995 (less sensitive): discard if more than 99.5% of sampled pixels match
+    /// - Higher thresholds retain smaller changes; 1.0 disables duplicate filtering
     /// - Default 0.9985 only discards nearly identical frames
     public let deduplicationThreshold: Double
 

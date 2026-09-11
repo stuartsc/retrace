@@ -5,6 +5,8 @@
 
 A local-first screen recording and search application for macOS, inspired by Rewind AI. Retrace captures your screen activity, extracts text via OCR, and makes everything searchable—all locally on-device.
 
+See [Updates and changelog](CHANGELOG.md) for bug fixes, improvements, validation and release status.
+
 ## What is Retrace?
 
 Retrace is an open source alternative to Rewind AI that gives you photographic memory of everything you've seen on your screen. It continuously captures screenshots (every 2 seconds by default), extracts text using OCR, and stores everything in a searchable database—entirely on your Mac with no cloud dependencies.

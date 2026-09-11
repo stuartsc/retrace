@@ -68,9 +68,12 @@ temp/
 !README.md
 !AGENTS.md
 !CONTRIBUTING.md
+!/CHANGELOG.md
 !*/README.md
 !*/AGENTS.md
 !docs/roadmap.md
+!/docs/capture-improvements-validation.md
+!/docs/progressive-recall-plan.md
 
 # Xcode user-specific data
 .swiftpm/xcode/xcuserdata/

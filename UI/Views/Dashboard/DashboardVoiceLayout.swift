@@ -37,7 +37,7 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
         case .appUsage:
             return "App usage and activity"
         case .live:
-            return "Live transcript, intelligence feed, and conversation context"
+            return "Live transcript, operating brief, and activity pulse"
         case .screenshots:
             return "Screen frames, OCR, and capture metadata"
         }
@@ -77,6 +77,8 @@ struct DashboardLiveColumnWidths: Equatable {
 enum DashboardLiveLayoutPolicy {
     static let minThreeColumnWidth: CGFloat = 1_080
     static let screenshotPageSize = 18
+    static let activityInitialFrameFetchLimit = 72
+    static let activityRefreshFrameFetchLimit = 24
     static let columnSpacing: CGFloat = 14
 
     static func contentMode(forWidth width: CGFloat) -> DashboardLiveContentMode {
@@ -86,107 +88,255 @@ enum DashboardLiveLayoutPolicy {
     static func columnWidths(forWidth width: CGFloat) -> DashboardLiveColumnWidths {
         let usableWidth = max(width - (columnSpacing * 2), 0)
         return DashboardLiveColumnWidths(
-            transcript: usableWidth * 0.31,
-            intelligence: usableWidth * 0.46,
-            context: usableWidth * 0.23
+            transcript: usableWidth * 0.30,
+            intelligence: usableWidth * 0.45,
+            context: usableWidth * 0.25
         )
     }
 }
 
-struct DashboardLiveIntelligenceCard: Identifiable, Equatable {
-    let id: String
-    let title: String
-    let badge: String?
-    let detail: String
-    let bullets: [String]
-    let iconName: String
-    let accentName: String
-
-    init(
-        id: String,
-        title: String,
-        badge: String? = nil,
-        detail: String,
-        bullets: [String] = [],
-        iconName: String,
-        accentName: String
-    ) {
-        self.id = id
-        self.title = title
-        self.badge = badge
-        self.detail = detail
-        self.bullets = bullets
-        self.iconName = iconName
-        self.accentName = accentName
+enum DashboardTranscriptConfidencePolicy {
+    static func displayLabel(transcriptionPass: Int, confidence: Double?) -> String {
+        let passLabel = transcriptionPass > 1 ? "Pass \(transcriptionPass)" : "First pass"
+        guard let confidence, confidence > 0 else { return passLabel }
+        return "\(passLabel) · \(Int((confidence * 100).rounded()))%"
     }
 }
 
-enum DashboardLiveIntelligencePolicy {
-    static let defaultCards: [DashboardLiveIntelligenceCard] = [
-        DashboardLiveIntelligenceCard(
-            id: "people",
-            title: "Key people mentioned",
-            badge: "NEW",
-            detail: "Names, roles, and teams detected from live speech will appear here.",
-            iconName: "person.2.fill",
-            accentName: "violet"
-        ),
-        DashboardLiveIntelligenceCard(
-            id: "company",
-            title: "Company context",
-            detail: "FuseIntel can attach CRM, email, notes, and prior meeting context.",
-            iconName: "building.2.fill",
-            accentName: "blue"
-        ),
-        DashboardLiveIntelligenceCard(
-            id: "talking-points",
-            title: "Suggested talking points",
-            detail: "Keep the conversation moving with timely prompts.",
-            bullets: [
-                "Clarify scope, decision owner, and timing.",
-                "Confirm the pain point in the user's own words.",
-                "Ask what success must look like after rollout."
-            ],
-            iconName: "lightbulb.fill",
-            accentName: "pink"
-        ),
-        DashboardLiveIntelligenceCard(
-            id: "risks",
-            title: "Risks & objections",
-            detail: "Budget, implementation effort, unclear ownership, and integration risk.",
-            iconName: "exclamationmark.triangle.fill",
-            accentName: "red"
-        ),
-        DashboardLiveIntelligenceCard(
-            id: "background",
-            title: "Relevant background",
-            detail: "Prior decisions, related documents, and searchable memory will be surfaced here.",
-            iconName: "book.closed.fill",
-            accentName: "indigo"
-        ),
-        DashboardLiveIntelligenceCard(
-            id: "actions",
-            title: "Action items forming",
-            detail: "Commitments and next steps are tracked as they emerge.",
-            bullets: [
-                "Capture owner, due date, and dependency.",
-                "Separate confirmed actions from possible follow-ups."
-            ],
-            iconName: "checkmark.circle.fill",
-            accentName: "teal"
-        ),
-        DashboardLiveIntelligenceCard(
-            id: "questions",
-            title: "Questions to ask now",
-            detail: "Useful questions based on what was just said.",
-            bullets: [
-                "What needs to be true before this moves forward?",
-                "Who else needs to be involved in the decision?"
-            ],
-            iconName: "questionmark.circle.fill",
-            accentName: "amber"
+struct DashboardScreenshotColumnWidths: Equatable {
+    let screenshots: CGFloat
+    let context: CGFloat
+}
+
+enum DashboardScreenshotLayoutPolicy {
+    static let minSplitWidth: CGFloat = 900
+    static let screenshotColumnRatio: CGFloat = 0.58
+    static let minimumInteractiveListWidth: CGFloat = 500
+
+    static func contentMode(forWidth width: CGFloat) -> DashboardVoiceContentMode {
+        width >= minSplitWidth ? .split : .stacked
+    }
+
+    static func columnWidths(forWidth width: CGFloat) -> DashboardScreenshotColumnWidths {
+        let usableWidth = max(width - DashboardLiveLayoutPolicy.columnSpacing, 0)
+        let screenshotWidth = max(usableWidth * screenshotColumnRatio, minimumInteractiveListWidth)
+        let boundedScreenshotWidth = min(screenshotWidth, usableWidth)
+
+        return DashboardScreenshotColumnWidths(
+            screenshots: boundedScreenshotWidth,
+            context: max(usableWidth - boundedScreenshotWidth, 0)
         )
-    ]
+    }
+}
+
+enum DashboardScreenshotWorkspaceContentMode: Equatable {
+    case threeColumn
+    case stacked
+}
+
+struct DashboardScreenshotWorkspaceColumnWidths: Equatable {
+    let momentRail: CGFloat
+    let preview: CGFloat
+    let inspector: CGFloat
+}
+
+enum DashboardScreenshotWorkspacePolicy {
+    static let minThreeColumnWidth: CGFloat = 1_050
+    static let momentRailWidth: CGFloat = 250
+    static let inspectorWidth: CGFloat = 340
+
+    static func contentMode(forWidth width: CGFloat) -> DashboardScreenshotWorkspaceContentMode {
+        width >= minThreeColumnWidth ? .threeColumn : .stacked
+    }
+
+    static func columnWidths(forWidth width: CGFloat) -> DashboardScreenshotWorkspaceColumnWidths {
+        let spacing = DashboardLiveLayoutPolicy.columnSpacing * 2
+        let usableWidth = max(width - spacing, 0)
+        let momentRail = min(momentRailWidth, usableWidth)
+        let inspector = min(inspectorWidth, max(usableWidth - momentRail, 0))
+        let preview = max(usableWidth - momentRail - inspector, 0)
+
+        return DashboardScreenshotWorkspaceColumnWidths(
+            momentRail: momentRail,
+            preview: preview,
+            inspector: inspector
+        )
+    }
+}
+
+enum DashboardScreenshotFilterPolicy {
+    static func matches(
+        query: String,
+        appName: String?,
+        windowName: String?,
+        browserURL: String?,
+        ocrText: String?
+    ) -> Bool {
+        let terms = query
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+
+        guard !terms.isEmpty else { return true }
+
+        let searchableText = [appName, windowName, browserURL, ocrText]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .lowercased()
+
+        return terms.allSatisfy(searchableText.contains)
+    }
+}
+
+enum DashboardScreenshotNavigationDirection {
+    case newer
+    case older
+}
+
+enum DashboardScreenshotNavigationPolicy {
+    static func adjacentID(
+        from selectedID: Int64?,
+        direction: DashboardScreenshotNavigationDirection,
+        orderedIDs: [Int64]
+    ) -> Int64? {
+        guard !orderedIDs.isEmpty else { return nil }
+        guard let selectedID, let index = orderedIDs.firstIndex(of: selectedID) else {
+            return orderedIDs.first
+        }
+
+        let targetIndex = direction == .older ? index + 1 : index - 1
+        guard orderedIDs.indices.contains(targetIndex) else { return nil }
+        return orderedIDs[targetIndex]
+    }
+}
+
+enum DashboardScreenshotRetryPolicy {
+    static let maximumAttempts = 3
+
+    static func shouldRetry(attemptCount: Int) -> Bool {
+        attemptCount < maximumAttempts
+    }
+}
+
+struct DashboardScreenshotScrollGeometry: Equatable {
+    let offsetY: CGFloat
+    let contentHeight: CGFloat
+    let containerHeight: CGFloat
+}
+
+enum DashboardScreenshotPaginationPolicy {
+    static let minimumScrollOffset: CGFloat = 24
+    static let minimumDownwardDelta: CGFloat = 1
+    static let preloadDistance: CGFloat = 160
+
+    static func shouldLoadOlder(
+        previousOffsetY: CGFloat,
+        currentOffsetY: CGFloat,
+        contentHeight: CGFloat,
+        containerHeight: CGFloat,
+        boundaryID: Int64?,
+        lastRequestedBoundaryID: Int64?,
+        canLoadMore: Bool,
+        isLoading: Bool
+    ) -> Bool {
+        guard canLoadMore, !isLoading else { return false }
+        guard let boundaryID, boundaryID != lastRequestedBoundaryID else { return false }
+        guard contentHeight > containerHeight else { return false }
+        guard currentOffsetY >= minimumScrollOffset else { return false }
+        guard currentOffsetY > previousOffsetY + minimumDownwardDelta else { return false }
+
+        let remainingDistance = contentHeight - (currentOffsetY + containerHeight)
+        return remainingDistance <= preloadDistance
+    }
+}
+
+struct DashboardOCRContextLine: Identifiable, Equatable {
+    let id: Int
+    let text: String
+    let nodeCount: Int
+}
+
+enum DashboardOCRContextPolicy {
+    static let rowYTolerance: CGFloat = 0.018
+
+    static func readableLines(from nodes: [OCRNodeWithText]) -> [DashboardOCRContextLine] {
+        let readableNodes = nodes
+            .map { node -> OCRNodeWithText? in
+                let text = normalizedText(node.text)
+                guard !text.isEmpty else { return nil }
+                return OCRNodeWithText(
+                    id: node.id,
+                    frameId: node.frameId,
+                    x: node.x,
+                    y: node.y,
+                    width: node.width,
+                    height: node.height,
+                    text: text
+                )
+            }
+            .compactMap { $0 }
+            .sorted { lhs, rhs in
+                if abs(lhs.y - rhs.y) > rowYTolerance {
+                    return lhs.y < rhs.y
+                }
+                return lhs.x < rhs.x
+            }
+
+        var lines: [DashboardOCRContextLine] = []
+        var currentRow: [OCRNodeWithText] = []
+        var currentRowY: CGFloat?
+
+        func flushCurrentRow() {
+            guard !currentRow.isEmpty else { return }
+            let row = currentRow.sorted { lhs, rhs in
+                if abs(lhs.x - rhs.x) > 0.001 {
+                    return lhs.x < rhs.x
+                }
+                return lhs.id < rhs.id
+            }
+            let text = row.map(\.text).joined(separator: " ")
+            lines.append(DashboardOCRContextLine(
+                id: row.map(\.id).min() ?? lines.count,
+                text: text,
+                nodeCount: row.count
+            ))
+            currentRow.removeAll(keepingCapacity: true)
+            currentRowY = nil
+        }
+
+        for node in readableNodes {
+            guard let rowY = currentRowY else {
+                currentRow = [node]
+                currentRowY = node.y
+                continue
+            }
+
+            if abs(node.y - rowY) <= rowYTolerance {
+                currentRow.append(node)
+                currentRowY = (rowY + node.y) / 2
+            } else {
+                flushCurrentRow()
+                currentRow = [node]
+                currentRowY = node.y
+            }
+        }
+
+        flushCurrentRow()
+        return lines
+    }
+
+    static func fullText(from nodes: [OCRNodeWithText]) -> String {
+        readableLines(from: nodes)
+            .map(\.text)
+            .joined(separator: "\n")
+    }
+
+    private static func normalizedText(_ text: String) -> String {
+        text
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 enum DashboardLiveMemoryPolicy {
@@ -240,6 +390,85 @@ enum DashboardLiveMemoryPolicy {
     }
 }
 
+/// Reconciles the selected screenshot independently of the bounded latest-page refresh.
+@MainActor
+final class DashboardSelectedFrameRefresher {
+    struct Snapshot: Sendable {
+        let frame: FrameWithVideoInfo
+        let nodes: [OCRNodeWithText]?
+    }
+
+    private var generation = 0
+    private var pending: (frameID: FrameID, generation: Int, task: Task<Snapshot?, Error>)?
+
+    func cancel() {
+        generation += 1
+        pending?.task.cancel()
+        pending = nil
+    }
+
+    func refresh(
+        _ selected: FrameWithVideoInfo,
+        loadedStatus: Int?,
+        loadFrame: @escaping @Sendable (FrameID) async throws -> FrameWithVideoInfo?,
+        loadNodes: @escaping @Sendable (FrameWithVideoInfo) async throws -> [OCRNodeWithText]
+    ) async throws -> Snapshot? {
+        guard selected.frame.source == .native, !Task.isCancelled else { return nil }
+        let request: (frameID: FrameID, generation: Int, task: Task<Snapshot?, Error>)
+        if let pending, pending.frameID == selected.frame.id {
+            request = pending
+        } else {
+            cancel()
+            let task = Task {
+                let clock = ContinuousClock()
+                let start = clock.now
+                defer {
+                    let duration = start.duration(to: clock.now).components
+                    Log.recordLatency("dashboard.selected_frame_refresh", valueMs: Double(duration.seconds) * 1_000 + Double(duration.attoseconds) / 1_000_000_000_000_000, category: .ui, warningThresholdMs: 500)
+                }
+                try Task.checkCancellation()
+                guard let frame = try await loadFrame(selected.frame.id),
+                      frame.frame.id == selected.frame.id,
+                      frame.frame.source == selected.frame.source else { return nil as Snapshot? }
+                try Task.checkCancellation()
+                let nodes = frame.processingStatus == 2 && loadedStatus != 2 ? try await loadNodes(frame) : nil
+                try Task.checkCancellation()
+                return Snapshot(frame: frame, nodes: nodes)
+            }
+            request = (selected.frame.id, generation, task)
+            pending = request
+        }
+        defer {
+            if pending?.generation == request.generation { pending = nil }
+        }
+        let result = try await request.task.value
+        try Task.checkCancellation()
+        guard generation == request.generation else { return nil }
+        return result
+    }
+
+    static func apply(
+        _ snapshot: Snapshot,
+        selectedID: Int64?,
+        frames: inout [FrameWithVideoInfo],
+        nodes: inout [Int64: [OCRNodeWithText]],
+        loadedStatuses: inout [Int64: Int]
+    ) -> Bool {
+        let id = snapshot.frame.frame.id.value
+        guard selectedID == id,
+              let index = frames.firstIndex(where: { $0.frame.id.value == id && $0.frame.source == snapshot.frame.frame.source }) else { return false }
+        frames[index] = snapshot.frame
+        if let refreshedNodes = snapshot.nodes {
+            nodes[id] = refreshedNodes
+            loadedStatuses[id] = snapshot.frame.processingStatus
+        } else if loadedStatuses[id] != snapshot.frame.processingStatus {
+            nodes.removeValue(forKey: id)
+            loadedStatuses.removeValue(forKey: id)
+        }
+        return true
+    }
+}
+
 enum DashboardLiveAudioPaginationPolicy {
     static func nextTranscriptOffset(
         currentOffset: Int,
@@ -254,6 +483,8 @@ enum DashboardLiveAudioPaginationPolicy {
 }
 
 enum DashboardLiveAudioHistoryPolicy {
+    static let maximumPagesPerLoad = 3
+
     static func shouldShowHistory(readableRowCount: Int, canLoadMoreOlderRows: Bool, isLoadingOlderRows: Bool) -> Bool {
         readableRowCount > 0 || canLoadMoreOlderRows || isLoadingOlderRows
     }
@@ -262,22 +493,35 @@ enum DashboardLiveAudioHistoryPolicy {
         readableRowCount: Int,
         targetReadableRowCount: Int,
         fetchedTranscriptRows: Int,
+        fetchedPageCount: Int = 0,
         pageSize: Int,
         canLoadMoreOlderRows: Bool
     ) -> Bool {
         guard readableRowCount < targetReadableRowCount else { return false }
         guard canLoadMoreOlderRows else { return false }
+        guard fetchedPageCount < maximumPagesPerLoad else { return false }
         return fetchedTranscriptRows >= pageSize
     }
 
     static func shouldAutoLoadOlderRows(
         currentRowID: Int64,
         lastRowID: Int64?,
+        lastRequestedBoundaryRowID: Int64?,
         canLoadMoreOlderRows: Bool,
         isLoadingOlderRows: Bool
     ) -> Bool {
         guard canLoadMoreOlderRows && !isLoadingOlderRows else { return false }
-        return currentRowID == lastRowID
+        return currentRowID == lastRowID && currentRowID != lastRequestedBoundaryRowID
+    }
+
+    static func shouldAutoContinueFromVisibleFooter(
+        currentOffset: Int,
+        lastRequestedOffset: Int?,
+        canLoadMoreOlderRows: Bool,
+        isLoadingOlderRows: Bool
+    ) -> Bool {
+        guard canLoadMoreOlderRows && !isLoadingOlderRows else { return false }
+        return currentOffset != lastRequestedOffset
     }
 }
 
@@ -288,6 +532,17 @@ enum DashboardRefreshLoopPolicy {
         isWindowVisible: Bool
     ) -> Bool {
         isWindowVisible && selectedTab == loopTab
+    }
+}
+
+enum DashboardTabEntryLoadAction: Equatable {
+    case initialLoad
+    case refresh
+}
+
+enum DashboardTabEntryLoadPolicy {
+    static func action(hasLoadedItems: Bool) -> DashboardTabEntryLoadAction {
+        hasLoadedItems ? .refresh : .initialLoad
     }
 }
 
@@ -316,7 +571,7 @@ enum DashboardTranscriptDisplayPolicy {
     }
 }
 
-struct DashboardLiveAudioRow: Identifiable, Equatable {
+struct DashboardLiveAudioRow: Identifiable, Equatable, Sendable {
     let id: Int64
     let text: String
     let startedAt: Date
@@ -589,7 +844,10 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
             (trimmed.hasPrefix("*") && trimmed.hasSuffix("*")) ||
             (trimmed.hasPrefix("[") && trimmed.hasSuffix("]")) ||
             (trimmed.hasPrefix("(") && trimmed.hasSuffix(")"))
-        guard hasCaptionWrapper else { return false }
+        let hasTruncatedCaptionMarker =
+            trimmed.hasPrefix("[") != trimmed.hasSuffix("]") ||
+            trimmed.hasPrefix("*") != trimmed.hasSuffix("*")
+        guard hasCaptionWrapper || hasTruncatedCaptionMarker else { return false }
 
         let inner = trimmed
             .trimmingCharacters(in: captionMarkers)
@@ -644,6 +902,9 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
         let words = inner
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map { String($0) }
+        if hasTruncatedCaptionMarker {
+            return words.count <= 4
+        }
         let speechPronouns: Set<String> = [
             "i",
             "im",
@@ -687,9 +948,305 @@ struct DashboardLiveAudioRow: Identifiable, Equatable {
     }
 }
 
-struct DashboardLiveAudioPresentation: Equatable {
+struct DashboardLiveAudioPresentation: Equatable, Sendable {
     let transcriptRows: [DashboardLiveAudioRow]
     let statusRows: [DashboardLiveAudioRow]
+}
+
+struct DashboardLiveTranscriptBlock: Identifiable, Equatable, Sendable {
+    enum ID: Hashable, Sendable {
+        case audioBatch(String)
+        case capture(startMilliseconds: Int64, source: String)
+    }
+
+    let id: ID
+    let rows: [DashboardLiveAudioRow]
+    let text: String
+    let startedAt: Date
+    let endedAt: Date
+
+    init(rows: [DashboardLiveAudioRow]) {
+        precondition(!rows.isEmpty, "Live transcript blocks require at least one row")
+
+        let chronologicalRows = rows.sorted {
+            if $0.startedAt != $1.startedAt {
+                return $0.startedAt < $1.startedAt
+            }
+            return $0.id < $1.id
+        }
+        let oldestRow = chronologicalRows[0]
+
+        self.id = Self.stableIdentity(for: oldestRow)
+        self.rows = chronologicalRows
+        self.text = DashboardLiveTranscriptBlockPolicy.continuousText(from: chronologicalRows)
+        self.startedAt = chronologicalRows.map(\.startedAt).min() ?? oldestRow.startedAt
+        self.endedAt = chronologicalRows.map(\.endedAt).max() ?? oldestRow.endedAt
+    }
+
+    var rowCount: Int { rows.count }
+    var oldestRowID: Int64 { rows.first?.id ?? 0 }
+    var newestRowID: Int64 { rows.last?.id ?? 0 }
+
+    var sourceLabel: String {
+        let sourceNames = rows.reduce(into: [String]()) { names, row in
+            let name = row.source.rawValue.capitalized
+            if !names.contains(name) {
+                names.append(name)
+            }
+        }
+        return sourceNames.count == 1 ? (sourceNames.first ?? "Audio") : "Mixed audio"
+    }
+
+    var spansMultipleDisplayMinutes: Bool {
+        Int(startedAt.timeIntervalSince1970 / 60) != Int(endedAt.timeIntervalSince1970 / 60)
+    }
+
+    var isUpdating: Bool {
+        rows.contains(where: \.isRepairingTranscript)
+    }
+
+    var refinementBadgeText: String? {
+        if isUpdating {
+            return "Updating"
+        }
+
+        let passes = rows.map(\.transcriptionPass)
+        guard let minimumPass = passes.min(), let maximumPass = passes.max(), maximumPass > 1 else {
+            return nil
+        }
+        if minimumPass >= 3 {
+            return "Context repaired"
+        }
+        if minimumPass >= 2 {
+            return "Repaired"
+        }
+        return "Partially repaired"
+    }
+
+    private static func stableIdentity(for row: DashboardLiveAudioRow) -> ID {
+        if let batchAudioPath = row.batchAudioPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !batchAudioPath.isEmpty {
+            return .audioBatch(batchAudioPath)
+        }
+
+        return .capture(
+            startMilliseconds: Int64((row.startedAt.timeIntervalSince1970 * 1_000).rounded()),
+            source: row.source.rawValue
+        )
+    }
+}
+
+struct DashboardLiveAudioPreparedSnapshot: Equatable, Sendable {
+    let transcriptRows: [DashboardLiveAudioRow]
+    let statusRows: [DashboardLiveAudioRow]
+    let transcriptBlocks: [DashboardLiveTranscriptBlock]
+
+    init(rawRows: [DashboardLiveAudioRow], statusRowLimit: Int) {
+        let presentation = DashboardLiveAudioPresentationPolicy.presentation(
+            for: rawRows,
+            statusRowLimit: statusRowLimit
+        )
+        self.transcriptRows = presentation.transcriptRows
+        self.statusRows = presentation.statusRows
+        self.transcriptBlocks = DashboardLiveTranscriptBlockPolicy.blocks(
+            from: presentation.transcriptRows
+        )
+    }
+}
+
+enum DashboardLiveTranscriptBlockPolicy {
+    static let maximumInterSegmentStartGap: TimeInterval = 20
+    static let maximumBlockDuration: TimeInterval = 90
+    static let maximumBlockCharacterCount = 1_200
+
+    private static let minimumOverlapWordCount = 3
+    private static let maximumOverlapWordCount = 32
+
+    static func blocks(from rows: [DashboardLiveAudioRow]) -> [DashboardLiveTranscriptBlock] {
+        let chronologicalRows = latestPassRows(from: rows)
+            .filter { $0.hasTranscriptText }
+            .sorted {
+                if $0.startedAt != $1.startedAt {
+                    return $0.startedAt < $1.startedAt
+                }
+                return $0.id < $1.id
+            }
+
+        var groupedRows: [[DashboardLiveAudioRow]] = []
+        for row in chronologicalRows {
+            if let currentRows = groupedRows.last,
+               canAppend(row, to: currentRows) {
+                groupedRows[groupedRows.count - 1].append(row)
+            } else {
+                groupedRows.append([row])
+            }
+        }
+
+        return groupedRows.reversed().map(DashboardLiveTranscriptBlock.init(rows:))
+    }
+
+    static func copyText(from blocks: [DashboardLiveTranscriptBlock]) -> String {
+        blocks.reversed()
+            .map(\.text)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    static func normalizedSegmentText(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func continuousText(from rows: [DashboardLiveAudioRow]) -> String {
+        let chronologicalRows = rows.sorted {
+            if $0.startedAt != $1.startedAt {
+                return $0.startedAt < $1.startedAt
+            }
+            return $0.id < $1.id
+        }
+
+        var result = ""
+        var previousSegment = ""
+        var previousSignature: String?
+
+        for row in chronologicalRows {
+            let segment = normalizedSegmentText(row.text)
+            guard !segment.isEmpty else { continue }
+
+            let signature = comparisonSignature(segment)
+            if !signature.isEmpty, signature == previousSignature {
+                previousSegment = segment
+                continue
+            }
+
+            if result.isEmpty {
+                result = segment
+            } else {
+                let overlapCount = leadingOverlapWordCount(
+                    previousSegment: previousSegment,
+                    nextSegment: segment
+                )
+                let remainder = segmentDroppingLeadingWords(segment, count: overlapCount)
+                if !remainder.isEmpty {
+                    result += " " + remainder
+                }
+            }
+
+            previousSegment = segment
+            previousSignature = signature
+        }
+
+        return result
+    }
+
+    private static func canAppend(
+        _ row: DashboardLiveAudioRow,
+        to currentRows: [DashboardLiveAudioRow]
+    ) -> Bool {
+        guard let previousRow = currentRows.last,
+              let firstRow = currentRows.first else {
+            return false
+        }
+
+        let startGap = row.startedAt.timeIntervalSince(previousRow.startedAt)
+        guard startGap <= maximumInterSegmentStartGap else { return false }
+
+        let blockEnd = max(
+            row.endedAt,
+            currentRows.map(\.endedAt).max() ?? previousRow.endedAt
+        )
+        guard blockEnd.timeIntervalSince(firstRow.startedAt) <= maximumBlockDuration else {
+            return false
+        }
+
+        return continuousText(from: currentRows + [row]).count <= maximumBlockCharacterCount
+    }
+
+    private static func latestPassRows(
+        from rows: [DashboardLiveAudioRow]
+    ) -> [DashboardLiveAudioRow] {
+        var latestPassByBatchPath: [String: Int] = [:]
+        for row in rows {
+            guard let batchPath = normalizedBatchPath(row.batchAudioPath) else { continue }
+            latestPassByBatchPath[batchPath] = max(
+                latestPassByBatchPath[batchPath] ?? row.transcriptionPass,
+                row.transcriptionPass
+            )
+        }
+
+        return rows.filter { row in
+            guard let batchPath = normalizedBatchPath(row.batchAudioPath),
+                  let latestPass = latestPassByBatchPath[batchPath] else {
+                return true
+            }
+            return row.transcriptionPass == latestPass
+        }
+    }
+
+    private static func normalizedBatchPath(_ path: String?) -> String? {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return nil
+        }
+        return path
+    }
+
+    private static func leadingOverlapWordCount(
+        previousSegment: String,
+        nextSegment: String
+    ) -> Int {
+        let previousWords = canonicalWords(previousSegment)
+        let nextWords = canonicalWords(nextSegment)
+        let maximumCount = min(
+            maximumOverlapWordCount,
+            previousWords.count,
+            nextWords.count
+        )
+        guard maximumCount >= minimumOverlapWordCount else { return 0 }
+
+        for count in stride(from: maximumCount, through: minimumOverlapWordCount, by: -1) {
+            if previousWords.suffix(count).elementsEqual(nextWords.prefix(count)) {
+                return count
+            }
+        }
+        return 0
+    }
+
+    private static func segmentDroppingLeadingWords(_ segment: String, count: Int) -> String {
+        guard count > 0 else { return segment }
+
+        let rawWords = segment.split(whereSeparator: \Character.isWhitespace).map(String.init)
+        var meaningfulWordCount = 0
+        var finalDroppedIndex: Int?
+
+        for (index, rawWord) in rawWords.enumerated() where !canonicalWord(rawWord).isEmpty {
+            meaningfulWordCount += 1
+            if meaningfulWordCount == count {
+                finalDroppedIndex = index
+                break
+            }
+        }
+
+        guard let finalDroppedIndex else { return segment }
+        return rawWords.dropFirst(finalDroppedIndex + 1).joined(separator: " ")
+    }
+
+    private static func comparisonSignature(_ text: String) -> String {
+        canonicalWords(text).joined(separator: " ")
+    }
+
+    private static func canonicalWords(_ text: String) -> [String] {
+        text.split(whereSeparator: \Character.isWhitespace)
+            .map { canonicalWord(String($0)) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func canonicalWord(_ word: String) -> String {
+        String(word.unicodeScalars.filter(CharacterSet.alphanumerics.contains))
+            .lowercased()
+    }
 }
 
 enum DashboardLiveAudioPresentationPolicy {
@@ -733,6 +1290,11 @@ enum DashboardLiveAudioPresentationPolicy {
                 transcriptRows.append(row)
             }
         }
+
+        let repeatedDecoderPartition = partitionRepeatedFirstPassDecoderLoops(transcriptRows)
+        transcriptRows = repeatedDecoderPartition.readableRows
+        statusRows.append(contentsOf: repeatedDecoderPartition.summaryRows)
+        statusRows.sort(by: rowSortIsDescending)
 
         if let statusRowLimit {
             statusRows = Array(statusRows.prefix(max(statusRowLimit, 0)))
@@ -779,6 +1341,60 @@ enum DashboardLiveAudioPresentationPolicy {
         }
 
         return coalesced
+    }
+
+    private static func partitionRepeatedFirstPassDecoderLoops(
+        _ rows: [DashboardLiveAudioRow]
+    ) -> (readableRows: [DashboardLiveAudioRow], summaryRows: [DashboardLiveAudioRow]) {
+        let minimumRepeatedRowCount = 3
+        let minimumSignatureCharacterCount = 18
+        let minimumSignatureWordCount = 5
+        let maximumOccurrenceGap: TimeInterval = 5 * 60
+
+        var readableRows: [DashboardLiveAudioRow] = []
+        var summaryRows: [DashboardLiveAudioRow] = []
+        var index = 0
+
+        while index < rows.count {
+            let signature = transcriptSignature(for: rows[index])
+            var endIndex = index + 1
+
+            while endIndex < rows.count,
+                  transcriptSignature(for: rows[endIndex]) == signature,
+                  abs(rows[endIndex].startedAt.timeIntervalSince(rows[endIndex - 1].startedAt))
+                    <= maximumOccurrenceGap {
+                endIndex += 1
+            }
+
+            let repeatedRows = Array(rows[index..<endIndex])
+            let signatureWordCount = signature.split(whereSeparator: \Character.isWhitespace).count
+            let shouldQuarantine = !signature.isEmpty
+                && repeatedRows.count >= minimumRepeatedRowCount
+                && repeatedRows.allSatisfy { $0.transcriptionPass == 1 }
+                && signature.count >= minimumSignatureCharacterCount
+                && signatureWordCount >= minimumSignatureWordCount
+
+            if shouldQuarantine, let summary = lowConfidenceSummary(for: repeatedRows) {
+                summaryRows.append(summary)
+            } else {
+                readableRows.append(contentsOf: repeatedRows)
+            }
+
+            index = endIndex
+        }
+
+        return (readableRows, summaryRows)
+    }
+
+    private static func lowConfidenceSummary(
+        for rows: [DashboardLiveAudioRow]
+    ) -> DashboardLiveAudioRow? {
+        guard let firstRow = rows.first else { return nil }
+        var summary = normalizedStatusRow(firstRow, signature: "low_confidence")
+        for row in rows.dropFirst() {
+            summary = mergedStatusRow(summary, with: row, signature: "low_confidence")
+        }
+        return summary
     }
 
     private static func transcriptSignature(for row: DashboardLiveAudioRow) -> String {

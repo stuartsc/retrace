@@ -184,25 +184,10 @@ public actor AudioBackfillManager {
             return .silence
         }
 
-        // 6. Write sentence-level M4A files first so we have paths for DB records
-        var sentenceAudioPaths: [String?] = Array(repeating: nil, count: sentences.count)
-        for (index, sentence) in sentences.enumerated() {
-            do {
-                let (filePath, _) = try await audioWriter.writeAudioSegment(
-                    audioData: decoded.data,
-                    startTime: sentence.startTime,
-                    endTime: sentence.endTime,
-                    sampleRate: decoded.sampleRate,
-                    channels: 1,
-                    timestamp: batch.startTime.addingTimeInterval(sentence.startTime),
-                    source: batch.source
-                )
-                sentenceAudioPaths[index] = filePath
-                Log.debug("[AudioBackfill] Wrote sentence segment: \(filePath)", category: .processing)
-            } catch {
-                Log.error("[AudioBackfill] Failed to write sentence audio: \(error)", category: .processing)
-            }
-        }
+        // Keep sentence timing in SQLite while retaining one canonical batch file.
+        let transcriptAudioPath = AudioStoragePolicy.canonicalTranscriptPath(
+            batchAudioPath: batch.audioPath
+        )
 
         // 7. Insert sentence records with audio paths
         var transcriptionsBatch: [(
@@ -222,7 +207,7 @@ public actor AudioBackfillManager {
             qualityFlags: String?
         )] = []
 
-        for (index, sentence) in sentences.enumerated() {
+        for sentence in sentences {
             transcriptionsBatch.append((
                 sessionID: nil,
                 text: sentence.text,
@@ -231,7 +216,7 @@ public actor AudioBackfillManager {
                 source: batch.source,
                 confidence: sentence.confidence,
                 words: sentence.words,
-                audioPath: sentenceAudioPaths[index],
+                audioPath: transcriptAudioPath,
                 transcriptionPass: 1,
                 batchAudioPath: batch.audioPath,
                 transcriptStatus: decision.status.rawValue,

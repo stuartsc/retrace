@@ -64,7 +64,11 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
             "(fire crackling)",
             "( Meaning No audio )",
             "[door closes]",
-            "*keyboard clicks*"
+            "*keyboard clicks*",
+            "[Loud",
+            "Click]",
+            "*music",
+            "typing*"
         ]
 
         for caption in captions {
@@ -291,7 +295,7 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertGreaterThan(decision.attempts, 1)
     }
 
-    func testLiveRetryProfileDoesNotRunOfflineRepairBudget() async throws {
+    func testLiveRetryProfileStopsAfterOneEmptyProbableSilenceAttempt() async throws {
         let service = ScriptedTranscriptionService(
             results: Array(
                 repeating: DetailedTranscriptionResult(text: "", words: [], language: "nn", duration: 1.0),
@@ -310,7 +314,8 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
             profile: .liveFirstPass
         )
 
-        XCTAssertEqual(decision.attempts, 3)
+        XCTAssertEqual(decision.status, .probableSilence)
+        XCTAssertEqual(decision.attempts, 1)
     }
 
     func testLiveRetryProfileUsesEnglishHintAndRejectsJunkBeforeReturning() async throws {
@@ -339,6 +344,47 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertEqual(decision.status, .transcribed)
         XCTAssertEqual(decision.attempts, 2)
         XCTAssertEqual(languageHints, ["en", "en"])
+    }
+
+    func testLiveRetryProfileDoesNotSeedDecoderWithPreviousBatchText() async throws {
+        let service = ScriptedTranscriptionService(
+            results: [Self.result("fresh speech from the current audio batch")]
+        )
+        try await service.initialize()
+
+        _ = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.02),
+            sampleRate: 16_000,
+            channels: 1,
+            transcriptionService: service,
+            wordLevel: true,
+            initialPrompt: "text from an earlier batch must not leak into live speech",
+            profile: .liveFirstPass
+        )
+
+        let prompts = await service.initialPromptsSeen()
+        XCTAssertEqual(prompts.count, 1)
+        XCTAssertNil(prompts[0])
+    }
+
+    func testExhaustiveRepairRetainsExplicitContextPrompt() async throws {
+        let service = ScriptedTranscriptionService(
+            results: [Self.result("repaired speech uses its explicit neighboring context")]
+        )
+        try await service.initialize()
+
+        _ = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.02),
+            sampleRate: 16_000,
+            channels: 1,
+            transcriptionService: service,
+            wordLevel: true,
+            initialPrompt: "trusted neighboring transcript",
+            profile: .exhaustiveRepair
+        )
+
+        let prompts = await service.initialPromptsSeen()
+        XCTAssertEqual(prompts.first ?? nil, "trusted neighboring transcript")
     }
 
     func testLiveRetryProfileRejectsSoundEffectCaptionsBeforeReturning() async throws {
@@ -392,6 +438,19 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertEqual(WhisperCppTranscriptionService.normalizedLanguageHint(" ja "), "ja")
     }
 
+    func testWhisperCppUsesCrashSafeCPUBackendByDefault() {
+        XCTAssertFalse(WhisperCppTranscriptionService.defaultUseGPU)
+
+        let defaultService = WhisperCppTranscriptionService(modelPath: "/tmp/nonexistent.bin")
+        XCTAssertFalse(defaultService.useGPU)
+
+        let explicitGPUService = WhisperCppTranscriptionService(
+            modelPath: "/tmp/nonexistent.bin",
+            useGPU: true
+        )
+        XCTAssertTrue(explicitGPUService.useGPU)
+    }
+
     private static func result(_ text: String) -> DetailedTranscriptionResult {
         let parts = text.split(whereSeparator: \.isWhitespace).map(String.init)
         let words = parts.enumerated().map { index, word in
@@ -420,6 +479,7 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
     private var results: [DetailedTranscriptionResult]
     private var callIndex = 0
     private var languageHints: [String] = []
+    private var initialPrompts: [String?] = []
 
     init(results: [DetailedTranscriptionResult]) {
         self.results = results
@@ -466,6 +526,7 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
             throw TranscriptionError.notInitialized
         }
         languageHints.append(languageHint ?? "nil")
+        initialPrompts.append(initialPrompt)
         let result = results[min(callIndex, results.count - 1)]
         callIndex += 1
         return result
@@ -473,5 +534,9 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
 
     func languageHintsSeen() -> [String] {
         languageHints
+    }
+
+    func initialPromptsSeen() -> [String?] {
+        initialPrompts
     }
 }

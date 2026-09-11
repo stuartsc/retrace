@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import XCTest
@@ -308,6 +309,40 @@ final class StorageManagerTests: XCTestCase {
     // ┌──────────────────────────────────────────────────────────────────────────┐
     // │                        Segment Writer Tests                              │
     // └──────────────────────────────────────────────────────────────────────────┘
+
+    func testStrictFrameReadRejectsEarlierImageWhileTolerantPlaybackRemainsAvailable() async throws {
+        let root = makeTempRoot()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let videoURL = root.appendingPathComponent("timestamp-gap.mp4")
+        let encoder = HEVCEncoder()
+        try await encoder.initialize(width: 64, height: 64, config: .default,
+                                     outputURL: videoURL, segmentStartTime: Date())
+        // A real encoded gap reproduces AVFoundation returning the earlier image
+        // for a requested 30 fps slot that has not been encoded yet.
+        for index in 0..<3 {
+            let frame = CapturedFrame(imageData: Data(repeating: UInt8(40 + index * 60), count: 64 * 64 * 4),
+                                      width: 64, height: 64, bytesPerRow: 64 * 4)
+            let pixels = try FrameConverter.createPixelBuffer(from: frame)
+            try await encoder.encode(pixelBuffer: pixels, timestamp: CMTime(value: Int64(index), timescale: 10))
+        }
+        try await encoder.finalize()
+        let storage = StorageManager(storageRoot: root)
+        let exact = try await storage.readFrameFromPath(videoPath: videoURL.path, frameIndex: 0)
+        XCTAssertFalse(exact.isEmpty)
+        let tolerant = try await storage.readFrameFromPath(videoPath: videoURL.path, frameIndex: 1,
+                                                         enforceTimestampMatch: false)
+        XCTAssertFalse(tolerant.isEmpty, "Playback can explicitly request a nearby image")
+        do {
+            _ = try await storage.readFrameFromPath(videoPath: videoURL.path, frameIndex: 1)
+            XCTFail("Strict OCR reads must not accept a different encoded frame")
+        } catch let error as StorageError {
+            guard case .fileReadFailed(_, let underlying) = error else {
+                return XCTFail("Unexpected storage error: \(error)")
+            }
+            XCTAssertTrue(underlying.contains("timestamp"), "Expected a timestamp mismatch: \(underlying)")
+        }
+    }
 
     func testSegmentWriterAppendFinalizeCreatesSegmentFile() async throws {
         let root = makeTempRoot()

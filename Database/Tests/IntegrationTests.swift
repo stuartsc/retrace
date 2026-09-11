@@ -1,781 +1,365 @@
-import XCTest
 import Foundation
+import SQLCipher
 import Shared
+import XCTest
 @testable import Database
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                          INTEGRATION TESTS                                   ║
-// ║                                                                              ║
-// ║  • Verify full capture → OCR → index → search workflow                       ║
-// ║  • Verify multi-frame scenarios with time-based queries                      ║
-// ║  • Verify data consistency across DatabaseManager and FTSManager             ║
-// ║  • Verify realistic user scenarios (search recent content, etc.)             ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
-
 final class IntegrationTests: XCTestCase {
-
-    var database: DatabaseManager!
-    var ftsManager: FTSManager!
-    private static var hasPrintedSeparator = false
+    private var database: DatabaseManager!
+    private var ftsManager: FTSManager!
+    private var testRoot: URL!
+    private let now = Date(timeIntervalSince1970: 1_780_000_000)
 
     override func setUp() async throws {
-        // Use one shared in-memory DB for both managers.
-        let sharedPath = "file:integration_tests_\(UUID().uuidString)?mode=memory&cache=shared"
-        database = DatabaseManager(databasePath: sharedPath)
-        ftsManager = FTSManager(databasePath: sharedPath)
+        testRoot = FileManager.default.temporaryDirectory.appendingPathComponent("RetraceIntegrationTests_\(UUID())")
+        try FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
+        let path = testRoot.appendingPathComponent("test.db").path
+        database = DatabaseManager(databasePath: path)
+        ftsManager = FTSManager(databasePath: path)
         try await database.initialize()
         try await ftsManager.initialize()
-
-        if !Self.hasPrintedSeparator {
-            printTestSeparator()
-            Self.hasPrintedSeparator = true
-        }
     }
 
     override func tearDown() async throws {
         try await ftsManager.close()
         try await database.close()
-        database = nil
-        ftsManager = nil
+        try FileManager.default.removeItem(at: testRoot)
     }
 
-    // ╔═════════════════════════════════════════════════════════════════════════╗
-    // ║                    CAPTURE → SEARCH FLOW                                ║
-    // ╚═════════════════════════════════════════════════════════════════════════╝
+    private func video(count: Int = 1) async throws -> VideoSegmentID {
+        let id = try await database.insertVideoSegment(VideoSegment(id: VideoSegmentID(value: 0),
+            startTime: now, endTime: now.addingTimeInterval(300), frameCount: count,
+            fileSizeBytes: 1_024, relativePath: "chunks/\(UUID())", width: 1920, height: 1080))
+        try await database.markVideoFinalized(id: id, frameCount: count, fileSize: 1_024)
+        return VideoSegmentID(value: id)
+    }
 
-    // ┌─────────────────────────────────────────────────────────────────────────┐
-    // │ Simulates: Screen capture → OCR → Index → Search                        │
-    // └─────────────────────────────────────────────────────────────────────────┘
+    /// Real SQLite capture and OCR publication, using IDs returned by the database.
+    private func capture(_ content: String? = nil, videoID: VideoSegmentID? = nil,
+                         offset: Double = 0, app: String = "com.apple.Safari",
+                         title: String? = "Retrace", url: String? = "https://example.test/retrace",
+                         index: Int = 0) async throws -> FrameReference {
+        let resolvedVideoID: VideoSegmentID
+        if let videoID {
+            resolvedVideoID = videoID
+        } else {
+            resolvedVideoID = try await video()
+        }
+        let timestamp = now.addingTimeInterval(offset)
+        let segmentID = try await database.insertSegment(bundleID: app, startDate: timestamp,
+            endDate: timestamp.addingTimeInterval(2), windowName: title, browserUrl: url, type: 0)
+        let id = FrameID(value: try await database.insertFrame(FrameReference(id: FrameID(value: 0),
+            timestamp: timestamp, segmentID: AppSegmentID(value: segmentID), videoID: resolvedVideoID,
+            frameIndexInSegment: index, metadata: FrameMetadata(appBundleID: app, windowName: title, browserURL: url))))
+        try await database.markFrameReadable(frameID: id.value)
+        if let content {
+            _ = try await database.commitFrameOCR(frameID: id, text: ExtractedText(frameID: id,
+                timestamp: timestamp, regions: [TextRegion(frameID: id, text: content,
+                    bounds: CGRect(x: 0.1, y: 0.2, width: 0.7, height: 0.1))]), frameWidth: 1920, frameHeight: 1080)
+        }
+        let frame = try await database.getFrame(id: id)
+        return try XCTUnwrap(frame)
+    }
 
     func testFullCaptureToSearchFlow() async throws {
-        let timestamp = Date()
-
-        // STEP 1: Simulate capture - create video segment
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: timestamp,
-            endTime: timestamp.addingTimeInterval(300),
-            frameCount: 10,
-            fileSizeBytes: 5 * 1024 * 1024,
-            relativePath: "segments/2024/01/capture-001.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        // Create app segment for frame
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.apple.Safari",
-            startDate: timestamp,
-            endDate: timestamp.addingTimeInterval(300),
-            windowName: "Retrace - Screen Recording App",
-            browserUrl: "https://github.com/retrace/app",
-            type: 0
-        )
-
-        // STEP 2: Simulate frame capture with app metadata
-        let frame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: timestamp,
-            segmentID: AppSegmentID(value: appSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 0,
-            encodingStatus: .success,
-            metadata: FrameMetadata(
-                appBundleID: "com.apple.Safari",
-                appName: "Safari",
-                windowName: "Retrace - Screen Recording App",
-                browserURL: "https://github.com/retrace/app"
-            )
-        )
-        try await database.insertFrame(frame)
-
-        // STEP 3: Simulate OCR processing - index extracted text
-        let document = IndexedDocument(
-            id: 0,
-            frameID: frame.id,
-            timestamp: frame.timestamp,
-            content: "Retrace is a powerful screen recording application that captures your screen and makes it searchable. Built for macOS with privacy in mind.",
-            appName: frame.metadata.appName,
-            windowName: frame.metadata.windowName,
-            browserURL: frame.metadata.browserURL
-        )
-        let docID = try await database.insertDocument(document)
-        XCTAssertGreaterThan(docID, 0, "Document should be indexed")
-
-        // STEP 4: User searches for content they saw
-        let searchResults = try await ftsManager.search(
-            query: "screen recording",
-            limit: 10,
-            offset: 0
-        )
-
-        // VERIFY: Search finds the captured content
-        XCTAssertEqual(searchResults.count, 1, "Should find one result")
-        XCTAssertEqual(searchResults[0].frameID, frame.id, "Result should reference correct frame")
-        XCTAssertEqual(searchResults[0].appName, "Safari", "Should have correct app name")
-        XCTAssertTrue(searchResults[0].snippet.lowercased().contains("screen"), "Snippet should contain match")
+        let frame = try await capture("screen recording application searchable evidence")
+        let results = try await ftsManager.search(query: "screen recording", limit: 10, offset: 0)
+        let nodes = try await database.getNodesWithText(frameID: frame.id, frameWidth: 1920, frameHeight: 1080)
+        let statuses = try await database.getFrameProcessingStatuses(frameIDs: [frame.id.value])
+        XCTAssertEqual(results.map(\.frameID), [frame.id])
+        XCTAssertEqual(results.first?.videoID, frame.videoID)
+        XCTAssertEqual(results.first?.windowName, "Retrace")
+        XCTAssertEqual(nodes.map(\.text), ["screen recording application searchable evidence"])
+        XCTAssertEqual(statuses[frame.id.value], 2)
     }
 
     func testSearchWithDateFilter_FindsOnlyRecentContent() async throws {
-        let oldTime = Date().addingTimeInterval(-86400 * 30)
-        let recentTime = Date()
-
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: oldTime,
-            endTime: recentTime,
-            frameCount: 2,
-            fileSizeBytes: 1024,
-            relativePath: "test.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.test.app",
-            startDate: oldTime,
-            endDate: recentTime,
-            windowName: nil,
-            browserUrl: nil,
-            type: 0
-        )
-
-        // Old frame (30 days ago)
-        let oldFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: oldTime,
-            segmentID: AppSegmentID(value: appSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 0,
-            encodingStatus: .success,
-            metadata: .empty
-        )
-        try await database.insertFrame(oldFrame)
-
-        let oldDoc = IndexedDocument(
-            id: 0,
-            frameID: oldFrame.id,
-            timestamp: oldFrame.timestamp,
-            content: "Meeting notes from last month"
-        )
-        _ = try await database.insertDocument(oldDoc)
-
-        // Recent frame (today)
-        let recentFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: recentTime,
-            segmentID: AppSegmentID(value: appSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 1,
-            encodingStatus: .success,
-            metadata: .empty
-        )
-        try await database.insertFrame(recentFrame)
-
-        let recentDoc = IndexedDocument(
-            id: 0,
-            frameID: recentFrame.id,
-            timestamp: recentFrame.timestamp,
-            content: "Meeting notes from today"
-        )
-        _ = try await database.insertDocument(recentDoc)
-
-        // Search with date filter (last 7 days only)
-        let filters = SearchFilters(
-            startDate: Date().addingTimeInterval(-86400 * 7),
-            endDate: Date()
-        )
-
-        let results = try await ftsManager.search(
-            query: "meeting notes",
-            filters: filters,
-            limit: 10,
-            offset: 0
-        )
-
-        XCTAssertEqual(results.count, 1, "Should only find recent content")
-        XCTAssertEqual(results[0].frameID, recentFrame.id, "Should be the recent frame")
+        _ = try await capture("searchable history", offset: -86_400)
+        let recent = try await capture("searchable history")
+        let results = try await ftsManager.search(query: "searchable",
+            filters: SearchFilters(startDate: now.addingTimeInterval(-60), endDate: now.addingTimeInterval(60)), limit: 10, offset: 0)
+        XCTAssertEqual(results.map(\.frameID), [recent.id])
     }
 
-    // ╔═════════════════════════════════════════════════════════════════════════╗
-    // ║                    MULTI-APP SESSION FLOW                               ║
-    // ╚═════════════════════════════════════════════════════════════════════════╝
-
-    func testMultipleAppsInSameSegment_SearchByApp() async throws {
-        let baseTime = Date()
-
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: baseTime,
-            endTime: baseTime.addingTimeInterval(600),
-            frameCount: 3,
-            fileSizeBytes: 1024,
-            relativePath: "multi-app.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        // Create 3 app segments for 3 different apps
-        let safariSegmentID = try await database.insertSegment(
-            bundleID: "com.apple.Safari",
-            startDate: baseTime,
-            endDate: baseTime.addingTimeInterval(60),
-            windowName: "GitHub",
-            browserUrl: nil,
-            type: 0
-        )
-
-        let xcodeSegmentID = try await database.insertSegment(
-            bundleID: "com.apple.dt.Xcode",
-            startDate: baseTime.addingTimeInterval(60),
-            endDate: baseTime.addingTimeInterval(120),
-            windowName: "DatabaseManager.swift",
-            browserUrl: nil,
-            type: 0
-        )
-
-        let terminalSegmentID = try await database.insertSegment(
-            bundleID: "com.apple.Terminal",
-            startDate: baseTime.addingTimeInterval(120),
-            endDate: baseTime.addingTimeInterval(600),
-            windowName: "bash",
-            browserUrl: nil,
-            type: 0
-        )
-
-        // Frame 1: Safari
-        let safariFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: baseTime,
-            segmentID: AppSegmentID(value: safariSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 0,
-            encodingStatus: .success,
-            metadata: FrameMetadata(
-                appBundleID: "com.apple.Safari",
-                appName: "Safari",
-                windowName: "GitHub"
-            )
-        )
-        try await database.insertFrame(safariFrame)
-        _ = try await database.insertDocument(IndexedDocument(
-            id: 0,
-            frameID: safariFrame.id,
-            timestamp: safariFrame.timestamp,
-            content: "GitHub repository code review",
-            appName: "Safari"
-        ))
-
-        // Frame 2: Xcode
-        let xcodeFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: baseTime.addingTimeInterval(60),
-            segmentID: AppSegmentID(value: xcodeSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 1,
-            encodingStatus: .success,
-            metadata: FrameMetadata(
-                appBundleID: "com.apple.dt.Xcode",
-                appName: "Xcode",
-                windowName: "DatabaseManager.swift"
-            )
-        )
-        try await database.insertFrame(xcodeFrame)
-        _ = try await database.insertDocument(IndexedDocument(
-            id: 0,
-            frameID: xcodeFrame.id,
-            timestamp: xcodeFrame.timestamp,
-            content: "Swift code implementation details",
-            appName: "Xcode"
-        ))
-
-        // Frame 3: Terminal
-        let terminalFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: baseTime.addingTimeInterval(120),
-            segmentID: AppSegmentID(value: terminalSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 2,
-            encodingStatus: .success,
-            metadata: FrameMetadata(
-                appBundleID: "com.apple.Terminal",
-                appName: "Terminal",
-                windowName: "bash"
-            )
-        )
-        try await database.insertFrame(terminalFrame)
-        _ = try await database.insertDocument(IndexedDocument(
-            id: 0,
-            frameID: terminalFrame.id,
-            timestamp: terminalFrame.timestamp,
-            content: "git commit and push commands",
-            appName: "Terminal"
-        ))
-
-        // Query by app bundle ID
-        let safariFrames = try await database.getFrames(
-            appBundleID: "com.apple.Safari",
-            limit: 10,
-            offset: 0
-        )
-        XCTAssertEqual(safariFrames.count, 1)
-        XCTAssertEqual(safariFrames[0].metadata.appName, "Safari")
-
-        // Search should find content from all apps
-        let codeResults = try await ftsManager.search(query: "code", limit: 10, offset: 0)
-        XCTAssertEqual(codeResults.count, 2, "Should find code in Safari and Xcode")
+    func testMultipleAppsSharingVideo_SearchByApp() async throws {
+        let videoID = try await video(count: 2)
+        let safari = try await capture("shared code content", videoID: videoID, app: "com.apple.Safari")
+        let xcode = try await capture("shared code content", videoID: videoID, offset: 2, app: "com.apple.dt.Xcode", index: 1)
+        let frames = try await database.getFrames(appBundleID: "com.apple.dt.Xcode", limit: 10, offset: 0)
+        let results = try await ftsManager.search(query: "code", filters: SearchFilters(appBundleIDs: ["Xcode"]), limit: 10, offset: 0)
+        XCTAssertEqual(frames.map(\.id), [xcode.id])
+        XCTAssertEqual(results.map(\.frameID), [xcode.id])
+        XCTAssertEqual(safari.videoID, xcode.videoID)
+        XCTAssertNotEqual(safari.segmentID, xcode.segmentID)
     }
-
-    // ╔═════════════════════════════════════════════════════════════════════════╗
-    // ║                    DELETION CASCADES                                    ║
-    // ╚═════════════════════════════════════════════════════════════════════════╝
 
     func testDeleteSegment_CascadesToFramesAndDocuments() async throws {
-        // Setup: segment → frame → document
-        let timestamp = Date()
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: timestamp,
-            endTime: timestamp.addingTimeInterval(300),
-            frameCount: 1,
-            fileSizeBytes: 1024,
-            relativePath: "cascade-test.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.test.app",
-            startDate: timestamp,
-            endDate: timestamp.addingTimeInterval(300),
-            windowName: nil,
-            browserUrl: nil,
-            type: 0
-        )
-
-        let frame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: timestamp,
-            segmentID: AppSegmentID(value: appSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 0,
-            encodingStatus: .success,
-            metadata: .empty
-        )
-        try await database.insertFrame(frame)
-
-        _ = try await database.insertDocument(IndexedDocument(
-            id: 0,
-            frameID: frame.id,
-            timestamp: frame.timestamp,
-            content: "Cascade test content"
-        ))
-
-        // Verify all exist
-        let segmentExists = try await database.getVideoSegment(id: videoSegment.id)
-        let frameExists = try await database.getFrame(id: frame.id)
-        let documentExists = try await database.getDocument(frameID: frame.id)
-        XCTAssertNotNil(segmentExists)
-        XCTAssertNotNil(frameExists)
-        XCTAssertNotNil(documentExists)
-
-        // Delete segment
-        try await database.deleteVideoSegment(id: videoSegment.id)
-
-        // All should be gone
-        let segmentAfterDelete = try await database.getVideoSegment(id: videoSegment.id)
-        let frameAfterDelete = try await database.getFrame(id: frame.id)
-        let documentAfterDelete = try await database.getDocument(frameID: frame.id)
-        XCTAssertNil(segmentAfterDelete, "Segment should be deleted")
-        XCTAssertNil(frameAfterDelete, "Frame should cascade delete")
-        XCTAssertNil(documentAfterDelete, "Document should cascade delete")
-
-        // FTS should also be updated (via trigger)
-        let searchResults = try await ftsManager.search(query: "Cascade", limit: 10, offset: 0)
-        XCTAssertEqual(searchResults.count, 0, "FTS should not find deleted content")
+        let deleted = try await capture("discarded evidence")
+        let retained = try await capture("retained evidence")
+        try await database.deleteVideoSegment(id: deleted.videoID)
+        let deletedVideo = try await database.getVideoSegment(id: deleted.videoID)
+        let deletedFrame = try await database.getFrame(id: deleted.id)
+        let deletedDocument = try await database.getDocument(frameID: deleted.id)
+        let oldResults = try await ftsManager.search(query: "discarded", limit: 10, offset: 0)
+        let keptResults = try await ftsManager.search(query: "retained", limit: 10, offset: 0)
+        XCTAssertNil(deletedVideo)
+        XCTAssertNil(deletedFrame)
+        XCTAssertNil(deletedDocument)
+        XCTAssertTrue(oldResults.isEmpty)
+        XCTAssertEqual(keptResults.map(\.frameID), [retained.id])
+        try await assertNoOrphanedFrameEvidence()
     }
 
     func testDeleteOldFrames_RemovesAssociatedDocuments() async throws {
-        let oldTime = Date().addingTimeInterval(-86400 * 100)
-        let recentTime = Date()
-
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: oldTime,
-            endTime: recentTime,
-            frameCount: 2,
-            fileSizeBytes: 1024,
-            relativePath: "old-frames.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.test.app",
-            startDate: oldTime,
-            endDate: recentTime,
-            windowName: nil,
-            browserUrl: nil,
-            type: 0
-        )
-
-        // Old frame
-        let oldFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: oldTime,
-            segmentID: AppSegmentID(value: appSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 0,
-            encodingStatus: .success,
-            metadata: .empty
-        )
-        try await database.insertFrame(oldFrame)
-        _ = try await database.insertDocument(IndexedDocument(
-            id: 0,
-            frameID: oldFrame.id,
-            timestamp: oldFrame.timestamp,
-            content: "Old searchable content"
-        ))
-
-        // Recent frame
-        let recentFrame = FrameReference(
-            id: FrameID(value: 0),
-            timestamp: recentTime,
-            segmentID: AppSegmentID(value: appSegmentID),
-            videoID: videoSegment.id,
-            frameIndexInSegment: 1,
-            encodingStatus: .success,
-            metadata: .empty
-        )
-        try await database.insertFrame(recentFrame)
-        _ = try await database.insertDocument(IndexedDocument(
-            id: 0,
-            frameID: recentFrame.id,
-            timestamp: recentFrame.timestamp,
-            content: "Recent searchable content"
-        ))
-
-        // Delete frames older than 30 days
-        let cutoff = Date().addingTimeInterval(-86400 * 30)
-        let deleted = try await database.deleteFrames(olderThan: cutoff)
-
-        XCTAssertEqual(deleted, 1, "Should delete 1 old frame")
-
-        // Old document should be gone (cascade)
-        let oldDocument = try await database.getDocument(frameID: oldFrame.id)
-        XCTAssertNil(oldDocument)
-
-        // Recent document should still exist
-        let recentDocument = try await database.getDocument(frameID: recentFrame.id)
-        XCTAssertNotNil(recentDocument)
-
-        // FTS should reflect deletion
-        let oldResults = try await ftsManager.search(query: "Old searchable", limit: 10, offset: 0)
-        let recentResults = try await ftsManager.search(query: "Recent searchable", limit: 10, offset: 0)
-
-        XCTAssertEqual(oldResults.count, 0, "Old content should be gone from FTS")
-        XCTAssertEqual(recentResults.count, 1, "Recent content should still be searchable")
+        let videoID = try await video(count: 2)
+        let old = try await capture("expired record", videoID: videoID, offset: -100)
+        let recent = try await capture("recent record", videoID: videoID, index: 1)
+        let deleted = try await database.deleteFrames(olderThan: now.addingTimeInterval(-10))
+        let oldDoc = try await database.getDocument(frameID: old.id)
+        let recentDoc = try await database.getDocument(frameID: recent.id)
+        let results = try await ftsManager.search(query: "record", limit: 10, offset: 0)
+        XCTAssertEqual(deleted, 1)
+        XCTAssertNil(oldDoc)
+        XCTAssertEqual(recentDoc?.content, "recent record")
+        XCTAssertEqual(results.map(\.frameID), [recent.id])
+        try await assertNoOrphanedFrameEvidence()
     }
 
-    // ╔═════════════════════════════════════════════════════════════════════════╗
-    // ║                    STATISTICS ACCURACY                                  ║
-    // ╚═════════════════════════════════════════════════════════════════════════╝
-
-    func testStatistics_AccurateAfterMultipleOperations() async throws {
-        // Create 3 segments with varying sizes
-        var totalSize: Int64 = 0
-
-        for i in 0..<3 {
-            let size = Int64((i + 1) * 1024 * 1024)  // 1MB, 2MB, 3MB
-            totalSize += size
-
-            let startTime = Date().addingTimeInterval(Double(i * 100))
-            let endTime = Date().addingTimeInterval(Double(i * 100 + 99))
-
-            let videoSegment = VideoSegment(
-                id: VideoSegmentID(value: 0),
-                startTime: startTime,
-                endTime: endTime,
-                frameCount: 5,
-                fileSizeBytes: size,
-                relativePath: "segment-\(i).mp4",
-                width: 1920,
-                height: 1080,
-                source: .native
-            )
-            try await database.insertVideoSegment(videoSegment)
-
-            let appSegmentID = try await database.insertSegment(
-                bundleID: "com.test.app",
-                startDate: startTime,
-                endDate: endTime,
-                windowName: nil,
-                browserUrl: nil,
-                type: 0
-            )
-
-            // Add frames to each segment
-            for j in 0..<5 {
-                let frame = FrameReference(
-                    id: FrameID(value: 0),
-                    timestamp: Date().addingTimeInterval(Double(i * 100 + j * 10)),
-                    segmentID: AppSegmentID(value: appSegmentID),
-                    videoID: videoSegment.id,
-                    frameIndexInSegment: j,
-                    metadata: .empty
-                )
-                try await database.insertFrame(frame)
-
-                // Add document to some frames
-                if j % 2 == 0 {
-                    _ = try await database.insertDocument(IndexedDocument(
-                        id: 0,
-                        frameID: frame.id,
-                        timestamp: frame.timestamp,
-                        content: "Content for frame \(j) in segment \(i)"
-                    ))
-                }
-            }
-        }
-
-        let stats = try await database.getStatistics()
-
-        XCTAssertEqual(stats.segmentCount, 3, "Should have 3 segments")
-        XCTAssertEqual(stats.frameCount, 15, "Should have 15 frames (5 per segment)")
-        XCTAssertEqual(stats.documentCount, 9, "Should have 9 documents (3 per segment, only even indices)")
-        XCTAssertNotNil(stats.oldestFrameDate)
-        XCTAssertNotNil(stats.newestFrameDate)
-
-        // Total storage from segments
-        let storageBytes = try await database.getTotalStorageBytes()
-        XCTAssertEqual(storageBytes, totalSize, "Storage should match sum of segment sizes")
+    func testDeleteRecentAndSingleFramesRemovesAllEvidence() async throws {
+        let old = try await capture("older evidence", offset: -20)
+        _ = try await capture("newer evidence", offset: 20)
+        let count = try await database.deleteFrames(newerThan: now)
+        XCTAssertEqual(count, 1)
+        try await database.deleteFrame(id: old.id)
+        let remaining = try await database.getFrameCount()
+        XCTAssertEqual(remaining, 0)
+        try await assertNoOrphanedFrameEvidence()
     }
 
-    // ╔═════════════════════════════════════════════════════════════════════════╗
-    // ║                    CONCURRENT ACCESS (Actor Safety)                     ║
-    // ╚═════════════════════════════════════════════════════════════════════════╝
-
-    func testConcurrentInserts_NoDataCorruption() async throws {
-        let startTime = Date()
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: startTime,
-            endTime: startTime.addingTimeInterval(1000),
-            frameCount: 100,
-            fileSizeBytes: 1024,
-            relativePath: "concurrent.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.test.app",
-            startDate: startTime,
-            endDate: startTime.addingTimeInterval(1000),
-            windowName: nil,
-            browserUrl: nil,
-            type: 0
-        )
-
-        // Insert 100 frames concurrently
-        await withTaskGroup(of: Void.self) { group in
-            for i in 0..<100 {
-                group.addTask {
-                    let frame = FrameReference(
-                        id: FrameID(value: 0),
-                        timestamp: Date().addingTimeInterval(Double(i)),
-                        segmentID: AppSegmentID(value: appSegmentID),
-                        videoID: videoSegment.id,
-                        frameIndexInSegment: i,
-                        metadata: FrameMetadata(appName: "App \(i)")
-                    )
-                    try? await self.database.insertFrame(frame)
-                }
-            }
-        }
-
-        // Verify all frames were inserted
-        let count = try await database.getFrameCount()
-        XCTAssertEqual(count, 100, "All concurrent inserts should succeed")
+    func testFailedDeletionRollsBackFrameAndSearchEvidence() async throws {
+        let frame = try await capture("transaction evidence")
+        try await database.updateFrameProcessingStatus(frameID: frame.id.value, status: 0)
+        try await database.enqueueFrameForProcessing(frameID: frame.id.value)
+        try await database.integrationExecute("CREATE TEMP TRIGGER reject_frame_delete BEFORE DELETE ON frame BEGIN SELECT RAISE(ABORT,'test failure'); END")
+        do {
+            try await database.deleteVideoSegment(id: frame.videoID)
+            XCTFail("Injected deletion failure must escape")
+        } catch is DatabaseError { }
+        let keptFrame = try await database.getFrame(id: frame.id)
+        let keptVideo = try await database.getVideoSegment(id: frame.videoID)
+        let nodes = try await database.getNodesWithText(frameID: frame.id, frameWidth: 1920, frameHeight: 1080)
+        let results = try await ftsManager.search(query: "transaction", limit: 10, offset: 0)
+        XCTAssertNotNil(keptFrame)
+        XCTAssertNotNil(keptVideo)
+        XCTAssertEqual(nodes.count, 1)
+        XCTAssertEqual(results.map(\.frameID), [frame.id])
+        let queued = try await database.integrationCount("SELECT COUNT(*) FROM processing_queue")
+        XCTAssertEqual(queued, 1)
+        try await database.integrationExecute("DROP TRIGGER reject_frame_delete")
+        try await database.deleteVideoSegment(id: frame.videoID)
+        try await assertNoOrphanedFrameEvidence()
     }
 
-    func testConcurrentReadsAndWrites_NoDeadlock() async throws {
-        let startTime = Date()
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: startTime,
-            endTime: startTime.addingTimeInterval(1000),
-            frameCount: 50,
-            fileSizeBytes: 1024,
-            relativePath: "readwrite.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
-
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.test.app",
-            startDate: startTime,
-            endDate: startTime.addingTimeInterval(1000),
-            windowName: nil,
-            browserUrl: nil,
-            type: 0
-        )
-
-        // Pre-insert some frames
-        for i in 0..<25 {
-            let frame = FrameReference(
-                id: FrameID(value: 0),
-                timestamp: Date().addingTimeInterval(Double(i)),
-                segmentID: AppSegmentID(value: appSegmentID),
-                videoID: videoSegment.id,
-                frameIndexInSegment: i,
-                metadata: .empty
-            )
-            try await database.insertFrame(frame)
-        }
-
-        // Concurrent reads and writes
-        await withTaskGroup(of: Int.self) { group in
-            // 5 readers
-            for _ in 0..<5 {
-                group.addTask {
-                    let count = try? await self.database.getFrameCount()
-                    return count ?? -1
-                }
-            }
-
-            // 5 writers
-            for i in 25..<50 {
-                group.addTask {
-                    let frame = FrameReference(
-                        id: FrameID(value: 0),
-                        timestamp: Date().addingTimeInterval(Double(i)),
-                        segmentID: AppSegmentID(value: appSegmentID),
-                        videoID: videoSegment.id,
-                        frameIndexInSegment: i,
-                        metadata: .empty
-                    )
-                    try? await self.database.insertFrame(frame)
-                    return 0
-                }
-            }
-
-            // Collect results (just verifying no deadlock)
-            for await _ in group { }
-        }
-
-        // Should complete without hanging
-        let finalCount = try await database.getFrameCount()
-        XCTAssertEqual(finalCount, 50, "All operations should complete")
+    func testDeletingOneFramePreservesSharedSearchDocumentAndUserComment() async throws {
+        let first = try await capture("shared document")
+        let second = try await capture()
+        let document = try await database.getDocument(frameID: first.id)
+        let docid = try XCTUnwrap(document?.id)
+        try await database.integrationExecute("INSERT INTO doc_segment(docid,segmentId,frameId) VALUES(\(docid),\(second.segmentID.value),\(second.id.value))")
+        try await database.integrationExecute("INSERT INTO segment_comment(body,author,frameId) VALUES('retained user note','test',\(first.id.value))")
+        try await database.updateFrameProcessingStatus(frameID: first.id.value, status: 0)
+        try await database.enqueueFrameForProcessing(frameID: first.id.value)
+        try await database.deleteFrame(id: first.id)
+        let results = try await ftsManager.search(query: "shared", limit: 10, offset: 0)
+        let comments = try await database.integrationCount("SELECT COUNT(*) FROM segment_comment WHERE body='retained user note' AND frameId IS NULL")
+        XCTAssertEqual(results.map(\.frameID), [second.id])
+        XCTAssertEqual(comments, 1)
+        try await assertNoOrphanedFrameEvidence()
+        try await database.deleteFrame(id: second.id)
+        let documents = try await database.integrationCount("SELECT COUNT(*) FROM searchRanking")
+        XCTAssertEqual(documents, 0)
     }
 
-    // ╔═════════════════════════════════════════════════════════════════════════╗
-    // ║                    DATABASE MAINTENANCE                                 ║
-    // ╚═════════════════════════════════════════════════════════════════════════╝
+    func testDeletingFramePreservesSessionOnlyDocumentLink() async throws {
+        let frame = try await capture("session evidence")
+        let document = try await database.getDocument(frameID: frame.id)
+        let docid = try XCTUnwrap(document?.id)
+        try await database.integrationExecute("INSERT INTO doc_segment(docid,segmentId,frameId) VALUES(\(docid),\(frame.segmentID.value),NULL)")
+        try await database.deleteFrame(id: frame.id)
+        let documents = try await database.integrationCount("SELECT COUNT(*) FROM searchRanking WHERE rowid=\(docid)")
+        let sessionLinks = try await database.integrationCount("SELECT COUNT(*) FROM doc_segment WHERE docid=\(docid) AND frameId IS NULL")
+        let frameLinks = try await database.integrationCount("SELECT COUNT(*) FROM doc_segment WHERE frameId=\(frame.id.value)")
+        XCTAssertEqual(documents, 1)
+        XCTAssertEqual(sessionLinks, 1)
+        XCTAssertEqual(frameLinks, 0)
+    }
 
-    func testVacuum_CompletesSuccessfully() async throws {
-        // Insert and delete data to create fragmentation
-        let startTime = Date()
-        let videoSegment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: startTime,
-            endTime: startTime.addingTimeInterval(300),
-            frameCount: 10,
-            fileSizeBytes: 1024,
-            relativePath: "vacuum-test.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(videoSegment)
+    func testVideoRowDeletionFailureRollsBackCompletedFrameCleanup() async throws {
+        let frame = try await capture("restored evidence")
+        try await database.integrationExecute("CREATE TEMP TRIGGER reject_video_delete BEFORE DELETE ON video BEGIN SELECT RAISE(ABORT,'test failure'); END")
+        do {
+            try await database.deleteVideoSegment(id: frame.videoID)
+            XCTFail("Video deletion failure must roll back frame cleanup")
+        } catch is DatabaseError { }
+        let keptFrame = try await database.getFrame(id: frame.id)
+        let keptVideo = try await database.getVideoSegment(id: frame.videoID)
+        let nodes = try await database.getNodesWithText(frameID: frame.id, frameWidth: 1920, frameHeight: 1080)
+        let results = try await ftsManager.search(query: "restored", limit: 10, offset: 0)
+        XCTAssertNotNil(keptFrame)
+        XCTAssertNotNil(keptVideo)
+        XCTAssertEqual(nodes.count, 1)
+        XCTAssertEqual(results.map(\.frameID), [frame.id])
+        try await database.integrationExecute("DROP TRIGGER reject_video_delete")
+        try await database.deleteVideoSegment(id: frame.videoID)
+        try await assertNoOrphanedFrameEvidence()
+    }
 
-        let appSegmentID = try await database.insertSegment(
-            bundleID: "com.test.app",
-            startDate: startTime,
-            endDate: startTime.addingTimeInterval(300),
-            windowName: nil,
-            browserUrl: nil,
-            type: 0
-        )
+    func testLegacyDocumentCRUDUsesCanonicalSearchIndex() async throws {
+        let frame = try await capture()
+        let docid = try await database.insertDocument(IndexedDocument(id: 0, frameID: frame.id,
+            timestamp: frame.timestamp, content: "originaltoken"))
+        let original = try await ftsManager.search(query: "originaltoken", limit: 10, offset: 0)
+        XCTAssertEqual(original.map(\.documentID), [docid])
+        try await database.updateDocument(id: docid, content: "replacementtoken")
+        let old = try await ftsManager.search(query: "originaltoken", limit: 10, offset: 0)
+        let updated = try await ftsManager.search(query: "replacementtoken", limit: 10, offset: 0)
+        XCTAssertTrue(old.isEmpty)
+        XCTAssertEqual(updated.map(\.frameID), [frame.id])
+        try await database.deleteDocument(id: docid)
+        let deleted = try await ftsManager.search(query: "replacementtoken", limit: 10, offset: 0)
+        let links = try await database.integrationCount("SELECT COUNT(*) FROM doc_segment")
+        let persisted = try await database.getFrame(id: frame.id)
+        XCTAssertTrue(deleted.isEmpty)
+        XCTAssertEqual(links, 0)
+        XCTAssertNotNil(persisted)
+    }
 
-        for i in 0..<10 {
-            let frame = FrameReference(
-                id: FrameID(value: 0),
-                timestamp: Date().addingTimeInterval(Double(i)),
-                segmentID: AppSegmentID(value: appSegmentID),
-                videoID: videoSegment.id,
-                frameIndexInSegment: i,
-                metadata: .empty
-            )
-            try await database.insertFrame(frame)
-        }
-
-        // Delete segment (cascades to frames)
-        try await database.deleteVideoSegment(id: videoSegment.id)
-
-        // Vacuum should complete without error
-        try await database.vacuum()
-
-        // Database should still work
-        let count = try await database.getFrameCount()
+    func testLegacyDocumentFailureDoesNotLeaveUnlinkedSearchContent() async throws {
+        let frame = try await capture()
+        try await database.integrationExecute("CREATE TEMP TRIGGER reject_document_link BEFORE INSERT ON doc_segment BEGIN SELECT RAISE(ABORT,'test failure'); END")
+        do {
+            _ = try await database.insertDocument(IndexedDocument(id: 0, frameID: frame.id, timestamp: frame.timestamp, content: "orphan candidate"))
+            XCTFail("Junction failure must roll back indexed content")
+        } catch is DatabaseError { }
+        let count = try await database.integrationCount("SELECT COUNT(*) FROM searchRanking")
         XCTAssertEqual(count, 0)
     }
 
+    func testLegacyTextUpdateInvalidatesOldHighlights() async throws {
+        let frame = try await capture("old region")
+        let existing = try await database.getDocument(frameID: frame.id)
+        let doc = try XCTUnwrap(existing)
+        try await database.updateDocument(id: doc.id, content: "replacement with different offsets")
+        let nodes = try await database.getNodesWithText(frameID: frame.id, frameWidth: 1920, frameHeight: 1080)
+        XCTAssertTrue(nodes.isEmpty)
+    }
+
+    func testStatistics_AccurateAfterMultipleOperations() async throws {
+        for videoIndex in 0..<3 {
+            let videoID = try await video(count: 5)
+            for index in 0..<5 {
+                let text = index < 3 ? "indexed row \(videoIndex) \(index)" : nil
+                _ = try await capture(text, videoID: videoID, offset: Double(videoIndex * 5 + index), index: index)
+            }
+        }
+        let stats = try await database.getStatistics()
+        XCTAssertEqual(stats.frameCount, 15)
+        XCTAssertEqual(stats.documentCount, 9)
+        XCTAssertEqual(stats.segmentCount, 3)
+        XCTAssertEqual(stats.oldestFrameDate, now)
+        XCTAssertEqual(stats.newestFrameDate, now.addingTimeInterval(14))
+        let bytes = try await database.getTotalStorageBytes()
+        XCTAssertEqual(bytes, 3_072)
+    }
+
+    func testConcurrentInserts_NoDataCorruption() async throws {
+        let videoID = try await video(count: 25)
+        let segmentID = try await database.insertSegment(bundleID: "com.test.concurrent", startDate: now,
+            endDate: now.addingTimeInterval(25), windowName: nil, browserUrl: nil, type: 0)
+        let database = try XCTUnwrap(database)
+        let now = now
+        let ids = try await withThrowingTaskGroup(of: Int64.self) { group in
+            for index in 0..<25 {
+                group.addTask {
+                    try await database.insertFrame(FrameReference(id: FrameID(value: 0),
+                        timestamp: now.addingTimeInterval(Double(index)), segmentID: AppSegmentID(value: segmentID),
+                        videoID: videoID, frameIndexInSegment: index, metadata: .empty))
+                }
+            }
+            var ids: [Int64] = []
+            for try await id in group { ids.append(id) }
+            return ids
+        }
+        let count = try await database.getFrameCount()
+        XCTAssertEqual(Set(ids).count, 25)
+        XCTAssertEqual(count, 25)
+    }
+
+    func testConcurrentReadsAndWrites_NoDeadlock() async throws {
+        let seed = try await capture("concurrent seed")
+        let database = try XCTUnwrap(database)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<20 {
+                group.addTask {
+                    _ = try await database.insertFrame(FrameReference(id: FrameID(value: 0),
+                        timestamp: seed.timestamp.addingTimeInterval(Double(index)), segmentID: seed.segmentID,
+                        videoID: seed.videoID, frameIndexInSegment: index + 1, metadata: .empty))
+                }
+                group.addTask { _ = try await database.getFrames(from: seed.timestamp, to: seed.timestamp.addingTimeInterval(30), limit: 100) }
+            }
+            try await group.waitForAll()
+        }
+        let count = try await database.getFrameCount()
+        XCTAssertEqual(count, 21)
+    }
+
+    func testVacuum_CompletesSuccessfully() async throws {
+        let removed = try await capture("discard before vacuum")
+        let kept = try await capture("retained after vacuum")
+        try await database.deleteVideoSegment(id: removed.videoID)
+        try await database.vacuum()
+        let frames = try await database.getFrameCount()
+        let results = try await ftsManager.search(query: "retained", limit: 10, offset: 0)
+        XCTAssertEqual(frames, 1)
+        XCTAssertEqual(results.map(\.frameID), [kept.id])
+    }
+
     func testAnalyze_CompletesSuccessfully() async throws {
-        let segment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: Date(),
-            endTime: Date().addingTimeInterval(300),
-            frameCount: 10,
-            fileSizeBytes: 1024,
-            relativePath: "analyze-test.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(segment)
-
-        // Analyze should complete without error
+        let frame = try await capture("analyze evidence")
         try await database.analyze()
-
-        // Database should still work
-        let retrieved = try await database.getVideoSegment(id: segment.id)
+        let retrieved = try await database.getVideoSegment(id: frame.videoID)
+        let results = try await ftsManager.search(query: "analyze", limit: 10, offset: 0)
         XCTAssertNotNil(retrieved)
+        XCTAssertEqual(results.map(\.frameID), [frame.id])
     }
 
     func testCheckpoint_CompletesSuccessfully() async throws {
-        let segment = VideoSegment(
-            id: VideoSegmentID(value: 0),
-            startTime: Date(),
-            endTime: Date().addingTimeInterval(300),
-            frameCount: 1,
-            fileSizeBytes: 1024,
-            relativePath: "checkpoint-test.mp4",
-            width: 1920,
-            height: 1080,
-            source: .native
-        )
-        try await database.insertVideoSegment(segment)
-
-        // Checkpoint should complete without error
+        let frame = try await capture("checkpoint evidence")
         try await database.checkpoint()
-
-        // Database should still work
-        let retrieved = try await database.getVideoSegment(id: segment.id)
+        let retrieved = try await database.getFrame(id: frame.id)
         XCTAssertNotNil(retrieved)
+        let results = try await ftsManager.search(query: "checkpoint", limit: 10, offset: 0)
+        XCTAssertEqual(results.map(\.frameID), [frame.id])
+    }
+
+    private func assertNoOrphanedFrameEvidence() async throws {
+        for table in ["node", "doc_segment", "processing_queue"] {
+            let count = try await database.integrationCount("SELECT COUNT(*) FROM \(table) t WHERE t.frameId IS NOT NULL AND NOT EXISTS(SELECT 1 FROM frame f WHERE f.id=t.frameId)")
+            XCTAssertEqual(count, 0, "No orphaned \(table)")
+        }
+        let unlinked = try await database.integrationCount("SELECT COUNT(*) FROM searchRanking r WHERE NOT EXISTS(SELECT 1 FROM doc_segment d WHERE d.docid=r.rowid)")
+        XCTAssertEqual(unlinked, 0, "No unlinked FTS content")
+    }
+}
+
+private extension DatabaseManager {
+    func integrationExecute(_ sql: String) throws {
+        guard let db = getConnection() else { throw DatabaseError.connectionFailed(underlying: "Test database closed") }
+        try PipelineSQL.execute(db, sql)
+    }
+
+    func integrationCount(_ sql: String) throws -> Int64 {
+        guard let db = getConnection() else { throw DatabaseError.connectionFailed(underlying: "Test database closed") }
+        return try PipelineSQL.integers(db, sql).first ?? 0
     }
 }

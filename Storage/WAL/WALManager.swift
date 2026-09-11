@@ -18,11 +18,19 @@ public actor WALManager {
     public static let defaultQuarantineMaxBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     private let walRootURL: URL
+    /// Sessions opened by this process belong to active capture, never startup recovery.
+    private var liveSessionIDs: Set<VideoSegmentID> = []
     private var frameOffsetIndexCache: [Int64: WALFrameOffsetIndex] = [:]
     private var frameIDOffsetIndexCache: [Int64: WALFrameIDOffsetIndex] = [:]
 
     public init(walRoot: URL) {
         self.walRootURL = walRoot
+    }
+
+    /// File presence also includes retained recovery material. Only a session
+    /// opened by this manager can still receive pixels from its live writer.
+    public func isLiveSession(videoID: VideoSegmentID) -> Bool {
+        liveSessionIDs.contains(videoID)
     }
 
     public func initialize() async throws {
@@ -64,6 +72,7 @@ public actor WALManager {
             height: 0
         )
         try saveMetadata(metadata, to: sessionDir)
+        liveSessionIDs.insert(videoID)
 
         return WALSession(
             videoID: videoID,
@@ -232,11 +241,12 @@ public actor WALManager {
         }
         frameOffsetIndexCache.removeValue(forKey: session.videoID.value)
         frameIDOffsetIndexCache.removeValue(forKey: session.videoID.value)
+        liveSessionIDs.remove(session.videoID)
     }
 
     /// Move a WAL session out of the active recovery path without deleting it.
-    /// Used for stale oversized sessions that would otherwise be retried on every
-    /// launch and allocate several GB while recovery reads full raw frames.
+    /// Reserved for explicit quarantine decisions. Recovery streams large files;
+    /// age and size alone must not quarantine recoverable active sessions.
     public func quarantineSession(_ session: WALSession, reason: String) async throws -> URL {
         let quarantineRoot = walRootURL.appendingPathComponent("quarantine", isDirectory: true)
         try FileManager.default.createDirectory(at: quarantineRoot, withIntermediateDirectories: true)
@@ -266,6 +276,7 @@ public actor WALManager {
         }
 
         try FileManager.default.moveItem(at: session.sessionDir, to: destination)
+        liveSessionIDs.remove(session.videoID)
         frameOffsetIndexCache.removeValue(forKey: session.videoID.value)
         frameIDOffsetIndexCache.removeValue(forKey: session.videoID.value)
         Log.warning("[WAL] Quarantined WAL session \(session.videoID.value) to \(destination.path) reason=\(reason)", category: .storage)
@@ -364,9 +375,16 @@ public actor WALManager {
 
         frameOffsetIndexCache.removeAll()
         frameIDOffsetIndexCache.removeAll()
+        liveSessionIDs.removeAll()
     }
 
     // MARK: - Recovery Operations
+
+    /// Startup recovery only owns sessions left by a previous process. Keep
+    /// listActiveSessions inclusive for orphan-video and normal capture bookkeeping.
+    public func listRecoverableSessions() async throws -> [WALSession] {
+        try await listActiveSessions().filter { !liveSessionIDs.contains($0.videoID) }
+    }
 
     /// List all active WAL sessions (for crash recovery)
     public func listActiveSessions() async throws -> [WALSession] {

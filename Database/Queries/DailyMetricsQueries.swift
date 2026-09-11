@@ -68,6 +68,10 @@ public enum DailyMetricsQueries {
         case dashboardTranscriptExpanded = "dashboard_transcript_expanded"  // metadata: surface identifier
         case dashboardTranscriptLoadOlder = "dashboard_transcript_load_older"  // metadata: surface identifier
         case dashboardLiveFrameSelected = "dashboard_live_frame_selected"  // metadata: frame/source context
+        case dashboardScreenshotAction = "dashboard_screenshot_action"  // metadata: visual-recall action/frame context
+        case dashboardFuseIntelAction = "dashboard_fuseintel_action"  // metadata: read-only intel action/connection context
+        case ocrNodeTextBackfillStarted = "ocr_node_text_backfill_started"  // metadata: limit/count context
+        case ocrNodeTextBackfillCompleted = "ocr_node_text_backfill_completed"  // metadata: enqueued/remaining counts
 
         // Delete actions
         case frameDeleted = "frame_deleted"

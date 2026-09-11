@@ -261,13 +261,14 @@ final class OCRPipelineTests: XCTestCase {
                 // Insert OCR nodes with text offsets
                 if docid > 0 && !frameData.regions.isEmpty {
                     var currentOffset = 0
-                    var nodeData: [(textOffset: Int, textLength: Int, bounds: CGRect, windowIndex: Int?)] = []
+                    var nodeData: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)] = []
 
                     for region in frameData.regions {
                         let textLength = region.text.count
                         nodeData.append((
                             textOffset: currentOffset,
                             textLength: textLength,
+                            text: region.text,
                             bounds: region.bounds,
                             windowIndex: nil
                         ))

@@ -12,8 +12,10 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 - **Module-Specific Instructions**: Each module has its own `AGENTS.md` file in its directory
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Technical Audit Docs**: `local/docs/` (includes deep-dive implementation and performance audit notes)
+- **Proposed Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (saved for review; implementation on hold)
+- **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
 ---
 
@@ -47,10 +49,13 @@ retrace/
 ├── AGENTS.md                    # This file - main agent coordination
 ├── .env.example                 # Template for local release credentials (copy to .env)
 ├── README.md                    # Human-readable project overview
+├── CHANGELOG.md                 # Maintained fixes, improvements and release status
 ├── CONTRIBUTING.md              # Contribution guidelines
 ├── Package.swift                # Swift Package Manager configuration
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
+│   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
+│   ├── progressive-recall-plan.md # Proposed contextual recall and idle refinement plan; awaiting review
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
 ├── scripts/                     # Build/release/validation scripts
 │   ├── release.sh               # End-to-end release automation
@@ -89,10 +94,11 @@ retrace/
 ├── Database/                    # SQLite + FTS5 storage
 │   ├── AGENTS.md                # Module-specific agent instructions
 │   ├── DatabaseManager.swift    # Main database coordinator
-│   ├── DatabaseConnection.swift # SQLite connection management
-│   ├── DatabaseConfig.swift     # Database configuration
+│   ├── DatabaseConnection.swift # SQLite connection helpers
+│   ├── FramePipelinePersistence.swift # Atomic OCR, claims and recovery
+│   ├── LegacyOCRBackfillPersistence.swift # Bounded, resumable OCR node-text maintenance
+│   ├── RetentionPersistence.swift # Bounded frame cleanup and guarded video deletion
 │   ├── FTSManager.swift         # Full-text search management
-│   ├── IDMappingService.swift   # ID mapping between sources
 │   ├── Schema.swift             # Current schema definition
 │   ├── Migrations/              # Schema migration scripts (including audio/dictation)
 │   ├── Queries/                 # Query implementations (including audio transcripts/dictation sessions)
@@ -106,7 +112,7 @@ retrace/
 │   ├── SegmentWriterImpl.swift
 │   ├── FileManager/             # File system utilities
 │   ├── VideoEncoder/            # HEVC video encoding
-│   ├── WAL/                     # Write-Ahead Log (WALManager, RecoveryManager)
+│   ├── WAL/                     # WALManager, RecoveryManager, WALRecoveryReader
 │   └── Tests/
 │
 ├── Capture/                     # CGWindowListCapture integration
@@ -122,11 +128,12 @@ retrace/
 │   ├── AGENTS.md
 │   ├── ProcessingManager.swift
 │   ├── FrameProcessingQueue.swift # Async frame processing queue
+│   ├── FrameProcessingWakeSignal.swift # Cancellation-safe worker notifications
 │   ├── URLExtractor.swift       # URL extraction from OCR text
 │   ├── OCR/                     # Vision framework OCR
 │   ├── Accessibility/           # Accessibility API integration
 │   ├── TextMerger/              # Text merging utilities
-│   ├── Audio/                   # Whisper transcription, buffering, refinement, backfill
+│   ├── Audio/                   # Whisper pipeline; opt-in NativeSpeechTranscriptionService
 │   └── Tests/
 │
 ├── Search/                      # Full-text search
@@ -172,6 +179,14 @@ retrace/
 ```
 
 ---
+
+### Capture improvement validation files
+
+- Database: `FramePipelinePersistenceTests.swift`, `RetentionPersistenceTests.swift`, `LegacyOCRBackfillPagingTests.swift`; `Migrations/V19_ProcessingQueueFrameIndex.swift` adds queue/document/video lookup indexes, and `Migrations/V20_OCRBackfillState.swift` stores the per-database maintenance cursor.
+- Storage: `WALRecoveryTests.swift` exercises large WAL, retries, damaged tails and live-session exclusion.
+- Processing: `VisionOCRIncrementalTests.swift`, `FrameProcessingWakeSignalTests.swift`, `NativeSpeechTranscriptionServiceTests.swift`.
+- Capture: `AudioFormatConverterTests.swift` exercises actual AVFoundation/CoreMedia conversion and stream draining; `CaptureStreamLifecycleTests.swift` covers stream ownership, cancellation, restart and display-switch ordering using real AsyncStreams.
+- App: `RetentionPathValidationTests.swift` exercises real filesystem path/symlink guards; `FrameDeletionRoutingTests.swift` verifies native timeline deletion and rollback through the database API; `StartupRecoverySequencingTests.swift` covers recovery-before-worker startup, shutdown, journal preservation, bounded orphan snapshots, live placeholder ownership and cancellable bounded OCR maintenance using real SQLite and filesystem journals.
 
 ## Module Ownership & Responsibilities
 
@@ -441,6 +456,14 @@ Then check which path actually executes and fix the right code.
 - Add a new `DailyMetricsQueries.MetricType` (and metadata schema) when no existing metric accurately represents the action.
 - Wire the metric emission at the action entry/outcome points (for example: opened, submitted, succeeded, failed/no-results where applicable).
 
+### 8. Keep the Changelog Current
+
+- Update `CHANGELOG.md` in the same change as every meaningful bug fix or improvement. Describe the resulting behavior and include relevant validation or a link to its evidence.
+- Add dated entries under **Unreleased** while changes are in development. A passing build or test suite does not establish installation or release.
+- Record a **Local trial** only after verifying the installed build and launch; include the build identifier, date and comparison/rollback notes when available. Local trials remain under Unreleased until an actual release.
+- Move shipped entries into a dated, versioned **Released** section only after verifying the release. Preserve the distinction between implemented, installed for local assessment, and released.
+- Keep the changelog and linked validation notes available to Git; do not place release history only in ignored local notes.
+
 ---
 
 ## Additional Resources
@@ -451,4 +474,48 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-03-04_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-06_
+
+
+<claude-mem-context>
+# Memory Context
+
+# [backintime] recent context, 2026-08-26 3:26pm GMT+10
+
+Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
+Format: ID TIME TYPE TITLE
+Fetch details: get_observations([IDs]) | Search: mem-search skill
+
+Stats: 20 obs (4,412t read) | 563,302t work | 99% savings
+
+### Jun 15, 2026
+S1236 Live Audio UI fixes + Sync/Refining button clarification + repaired audio visibility in Retrace app (Jun 15 at 3:22 AM)
+S806 Understanding the purpose of pretool hooks in the project — do we need all of them? (Jun 15 at 3:22 AM)
+### Jun 22, 2026
+S1237 Live Audio UI fixes — scrollable history, Sync/Refining button clarification, repaired audio row labels — shipped to Retrace.app (Jun 22 at 8:18 AM)
+### Jul 2, 2026
+S1741 Dictation UX / OCR repair product-shape fix — hide legacy backfill from user-facing UI (Jul 2 at 5:00 AM)
+### Aug 26, 2026
+49834 2:15p 🔵 Audio audit partial results: 701K filesystem files, 879K DB paths, 177K missing files
+49837 2:16p 🔵 Multiple analysis commands launched: word source code search, audio queries, unreferenced file details, duplicate detection, dbstat
+49844 2:18p 🔵 User questioned pretool hook system purpose and necessity
+49848 2:19p 🔵 Audio file storage analysis for Retrace application
+49853 2:20p 🔵 User questions purpose and necessity of pretool hooks
+49857 2:21p 🔵 User inquiry about pretool hooks purpose and necessity
+49859 " 🔵 Investigation of audio segment writing and transcript rendering code paths
+49860 2:22p 🔵 Audio processing pipeline uses writeAudioSegment across 5 managers with consistent pattern
+49862 " 🔵 Primary session investigating Retrace app storage and git diffs for audio pipeline
+49865 2:24p 🔵 User inquiring about pretool hooks purpose and necessity
+49871 2:25p 🔵 Audio transcription system architecture and data scale discovered
+49878 2:26p 🔵 Multi-pass audio transcription pipeline architecture with version tracking
+49879 " 🔵 Audio storage and repair policy tests executing
+49881 2:27p 🔵 Audio storage and repair policy tests compiling
+49882 " 🔵 Waiting for audio policy tests compilation to complete
+49884 " 🔵 Audio policy tests fail compilation - missing AudioStoragePolicy type
+49886 2:28p 🔵 User inquiring about pretool hooks purpose and necessity
+49888 2:29p 🔴 Running audio policy tests after patch application
+49889 " 🔵 Waiting for audio policy tests compilation after patch
+49891 2:30p 🔵 Audio policy tests compilation in progress
+
+Access 563k tokens of past work via get_observations([IDs]) or mem-search skill.
+</claude-mem-context>

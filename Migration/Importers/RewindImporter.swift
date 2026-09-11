@@ -436,7 +436,7 @@ public actor RewindImporter: MigrationProtocol {
                 // Insert OCR nodes (Rewind-compatible) with textOffset/textLength
                 if docid > 0 && !extractedText.regions.isEmpty {
                     var currentOffset = 0
-                    var nodeData: [(textOffset: Int, textLength: Int, bounds: CGRect, windowIndex: Int?)] = []
+                    var nodeData: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)] = []
 
                     for region in extractedText.regions {
                         let textLength = region.text.count
@@ -444,6 +444,7 @@ public actor RewindImporter: MigrationProtocol {
                         nodeData.append((
                             textOffset: currentOffset,
                             textLength: textLength,
+                            text: region.text,
                             bounds: region.bounds,
                             windowIndex: nil
                         ))

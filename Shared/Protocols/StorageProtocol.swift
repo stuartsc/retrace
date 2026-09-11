@@ -16,6 +16,10 @@ public protocol StorageProtocol: Actor {
     /// Create a new video segment writer
     func createSegmentWriter() async throws -> SegmentWriter
 
+    /// Create an output writer for WAL recovery. The original WAL supplies durability,
+    /// so this writer must not create a second active WAL session for the same frames.
+    func createRecoverySegmentWriter() async throws -> SegmentWriter
+
     /// Read a frame from a video segment using frame index
     /// Frame index is the position in the video (0-based), encoded at fixed 30 FPS
     func readFrame(segmentID: VideoSegmentID, frameIndex: Int) async throws -> Data
@@ -53,6 +57,12 @@ public protocol StorageProtocol: Actor {
 
     /// Get storage directory URL
     func getStorageDirectory() -> URL
+}
+
+public extension StorageProtocol {
+    func createRecoverySegmentWriter() async throws -> SegmentWriter {
+        throw StorageError.fileWriteFailed(path: "WAL recovery", underlying: "Recovery writer is not implemented")
+    }
 }
 
 // MARK: - Segment Writer Protocol

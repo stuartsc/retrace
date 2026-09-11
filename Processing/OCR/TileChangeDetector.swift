@@ -112,7 +112,8 @@ public struct TileChangeDetector: Sendable {
                             tile: tile,
                             currentPixels: currentPixels,
                             previousPixels: previousPixels,
-                            bytesPerRow: current.bytesPerRow
+                            currentBytesPerRow: current.bytesPerRow,
+                            previousBytesPerRow: previous.bytesPerRow
                         )
 
                         if changed {
@@ -197,7 +198,8 @@ public struct TileChangeDetector: Sendable {
         tile: TileInfo,
         currentPixels: UnsafePointer<UInt8>,
         previousPixels: UnsafePointer<UInt8>,
-        bytesPerRow: Int
+        currentBytesPerRow: Int,
+        previousBytesPerRow: Int
     ) -> Bool {
         let startX = Int(tile.pixelBounds.origin.x)
         let startY = Int(tile.pixelBounds.origin.y)
@@ -215,12 +217,14 @@ public struct TileChangeDetector: Sendable {
         // Sample pixels with stride for speed
         for y in stride(from: startY, to: endY, by: config.samplingStride) {
             for x in stride(from: startX, to: endX, by: config.samplingStride) {
-                let offset = y * bytesPerRow + x * 4
+                // Raw captures and decoded frames can use different row alignment.
+                let currentOffset = y * currentBytesPerRow + x * 4
+                let previousOffset = y * previousBytesPerRow + x * 4
 
                 // BGRA format
-                let bDiff = abs(Int(currentPixels[offset]) - Int(previousPixels[offset]))
-                let gDiff = abs(Int(currentPixels[offset + 1]) - Int(previousPixels[offset + 1]))
-                let rDiff = abs(Int(currentPixels[offset + 2]) - Int(previousPixels[offset + 2]))
+                let bDiff = abs(Int(currentPixels[currentOffset]) - Int(previousPixels[previousOffset]))
+                let gDiff = abs(Int(currentPixels[currentOffset + 1]) - Int(previousPixels[previousOffset + 1]))
+                let rDiff = abs(Int(currentPixels[currentOffset + 2]) - Int(previousPixels[previousOffset + 2]))
 
                 // Pixel is different if any channel exceeds threshold
                 if bDiff > config.pixelDifferenceThreshold ||

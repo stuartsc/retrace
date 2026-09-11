@@ -21,8 +21,8 @@ UI/
 │   │   ├── SpotlightSearchOverlay.swift # Primary search overlay UI
 │   │   └── SearchFilterBar.swift        # Search filters and controls
 │   ├── Dashboard/
-│   │   ├── DashboardView.swift          # Main dashboard with app usage and dictation history
-│   │   ├── DashboardVoiceLayout.swift   # Voice-first dashboard tab/layout policy
+│   │   ├── DashboardView.swift          # Voice-first dashboard, visual memory, and live intelligence UI
+│   │   ├── DashboardVoiceLayout.swift   # Dashboard layout, transcript, and screenshot policies
 │   │   ├── ChangelogView.swift          # Appcast-powered release notes view
 │   │   ├── AnalyticsCard.swift          # Stats widgets
 │   │   ├── MigrationPanel.swift         # Import UI
@@ -37,6 +37,7 @@ UI/
 │       ├── PrivacySettings.swift        # Exclusions/permissions
 │       └── AdvancedSettings.swift       # Power user options
 ├── Components/
+│   ├── AppResourceBundle.swift          # Packaged app resource bundle and SwiftPM/Xcode fallbacks
 │   ├── BoundingBoxOverlay.swift         # Text region highlighting
 │   ├── SessionTimeline.swift            # App session visualization
 │   ├── DeeplinkHandler.swift            # URL scheme routing
@@ -47,15 +48,18 @@ UI/
 │   ├── TimelineViewModel.swift
 │   ├── SearchViewModel.swift
 │   ├── DashboardViewModel.swift
+│   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
 │   └── SettingsViewModel.swift
 └── Tests/
+    ├── AppResourceBundleTests.swift      # Real app/resource bundle layout and lazy fallback checks
     ├── TestLogger.swift                  # UI behavior + deeplink parsing tests
     ├── HotkeyHoldReleasePolicyTests.swift # Hold-hotkey modifier release regression tests
     ├── DashboardVoiceLayoutTests.swift   # Voice-first dashboard layout policy tests
+    ├── DashboardSelectedFrameRefreshTests.swift # Real SQLite selected-frame OCR refresh and cancellation regressions
+    ├── FuseIntelViewModelTests.swift      # FuseIntel wire-contract and context-ranking tests
     ├── ProcessCPUMonitorPolicyTests.swift # System monitor launch-sampling policy tests
     ├── TimelineBackgroundRefreshPolicyTests.swift # Hidden timeline background-work opt-in policy tests
-    ├── TranscriptCursorPolicyTests.swift # Audio transcript cursor stack regression tests
-    └── ManualShowSearchSimulationTests.swift # Manual dev harness for showSearch deeplink simulation
+    └── TranscriptCursorPolicyTests.swift # Audio transcript cursor stack regression tests
 ```
 
 ## Feature Requirements
@@ -580,6 +584,14 @@ You depend on:
 - UI tests for search flow
 - UI tests for timeline navigation
 - Accessibility tests (VoiceOver support)
+
+## Resource Packaging
+
+`AppResourceBundle.bundle` caches UI resource resolution. Packaged SwiftPM apps keep `Retrace_Retrace.bundle` under `Contents/Resources`; the generated `Bundle.module` accessor is only a lazy fallback for direct SwiftPM runs. Xcode builds continue to use `Bundle.main`. Do not place resource bundles beside `Contents` in the app root or modify SwiftPM's generated accessor.
+
+## Selected Screenshot Refresh
+
+The screenshot dashboard's latest-page poll does not cover every retained historical selection. `DashboardSelectedFrameRefresher` in `DashboardVoiceLayout.swift` independently reads the selected native frame by ID, coalesces concurrent lookups, and fetches completed OCR nodes only when its text cache is stale. Apply results only to the matching selected ID/source still retained in the list, preserving order and selection. Cancel/invalidate on tab change or window hide, and restart polling when the dashboard reopens. Older OCR requests must not overwrite a newer processing status, and read failures must not be cached as completed empty text. This refresh never promotes queue priority or writes recorded data. Its actual read is measured by `dashboard.selected_frame_refresh` latency.
 
 ## Accessibility
 

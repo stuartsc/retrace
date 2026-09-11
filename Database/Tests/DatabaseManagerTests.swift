@@ -94,7 +94,9 @@ final class DatabaseManagerTests: XCTestCase {
             .settingsUtilityAction,
             .dashboardTranscriptExpanded,
             .dashboardTranscriptLoadOlder,
-            .dashboardLiveFrameSelected
+            .dashboardLiveFrameSelected,
+            .ocrNodeTextBackfillStarted,
+            .ocrNodeTextBackfillCompleted
         ]
 
         for metricType in metricTypes {
@@ -113,6 +115,201 @@ final class DatabaseManagerTests: XCTestCase {
             )
             XCTAssertEqual(total, 1, "Expected one event for \(metricType.rawValue)")
         }
+    }
+
+    func testOCRNodesPreserveStoredRegionTextWhenIndexedTextIncludesAccessibilityText() async throws {
+        let timestamp = Date(timeIntervalSince1970: 1_700_200_000)
+        let segmentID = try await database.insertSegment(
+            bundleID: "com.test.ocr",
+            startDate: timestamp,
+            endDate: timestamp.addingTimeInterval(2),
+            windowName: "Invoice Window",
+            browserUrl: nil,
+            type: 0
+        )
+        let frameID = try await database.insertFrame(FrameReference(
+            id: FrameID(value: 0),
+            timestamp: timestamp,
+            segmentID: AppSegmentID(value: segmentID),
+            videoID: VideoSegmentID(value: 0),
+            frameIndexInSegment: 0,
+            metadata: FrameMetadata(
+                appBundleID: "com.test.ocr",
+                appName: "OCR Test",
+                windowName: "Invoice Window"
+            ),
+            source: .native
+        ))
+
+        _ = try await database.indexFrameText(
+            mainText: "Accessibility prefix that should not leak into OCR node text\nSubmit Invoice",
+            chromeText: nil,
+            windowTitle: "Invoice Window",
+            segmentId: segmentID,
+            frameId: frameID
+        )
+
+        try await database.insertNodes(
+            frameID: FrameID(value: frameID),
+            nodes: [
+                (
+                    textOffset: 0,
+                    textLength: "Submit".count,
+                    text: "Submit",
+                    bounds: CGRect(x: 10, y: 10, width: 60, height: 20),
+                    windowIndex: nil
+                ),
+                (
+                    textOffset: "Submit ".count,
+                    textLength: "Invoice".count,
+                    text: "Invoice",
+                    bounds: CGRect(x: 76, y: 10, width: 82, height: 20),
+                    windowIndex: nil
+                )
+            ],
+            frameWidth: 200,
+            frameHeight: 100
+        )
+
+        let nodes = try await database.getNodesWithText(
+            frameID: FrameID(value: frameID),
+            frameWidth: 200,
+            frameHeight: 100
+        )
+
+        XCTAssertEqual(nodes.map(\.text), ["Submit", "Invoice"])
+    }
+
+    func testLegacyOCRNodeTextBackfillCandidatesFindCompletedFramesMissingStoredNodeText() async throws {
+        let timestamp = Date(timeIntervalSince1970: 1_700_300_000)
+        let segmentID = try await database.insertSegment(
+            bundleID: "com.test.ocr.backfill",
+            startDate: timestamp,
+            endDate: timestamp.addingTimeInterval(10),
+            windowName: "Backfill Window",
+            browserUrl: nil,
+            type: 0
+        )
+
+        let legacyFrameID = try await insertOCRBackfillFixtureFrame(
+            segmentID: segmentID,
+            timestamp: timestamp,
+            text: "Legacy",
+            storedNodeText: nil,
+            processingStatus: 2
+        )
+        let modernFrameID = try await insertOCRBackfillFixtureFrame(
+            segmentID: segmentID,
+            timestamp: timestamp.addingTimeInterval(2),
+            text: "Modern",
+            storedNodeText: "Modern",
+            processingStatus: 2
+        )
+        let pendingLegacyFrameID = try await insertOCRBackfillFixtureFrame(
+            segmentID: segmentID,
+            timestamp: timestamp.addingTimeInterval(4),
+            text: "Pending",
+            storedNodeText: nil,
+            processingStatus: 0
+        )
+
+        let candidates = try await database.getLegacyOCRNodeTextBackfillFrameIDs(limit: 10)
+
+        XCTAssertEqual(candidates, [legacyFrameID])
+        XCTAssertFalse(candidates.contains(modernFrameID))
+        XCTAssertFalse(candidates.contains(pendingLegacyFrameID))
+    }
+
+    func testEnqueueLegacyOCRNodeTextBackfillPreservesReadableDataUntilWorkerReprocesses() async throws {
+        let timestamp = Date(timeIntervalSince1970: 1_700_400_000)
+        let segmentID = try await database.insertSegment(
+            bundleID: "com.test.ocr.backfill",
+            startDate: timestamp,
+            endDate: timestamp.addingTimeInterval(2),
+            windowName: "Backfill Window",
+            browserUrl: nil,
+            type: 0
+        )
+        let legacyFrameID = try await insertOCRBackfillFixtureFrame(
+            segmentID: segmentID,
+            timestamp: timestamp,
+            text: "Legacy",
+            storedNodeText: nil,
+            processingStatus: 2
+        )
+
+        let docidBefore = try await database.getDocidForFrame(frameId: legacyFrameID)
+        let nodesBefore = try await database.getNodesWithText(
+            frameID: FrameID(value: legacyFrameID),
+            frameWidth: 200,
+            frameHeight: 100
+        )
+
+        let enqueued = try await database.enqueueLegacyOCRNodeTextBackfill(limit: 10, priority: 75)
+
+        let docidAfter = try await database.getDocidForFrame(frameId: legacyFrameID)
+        let nodesAfter = try await database.getNodesWithText(
+            frameID: FrameID(value: legacyFrameID),
+            frameWidth: 200,
+            frameHeight: 100
+        )
+        let processingStatus = try await database.getFrameProcessingStatus(frameID: legacyFrameID)
+        let isInQueue = try await database.isFrameInProcessingQueue(frameID: legacyFrameID)
+        let enqueuedAgain = try await database.enqueueLegacyOCRNodeTextBackfill(limit: 10, priority: 75)
+
+        XCTAssertEqual(enqueued, [legacyFrameID])
+        XCTAssertEqual(docidAfter, docidBefore)
+        XCTAssertEqual(nodesBefore.map(\.text), ["Legacy"])
+        XCTAssertEqual(nodesAfter.map(\.text), ["Legacy"])
+        XCTAssertEqual(processingStatus, 0)
+        XCTAssertTrue(isInQueue)
+        XCTAssertTrue(enqueuedAgain.isEmpty)
+    }
+
+    private func insertOCRBackfillFixtureFrame(
+        segmentID: Int64,
+        timestamp: Date,
+        text: String,
+        storedNodeText: String?,
+        processingStatus: Int
+    ) async throws -> Int64 {
+        let frameID = try await database.insertFrame(FrameReference(
+            id: FrameID(value: 0),
+            timestamp: timestamp,
+            segmentID: AppSegmentID(value: segmentID),
+            videoID: VideoSegmentID(value: 0),
+            frameIndexInSegment: 0,
+            metadata: FrameMetadata(
+                appBundleID: "com.test.ocr.backfill",
+                appName: "OCR Backfill Test",
+                windowName: "Backfill Window"
+            ),
+            source: .native
+        ))
+
+        _ = try await database.indexFrameText(
+            mainText: text,
+            chromeText: nil,
+            windowTitle: "Backfill Window",
+            segmentId: segmentID,
+            frameId: frameID
+        )
+        try await database.insertNodes(
+            frameID: FrameID(value: frameID),
+            nodes: [
+                (
+                    textOffset: 0,
+                    textLength: text.count,
+                    text: storedNodeText,
+                    bounds: CGRect(x: 10, y: 10, width: 80, height: 20),
+                    windowIndex: nil
+                )
+            ],
+            frameWidth: 200,
+            frameHeight: 100
+        )
+        try await database.updateFrameProcessingStatus(frameID: frameID, status: processingStatus)
+        return frameID
     }
 
     // ┌─────────────────────────────────────────────────────────────────────────┐
@@ -687,13 +884,34 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertNotNil(retrievedFrame)
         XCTAssertEqual(retrievedFrame?.videoID.value, insertedVideoID)
 
-        // Deleting a video segment should preserve frame rows and null out frame.videoId.
+        // The public protocol deletes the video and its associated frames atomically.
         try await database.deleteVideoSegment(id: VideoSegmentID(value: insertedVideoID))
 
-        // Verify frame still exists but is no longer linked to a video.
         retrievedFrame = try await database.getFrame(id: FrameID(value: insertedFrameID))
-        XCTAssertNotNil(retrievedFrame)
-        XCTAssertEqual(retrievedFrame?.videoID.value, 0)
+        XCTAssertNil(retrievedFrame)
+        let removedVideo = try await database.getVideoSegment(id: VideoSegmentID(value: insertedVideoID))
+        XCTAssertNil(removedVideo)
+        let retainedSession = try await database.getSegment(id: appSegmentID)
+        XCTAssertNotNil(retainedSession)
+    }
+
+    func testLowLevelVideoRowDeletionRetainsFrameWithNullVideoForeignKey() async throws {
+        let timestamp = Date()
+        let videoID = try await database.insertVideoSegment(VideoSegment(id: VideoSegmentID(value: 0),
+            startTime: timestamp, endTime: timestamp, frameCount: 1, fileSizeBytes: 1_024,
+            relativePath: "chunks/schema-test", width: 64, height: 64))
+        let segmentID = try await insertTestAppSegment(bundleID: "com.test.foreignkey")
+        let frameID = FrameID(value: try await database.insertFrame(FrameReference(id: FrameID(value: 0),
+            timestamp: timestamp, segmentID: AppSegmentID(value: segmentID.value),
+            videoID: VideoSegmentID(value: videoID), frameIndexInSegment: 0, metadata: .empty)))
+        // Preserve the separate schema guarantee used by low-level maintenance.
+        // The public deleteVideoSegment contract intentionally performs more work.
+        try await database.testDeleteVideoRowOnly(id: VideoSegmentID(value: videoID))
+        let frame = try await database.getFrame(id: frameID)
+        let video = try await database.getVideoSegment(id: VideoSegmentID(value: videoID))
+        XCTAssertNotNil(frame)
+        XCTAssertEqual(frame?.videoID.value, 0)
+        XCTAssertNil(video)
     }
 
     // ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1066,5 +1284,14 @@ final class DatabaseManagerTests: XCTestCase {
             type: 0
         )
         return SegmentID(value: id)
+    }
+}
+
+private extension DatabaseManager {
+    func testDeleteVideoRowOnly(id: VideoSegmentID) throws {
+        guard let db = getConnection() else {
+            throw DatabaseError.connectionFailed(underlying: "Test database not initialized")
+        }
+        try SegmentQueries.delete(db: db, id: id)
     }
 }

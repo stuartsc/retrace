@@ -105,6 +105,19 @@ public actor StorageManager: StorageProtocol {
         )
     }
 
+    public func createRecoverySegmentWriter() async throws -> SegmentWriter {
+        guard config != nil else {
+            throw StorageError.directoryCreationFailed(path: "Storage not initialized")
+        }
+        let now = Date()
+        segmentCounter += 1
+        let timestampID = VideoSegmentID(value: Int64(now.timeIntervalSince1970 * 1000) + Int64(segmentCounter % 1000))
+        let fileURL = try await directoryManager.segmentURL(for: timestampID, date: now)
+        let relative = await directoryManager.relativePath(from: fileURL)
+        return try SegmentWriterImpl(segmentID: timestampID, fileURL: fileURL, relativePath: relative,
+                                     encoderConfig: encoderConfig)
+    }
+
     /// Get WAL manager for recovery operations
     public func getWALManager() -> WALManager {
         return walManager
@@ -229,8 +242,13 @@ public actor StorageManager: StorageProtocol {
                         Log.warning("[VideoExtract] ⚠️ TIME MISMATCH (cached): frameIndex=\(frameIndex), requested=\(String(format: "%.3f", requestedSeconds))s, actual=\(String(format: "%.3f", actualSeconds))s, retrying with fresh generator", category: .storage)
                         continue // Retry with fresh generator
                     } else {
-                        // Fresh generator also returned wrong frame - video doesn't have this frame yet
+                        // A nearby frame is acceptable only for explicitly tolerant
+                        // playback. OCR must never publish another capture's pixels.
                         Log.warning("[VideoExtract] ⚠️ TIME MISMATCH (fresh): frameIndex=\(frameIndex), requested=\(String(format: "%.3f", requestedSeconds))s, actual=\(String(format: "%.3f", actualSeconds))s, video=\(videoURL.lastPathComponent)", category: .storage)
+                        throw StorageError.fileReadFailed(
+                            path: videoURL.path,
+                            underlying: "Frame timestamp mismatch: requested \(requestedSeconds)s, received \(actualSeconds)s"
+                        )
                     }
                 }
 

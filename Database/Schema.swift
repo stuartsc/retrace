@@ -236,6 +236,7 @@ extension Schema {
     ///   - REAL width NOT NULL (normalized 0.0-1.0)
     ///   - REAL height NOT NULL (normalized 0.0-1.0)
     ///   - INTEGER windowIndex
+    ///   - TEXT text (direct OCR region text; offsets are legacy fallback)
     ///
     /// video: Video metadata
     ///   - INTEGER id (PK, auto-increment)

@@ -380,84 +380,56 @@ enum FrameQueries {
     // MARK: - Delete
 
     static func delete(db: OpaquePointer, id: FrameID) throws {
-        let sql = "DELETE FROM frame WHERE id = ?;"
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        sqlite3_bind_int64(statement, 1, id.value)
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
+        _ = try deleteMatching(db: db, predicate: "id=?", values: [.integer(id.value)])
     }
 
     static func deleteOlderThan(db: OpaquePointer, date: Date) throws -> Int {
-        let sql = "DELETE FROM frame WHERE createdAt < ?;"
-
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
-        }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        sqlite3_bind_int64(statement, 1, Schema.dateToTimestamp(date))
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        return Int(sqlite3_changes(db))
+        try deleteMatching(db: db, predicate: "createdAt<?", values: [.integer(Schema.dateToTimestamp(date))])
     }
 
-    /// Delete all frames newer than (after) the specified date
-    /// Used for quick delete functionality to remove recent recordings
+    /// Delete all frames newer than (after) the specified date.
     static func deleteNewerThan(db: OpaquePointer, date: Date) throws -> Int {
-        let sql = "DELETE FROM frame WHERE createdAt > ?;"
+        try deleteMatching(db: db, predicate: "createdAt>?", values: [.integer(Schema.dateToTimestamp(date))])
+    }
 
-        var statement: OpaquePointer?
-        defer {
-            sqlite3_finalize(statement)
+    static func deleteForVideo(db: OpaquePointer, id: VideoSegmentID) throws {
+        _ = try deleteMatching(db: db, predicate: "videoId=?", values: [.integer(id.value)])
+    }
+
+    /// Keep the selected IDs in SQLite so bulk deletion does not materialize an
+    /// unbounded Swift array. A savepoint also permits an outer video transaction.
+    /// Predicates are internal constants; all caller values remain bound.
+    private static func deleteMatching(db: OpaquePointer, predicate: String, values: [PipelineSQL.Value]) throws -> Int {
+        let operation = "delete_frames_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let selected = "temp." + operation
+        try PipelineSQL.execute(db, "SAVEPOINT \(operation)")
+        do {
+            try PipelineSQL.execute(db, "CREATE TEMP TABLE \(operation)(id INTEGER PRIMARY KEY)")
+            try PipelineSQL.execute(db, "INSERT INTO \(selected) SELECT id FROM frame WHERE \(predicate)", values)
+            // A document can be shared by several frames, or have a session-only
+            // link with NULL frameId. Delete it only if every link is selected.
+            try PipelineSQL.execute(db, """
+                DELETE FROM searchRanking WHERE rowid IN (
+                    SELECT docid FROM doc_segment WHERE frameId IN (SELECT id FROM \(selected))
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM doc_segment remaining WHERE remaining.docid=searchRanking.rowid
+                      AND NOT EXISTS(SELECT 1 FROM \(selected) WHERE id=remaining.frameId)
+                )
+                """)
+            for table in ["doc_segment", "node", "processing_queue"] {
+                try PipelineSQL.execute(db, "DELETE FROM \(table) WHERE frameId IN (SELECT id FROM \(selected))")
+            }
+            try PipelineSQL.execute(db, "UPDATE segment_comment SET frameId=NULL WHERE frameId IN (SELECT id FROM \(selected))")
+            try PipelineSQL.execute(db, "DELETE FROM frame WHERE id IN (SELECT id FROM \(selected))")
+            let count = Int(sqlite3_changes(db))
+            try PipelineSQL.execute(db, "DROP TABLE \(selected)")
+            try PipelineSQL.execute(db, "RELEASE SAVEPOINT \(operation)")
+            return count
+        } catch {
+            try? PipelineSQL.execute(db, "ROLLBACK TO SAVEPOINT \(operation)")
+            try? PipelineSQL.execute(db, "RELEASE SAVEPOINT \(operation)")
+            throw error
         }
-
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        sqlite3_bind_int64(statement, 1, Schema.dateToTimestamp(date))
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw DatabaseError.queryFailed(
-                query: sql,
-                underlying: String(cString: sqlite3_errmsg(db))
-            )
-        }
-
-        return Int(sqlite3_changes(db))
     }
 
     // MARK: - Exists Check

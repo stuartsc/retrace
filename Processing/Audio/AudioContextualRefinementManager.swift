@@ -241,24 +241,10 @@ public actor AudioContextualRefinementManager {
             return .failed(reason: "bad_batch_filename")
         }
 
-        // 9. Write new sentence M4A files
-        var sentenceAudioPaths: [String?] = Array(repeating: nil, count: sentences.count)
-        for (index, sentence) in sentences.enumerated() {
-            do {
-                let (filePath, _) = try await audioWriter.writeAudioSegment(
-                    audioData: decoded.data,
-                    startTime: sentence.startTime,
-                    endTime: sentence.endTime,
-                    sampleRate: decoded.sampleRate,
-                    channels: 1,
-                    timestamp: batchStartTime.addingTimeInterval(sentence.startTime),
-                    source: .microphone
-                )
-                sentenceAudioPaths[index] = filePath
-            } catch {
-                Log.error("[ContextualRefinement] Failed to write sentence audio: \(error)", category: .processing)
-            }
-        }
+        // Contextual refinement shares the immutable raw batch with earlier passes.
+        let transcriptAudioPath = AudioStoragePolicy.canonicalTranscriptPath(
+            batchAudioPath: batchPath
+        )
 
         // 10. Build pass-3 records
         var transcriptionsBatch: [(
@@ -278,7 +264,7 @@ public actor AudioContextualRefinementManager {
             qualityFlags: String?
         )] = []
 
-        for (index, sentence) in sentences.enumerated() {
+        for sentence in sentences {
             transcriptionsBatch.append((
                 sessionID: nil,
                 text: sentence.text,
@@ -287,7 +273,7 @@ public actor AudioContextualRefinementManager {
                 source: .microphone,
                 confidence: sentence.confidence,
                 words: sentence.words,
-                audioPath: sentenceAudioPaths[index],
+                audioPath: transcriptAudioPath,
                 transcriptionPass: 3,
                 batchAudioPath: batchPath,
                 transcriptStatus: decision.status.rawValue,

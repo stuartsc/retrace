@@ -266,7 +266,10 @@ public enum AudioTranscriptQualityPolicy {
             (trimmed.hasPrefix("*") && trimmed.hasSuffix("*")) ||
             (trimmed.hasPrefix("[") && trimmed.hasSuffix("]")) ||
             (trimmed.hasPrefix("(") && trimmed.hasSuffix(")"))
-        guard hasCaptionWrapper else { return false }
+        let hasTruncatedCaptionMarker =
+            trimmed.hasPrefix("[") != trimmed.hasSuffix("]") ||
+            trimmed.hasPrefix("*") != trimmed.hasSuffix("*")
+        guard hasCaptionWrapper || hasTruncatedCaptionMarker else { return false }
 
         let inner = trimmed
             .trimmingCharacters(in: captionMarkers)
@@ -321,6 +324,9 @@ public enum AudioTranscriptQualityPolicy {
         let words = inner
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map { String($0) }
+        if hasTruncatedCaptionMarker {
+            return words.count <= 4
+        }
         let speechPronouns: Set<String> = [
             "i",
             "im",

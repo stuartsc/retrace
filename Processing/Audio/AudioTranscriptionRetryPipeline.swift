@@ -42,6 +42,9 @@ public enum AudioTranscriptionRetryPipeline {
         var attempts = 0
         let attemptPlan = attemptPlan(for: profile)
         let requestedWordLevel = profile == .liveFirstPass ? false : wordLevel
+        // Context helps offline repair, but it can make quiet live batches echo the
+        // previous transcript and feed that hallucination into every later batch.
+        let effectiveInitialPrompt = profile == .liveFirstPass ? nil : initialPrompt
 
         for variant in attemptPlan.variants {
             let shouldKeepSearching = bestDecision.map {
@@ -66,7 +69,7 @@ public enum AudioTranscriptionRetryPipeline {
                 let transcription = try await transcriptionService.transcribeWithTimestamps(
                     candidateAudio,
                     wordLevel: requestedWordLevel,
-                    initialPrompt: initialPrompt,
+                    initialPrompt: effectiveInitialPrompt,
                     languageHint: languageHint.rawValue
                 )
                 let assessment = AudioTranscriptQualityPolicy.assess(
@@ -85,6 +88,19 @@ public enum AudioTranscriptionRetryPipeline {
 
                 if isBetter(decision, than: bestDecision) {
                     bestDecision = decision
+                }
+                if profile == .liveFirstPass,
+                   activity.isProbablySilence,
+                   assessment.status == .probableSilence,
+                   transcription.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return AudioTranscriptionDecision(
+                        transcription: transcription,
+                        status: assessment.status,
+                        audioVariant: variant,
+                        languageHint: languageHint,
+                        qualityFlags: assessment.flags,
+                        attempts: attempts
+                    )
                 }
                 if profile == .liveFirstPass, isAcceptableLiveCandidate(decision) {
                     return AudioTranscriptionDecision(
