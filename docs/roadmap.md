@@ -61,6 +61,8 @@ For charts, diagrams, images and other meaningful visual content, preserve avail
 
 ### Proposed Implementation Order
 
+The [amended progressive recall plan](progressive-recall-plan.md) defines the complete delivery sequence: baseline fixtures, then retrieval correctness and exact citation-driven timeline navigation (including journal-backed previews), followed by richer observations, hybrid retrieval, coordinated inspection and measured idle refinement. The sequence below describes the context subsystem within that plan; it does not postpone exact evidence navigation until model refinement. Both documents remain proposed.
+
 1. **Preserve context at capture time.** Snapshot per-window identity and metadata alongside the accepted frame, with acquisition timing and consistency checks. Keep earlier context immutable when titles or URLs change. Context-only changes must survive image deduplication. Late OCR must use the saved context, never the current desktop as a substitute for an old capture.
 2. **Attribute and structure visible content.** Combine captured window information with bounded accessibility labels and OCR. Apply visibility/occlusion checks and the same exclusions to every extraction path. Keep uncertain blocks unassigned rather than attributing an entire display to its foreground app.
 3. **Provide one agent-facing representation.** Persist context, text and relationships together and render complete structured/text observations through a documented bridge. Preserve the last usable observation until a retry commits; retries must not look like repeated user activity. Captured source text must stay delimited as data when an agent consumes it.

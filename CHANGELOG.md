@@ -8,6 +8,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 Status at 2026-09-09: **0.7.6 (2609.9.1) is installed and running**, launched at **07:15:27 Brisbane** after a fresh recovery snapshot and normal shutdown. The fixed 90-second trial completed **all eight captures**, with **1.005-second median** and **5.003-second maximum** capture-to-OCR completion; three sampled frames and all three controlled text screens passed actual FTS checks. At 07:31:32, sharply increased host load coincided with 10 newer frames pending and one processing, so sustained freshness remains variable. Missing historical source video and the newest unfinished-video preview remain separate limitations. This is a local trial, not a public release or an equal-workload accuracy, energy or disk benchmark.
 
+### 2026-09-11 — Progressive recall plan amended after checkpoint review
+
+- Amended the [saved plan](docs/progressive-recall-plan.md) against checkpoint `118b790`: exact source-qualified evidence resolution, citation-driven historical navigation and journal-backed previews now belong in the first functional deliverable, alongside retrieval and preservation fixes.
+- Added claim-to-evidence answers, full-pool scoring before expansion, explicit versus inferred constraints, capture micro-change tests, revision/highlight integrity, atomic change consumption, deletion precedence and privacy controls spanning Accessibility, helper processing and agent disclosure. Model choices remain benchmark candidates; running-job cancellation and measured memory/disk budgets are explicit requirements.
+- Rechecked the relevant source and independently reproduced the shortlist loss with synthetic SQLite (2,000 out-of-scope matches; zero results before the query correction, one afterwards). This documentation amendment does not implement the fixes, rerun macOS acceptance or install a build. Implementation remains on hold for review.
+
 ### 2026-09-11 — Progressive recall plan saved for review
 
 - Saved the [progressive recall and idle refinement plan](docs/progressive-recall-plan.md), covering contextual screen evidence, broad-to-precise retrieval, exact screenshot inspection and bounded background work across the two private Macs.
