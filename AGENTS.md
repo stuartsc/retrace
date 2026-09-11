@@ -14,7 +14,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Proposed Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (saved for review; implementation on hold)
+- **Proposed Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (activity context, exact evidence and idle refinement; implementation on hold)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
 ---

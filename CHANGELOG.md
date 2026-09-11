@@ -8,6 +8,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 Status at 2026-09-09: **0.7.6 (2609.9.1) is installed and running**, launched at **07:15:27 Brisbane** after a fresh recovery snapshot and normal shutdown. The fixed 90-second trial completed **all eight captures**, with **1.005-second median** and **5.003-second maximum** capture-to-OCR completion; three sampled frames and all three controlled text screens passed actual FTS checks. At 07:31:32, sharply increased host load coincided with 10 newer frames pending and one processing, so sustained freshness remains variable. Missing historical source video and the newest unfinished-video preview remain separate limitations. This is a local trial, not a public release or an equal-workload accuracy, energy or disk benchmark.
 
+### 2026-09-11 — Independent activity capture and document-first timeline planned
+
+- Incorporated the Timely-informed review into the [saved plan](docs/progressive-recall-plan.md). Phase 1 now includes a durable activity stream independent of screenshot deduplication, encoding and OCR, application-specific context, and an expandable episode → activity interval → exact evidence timeline.
+- Added separate engagement/capacity decisions, confirmed classification corrections, per-stage capture health, explicit pause/exclude/hide/rename/delete semantics, URL credential scrubbing across metadata sinks, and a matched Timely comparison adjudicated against reviewed recordings. Activity labels supplement direct evidence search; brief transitions and unknown coverage must be retained honestly.
+- Checked official Timely documentation and the existing notification/metadata/health seams at `4207f4b`. This is a documentation amendment, not implementation, a completed comparison or an installed build. The existing SQL probe is unchanged; implementation remains on hold for review.
+
 ### 2026-09-11 — Progressive recall plan amended after checkpoint review
 
 - Amended the [saved plan](docs/progressive-recall-plan.md) against checkpoint `118b790`: exact source-qualified evidence resolution, citation-driven historical navigation and journal-backed previews now belong in the first functional deliverable, alongside retrieval and preservation fixes.
