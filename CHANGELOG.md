@@ -6,6 +6,18 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-09-14 — Native process identity and unavailable notifications
+
+- Activity and screen context support native apps launched without a LaunchServices launch date. A bounded registry uses native application equality and the observed PID to preserve one process lifetime across polling; terminated handles and separate launches retain distinct identities.
+- Unidentified focus notifications retain an unknown gap at their original observation time. Explicit reconciliation samples the current app separately, preserving its own provenance.
+- Fixed route/reason diagnostics expose unavailable native identity with bounded transition counts and no app or document identifiers. File logging runs on a utility queue, keeping locks and rotation off the main thread. Independent source review is clear and **880 tests pass with five intentional skips and zero failures**. Native process and real SQLite regressions are tracked in [the validation record](docs/progressive-recall-validation.md#foreground-process-identity-investigation--2026-09-14).
+
+### Local trial 2609.14.2 — 2026-09-14
+
+- Installed and launched the native process-identity correction in the background at **12:34:20 Brisbane**, following the passing **880-test** suite, optimized compilation and independent signed-package verification. The first bounded read found **36 fresh completed captures**; Retrace remained hidden with zero windows.
+- A subsequent one-minute cohort completed all **29 captures**, with processing completion at **233 ms p50 / 428 ms p95**. Recording stayed On and activity collection Off. CPU/memory targets and the wider recall/Timely comparison remain unaccepted; the fresh-capture result does not resolve older failed frames or the earlier unavailable-context interval.
+- Retained **2609.14.1** for rollback with the current V21 library. Normal Quit drained the previous app; the guarded installer made no library writes. This capture-only follow-up does not add a new saved-link UI acceptance result. Detailed measurements and remaining Phase 1 acceptance are recorded in [the validation ledger](docs/progressive-recall-validation.md#foreground-process-identity-investigation--2026-09-14).
+
 ### Local trial 2609.14.1 — 2026-09-14
 
 - Installed and launched the activity notification correction at **10:54:45 Brisbane** after **866 tests, five intentional skips and zero failures**, optimized compilation and independent package verification. A bounded post-launch check found sixteen fresh completed captures.

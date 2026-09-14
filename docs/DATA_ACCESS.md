@@ -2,7 +2,7 @@
 
 This document describes what Retrace records and how external agents or scripts can read the captured data.
 
-Schema and release status are separate. As verified on **2026-09-14**, **0.7.6 (2609.14.1)** is installed and running as an unreleased local trial, and its native database has the additive **V21** progressive-recall schema. The prior app is retained for rollback with the current library; the earlier verified whole-library recovery copy is also retained. See the [validation ledger](progressive-recall-validation.md#notification-correction--2026-09-14) for installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
+Schema and release status are separate. As verified on **2026-09-14**, **0.7.6 (2609.14.2)** is installed and running as an unreleased local trial, and its native database has the additive **V21** progressive-recall schema. The prior app is retained for rollback with the current library; the earlier verified whole-library recovery copy is also retained. See the [validation ledger](progressive-recall-validation.md#foreground-process-identity-investigation--2026-09-14) for installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
 
 ## What the app records
 

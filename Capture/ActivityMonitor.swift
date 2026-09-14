@@ -3,6 +3,119 @@ import AppKit
 import ApplicationServices
 import Shared
 
+enum ActivityApplicationSnapshotRoute: String, Sendable { case current, workspace, ax }
+
+enum ActivityApplicationSnapshotReason: String, CaseIterable, Sendable {
+    case available
+    case availableWithoutLaunchDate = "available-without-launch-date"
+    case missingApplication = "missing-app"
+    case missingBundleIdentifier = "missing-bundle-id"
+    case terminatedApplication = "terminated-app"
+    case invalidProcessIdentifier = "invalid-process"
+}
+
+/// Only fixed codes and bounded counters can reach the diagnostic sink.
+struct ActivityApplicationDiagnostic: Sendable {
+    let route: ActivityApplicationSnapshotRoute
+    let reason: ActivityApplicationSnapshotReason
+    let suppressedTransitions: [ActivityApplicationSnapshotReason: Int]
+    var message: String {
+        let counts = ActivityApplicationSnapshotReason.allCases.compactMap { reason -> String? in
+            guard let count = suppressedTransitions[reason] else { return nil }
+            return "\(reason.rawValue):\(count)"
+        }
+        return "[Activity] Native application snapshot route=\(route.rawValue) reason=\(reason.rawValue) suppressed=\(counts.isEmpty ? "none" : counts.joined(separator: ","))"
+    }
+}
+
+enum ActivityApplicationDiagnosticDelivery {
+    // Log.info may lock, write and rotate files. Keep that work off both
+    // MainActor and Swift's cooperative executor after rate admission.
+    private static let queue = DispatchQueue(label: "com.retrace.activity.snapshot-diagnostics", qos: .utility)
+
+    static func enqueue(_ diagnostic: ActivityApplicationDiagnostic,
+                        write: @escaping @Sendable (ActivityApplicationDiagnostic) -> Void = {
+                            Log.info($0.message, category: .capture)
+                        }) {
+        queue.async { write(diagnostic) }
+    }
+}
+
+@MainActor
+final class ActivityApplicationDiagnostics {
+    static let shared = ActivityApplicationDiagnostics()
+    private struct State {
+        var lastReason: ActivityApplicationSnapshotReason
+        var lastEmission: TimeInterval
+        var suppressed: [ActivityApplicationSnapshotReason: Int] = [:]
+    }
+    private let minimumInterval: TimeInterval
+    private let now: () -> TimeInterval
+    private let emit: (ActivityApplicationDiagnostic) -> Void
+    private var states: [ActivityApplicationSnapshotRoute: State] = [:]
+
+    init(minimumInterval: TimeInterval = 30,
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         emit: @escaping (ActivityApplicationDiagnostic) -> Void = { ActivityApplicationDiagnosticDelivery.enqueue($0) }) {
+        self.minimumInterval = max(1, minimumInterval); self.now = now; self.emit = emit
+    }
+
+    func record(_ reason: ActivityApplicationSnapshotReason, route: ActivityApplicationSnapshotRoute) {
+        let time = now()
+        guard var state = states[route] else {
+            states[route] = State(lastReason: reason, lastEmission: time)
+            emit(.init(route: route, reason: reason, suppressedTransitions: [:]))
+            return
+        }
+        let changed = state.lastReason != reason
+        state.lastReason = reason
+        if time - state.lastEmission < minimumInterval {
+            if changed { state.suppressed[reason] = min(state.suppressed[reason, default: 0], Int.max - 1) + 1 }
+            states[route] = state
+            return
+        }
+        // Flush suppressed transitions even if the current reason has stabilized.
+        // Fixed reason counts preserve brief failures without an identity log.
+        let shouldEmit = changed || !state.suppressed.isEmpty
+        let diagnostic = ActivityApplicationDiagnostic(route: route, reason: reason, suppressedTransitions: state.suppressed)
+        if shouldEmit { state.lastEmission = time; state.suppressed.removeAll(keepingCapacity: true) }
+        states[route] = state
+        if shouldEmit { emit(diagnostic) }
+    }
+}
+
+/// NSRunningApplication documents native equality as its process-identity test;
+/// PID alone is insufficient and launchDate is absent without LaunchServices.
+/// Retained handles plus the observed PID fence automatic termination/relaunch.
+/// These opaque observed-lifetime tokens are independent of window/lifecycle resets.
+@MainActor
+final class ActivityApplicationIdentityRegistry {
+    static let shared = ActivityApplicationIdentityRegistry()
+    private struct Entry {
+        let app: NSRunningApplication
+        let pid: Int32
+        let generation: String
+    }
+    private let capacity: Int
+    private var entries: [Entry] = []
+
+    init(capacity: Int = 256) { self.capacity = min(256, max(1, capacity)) }
+
+    func generation(for app: NSRunningApplication, observedPID: Int32) -> String? {
+        entries.removeAll { $0.app.isTerminated || $0.app.processIdentifier != $0.pid }
+        guard observedPID > 0, !app.isTerminated, app.processIdentifier == observedPID else { return nil }
+        if let index = entries.firstIndex(where: { $0.pid == observedPID && $0.app.isEqual(app) }) {
+            let existing = entries.remove(at: index)
+            entries.append(existing)
+            return existing.generation
+        }
+        if entries.count == capacity { entries.removeFirst() }
+        let entry = Entry(app: app, pid: observedPID, generation: "native-process:\(UUID())")
+        entries.append(entry)
+        return entry.generation
+    }
+}
+
 struct ActivityApplicationSnapshot: Sendable, Equatable {
     let bundleID: String
     let name: String
@@ -13,10 +126,30 @@ struct ActivityApplicationSnapshot: Sendable, Equatable {
         self.bundleID = bundleID; self.name = name; self.pid = pid; self.generation = generation
     }
 
-    @MainActor init?(_ app: NSRunningApplication?) {
-        guard let app, let bundleID = app.bundleIdentifier, let launchDate = app.launchDate else { return nil }
-        self.bundleID = bundleID; name = app.localizedName ?? bundleID; pid = app.processIdentifier
-        generation = "\(app.processIdentifier):\(launchDate.timeIntervalSince1970)"
+    @MainActor init?(_ app: NSRunningApplication?, route: ActivityApplicationSnapshotRoute = .current,
+                     registry: ActivityApplicationIdentityRegistry? = nil,
+                     diagnostics: ActivityApplicationDiagnostics? = nil) {
+        let diagnostics = diagnostics ?? .shared
+        guard let app else {
+            diagnostics.record(.missingApplication, route: route); return nil
+        }
+        guard !app.isTerminated else {
+            diagnostics.record(.terminatedApplication, route: route); return nil
+        }
+        let processID = app.processIdentifier
+        guard processID > 0 else {
+            diagnostics.record(.invalidProcessIdentifier, route: route); return nil
+        }
+        guard let bundleID = app.bundleIdentifier, !bundleID.isEmpty else {
+            diagnostics.record(.missingBundleIdentifier, route: route); return nil
+        }
+        let hasLaunchDate = app.launchDate != nil
+        guard let generation = (registry ?? .shared).generation(for: app, observedPID: processID) else {
+            diagnostics.record(.invalidProcessIdentifier, route: route); return nil
+        }
+        self.bundleID = bundleID; name = app.localizedName ?? bundleID; pid = processID
+        self.generation = generation
+        diagnostics.record(hasLaunchDate ? .available : .availableWithoutLaunchDate, route: route)
     }
 }
 
@@ -105,7 +238,8 @@ private final class ActivityObservationBridge {
         let center = NSWorkspace.shared.notificationCenter
         tokens.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
-                self?.observe(kind: .focus, application: note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+                self?.observe(kind: .focus, application: note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                              route: .workspace)
             }
         })
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
@@ -135,9 +269,10 @@ private final class ActivityObservationBridge {
         }
     }
 
-    private func observe(kind: ActivityEventKind, application: NSRunningApplication?, emitSignal: Bool = true) {
+    private func observe(kind: ActivityEventKind, application: NSRunningApplication?,
+                         route: ActivityApplicationSnapshotRoute = .current, emitSignal: Bool = true) {
         guard isObserving else { return }
-        let applicationSnapshot = ActivityApplicationSnapshot(application)
+        let applicationSnapshot = ActivityApplicationSnapshot(application, route: route)
         if emitSignal {
             if kind == .focus { ObservedWindowGenerations.shared.reset() }
             buffer.send(.init(kind: kind, app: applicationSnapshot))
@@ -219,7 +354,7 @@ private struct ActivityAXRegistration: @unchecked Sendable {
             // No AX traversal in a run-loop callback. Reconcile the current focused window off main.
             MainActor.assumeIsolated {
                 ActivityAXNotificationHandler.handle(notification as String,
-                    app: ActivityApplicationSnapshot(NSWorkspace.shared.frontmostApplication), buffer: buffer)
+                    app: ActivityApplicationSnapshot(NSWorkspace.shared.frontmostApplication, route: .ax), buffer: buffer)
             }
         }, &observer) == .success, let observer else { return nil }
         let app = AXUIElementCreateApplication(pid)
@@ -450,9 +585,12 @@ public actor ActivityMonitor {
         guard buffer.permitsContent(generation: signal.generation) else { return }
         let currentApp = await source.frontmost()
         guard buffer.permitsContent(generation: signal.generation) else { return }
-        guard let app = signal.app ?? currentApp else {
+        // Only an explicit reconciliation may sample a later current process.
+        // An unavailable notified identity remains unknown at its original time.
+        guard let app = signal.app ?? (signal.kind == .reconciliation ? currentApp : nil) else {
             resetContext()
-            _ = await persist(kind: .gap, coverage: .unknown, context: nil, signal: signal, method: "frontmost-app-unavailable")
+            _ = await persist(kind: .gap, coverage: .unknown, context: nil, signal: signal,
+                              method: signal.kind == .reconciliation ? "frontmost-app-unavailable" : "notified-app-unavailable")
             return
         }
         guard !config.excludedAppBundleIDs.contains(app.bundleID),
