@@ -14,7 +14,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2 authorised; evidence collection and exact replay; acceptance tracked separately)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B implemented; evidence collection and exact replay; feed/retrieval and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
@@ -56,7 +56,7 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── progressive-recall-plan.md # Authorised evidence-focused recall plan; Phase 2 commencing
+│   ├── progressive-recall-plan.md # Evidence-focused recall plan; Phase 2A/2B local trial, feed/retrieval pending
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
 │   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle and same-title Word RTF fixtures
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
