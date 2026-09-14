@@ -195,6 +195,8 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
 
                 var currentWord = ""
                 var wordStartTime: Double? = nil
+                var wordEndTime: Double? = nil
+                var lastTokenConfidence: Double? = nil
 
                 for tokenIdx in 0..<numTokens {
                     let tokenData = whisper_full_get_token_data(ctx, segmentIdx, tokenIdx)
@@ -239,17 +241,22 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
                         }
                     }
 
-                    // Save last word at end of segment
-                    if tokenIdx == numTokens - 1 && !currentWord.isEmpty, let startTime = wordStartTime {
-                        let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
-                        if !cleanWord.isEmpty {
-                            words.append(TranscriptionWord(
-                                word: cleanWord,
-                                start: startTime,
-                                end: t1,
-                                confidence: Double(tokenData.p)
-                            ))
-                        }
+                    wordEndTime = t1
+                    lastTokenConfidence = Double(tokenData.p)
+                }
+
+                // Whisper normally ends a segment with a skipped control token.
+                // Flush the pending word after visiting every token, using the
+                // last lexical token's timing rather than the control token's.
+                if !currentWord.isEmpty, let startTime = wordStartTime, let endTime = wordEndTime {
+                    let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
+                    if !cleanWord.isEmpty {
+                        words.append(TranscriptionWord(
+                            word: cleanWord,
+                            start: startTime,
+                            end: endTime,
+                            confidence: lastTokenConfidence
+                        ))
                     }
                 }
             }
@@ -274,90 +281,13 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         wordLevel: Bool = true,
         initialPrompt: String
     ) async throws -> DetailedTranscriptionResult {
-        let ctx = try await prepareForTranscription()
-        defer { scheduleIdleUnloadIfNeeded() }
-
-        let samples = convertToFloat32(audioData)
-
-        var params = makeWhisperParams()
-        Self.configureRecallFirstDecoding(&params)
-        params.print_timestamps = wordLevel
-        params.token_timestamps = wordLevel
-        params.max_len = 0
-        params.suppress_blank = true
-        params.suppress_nst = false
-
-        // Truncate prompt to ~800 chars (whisper uses max n_text_ctx/2 ≈ 224 tokens)
-        let truncatedPrompt = String(initialPrompt.prefix(800))
-
-        // Run transcription with initial_prompt set — helper keeps C strings alive during whisper_full.
-        let result = runWhisper(
-            ctx: ctx,
-            params: &params,
-            samples: samples,
-            initialPrompt: truncatedPrompt,
+        // Preserve this entry point's prefix-based prompt limit while sharing
+        // decoding, word extraction and model cleanup with the timestamp API.
+        try await transcribeWithTimestamps(
+            audioData,
+            wordLevel: wordLevel,
+            initialPrompt: String(initialPrompt.prefix(800)),
             languageHint: nil
-        )
-
-        guard result == 0 else {
-            throw TranscriptionError.transcriptionFailed
-        }
-
-        // Extract results (same as transcribeWithTimestamps)
-        var words: [TranscriptionWord] = []
-        var fullText = ""
-
-        let numSegments = whisper_full_n_segments(ctx)
-        for segmentIdx in 0..<numSegments {
-            guard let segmentText = whisper_full_get_segment_text(ctx, segmentIdx) else { continue }
-            fullText += String(cString: segmentText)
-
-            if wordLevel {
-                let numTokens = whisper_full_n_tokens(ctx, segmentIdx)
-                var currentWord = ""
-                var wordStartTime: Double? = nil
-
-                for tokenIdx in 0..<numTokens {
-                    let tokenData = whisper_full_get_token_data(ctx, segmentIdx, tokenIdx)
-                    guard let tokenTextPtr = whisper_full_get_token_text(ctx, segmentIdx, tokenIdx) else { continue }
-                    let tokenText = String(cString: tokenTextPtr)
-                    let t0 = Double(tokenData.t0) / 100.0
-                    let t1 = Double(tokenData.t1) / 100.0
-
-                    if tokenText.hasPrefix("[") && tokenText.hasSuffix("]") { continue }
-
-                    if tokenText.hasPrefix(" ") || tokenText.hasPrefix("\n") {
-                        if !currentWord.isEmpty, let startTime = wordStartTime {
-                            let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
-                            if !cleanWord.isEmpty {
-                                words.append(TranscriptionWord(word: cleanWord, start: startTime, end: t0, confidence: Double(tokenData.p)))
-                            }
-                        }
-                        currentWord = tokenText.trimmingCharacters(in: .whitespaces)
-                        wordStartTime = t0
-                    } else {
-                        currentWord += tokenText
-                        if wordStartTime == nil { wordStartTime = t0 }
-                    }
-
-                    if tokenIdx == numTokens - 1 && !currentWord.isEmpty, let startTime = wordStartTime {
-                        let cleanWord = Self.stripControlTokens(currentWord.trimmingCharacters(in: .whitespacesAndNewlines))
-                        if !cleanWord.isEmpty {
-                            words.append(TranscriptionWord(word: cleanWord, start: startTime, end: t1, confidence: Double(tokenData.p)))
-                        }
-                    }
-                }
-            }
-        }
-
-        let langId = whisper_full_lang_id(ctx)
-        let language = String(cString: whisper_lang_str(langId))
-
-        return DetailedTranscriptionResult(
-            text: Self.stripControlTokens(fullText),
-            words: words,
-            language: language,
-            duration: Double(samples.count) / 16000.0
         )
     }
 

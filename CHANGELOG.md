@@ -6,6 +6,17 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-09-14 — Preserve final words in audio timing
+
+- Whisper's timed-word output now retains the final lexical word when a segment ends with control tokens. Previously, a real 32-word authored audio fixture produced only 28 timed words, omitting `draft`, `payment`, `yesterday` and `reply`. Backfill and refinement request this word-level output; live first-pass transcription currently requests untimed text.
+- Contextual transcription shares the corrected parser and preserves its existing prompt limit. Production continues to use CPU Whisper. The authored audio, reference and provenance are versioned as test-only resources; both real-model entry points return all 32 timed words. The full suite passes **881 tests with five intentional skips and zero failures**. Validation and installation status are recorded in [the audio regression evidence](docs/progressive-recall-validation.md#audio-timed-word-completeness--2026-09-14).
+
+### Local trial 2609.14.3 — 2026-09-14
+
+- Installed and launched the timed-word correction at **15:27:57 Brisbane** after the passing **881-test** suite, optimized compilation and independent signed-package verification. The first bounded startup check found **19 fresh captures, all completed**; older processing work remains separate.
+- A subsequent one-minute cohort completed **all 29 captures**, with processing completion at **237 ms p50 / 1,052 ms p95** and no pending/processing work at the final read. CPU and memory still exceed the targets in the uncontrolled shared-desktop observation; this does not establish a performance comparison or repair of older failed frames.
+- Recording autostart and activity collection stayed On, preserving their values immediately before Quit. The previous **2609.14.2** app is retained for rollback with the current V21 library; the installer made no library writes. General accuracy, matched resources and wider recall acceptance remain open. See [the installed-trial evidence](docs/progressive-recall-validation.md#audio-timed-word-completeness--2026-09-14).
+
 ### 2026-09-14 — Native process identity and unavailable notifications
 
 - Activity and screen context support native apps launched without a LaunchServices launch date. A bounded registry uses native application equality and the observed PID to preserve one process lifetime across polling; terminated handles and separate launches retain distinct identities.

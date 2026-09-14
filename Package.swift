@@ -167,6 +167,7 @@ let package = Package(
             name: "ProcessingTests",
             dependencies: ["Processing", "Shared", "Database", "Storage"],
             path: "Processing/Tests",
+            resources: [.copy("Fixtures/WhisperTimedWords")],
             linkerSettings: [
                 .unsafeFlags(["-L", whisperLibPath, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../lib", "-Xlinker", "-rpath", "-Xlinker", whisperLibPath]),
                 .linkedLibrary("whisper"),

@@ -35,6 +35,11 @@ Processing/
 │   ├── TileOCRProcessor.swift
 │   └── VisionOCR.swift
 ├── Tests/
+│   ├── Fixtures/
+│   │   └── WhisperTimedWords/
+│   │       ├── authored.wav
+│   │       ├── provenance.json
+│   │       └── reference.txt
 │   ├── _future/
 │   │   ├── AccessibilityTests.swift
 │   │   └── VisionOCRTests.swift
@@ -84,6 +89,7 @@ Processing/
 - Media repair failures publish a durable unavailable reason and failed status through `recordFrameMediaUnavailable`; no repair branch deletes frames, existing OCR/FTS, highlight nodes or extraction revisions. Missing/empty media and integrity failures remain distinct; only explicit deletion or retention owns evidence removal. Finalized missing media counts as failed work, never successful OCR.
 - Prefer a readable exact-frame-ID WAL over encoded video even when database metadata says finalized: an active container can still be empty or return an earlier frame. Missing/incomplete live WAL or nonfinalized sources defer at automatic priority 10 without consuming error retries, retaining the 0.5-second backoff; capture-age expiry still sends old work to historical FIFO. An unreadable retained WAL from a prior process falls back to strict encoded reads when metadata is finalized, so damaged evidence cannot cause endless retries. Missing finalized media still reaches the existing terminal failure path without deleting the retained WAL. The source-readiness tests exercise real WAL pixels, SQLite claims, fresh-retry precedence over backlog, restart ownership and completion through the production worker.
 - `AudioStoragePolicy` preserves canonical batch recordings and prevents duplicate sentence files. Whisper remains the production transcription backend.
+- Whisper timed-word extraction flushes each segment's pending lexical word after control-token filtering. Contextual transcription shares that parser and retains its existing prefix-based prompt limit. `WhisperModelResidencyTests` includes an opt-in real CPU inference regression using the versioned, unplayed authored audio in `Tests/Fixtures/WhisperTimedWords`; only `RETRACE_WHISPER_WORD_TEST_MODEL_PATH` is required. It compares each returned full text with its own timed words and checks complete PCM reads and timestamp bounds/order, rather than requiring perfect speech recognition. The fixtures are resources of the test target only.
 - `NativeSpeechTranscriptionService` is an opt-in macOS 26 batch comparison backend, not a production routing change. Exact module asset readiness must be checked in the calling app; locale support alone is insufficient. Tests may explicitly prepare assets for comparison.
 - Root-owned capture freshness metrics use `Log.recordLatency` for OCR processing and recent/backlog capture-to-search latency. New product actions must also emit `daily_metrics` as required by the root guide.
 - Use continuous-clock duration sleeps, actors for mutable state and background execution for expensive I/O/OCR. Preserve cancellation and drain worker tasks before service teardown.

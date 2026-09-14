@@ -1,0 +1,48 @@
+{
+  "description": "Authored, unplayed speech for real Whisper timed-word completeness regression. Not a human recording or a general speech accuracy corpus.",
+  "created_date": "2026-09-14",
+  "os": "macOS26.1",
+  "voice": "installed Karen en_AU",
+  "synthesis_command": [
+    "say",
+    "-v",
+    "Karen",
+    "-r",
+    "155",
+    "-f",
+    "reference.txt",
+    "-o",
+    "authored.wav",
+    "--file-format=WAVE",
+    "--data-format=LEI16@16000"
+  ],
+  "format": {
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "pcm_frames": 171707,
+    "seconds": 10.7316875
+  },
+  "pcm_sha256": "b1295d561ac7a320eec47d9f5e5ccb58ed4e1e20f52dc3119b445f1d88952b41",
+  "file_sha256": {
+    "authored.wav": "271a49fc227c083978627f4ea436d4f5c155514542d9089390a6885182c3cd00",
+    "reference.txt": "c9e4267ce37593ab46a3a7ce5e15ee3ceb95d39d7ce87a0481fe4ffadb7038ad"
+  },
+  "regression_evidence": {
+    "production_full_text_words": 32,
+    "production_timed_words_before_fix": 28,
+    "missing_terminal_words": [
+      "draft",
+      "payment",
+      "yesterday",
+      "reply"
+    ],
+    "paths": [
+      "transcribeWithTimestamps",
+      "transcribeWithContext"
+    ],
+    "backend": "CPU Whisper small; real API reproduction before code change"
+  },
+  "oracle": "Compare each decoded full text with its own timed-word sequence. Synthesis reference establishes meaningful decoding; exact speech recognition is not required.",
+  "reproduction_note": "Use the checked-in audio for byte-identical input; regenerated system voices may differ."
+}
