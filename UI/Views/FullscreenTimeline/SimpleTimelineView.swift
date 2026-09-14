@@ -738,13 +738,7 @@ public struct SimpleTimelineView: View {
                 coordinator: coordinator,
                 viewModel: viewModel.searchViewModel,
                 onResultSelected: { result, query in
-                    Task {
-                        await viewModel.navigateToSearchResult(
-                            frameID: result.id,
-                            timestamp: result.timestamp,
-                            highlightQuery: query
-                        )
-                    }
+                    ActivityTimelineController.shared.openSearchResult(result, coordinator: coordinator)
                 },
                 onDismiss: {
                     viewModel.isSearchOverlayVisible = false

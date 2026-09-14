@@ -1508,6 +1508,10 @@ public struct DashboardView: View {
                         .font(.retraceHeadline)
                         .foregroundColor(.retracePrimary)
 
+                    Button("Activity & Evidence") {
+                        ActivityTimelineController.shared.show(coordinator: coordinatorWrapper.coordinator)
+                    }.buttonStyle(.link)
+
                     Text("Find what you saw, recover the text, then jump back into that moment.")
                         .font(.retraceCaptionMedium)
                         .foregroundColor(.retraceSecondary)

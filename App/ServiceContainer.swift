@@ -69,7 +69,7 @@ public actor ServiceContainer {
         self.database = DatabaseManager(databasePath: databasePath)
         self.ftsEngine = FTSManager(databasePath: databasePath)
         // Use the correct storage root (respects custom path setting)
-        let storageRootURL = URL(fileURLWithPath: AppPaths.expandedStorageRoot, isDirectory: true)
+        let storageRootURL = URL(fileURLWithPath: NSString(string: storageConfig.storageRootPath).expandingTildeInPath, isDirectory: true)
         self.storage = StorageManager(storageRoot: storageRootURL)
         self.capture = CaptureManager(config: captureConfig)
         self.audioCapture = AudioCaptureManager(config: audioCaptureConfig)
@@ -305,13 +305,10 @@ public actor ServiceContainer {
         Log.info("✓ Migration ready", category: .app)
 
         // 9. Initialize DataAdapter with connections directly
-        guard let dbPointer = await database.getConnection() else {
-            throw ServiceError.databaseNotReady
-        }
-
         // Create connections and config for Retrace
-        let retraceConnection = SQLiteConnection(db: dbPointer)
-        let retraceConfig = DatabaseConfig.retrace
+        let retraceConnection = try await database.makeRecallReadConnection()
+        let retraceConfig = DatabaseConfig(dateFormatter: nil,
+            storageRoot: await storage.getStorageDirectory().path, source: .native, cutoffDate: nil)
         let retraceImageExtractor = HEVCStorageExtractor(storageManager: storage)
 
         let adapter = DataAdapter(

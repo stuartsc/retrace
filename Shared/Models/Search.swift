@@ -18,10 +18,12 @@ public enum SearchSortOrder: String, Codable, Sendable, CaseIterable {
 public struct SearchSourceCursor: Codable, Sendable, Equatable {
     public let timestamp: Date
     public let frameID: Int64
+    public let relevanceRank: Double?
 
-    public init(timestamp: Date, frameID: Int64) {
+    public init(timestamp: Date, frameID: Int64, relevanceRank: Double? = nil) {
         self.timestamp = timestamp
         self.frameID = frameID
+        self.relevanceRank = relevanceRank
     }
 }
 
@@ -29,10 +31,27 @@ public struct SearchSourceCursor: Codable, Sendable, Equatable {
 public struct SearchPageCursor: Codable, Sendable, Equatable {
     public let native: SearchSourceCursor?
     public let rewind: SearchSourceCursor?
+    public let nativeSearchRevision: Int64?
+    public let rewindDataVersion: Int64?
+    public let rewindTotalChanges: Int64?
+    public let sourceIdentity: String?
+    public let queryFingerprint: String?
 
-    public init(native: SearchSourceCursor? = nil, rewind: SearchSourceCursor? = nil) {
+    public init(native: SearchSourceCursor? = nil, rewind: SearchSourceCursor? = nil,
+                nativeSearchRevision: Int64? = nil, rewindDataVersion: Int64? = nil,
+                rewindTotalChanges: Int64? = nil, sourceIdentity: String? = nil, queryFingerprint: String? = nil) {
         self.native = native
         self.rewind = rewind
+        self.nativeSearchRevision = nativeSearchRevision; self.rewindDataVersion = rewindDataVersion
+        self.rewindTotalChanges = rewindTotalChanges; self.sourceIdentity = sourceIdentity
+        self.queryFingerprint = queryFingerprint
+    }
+}
+
+public enum SearchPaginationError: Error, Sendable, LocalizedError {
+    case dataChanged
+    public var errorDescription: String? {
+        "The search index or source changed. Refresh this search to continue from current evidence."
     }
 }
 
@@ -182,6 +201,25 @@ public struct SearchFilters: Codable, Sendable {
 
 // MARK: - Search Result
 
+/// Binds a legacy search selection to its source connection, indexed content,
+/// and captured frame/media identity until an immutable reference is created.
+public struct SearchSelectionToken: Codable, Sendable, Equatable {
+    public let source: FrameSource
+    public let sourceGeneration: String
+    public let nativeSearchRevision: Int64?
+    public let rewindDataVersion: Int64?
+    public let rewindTotalChanges: Int64?
+    public let captureIdentityDigest: String
+
+    public init(source: FrameSource, sourceGeneration: String, nativeSearchRevision: Int64? = nil,
+                rewindDataVersion: Int64? = nil, rewindTotalChanges: Int64? = nil,
+                captureIdentityDigest: String) {
+        self.source = source; self.sourceGeneration = sourceGeneration
+        self.nativeSearchRevision = nativeSearchRevision; self.rewindDataVersion = rewindDataVersion
+        self.rewindTotalChanges = rewindTotalChanges; self.captureIdentityDigest = captureIdentityDigest
+    }
+}
+
 /// A single search result
 /// Rewind-compatible: links to both app segment (session context) and video (playback)
 public struct SearchResult: Codable, Sendable, Identifiable {
@@ -223,6 +261,15 @@ public struct SearchResult: Codable, Sendable, Identifiable {
     public let videoFrameRate: Double?    // Video frame rate for precise seek
     public var source: FrameSource        // Which data source this result came from
     public let highlightNode: HighlightNode?
+    public let evidenceRef: ScreenEvidenceRef?
+    public let selectionToken: SearchSelectionToken?
+
+    /// View identity spans stores/sources and stays stable when an extraction is refined.
+    public var sourceQualifiedID: String {
+        let observation = evidenceRef.map { "\($0.storeID.uuidString):\($0.observationID.uuidString)" }
+            ?? selectionToken.map { "legacy:\($0.sourceGeneration)" } ?? "legacy"
+        return "\(source.rawValue):\(observation):\(id.value)"
+    }
 
     public init(
         id: FrameID,
@@ -237,7 +284,9 @@ public struct SearchResult: Codable, Sendable, Identifiable {
         videoPath: String? = nil,
         videoFrameRate: Double? = nil,
         source: FrameSource = .native,
-        highlightNode: HighlightNode? = nil
+        highlightNode: HighlightNode? = nil,
+        evidenceRef: ScreenEvidenceRef? = nil,
+        selectionToken: SearchSelectionToken? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -252,6 +301,8 @@ public struct SearchResult: Codable, Sendable, Identifiable {
         self.videoFrameRate = videoFrameRate
         self.source = source
         self.highlightNode = highlightNode
+        self.evidenceRef = evidenceRef
+        self.selectionToken = selectionToken
     }
 }
 
@@ -278,7 +329,12 @@ public struct SearchResults: Codable, Sendable {
     }
 
     public var isEmpty: Bool { results.isEmpty }
-    public var hasMore: Bool { results.count < totalCount }
+    public var hasMore: Bool {
+        if nextCursor != nil { return true }
+        if query.cursor != nil { return false }
+        let offset = max(0, query.offset)
+        return offset < totalCount && results.count < totalCount - offset
+    }
 }
 
 // MARK: - Grouped Search Results

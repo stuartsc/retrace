@@ -150,7 +150,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var shouldShowDashboardAfterInitialization = false
     private var isActivationRevealInFlight = false
     private var isInitialized = false
-    private var isTerminationFlushInProgress = false
+    private let terminationWorkflow = ApplicationTerminationWorkflow()
     private var isTerminationDecisionInProgress = false
     private var bypassQuitConfirmationPromptOnce = false
     private var quitConfirmationHostWindow: NSWindow?
@@ -209,10 +209,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         MainThreadHangDetector.shared.start()
 
         // Initialize the app coordinator and UI
-        Task { @MainActor in
+        terminationWorkflow.startInitialization { [weak self] in
+            guard let self else { return }
             await initializeApp()
 
             // Record app launch metric
+            guard !Task.isCancelled, !terminationWorkflow.isTerminating else { return }
             if let coordinator = coordinatorWrapper?.coordinator {
                 DashboardViewModel.recordAppLaunch(coordinator: coordinator)
             }
@@ -223,15 +225,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func initializeApp() async {
+        guard !Task.isCancelled, !terminationWorkflow.isTerminating else { return }
         // Pre-flight check: Ensure custom storage path is accessible (if set)
         if !(await checkStoragePathAvailable()) {
             return // User chose to quit or we're waiting for them to reconnect
         }
+        guard !Task.isCancelled, !terminationWorkflow.isTerminating else { return }
 
         do {
             let wrapper = AppCoordinatorWrapper()
             self.coordinatorWrapper = wrapper
             try await wrapper.initialize()
+            try Task.checkCancellation()
             Log.info("[AppDelegate] Coordinator initialized successfully", category: .app)
 
             configureWatchdogAutoQuit()
@@ -289,6 +294,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let hasCompletedOnboarding = await wrapper.coordinator.onboardingManager.hasCompletedOnboarding
+            try Task.checkCancellation()
 
             if shouldShowDashboardAfterInitialization {
                 requestDashboardReveal(source: "pendingExternalDashboardReveal")
@@ -303,7 +309,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.info("[LaunchSurface] Completed startup in menu-bar mode without opening dashboard", category: .app)
             }
 
+        } catch is CancellationError {
+            // Confirmed Quit owns shutdown after joining this initializer.
+            return
         } catch {
+            guard !Task.isCancelled else { return }
             Log.error("[AppDelegate] Failed to initialize: \(error)", category: .app)
         }
     }
@@ -400,9 +410,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if isTerminationFlushInProgress {
-            return .terminateNow
-        }
+        if terminationWorkflow.didCompleteShutdown { return .terminateNow }
+        if terminationWorkflow.isDraining { return .terminateLater }
 
         if isTerminationDecisionInProgress {
             return .terminateLater
@@ -447,19 +456,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginTerminationFlush() {
-        guard !isTerminationFlushInProgress else { return }
-
-        isTerminationFlushInProgress = true
+        guard !terminationWorkflow.isDraining, !terminationWorkflow.didCompleteShutdown else { return }
 
         // Save timeline state (filters, search) for cross-session persistence.
         TimelineWindowController.shared.saveStateForTermination()
 
-        // Flush active timeline metrics asynchronously with a bounded timeout.
-        // Use terminateLater to avoid blocking the main thread during shutdown.
+        terminationWorkflow.requestTermination(prepareShutdown: { [self] in
+            await coordinatorWrapper?.prepareForShutdown()
+        }, flushMetrics: {
+            // Complete metric writes before the coordinator closes its database.
+            let flushed = await TimelineWindowController.shared.forceRecordSessionMetrics(timeoutMs: 350)
+            if !flushed {
+                Log.warning("[AppDelegate] Continuing Quit after an incomplete timeline metric flush", category: .app)
+            }
+        }, shutdown: { [self] in
+            // The workflow joins cancelled initialization before reading the wrapper.
+            // Coordinator shutdown preserves recording autostart intent for next launch.
+            try await coordinatorWrapper?.shutdown()
+        }, reply: { permitted in
+            if permitted {
+                Log.info("[AppDelegate] Quit drain completed; permitting termination", category: .app)
+            }
+            NSApp.reply(toApplicationShouldTerminate: permitted)
+        }, reportFailure: { [weak self] error in
+            self?.reportTerminationFailure(error)
+        })
+    }
+
+    private func reportTerminationFailure(_ error: Error) {
+        Log.error("[AppDelegate] Quit did not complete; services may be partially stopped. Error type: \(String(reflecting: type(of: error)))", category: .app)
+        // Present after reply(false), using a sheet so AppKit remains responsive.
         Task { @MainActor [weak self] in
-            _ = await TimelineWindowController.shared.forceRecordSessionMetrics(timeoutMs: 350)
-            self?.isTerminationFlushInProgress = false
-            NSApp.reply(toApplicationShouldTerminate: true)
+            guard let self, !terminationWorkflow.isDraining, !terminationWorkflow.didCompleteShutdown else { return }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Quit did not complete"
+            alert.informativeText = "Some services may already have stopped. Retrace remains open; choose Quit again to retry."
+            alert.addButton(withTitle: "OK")
+            let anchorWindow = currentTerminationAnchorWindow() ?? makeQuitConfirmationHostWindow()
+            alert.beginSheetModal(for: anchorWindow) { [weak self] _ in
+                Task { @MainActor in
+                    self?.dismissQuitConfirmationHostWindowIfNeeded(anchorWindow)
+                }
+            }
         }
     }
 
@@ -1229,6 +1268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func requestDashboardReveal(source: String) {
+        guard !terminationWorkflow.isTerminating else { return }
         if isInitialized {
             Log.info("[LaunchSurface] requestDashboardReveal source=\(source) before state=\(launchSurfaceStateSnapshot())", category: .app)
 
@@ -1321,6 +1361,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - URL Handling
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        guard !terminationWorkflow.isTerminating else { return }
         Log.info("[AppDelegate] Received URLs: \(urls), isInitialized: \(isInitialized)", category: .app)
         for url in urls {
             if isInitialized {
@@ -1337,11 +1378,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleDeeplink(_ url: URL) {
+        guard !terminationWorkflow.isTerminating else { return }
         guard let route = DeeplinkHandler.route(for: url) else {
             return
         }
 
         switch route {
+        case .evidence(let reference):
+            if let coordinator = coordinatorWrapper?.coordinator {
+                ActivityTimelineController.shared.show(coordinator: coordinator, evidence: reference)
+            }
         case let .timeline(timestamp):
             Log.info("[AppDelegate] Opening timeline deeplink at timestamp: \(String(describing: timestamp))", category: .app)
             if let timestamp {

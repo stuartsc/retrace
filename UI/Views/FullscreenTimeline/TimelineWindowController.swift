@@ -17,9 +17,8 @@ public class TimelineWindowController: NSObject {
 
     // MARK: - Session Duration Tracking
 
-    /// Tracks when the timeline was opened for duration tracking
-    private var sessionStartTime: Date?
-    private var sessionScrubDistance: Double = 0
+    /// Shared ownership prevents hide and Quit from replaying the same counters.
+    private var sessionMetrics: TimelineSessionMetrics?
 
     // MARK: - Properties
 
@@ -430,8 +429,19 @@ public class TimelineWindowController: NSObject {
 
     // MARK: - Configuration
 
-    /// Configure with the app coordinator (call once during app launch)
+    /// Configure at launch and when shortcut bindings reload, using the same app coordinator.
     public func configure(coordinator: AppCoordinator) {
+        guard let metrics = TimelineSessionMetrics.configured(retaining: sessionMetrics, owner: coordinator,
+                                                              writer: { metric, value in
+            try await coordinator.recordMetricEvent(
+                metricType: metric == .duration ? .timelineSessionDuration : .scrubDistance,
+                metadata: String(value)
+            )
+        }) else {
+            Log.error("[TIMELINE] Coordinator replacement requires a new controller; retaining existing session ownership", category: .ui)
+            return
+        }
+        self.sessionMetrics = metrics
         self.coordinator = coordinator
         self.coordinatorWrapper = AppCoordinatorWrapper(coordinator: coordinator)
         if Self.shouldPrerenderTimeline() {
@@ -892,8 +902,7 @@ public class TimelineWindowController: NSObject {
         }
 
         // Track session start time for duration metrics
-        sessionStartTime = Date()
-        sessionScrubDistance = 0  // Reset scrub distance for new session
+        sessionMetrics?.beginSession()
 
         // Post notification so menu bar can hide recording indicator
         NotificationCenter.default.post(name: .timelineDidOpen, object: nil)
@@ -910,18 +919,15 @@ public class TimelineWindowController: NSObject {
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
 
-        // Record timeline session duration (only if > 3 seconds)
-        if let startTime = sessionStartTime, let coordinator = coordinator {
-            let durationMs = Int64(Date().timeIntervalSince(startTime) * 1000)
-            DashboardViewModel.recordTimelineSession(coordinator: coordinator, durationMs: durationMs)
-
-            // Record scrub distance metric
-            if sessionScrubDistance > 0 {
-                DashboardViewModel.recordScrubDistance(coordinator: coordinator, distancePixels: sessionScrubDistance)
+        if let sessionMetrics {
+            // Snapshot synchronously before a reopen can start another session.
+            // Quit joins this same write owner even when the window is hidden.
+            sessionMetrics.endSession()
+            Task {
+                if !(await sessionMetrics.flushPending()) {
+                    Log.warning("[TIMELINE] Hidden session metric write failed; unacknowledged increments remain pending", category: .ui)
+                }
             }
-
-            sessionStartTime = nil
-            sessionScrubDistance = 0  // Reset scrub distance for next session
         }
 
         // Don't save position on hide - window stays in memory
@@ -3123,7 +3129,7 @@ public class TimelineWindowController: NSObject {
 
     /// Accumulate scrub distance for the current session
     public func accumulateScrubDistance(_ distance: Double) {
-        sessionScrubDistance += distance
+        sessionMetrics?.accumulateScrubDistance(distance)
     }
 
     // MARK: - Keyboard Shortcut Tracking
@@ -3270,44 +3276,18 @@ public class TimelineWindowController: NSObject {
     // MARK: - Session Metrics
 
     /// Force-record active session metrics without blocking the main actor.
-    /// Returns true when metrics were flushed before timeout, false otherwise.
+    /// Returns true when active and pending metrics completed within the cooperative deadline.
     public func forceRecordSessionMetrics(timeoutMs: UInt64 = 350) async -> Bool {
-        guard let startTime = sessionStartTime, let coordinator = coordinator else { return true }
-
-        let durationMs = Int64(Date().timeIntervalSince(startTime) * 1000)
-        let scrubDistance = sessionScrubDistance > 0 ? Int(sessionScrubDistance) : nil
-
-        do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await coordinator.recordMetricEvent(metricType: .timelineSessionDuration, metadata: "\(durationMs)")
-                    if let scrubDistance {
-                        try await coordinator.recordMetricEvent(metricType: .scrubDistance, metadata: "\(scrubDistance)")
-                    }
-                }
-
-                group.addTask {
-                    try await Task.sleep(for: .nanoseconds(Int64(timeoutMs * 1_000_000)), clock: .continuous)
-                    throw SessionMetricFlushTimeout()
-                }
-
-                _ = try await group.next()
-                group.cancelAll()
-            }
-
+        guard let sessionMetrics else { return true }
+        let completed = await sessionMetrics.flush(timeoutMs: timeoutMs)
+        if completed {
             Log.info("[TIMELINE] Session metrics flush completed during termination", category: .ui)
-            return true
-        } catch is SessionMetricFlushTimeout {
-            Log.warning("[TIMELINE] Session metrics flush timed out after \(timeoutMs)ms during termination", category: .ui)
-            return false
-        } catch {
-            Log.warning("[TIMELINE] Session metrics flush failed during termination: \(error)", category: .ui)
-            return false
+        } else {
+            Log.warning("[TIMELINE] Session metrics flush exceeded its cooperative deadline or a write failed during termination", category: .ui)
         }
+        return completed
     }
 }
-
-private struct SessionMetricFlushTimeout: Error {}
 
 // MARK: - Notifications
 

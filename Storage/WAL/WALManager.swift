@@ -492,6 +492,67 @@ public actor WALManager {
         return frames
     }
 
+    /// Reads only an explicitly mapped database frame, validating the immutable capture identity.
+    /// `videoID` is the WAL session/path ID, which is distinct from the database video ID.
+    public func readExactFrame(videoID: VideoSegmentID, frameID: Int64,
+                               expectedTimestamp: Date, expectedWidth: Int, expectedHeight: Int,
+                               expectedDisplayID: UInt32) async throws -> CapturedFrame {
+        guard !Task.isCancelled else { throw ExactFrameReadError.cancelled }
+        guard videoID.value > 0, frameID > 0, expectedTimestamp.timeIntervalSince1970.isFinite,
+              expectedWidth > 0, expectedHeight > 0 else {
+            throw ExactFrameReadError.integrityFailure
+        }
+        let sessionDir = walRootURL.appendingPathComponent("active_segment_\(videoID.value)")
+        let framesURL = sessionDir.appendingPathComponent("frames.bin")
+        guard FileManager.default.fileExists(atPath: framesURL.path) else {
+            throw ExactFrameReadError.recordingMissing
+        }
+        do {
+            // Reuse the bounded recovery reader's validated headers, UTF-8, pixel
+            // layout, and conflict-checked identity map. No index fallback is allowed.
+            let session = WALSession(videoID: videoID, sessionDir: sessionDir, framesURL: framesURL,
+                metadata: WALMetadata(videoID: videoID, startTime: expectedTimestamp,
+                                      frameCount: 0, width: expectedWidth, height: expectedHeight))
+            let reader = try WALRecoveryReader(session: session)
+            guard let mappedOffset = await reader.frameOffset(for: frameID) else {
+                throw ExactFrameReadError.frameFinalising
+            }
+            // Prove the mapped address is a record boundary. An arbitrary offset
+            // into another capture's payload cannot establish frame identity.
+            var offset: UInt64 = 0
+            var index = 0
+            while offset < mappedOffset {
+                guard !Task.isCancelled else { throw ExactFrameReadError.cancelled }
+                guard let record = try await reader.readRecord(at: offset, index: index, loadPixels: false) else {
+                    throw ExactFrameReadError.integrityFailure
+                }
+                offset = record.nextOffset
+                index += 1
+            }
+            guard offset == mappedOffset,
+                  let record = try await reader.readRecord(at: offset, index: index, loadPixels: true),
+                  record.databaseFrameID == frameID else {
+                throw ExactFrameReadError.integrityFailure
+            }
+            let frame = record.frame
+            guard frame.width == expectedWidth, frame.height == expectedHeight,
+                  frame.metadata.displayID == expectedDisplayID,
+                  abs(frame.timestamp.timeIntervalSince(expectedTimestamp)) <= 0.001 else {
+                throw ExactFrameReadError.integrityFailure
+            }
+            guard !Task.isCancelled else { throw ExactFrameReadError.cancelled }
+            guard FileManager.default.fileExists(atPath: framesURL.path) else {
+                throw ExactFrameReadError.recordingMissing
+            }
+            return frame
+        } catch let error as ExactFrameReadError {
+            throw error
+        } catch {
+            if Task.isCancelled { throw ExactFrameReadError.cancelled }
+            throw ExactFrameReadError.integrityFailure
+        }
+    }
+
     /// Read a single frame from an active WAL session by database frame ID.
     /// Falls back to frame index when map entry is missing (e.g. crash before mapping persisted).
     public func readFrame(videoID: VideoSegmentID, frameID: Int64, fallbackFrameIndex: Int) async throws -> CapturedFrame {

@@ -22,6 +22,9 @@ public actor CGWindowListCapture {
     /// Once we know it's broken, skip directly to fallback masking
     private var arrayCaptureBroken = false
     private var isCaptureInFlight = false
+    private var configurationGeneration: UInt64 = 0
+    private var contextUnavailable = false
+    private let contextSource = ActivityContextSource.live
 
     /// Callback when frame is captured
     nonisolated(unsafe) var onFrameCaptured: (@Sendable (CapturedFrame) -> Void)?
@@ -65,6 +68,7 @@ public actor CGWindowListCapture {
         guard !isActive else { return }
 
         self.currentConfig = config
+        configurationGeneration &+= 1
         self.isActive = true
 
         // Set up frame callback
@@ -86,6 +90,7 @@ public actor CGWindowListCapture {
         guard isActive else { return }
 
         isActive = false
+        configurationGeneration &+= 1
 
         // Stop timer on main thread
         await MainActor.run {
@@ -98,6 +103,7 @@ public actor CGWindowListCapture {
 
     /// Update capture configuration
     func updateConfig(_ config: CaptureConfig) async throws {
+        configurationGeneration &+= 1
         self.currentConfig = config
         // No need to update excluded windows here - they're computed on every capture
     }
@@ -145,6 +151,7 @@ public actor CGWindowListCapture {
         // Capture immediately
         await captureFrame(displayID: displayID)
 
+        guard isActive else { return }
         // Reset the timer to restart the interval on main actor
         await MainActor.run {
             timer?.invalidate()
@@ -166,6 +173,29 @@ public actor CGWindowListCapture {
         isCaptureInFlight = true
         defer { isCaptureInFlight = false }
 
+        let generation = configurationGeneration
+        let started = ContinuousClock.now
+        let frame = await CaptureSnapshotSequencer.capture(displayID: displayID,
+            readContext: { await self.contextSource.sampleCapture(config: config, displayID: displayID) },
+            capturePixels: { await self.captureFilteredPixels(displayID: displayID, config: config) })
+        guard isActive, generation == configurationGeneration else { return }
+        guard let frame else {
+            if !contextUnavailable {
+                Log.info("[CGWindowListCapture] Waiting for a stable permitted surface before retaining pixels", category: .capture)
+                contextUnavailable = true
+            }
+            return
+        }
+        if contextUnavailable {
+            Log.info("[CGWindowListCapture] Stable permitted capture context restored", category: .capture)
+            contextUnavailable = false
+        }
+        let elapsed = started.duration(to: .now)
+        Log.recordLatency("capture.attributed_pixels", valueMs: Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15, category: .capture)
+        onFrameCaptured?(frame)
+    }
+
+    private func captureFilteredPixels(displayID: CGWindowID, config: CaptureConfig) async -> CapturedFrame? {
         // Compute excluded window IDs for THIS capture (real-time filtering)
         let exclusionResult = await computeExcludedWindowIDs(config: config, displayID: displayID)
         let excludedIDs = exclusionResult.excludedWindowIDs
@@ -177,14 +207,14 @@ public actor CGWindowListCapture {
             forceMasking: !exclusionResult.redactedWindowIDs.isEmpty
         ) else {
             Log.warning("[CGWindowListCapture] Failed to capture CGImage for displayID=\(displayID), excludedCount=\(excludedIDs.count)", category: .capture)
-            return
+            return nil
         }
         let cgImage = captureResult.image
 
         // Convert CGImage to BGRA data format (matching ScreenCaptureKit output)
         guard let frameData = convertCGImageToBGRAData(cgImage) else {
             Log.warning("[CGWindowListCapture] Failed to convert CGImage to BGRA data for displayID=\(displayID)", category: .capture)
-            return
+            return nil
         }
 
         // Get display info and captured image dimensions
@@ -211,15 +241,12 @@ public actor CGWindowListCapture {
             height: height,
             bytesPerRow: bytesPerRow,
             metadata: FrameMetadata(
-                appBundleID: redactionSummary?.appBundleID,
-                appName: redactionSummary?.appName,
                 redactionReason: redactionSummary?.reason,
                 displayID: UInt32(displayID)
             )
         )
 
-        // Yield frame
-        onFrameCaptured?(frame)
+        return frame
     }
 
     /// Compute which window IDs should be excluded based on current config
@@ -285,7 +312,7 @@ public actor CGWindowListCapture {
 
             // Check 1: Excluded app bundle IDs (check by bundle ID from PID)
             if let bundleID, config.excludedAppBundleIDs.contains(bundleID) {
-                Log.info("[Exclusion] EXCLUDING app window: '\(windowName)' from \(ownerName) (bundleID: \(bundleID))", category: .capture)
+                Log.debug("[Exclusion] Window suppressed by capture policy", category: .capture)
                 excludedIDs.insert(windowID)
                 redactedWindowIDs.insert(windowID)
                 if redactionContextByWindowID[windowID] == nil {

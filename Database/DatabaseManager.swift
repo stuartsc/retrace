@@ -128,6 +128,30 @@ public actor DatabaseManager: DatabaseProtocol {
         Log.info("[DatabaseManager] Database closed", category: .database)
     }
 
+    /// Owns a separate read transaction domain while preserving this database's encryption policy.
+    public func makeRecallReadConnection() throws -> SQLiteConnection {
+        guard isInitialized, let db else {
+            throw DatabaseError.connectionFailed(underlying: "Database not initialized")
+        }
+        if databasePath == ":memory:" || databasePath.contains("mode=memory") {
+            return SQLiteConnection(db: db)
+        }
+        let reader = try SQLiteConnection(readOnlyDatabasePath: NSString(string: databasePath).expandingTildeInPath)
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        if defaults.object(forKey: "encryptionEnabled") as? Bool == true {
+            // A reader never generates/replaces the writer's key. Keep key-bearing SQL out of errors/logs.
+            let key = try loadKeyFromKeychain(service: AppPaths.keychainService, account: AppPaths.keychainAccount)
+            guard key.count == 32, let pointer = reader.getConnection() else {
+                throw DatabaseError.connectionFailed(underlying: "Encrypted reader unavailable")
+            }
+            let hex = key.map { String(format: "%02hhx", $0) }.joined()
+            guard sqlite3_exec(pointer, "PRAGMA key = \"x'\(hex)'\";", nil, nil, nil) == SQLITE_OK else {
+                throw DatabaseError.connectionFailed(underlying: "Encrypted reader unavailable")
+            }
+        }
+        return reader
+    }
+
     // MARK: - Audio Transcription Operations
     // ⚠️ RELEASE 2 ONLY - Audio transcription methods commented out for Release 1
 
@@ -219,7 +243,11 @@ public actor DatabaseManager: DatabaseProtocol {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
-        return try FrameQueries.insert(db: db, frame: frame)
+        return try PipelineSQL.transaction(db) {
+            let id = try FrameQueries.insert(db: db, frame: frame)
+            try ScreenEvidenceSQL.capture(db, frameID: id, descriptor: frame)
+            return id
+        }
     }
 
     public func getFrame(id: FrameID) async throws -> FrameReference? {
@@ -321,6 +349,15 @@ public actor DatabaseManager: DatabaseProtocol {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
         try FrameQueries.delete(db: db, id: id)
+    }
+
+    /// A selected native batch shares one writer transaction, including all derived evidence cleanup.
+    public func deleteFrames(ids: [FrameID]) throws {
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
+        guard !ids.isEmpty else { return }
+        try PipelineSQL.transaction(db) {
+            for id in Set(ids) { try FrameQueries.delete(db: db, id: id) }
+        }
     }
 
     public func getFrameCount() async throws -> Int {
@@ -1879,12 +1916,20 @@ public actor DatabaseManager: DatabaseProtocol {
 
         try executeTransactionSQL("BEGIN IMMEDIATE TRANSACTION;")
         do {
+            let captured = try ScreenEvidenceSQL.commitLegacyText(db, frameID: FrameID(value: frameId),
+                                                                  mainText: mainText, chromeText: chromeText)
+            guard captured.segmentID.value == segmentId else { throw PipelineSQL.failure("Indexed segment differs from retained frame") }
+            if let previousID = try FTSQueries.getDocidForFrame(db: db, frameId: frameId),
+               let previous = try FTSQueries.getContent(db: db, docid: previousID),
+               previous.mainText != mainText || (previous.chromeText ?? "") != (chromeText ?? "") {
+                try NodeQueries.deleteByFrameID(db: db, frameID: FrameID(value: frameId))
+            }
             try FTSQueries.deleteForFrame(db: db, frameId: frameId)
             let docid = try FTSQueries.indexFrame(
                 db: db,
                 mainText: mainText,
                 chromeText: chromeText,
-                windowTitle: windowTitle,
+                windowTitle: captured.metadata.windowName,
                 segmentId: segmentId,
                 frameId: frameId
             )

@@ -15,14 +15,22 @@ enum DocumentQueries {
             guard try FTSQueries.getDocidForFrame(db: db, frameId: document.frameID.value) == nil else {
                 throw PipelineSQL.failure("Frame already has a document; update it or use atomic OCR replacement")
             }
+            let captured = try ScreenEvidenceSQL.commitLegacyText(db, frameID: document.frameID,
+                                                                  mainText: document.content, chromeText: nil)
             return try FTSQueries.indexFrame(db: db, mainText: document.content, chromeText: nil,
-                windowTitle: frame.metadata.windowName, segmentId: frame.segmentID.value,
+                windowTitle: captured.metadata.windowName, segmentId: frame.segmentID.value,
                 frameId: document.frameID.value)
         }
     }
 
     static func update(db: OpaquePointer, id: Int64, content: String) throws {
         try PipelineSQL.transaction(db) {
+            let frameIDs = try PipelineSQL.integers(db,
+                "SELECT DISTINCT frameId FROM doc_segment WHERE docid=? ORDER BY frameId LIMIT 501", [.integer(id)])
+            guard frameIDs.count <= 500 else { throw PipelineSQL.failure("Shared legacy document requires a bounded reindex") }
+            for frameID in frameIDs {
+                try ScreenEvidenceSQL.commitLegacyText(db, frameID: FrameID(value: frameID), mainText: content, chromeText: nil)
+            }
             // Legacy updates have no replacement bounding boxes. Old offsets/raw
             // node text must not remain attached to different indexed content.
             try PipelineSQL.execute(db, "DELETE FROM node WHERE frameId IN (SELECT frameId FROM doc_segment WHERE docid=?)", [.integer(id)])

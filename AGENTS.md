@@ -14,7 +14,8 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Proposed Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (activity context, exact evidence and idle refinement; implementation on hold)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 0/1 implementation authorised; acceptance tracked separately)
+- **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions and matched Mac/Timely acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
 ---
@@ -55,7 +56,9 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── progressive-recall-plan.md # Proposed contextual recall and idle refinement plan; awaiting review
+│   ├── progressive-recall-plan.md # Authorised contextual recall plan; Phase 0/1 in progress
+│   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
+│   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle and same-title Word RTF fixtures
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
 ├── scripts/                     # Build/release/validation scripts
 │   ├── release.sh               # End-to-end release automation
@@ -67,8 +70,11 @@ retrace/
 ├── Shared/                      # CRITICAL: Shared types and protocols
 │   ├── Logging.swift            # Central log utility (Log.debug/info/warning/error)
 │   ├── AppPaths.swift           # Application path configuration
+│   ├── CapturedURLPolicy.swift  # Shared metadata URL/label scrubbing and opaque navigation identity
 │   ├── Models/                  # Data types used across modules
 │   │   ├── Frame.swift          # FrameID, CapturedFrame, VideoSegment
+│   │   ├── Activity.swift       # Immutable focus events, coverage, corrections and feed contracts
+│   │   ├── Evidence.swift       # Source-qualified references, snapshots and typed exact resolution
 │   │   ├── Text.swift           # ExtractedText, OCRTextRegion
 │   │   ├── TextRegion.swift     # OCR text region types
 │   │   ├── Search.swift         # SearchQuery, SearchResult
@@ -83,6 +89,8 @@ retrace/
 │   │   └── Comment.swift        # Segment comment and attachment models
 │   └── Protocols/               # Module interfaces
 │       ├── DatabaseProtocol.swift
+│       ├── ActivityStoreProtocol.swift # Canonical activity/feed/correction writer interface
+│       ├── EvidenceStoreProtocol.swift # Immutable screen snapshot/store registry interface
 │       ├── StorageProtocol.swift
 │       ├── CaptureProtocol.swift
 │       ├── ProcessingProtocol.swift
@@ -96,17 +104,23 @@ retrace/
 │   ├── DatabaseManager.swift    # Main database coordinator
 │   ├── DatabaseConnection.swift # SQLite connection helpers
 │   ├── FramePipelinePersistence.swift # Atomic OCR, claims and recovery
+│   ├── ActivityPersistence.swift # Durable context, feed/checkpoints and corrections
+│   ├── ActivityScreenLinkPersistence.swift # Proven capture-to-activity associations
+│   ├── ScreenEvidencePersistence.swift # Immutable screen/extraction snapshots and receipts
 │   ├── LegacyOCRBackfillPersistence.swift # Bounded, resumable OCR node-text maintenance
 │   ├── RetentionPersistence.swift # Bounded frame cleanup and guarded video deletion
 │   ├── FTSManager.swift         # Full-text search management
+│   ├── RecallSearchRevisionHooks.swift # Connection-local FTS revision tracking for compatible readers
 │   ├── Schema.swift             # Current schema definition
 │   ├── Migrations/              # Schema migration scripts (including audio/dictation)
 │   ├── Queries/                 # Query implementations (including audio transcripts/dictation sessions)
+│   ├── TestSupport/             # Test-only typed C bridge for defensive SQLite reader checks
 │   └── Tests/                  # App integration, dictation, and refinement policy tests
 │
 ├── Storage/                     # File I/O, HEVC encoding
 │   ├── AGENTS.md
 │   ├── StorageManager.swift
+│   ├── ExactFrameReader.swift   # Identity-checked encoded-frame evidence reads
 │   ├── ImageExtractor.swift     # Extract frames from video files
 │   ├── IncrementalSegmentWriter.swift
 │   ├── SegmentWriterImpl.swift
@@ -118,6 +132,7 @@ retrace/
 ├── Capture/                     # CGWindowListCapture integration
 │   ├── AGENTS.md
 │   ├── CaptureManager.swift
+│   ├── ActivityMonitor.swift    # Independent bounded activity observer/persistence lifecycle
 │   ├── ScreenCapture/           # Screen capture implementation
 │   ├── Deduplication/           # Perceptual hash deduplication
 │   ├── Metadata/                # AppInfoProvider, BrowserURLExtractor
@@ -152,6 +167,9 @@ retrace/
 │
 ├── App/                         # Main application coordinator
 │   ├── AppCoordinator.swift     # Central coordinator (orchestrates all modules)
+│   ├── RecordingLifecycle.swift # Coalesced startup and cancellation/teardown ownership
+│   ├── ProgressiveRecallService.swift # Local activity/evidence access with current privacy checks
+│   ├── ActivityTimelineProjection.swift # Derived episodes and timed document/coverage intervals
 │   ├── DataAdapter.swift        # Data layer adapter (DB queries, transformations)
 │   ├── ServiceContainer.swift   # Dependency injection container
 │   ├── AppLifecycle.swift       # App lifecycle management
@@ -171,6 +189,7 @@ retrace/
     │   ├── Dashboard/           # App usage analytics and dictation history views
     │   ├── Audio/               # Transcript window views
     │   ├── FullscreenTimeline/  # Timeline scrubbing & playback (10 views)
+    │   ├── Timeline/            # Activity episodes, exact evidence and window controller
     │   ├── Search/              # Search UI (SearchView, ResultRow, FrameViewer)
     │   ├── Settings/            # Settings panel
     │   ├── Onboarding/          # Onboarding flow
@@ -187,6 +206,12 @@ retrace/
 - Processing: `VisionOCRIncrementalTests.swift`, `FrameProcessingWakeSignalTests.swift`, `NativeSpeechTranscriptionServiceTests.swift`.
 - Capture: `AudioFormatConverterTests.swift` exercises actual AVFoundation/CoreMedia conversion and stream draining; `CaptureStreamLifecycleTests.swift` covers stream ownership, cancellation, restart and display-switch ordering using real AsyncStreams.
 - App: `RetentionPathValidationTests.swift` exercises real filesystem path/symlink guards; `FrameDeletionRoutingTests.swift` verifies native timeline deletion and rollback through the database API; `StartupRecoverySequencingTests.swift` covers recovery-before-worker startup, shutdown, journal preservation, bounded orphan snapshots, live placeholder ownership and cancellable bounded OCR maintenance using real SQLite and filesystem journals.
+
+### Progressive recall implementation and validation
+
+`App/Tests/ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover constrained/source-aware search, exact navigation, source failure propagation, timed organisation and cancelled device startup. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
+
+Activity context is independently opt-in (`activityContextEnabled`, default false) in the activity timeline and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a legacy hit by bare numeric ID. Local corrections can be confirmed but remain pending until the companion writer acknowledges them. Implementation and automated evidence do not establish installed Mac/Timely acceptance; see the validation ledger.
 
 ## Module Ownership & Responsibilities
 
@@ -474,7 +499,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-06_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-12_
 
 
 <claude-mem-context>

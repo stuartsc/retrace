@@ -35,6 +35,14 @@ public enum DailyMetricsQueries {
         case dateSearchSubmitted = "date_search_submitted"
         case dateSearchOutcome = "date_search_outcome"
 
+        // Progressive recall: metadata uses categorical outcomes/counts, never captured text or URLs.
+        case progressiveRecallAction = "progressive_recall_action" // JSON {action,outcome,count}
+        case activityPersisted = "activity_persisted" // JSON {kind,coverage}
+        case activityCorrection = "activity_correction" // JSON {action,status,confirmed?}
+        case activityDeleted = "activity_deleted" // JSON {count}
+        case activityScreenLinked = "activity_screen_linked" // JSON {outcome}
+        case screenEvidenceOutcome = "screen_evidence_outcome" // JSON {outcome}
+
         // Timeline tagging/comments/playback metrics
         case segmentHide = "segment_hide"
         case segmentUnhide = "segment_unhide"

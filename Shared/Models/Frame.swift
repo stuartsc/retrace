@@ -44,6 +44,9 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
 
     /// Display ID that was captured
     public let displayID: UInt32
+    public let captureContext: ActivityContext?
+    public let captureMonotonicTime: TimeInterval?
+    public let activityIdentity: ActivityCaptureIdentity?
 
     public init(
         appBundleID: String? = nil,
@@ -51,17 +54,28 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
         windowName: String? = nil,
         browserURL: String? = nil,
         redactionReason: String? = nil,
-        displayID: UInt32 = 0
+        displayID: UInt32 = 0,
+        captureContext: ActivityContext? = nil,
+        captureMonotonicTime: TimeInterval? = nil,
+        activityIdentity: ActivityCaptureIdentity? = nil
     ) {
         self.appBundleID = appBundleID
         self.appName = appName
-        self.windowName = windowName
-        self.browserURL = browserURL
+        self.windowName = CapturedURLPolicy.sanitizeLabel(windowName)
+        self.browserURL = CapturedURLPolicy.sanitize(browserURL)
         self.redactionReason = redactionReason
         self.displayID = displayID
+        self.captureContext = captureContext; self.captureMonotonicTime = captureMonotonicTime
+        self.activityIdentity = activityIdentity
     }
 
     public static let empty = FrameMetadata()
+
+    public func linkingActivity(_ identity: ActivityCaptureIdentity?) -> FrameMetadata {
+        .init(appBundleID: appBundleID, appName: appName, windowName: windowName, browserURL: browserURL,
+              redactionReason: redactionReason, displayID: displayID, captureContext: captureContext,
+              captureMonotonicTime: captureMonotonicTime, activityIdentity: identity)
+    }
 }
 
 // MARK: - Captured Frame

@@ -31,7 +31,7 @@ final class AsyncQueuePipelineTests: XCTestCase {
 
     /// Path to test screenshots (set via TEST_SCREENSHOT_PATH env var)
     var screenshotPath: String {
-        ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] ?? NSString(string: "~/ScreenMemoryData/screenshots").expandingTildeInPath
+        ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] ?? testRoot.appendingPathComponent("screenshots").path
     }
 
     /// Database path for this test (isolated temp location)
@@ -54,6 +54,9 @@ final class AsyncQueuePipelineTests: XCTestCase {
         testRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("RetraceAsyncQueueTests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] == nil {
+            try RenderedRecallFixture.write(to: URL(fileURLWithPath: screenshotPath))
+        }
 
         // Create isolated storage directory for this test run
         try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
@@ -280,7 +283,11 @@ final class AsyncQueuePipelineTests: XCTestCase {
             // Wait for queue to drain AND all frames to be processed
             if queueDepth == 0 && stats.totalProcessed >= allEnqueuedFrameIDs.count {
                 // Give a small grace period for workers to mark frames as completed
-                try await Task.sleep(for: .nanoseconds(Int64(100_000_000)), clock: .continuous)  // 0.1 seconds
+                try await Task.sleep(for: .milliseconds(100), clock: .continuous)
+                break
+            }
+            if queueDepth == 0 && stats.processingCount == 0 && stats.totalFailed > 0 {
+                XCTFail("Queue exhausted with failed evidence; inspect the typed processing failure")
                 break
             }
 
@@ -289,7 +296,7 @@ final class AsyncQueuePipelineTests: XCTestCase {
                 break
             }
 
-            try await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous)  // Wait 0.5 seconds
+            try await Task.sleep(for: .milliseconds(500), clock: .continuous)
         }
 
         let elapsedWait = Date().timeIntervalSince(startWait)
@@ -346,6 +353,9 @@ final class AsyncQueuePipelineTests: XCTestCase {
         print("   Search query executed successfully (\(searchResults.results.count) results)")
         // Don't assert on specific count since content varies, just verify search works
         XCTAssertGreaterThanOrEqual(dbStats.documentCount, allEnqueuedFrameIDs.count, "Should have indexed all processed frames")
+        if ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] == nil {
+            try await RenderedRecallFixture.assertSearchEvidence(search)
+        }
 
         // STEP 7: Final statistics
         let finalStats = await processingQueue.getStatistics()

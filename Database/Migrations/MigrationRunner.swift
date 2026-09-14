@@ -41,6 +41,7 @@ actor MigrationRunner {
         for migration in migrations where migration.version > currentVersion {
             try await runMigration(migration)
         }
+        try RecallSearchRevisionHooks.install(db: db)
     }
 
     /// Get the current schema version
@@ -107,7 +108,8 @@ actor MigrationRunner {
             V17_AudioTranscriptMetadata(),
             V18_NodeText(),
             V19_ProcessingQueueFrameIndex(),
-            V20_OCRBackfillState()
+            V20_OCRBackfillState(),
+            V21_ProgressiveRecall()
         ]
     }
 

@@ -71,14 +71,22 @@ let package = Package(
             path: "Database",
             exclude: [
                 "Tests",
+                "TestSupport",
                 "README.md",
                 "AGENTS.md",
                 "PROGRESS.md"
             ]
         ),
+        // Typed bridge for SQLite's variadic defensive-mode API in database tests.
+        .target(
+            name: "DatabaseTestSupport",
+            dependencies: [.product(name: "SQLCipher", package: "swift-sqlcipher")],
+            path: "Database/TestSupport",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "DatabaseTests",
-            dependencies: ["Database", "Shared", "Processing", "Storage", "Search"],
+            dependencies: ["Database", "DatabaseTestSupport", "Shared", "Processing", "Storage", "Search"],
             path: "Database/Tests",
             exclude: [
                 "_future"  // Release 2+ tests
@@ -124,7 +132,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureTests",
-            dependencies: ["Capture", "Shared"],
+            dependencies: ["Capture", "Shared", "Database"],
             path: "Capture/Tests"
         ),
 

@@ -3,15 +3,14 @@ import Shared
 
 // MARK: - ProcessingManager
 
-/// Main actor implementing ProcessingProtocol
-/// Coordinates OCR, Accessibility API, and text merging
+/// Coordinates retained-frame OCR and explicit live Accessibility operations.
+/// Saved-frame extraction is delegated to a pixel-only actor with no AX dependency.
 public actor ProcessingManager: ProcessingProtocol {
 
     // MARK: - Dependencies
 
-    private let ocr: VisionOCR
-    private let accessibility: AccessibilityService
-    private let merger: TextMerger
+    private let retainedText: RetainedFrameTextExtractor
+    private let accessibility: any AccessibilityProtocol
 
     // MARK: - State
 
@@ -21,16 +20,6 @@ public actor ProcessingManager: ProcessingProtocol {
     private var processingQueue: [(CapturedFrame, (Result<ExtractedText, ProcessingError>) -> Void)] = []
     private var isProcessing = false
 
-    // Region-based OCR state
-    private var fullFrameCache: FullFrameOCRCache?
-    private var previousFrame: CapturedFrame?
-    private var useRegionBasedOCR: Bool = true
-
-
-    // Region OCR statistics
-    private var totalEnergySavings: Double = 0
-    private var regionOCRFrameCount = 0
-
     // Statistics
     private var framesProcessed = 0
     private var totalOCRTimeMs: Double = 0
@@ -39,11 +28,13 @@ public actor ProcessingManager: ProcessingProtocol {
 
     // MARK: - Initialization
 
-    public init(config: ProcessingConfig = .default) {
+    public init(
+        config: ProcessingConfig = .default,
+        accessibility: any AccessibilityProtocol = AccessibilityService()
+    ) {
         self.config = config
-        self.ocr = VisionOCR(recognitionLanguages: config.recognitionLanguages)
-        self.accessibility = AccessibilityService()
-        self.merger = TextMerger()
+        self.retainedText = RetainedFrameTextExtractor(recognitionLanguages: config.recognitionLanguages)
+        self.accessibility = accessibility
     }
 
     // MARK: - ProcessingProtocol
@@ -55,143 +46,15 @@ public actor ProcessingManager: ProcessingProtocol {
 
     public func extractText(from frame: CapturedFrame) async throws -> ExtractedText {
         let startTime = Date()
-        return try await extractTextInternal(from: frame, startTime: startTime)
-    }
-
-    private func extractTextInternal(from frame: CapturedFrame, startTime: Date) async throws -> ExtractedText {
-
-        // Ensure full-frame cache is initialized for region-based OCR
-        if fullFrameCache == nil {
-            fullFrameCache = FullFrameOCRCache()
-        }
-
-        // Perform OCR (region-based or full-frame)
-        let ocrRegions: [TextRegion]
-
-        if useRegionBasedOCR, let cache = fullFrameCache {
-            // Use region-based OCR for energy efficiency
-            // Tiles are used for CHANGE DETECTION only, not for OCR bounding boxes
-            let result = try await ocr.recognizeTextRegionBased(
-                frame: frame,
-                previousFrame: previousFrame,
-                cache: cache,
-                config: config
-            )
-            ocrRegions = result.regions
-
-            // Track energy savings
-            regionOCRFrameCount += 1
-            totalEnergySavings += result.stats.energySavings
-
-            // Log significant energy savings
-            if result.stats.energySavings > 0.1 {
-                Log.debug("[ProcessingManager] Region OCR: \(result.stats.tilesOCRed)/\(result.stats.totalTiles) tiles, \(Int(result.stats.energySavings * 100))% energy saved, \(String(format: "%.1f", result.stats.totalTimeMs))ms", category: .processing)
-            }
-        } else {
-            // Fallback to full-frame OCR
-            ocrRegions = try await ocr.recognizeText(
-                imageData: frame.imageData,
-                width: frame.width,
-                height: frame.height,
-                bytesPerRow: frame.bytesPerRow,
-                config: config
-            )
-        }
-
-        // Store frame for next comparison (region-based OCR)
-        previousFrame = frame
-
-        // Separate UI chrome from main content
-        // Chrome = top 5% (menu bar/status bar) + bottom 5% (dock)
-        // Coordinates are now in pixel space with Y flipped (0 = top)
-        let frameHeight = CGFloat(frame.height)
-        let topChromeThreshold = frameHeight * 0.05    // Top 5%
-        let bottomChromeThreshold = frameHeight * 0.95 // Bottom 5%
-
-        var mainRegions: [TextRegion] = []
-        var chromeRegions: [TextRegion] = []
-
-        for region in ocrRegions {
-            let regionTopY = region.bounds.origin.y
-            let regionBottomY = region.bounds.origin.y + region.bounds.height
-
-            // Check if region is in UI chrome areas
-            let isTopChrome = regionBottomY <= topChromeThreshold
-            let isBottomChrome = regionTopY >= bottomChromeThreshold
-
-            if isTopChrome || isBottomChrome {
-                chromeRegions.append(region)
-            } else {
-                mainRegions.append(region)
-            }
-        }
-
-        // Extract accessibility text (if enabled and permitted)
-        var axResult: AccessibilityResult? = nil
-        var axText: String? = nil
-        if config.accessibilityEnabled {
-            let hasPermission = await accessibility.hasPermission()
-            if hasPermission {
-                do {
-                    axResult = try await accessibility.getFocusedAppText()
-                    axText = axResult?.textElements.map(\.text).joined(separator: " ")
-                } catch {
-                    Log.debug("[ProcessingManager] Accessibility text extraction failed (non-critical): \(error.localizedDescription)", category: .processing)
-                    axResult = nil
-                }
-            }
-        }
-
-        // Build OCR text from main regions only (chrome text stored separately)
-        let ocrText = mainRegions.map(\.text).joined(separator: " ")
-        let chromeText = chromeRegions.map(\.text).joined(separator: " ")
-
-        // Merge OCR and accessibility text
-        let fullText = merger.mergeText(ocrText: ocrText, accessibilityText: axText)
-
-        // Merge accessibility metadata with existing metadata
-        // Preserve browserURL from capture phase if accessibility doesn't provide one
-        var metadata = frame.metadata
-        if let axResult = axResult {
-            metadata = FrameMetadata(
-                appBundleID: axResult.appInfo.bundleID,
-                appName: axResult.appInfo.name,
-                windowName: axResult.appInfo.windowName,
-                browserURL: axResult.appInfo.browserURL ?? frame.metadata.browserURL,
-                redactionReason: frame.metadata.redactionReason,
-                displayID: frame.metadata.displayID
-            )
-        }
-
-        // Create ExtractedText with separated main/chrome regions
-        // Note: CapturedFrame doesn't have an ID yet (assigned by database on insert)
-        let extractedText = ExtractedText(
-            frameID: FrameID(value: 0), // Placeholder - will be updated by caller after DB insert
-            timestamp: frame.timestamp,
-            regions: mainRegions,        // Main content regions (c0)
-            chromeRegions: chromeRegions, // UI chrome regions (c1)
-            fullText: fullText,          // Main content text
-            chromeText: chromeText,      // UI chrome text
-            metadata: metadata
-        )
-
-        // Update statistics
-        let ocrTime = Date().timeIntervalSince(startTime) * 1000  // Convert to ms
+        let text = try await retainedText.extractText(from: frame, config: config)
         framesProcessed += 1
-        totalOCRTimeMs += ocrTime
-        totalTextLength += extractedText.wordCount
-
-        return extractedText
+        totalOCRTimeMs += Date().timeIntervalSince(startTime) * 1000
+        totalTextLength += text.wordCount
+        return text
     }
 
     public func extractTextViaOCR(from frame: CapturedFrame) async throws -> [TextRegion] {
-        return try await ocr.recognizeText(
-            imageData: frame.imageData,
-            width: frame.width,
-            height: frame.height,
-            bytesPerRow: frame.bytesPerRow,
-            config: config
-        )
+        try await retainedText.extractTextViaOCR(from: frame, config: config)
     }
 
     public func extractTextViaAccessibility() async throws -> [TextRegion] {
@@ -263,41 +126,23 @@ public actor ProcessingManager: ProcessingProtocol {
         )
     }
 
-    /// Get region-based OCR statistics
+    /// Get region-based OCR statistics. Work-area savings are estimates, not energy measurements.
     public func getRegionOCRStats() async -> (averageEnergySavings: Double, frameCount: Int, cacheStats: (hits: Int, misses: Int, size: Int, hitRate: Double)?) {
-        let avgSavings = regionOCRFrameCount > 0 ? totalEnergySavings / Double(regionOCRFrameCount) : 0
-        if let cache = fullFrameCache {
-            let stats = await cache.getStats()
-            return (avgSavings, regionOCRFrameCount, (stats.hits, stats.misses, stats.regionCount, stats.hitRate))
-        }
-        return (avgSavings, regionOCRFrameCount, nil)
+        await retainedText.getRegionOCRStats()
     }
 
     // MARK: - Region-Based OCR Configuration
 
-    /// Enable or disable region-based OCR
-    /// When enabled, only changed regions are OCR'd for energy efficiency
-    /// Tiles are used for change detection only - bounding boxes remain paragraph-level
-    public func setRegionBasedOCR(enabled: Bool) {
-        useRegionBasedOCR = enabled
-        if !enabled {
-            // Clear cache and previous frame when disabled
-            Task {
-                await fullFrameCache?.invalidateAll()
-            }
-            previousFrame = nil
-        }
+    public func setRegionBasedOCR(enabled: Bool) async {
+        await retainedText.setRegionBasedOCR(enabled: enabled)
     }
 
-    /// Check if region-based OCR is enabled
-    public func isRegionBasedOCREnabled() -> Bool {
-        return useRegionBasedOCR
+    public func isRegionBasedOCREnabled() async -> Bool {
+        await retainedText.isRegionBasedOCREnabled()
     }
 
-    /// Invalidate the OCR cache (useful when significant UI changes occur)
     public func invalidateTileCache() async {
-        await fullFrameCache?.invalidateAll()
-        previousFrame = nil
+        await retainedText.invalidateTileCache()
     }
 
     // MARK: - Private Methods
@@ -343,5 +188,115 @@ extension ProcessingManager {
     /// Get information about the frontmost application
     public func getFrontmostAppInfo() async throws -> AppInfo {
         return try await accessibility.getFrontmostAppInfo()
+    }
+}
+
+// MARK: - Retained Pixel Extraction
+
+/// This actor deliberately has no Accessibility or frontmost-app dependency.
+/// Its complete evidence input is the retained frame and saved capture metadata;
+/// enabling live AX elsewhere cannot change historical extraction or provenance.
+private actor RetainedFrameTextExtractor {
+    private let ocr: VisionOCR
+    private var fullFrameCache: FullFrameOCRCache?
+    private var previousFrame: CapturedFrame?
+    private var useRegionBasedOCR = true
+    private var totalWorkAreaSavings: Double = 0
+    private var regionOCRFrameCount = 0
+    private var extractionTail: Task<ExtractedText, Error>?
+    private var extractionSequence: UInt64 = 0
+
+    init(recognitionLanguages: [String]) {
+        ocr = VisionOCR(recognitionLanguages: recognitionLanguages)
+    }
+
+    func extractText(from frame: CapturedFrame, config: ProcessingConfig) async throws -> ExtractedText {
+        // Actor reentrancy alone does not protect the frame/cache pair across
+        // Vision awaits. Order complete extractions without blocking a thread;
+        // this also avoids saturating the cooperative executor with Vision's
+        // synchronous internal waits when multiple workers arrive together.
+        let predecessor = extractionTail
+        extractionSequence &+= 1
+        let sequence = extractionSequence
+        let task = Task {
+            if let predecessor { _ = await predecessor.result }
+            try Task.checkCancellation()
+            return try await self.extractRetainedFrame(from: frame, config: config)
+        }
+        extractionTail = task
+        defer {
+            if extractionSequence == sequence { extractionTail = nil }
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func extractRetainedFrame(from frame: CapturedFrame, config: ProcessingConfig) async throws -> ExtractedText {
+        if fullFrameCache == nil { fullFrameCache = FullFrameOCRCache() }
+        let regions: [TextRegion]
+        if useRegionBasedOCR, let cache = fullFrameCache {
+            let result = try await ocr.recognizeTextRegionBased(
+                frame: frame, previousFrame: previousFrame, cache: cache, config: config
+            )
+            regions = result.regions
+            regionOCRFrameCount += 1
+            totalWorkAreaSavings += result.stats.energySavings
+            if result.stats.energySavings > 0.1 {
+                Log.debug("[ProcessingManager] Region OCR: \(result.stats.tilesOCRed)/\(result.stats.totalTiles) tiles, \(Int(result.stats.energySavings * 100))% estimated crop work avoided, \(String(format: "%.1f", result.stats.totalTimeMs))ms", category: .processing)
+            }
+        } else {
+            regions = try await extractTextViaOCR(from: frame, config: config)
+        }
+        previousFrame = frame
+
+        let topChromeThreshold = CGFloat(frame.height) * 0.05
+        let bottomChromeThreshold = CGFloat(frame.height) * 0.95
+        var mainRegions: [TextRegion] = []
+        var chromeRegions: [TextRegion] = []
+        for region in regions {
+            if region.bounds.maxY <= topChromeThreshold || region.bounds.minY >= bottomChromeThreshold {
+                chromeRegions.append(region)
+            } else {
+                mainRegions.append(region)
+            }
+        }
+
+        // Flatten the same ordered regions used for offsets/highlights. Never
+        // inject text from a different surface, timestamp or extraction method.
+        return ExtractedText(
+            frameID: FrameID(value: 0), timestamp: frame.timestamp,
+            regions: mainRegions, chromeRegions: chromeRegions, metadata: frame.metadata
+        )
+    }
+
+    func extractTextViaOCR(from frame: CapturedFrame, config: ProcessingConfig) async throws -> [TextRegion] {
+        try await ocr.recognizeText(
+            imageData: frame.imageData, width: frame.width, height: frame.height,
+            bytesPerRow: frame.bytesPerRow, config: config
+        )
+    }
+
+    func getRegionOCRStats() async -> (averageEnergySavings: Double, frameCount: Int, cacheStats: (hits: Int, misses: Int, size: Int, hitRate: Double)?) {
+        let average = regionOCRFrameCount > 0 ? totalWorkAreaSavings / Double(regionOCRFrameCount) : 0
+        if let cache = fullFrameCache {
+            let stats = await cache.getStats()
+            return (average, regionOCRFrameCount, (stats.hits, stats.misses, stats.regionCount, stats.hitRate))
+        }
+        return (average, regionOCRFrameCount, nil)
+    }
+
+    func setRegionBasedOCR(enabled: Bool) async {
+        useRegionBasedOCR = enabled
+        if !enabled { await invalidateTileCache() }
+    }
+
+    func isRegionBasedOCREnabled() -> Bool { useRegionBasedOCR }
+
+    func invalidateTileCache() async {
+        await fullFrameCache?.invalidateAll()
+        previousFrame = nil
     }
 }

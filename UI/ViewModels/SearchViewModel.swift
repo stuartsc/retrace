@@ -502,6 +502,11 @@ public class SearchViewModel: ObservableObject {
             .dropFirst()  // Skip initial empty value so we don't clear cache on init
             .sink { [weak self] query in
                 if query.isEmpty {
+                    self?.searchGeneration += 1
+                    self?.currentSearchTask?.cancel()
+                    self?.currentLoadMoreTask?.cancel()
+                    self?.isSearching = false
+                    self?.isLoadingMore = false
                     self?.results = nil
                     self?.committedSearchQuery = ""
                     self?.hasSubmittedSearch = false  // Reset so filters don't auto-update for new query
@@ -1268,12 +1273,14 @@ public class SearchViewModel: ObservableObject {
         }
 
         isSearching = true
+        isLoadingMore = false
         error = nil
 
         results = nil  // Clear old results immediately to prevent stale thumbnail loads
         savedScrollPosition = 0  // Reset scroll position for new search
         clearInMemoryThumbnailCache()  // Clear in-memory thumbnail cache for new search
         searchGeneration += 1  // Increment generation to invalidate in-flight thumbnail loads
+        let requestGeneration = searchGeneration
         committedSearchQuery = query  // Set committed query for thumbnail cache keys
         didReachPaginationEnd = false
         nextPageCursor = nil
@@ -1288,6 +1295,7 @@ public class SearchViewModel: ObservableObject {
 
             // Check for cancellation after the search completes
             try Task.checkCancellation()
+            guard requestGeneration == searchGeneration else { return }
 
             if !searchResults.results.isEmpty {
                 let firstResult = searchResults.results[0]
@@ -1301,10 +1309,12 @@ public class SearchViewModel: ObservableObject {
                 isSearching = false
             }
         } catch is CancellationError {
+            guard requestGeneration == searchGeneration else { return }
             await MainActor.run {
                 isSearching = false
             }
         } catch {
+            guard requestGeneration == searchGeneration else { return }
             Log.error("[SearchViewModel] Search failed: \(error.localizedDescription)", category: .ui)
             // Ensure UI updates happen on main actor
             await MainActor.run {
@@ -1559,6 +1569,7 @@ public class SearchViewModel: ObservableObject {
 
         Log.info("[SearchViewModel] Loading more results, current count: \(currentResults.results.count)", category: .ui)
         isLoadingMore = true
+        let requestGeneration = searchGeneration
 
         do {
             // Check for cancellation before starting
@@ -1569,6 +1580,7 @@ public class SearchViewModel: ObservableObject {
 
             // Check for cancellation after the search completes
             try Task.checkCancellation()
+            guard requestGeneration == searchGeneration else { return }
 
             Log.info("[SearchViewModel] Loaded \(moreResults.results.count) more results", category: .ui)
 
@@ -1598,10 +1610,19 @@ public class SearchViewModel: ObservableObject {
 
             isLoadingMore = false
         } catch is CancellationError {
+            guard requestGeneration == searchGeneration else { return }
             isLoadingMore = false
+        } catch SearchPaginationError.dataChanged {
+            guard requestGeneration == searchGeneration else { return }
+            nextPageCursor = nil
+            didReachPaginationEnd = true
+            isLoadingMore = false
+            self.error = "The recording library changed. Refresh search to continue with current evidence."
         } catch {
+            guard requestGeneration == searchGeneration else { return }
             Log.error("[SearchViewModel] Load more failed: \(error.localizedDescription)", category: .ui)
             isLoadingMore = false
+            self.error = "More results could not be loaded. Refresh search to try again."
         }
     }
 
@@ -1609,7 +1630,8 @@ public class SearchViewModel: ObservableObject {
 
     public func selectResult(_ result: SearchResult) {
         selectedResult = result
-        showingFrameViewer = true
+        showingFrameViewer = false
+        ActivityTimelineController.shared.openSearchResult(result, coordinator: coordinator)
     }
 
     public func closeFrameViewer() {
@@ -1986,7 +2008,7 @@ public class SearchViewModel: ObservableObject {
     public func nextResult() {
         guard let results = results,
               let current = selectedResult,
-              let index = results.results.firstIndex(where: { $0.frameID == current.frameID }),
+              let index = results.results.firstIndex(where: { $0.sourceQualifiedID == current.sourceQualifiedID }),
               index + 1 < results.results.count else {
             return
         }
@@ -1997,7 +2019,7 @@ public class SearchViewModel: ObservableObject {
     public func previousResult() {
         guard let results = results,
               let current = selectedResult,
-              let index = results.results.firstIndex(where: { $0.frameID == current.frameID }),
+              let index = results.results.firstIndex(where: { $0.sourceQualifiedID == current.sourceQualifiedID }),
               index > 0 else {
             return
         }
@@ -2008,23 +2030,21 @@ public class SearchViewModel: ObservableObject {
     // MARK: - Sharing
 
     public func generateShareLink(for result: SearchResult) -> URL? {
-        // For share links, use the first selected app if any
-        let appBundleID = selectedAppFilters?.first
-        return DeeplinkHandler.generateSearchLink(
-            query: searchQuery,
-            timestamp: result.timestamp,
-            appBundleID: appBundleID
-        )
+        result.evidenceRef.flatMap { EvidenceRef.screen($0).deepLink }
     }
 
     public func copyShareLink(for result: SearchResult) {
-        guard let url = generateShareLink(for: result) else { return }
+        guard let url = generateShareLink(for: result) else {
+            self.error = "Open this result to verify its source before copying an exact evidence link."
+            return
+        }
 
         #if os(macOS)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(url.absoluteString, forType: .string)
         #endif
+        Task { if let service = try? await coordinator.progressiveRecall() { await service.track(.deepLinkCopied) } }
     }
 
     // MARK: - Statistics

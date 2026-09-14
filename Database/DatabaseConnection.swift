@@ -30,6 +30,7 @@ public protocol DatabaseConnection: Sendable {
 // MARK: - Database Errors
 
 public enum DatabaseConnectionError: Error, CustomStringConvertible {
+    case openingFailed(error: String)
     case statementPreparationFailed(sql: String, error: String)
     case executionFailed(sql: String, error: String)
     case transactionFailed(error: String)
@@ -37,6 +38,8 @@ public enum DatabaseConnectionError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
+        case .openingFailed(let error):
+            return "Failed to open read-only database: \(error)"
         case .statementPreparationFailed(let sql, let error):
             return "Failed to prepare statement '\(sql)': \(error)"
         case .executionFailed(let sql, let error):
@@ -54,9 +57,38 @@ public enum DatabaseConnectionError: Error, CustomStringConvertible {
 /// Wrapper for standard SQLite connection (used by RetraceDataSource)
 public final class SQLiteConnection: DatabaseConnection, @unchecked Sendable {
     private let db: OpaquePointer?
+    private let ownsConnection: Bool
 
     public init(db: OpaquePointer?) {
         self.db = db
+        self.ownsConnection = false
+    }
+
+    /// A separate reader observes committed state even while another actor owns a
+    /// write transaction. The pointer initializer remains an explicitly borrowed seam.
+    public init(readOnlyDatabasePath: String) throws {
+        guard !readOnlyDatabasePath.isEmpty, !readOnlyDatabasePath.contains("\0") else {
+            throw DatabaseConnectionError.openingFailed(error: "Invalid database path")
+        }
+        var opened: OpaquePointer?
+        let result = sqlite3_open_v2(readOnlyDatabasePath, &opened,
+            SQLITE_OPEN_URI | SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
+        guard result == SQLITE_OK, let opened else {
+            let message = opened.map { String(cString: sqlite3_errmsg($0)) } ?? "Database unavailable"
+            if let opened { sqlite3_close_v2(opened) }
+            throw DatabaseConnectionError.openingFailed(error: message)
+        }
+        guard sqlite3_db_readonly(opened, "main") == 1,
+              sqlite3_busy_timeout(opened, 1_000) == SQLITE_OK else {
+            sqlite3_close_v2(opened)
+            throw DatabaseConnectionError.openingFailed(error: "Read-only connection setup failed")
+        }
+        self.db = opened
+        self.ownsConnection = true
+    }
+
+    deinit {
+        if ownsConnection, let db { sqlite3_close_v2(db) }
     }
 
     public func getConnection() -> OpaquePointer? {

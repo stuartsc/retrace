@@ -411,8 +411,6 @@ public actor FrameProcessingQueue {
                     let isUnrecoverableError = isUnrecoverableVideoError(error)
 
                     if isUnrecoverableError {
-                        // Expected for frames still being written - use warning, not error
-                        Log.warning("[Queue] Frame \(queuedFrame.frameID) skipped (video not ready)", category: .processing)
                         try await markFrameAsFailed(queuedFrame.frameID, error: error, skipRetries: true)
                     } else if queuedFrame.retryCount < config.maxRetryAttempts {
                         // Retry if under limit for recoverable errors
@@ -500,12 +498,7 @@ public actor FrameProcessingQueue {
             // Verify finalized video file exists before attempting extraction
             let videoFullPath = storageRoot.appendingPathComponent(videoSegment.relativePath).path
             if !FileManager.default.fileExists(atPath: videoFullPath) {
-                Log.error("[Queue] Video file not found for frame \(frameID): \(videoFullPath)", category: .processing)
-                Log.error("[Queue] This suggests database/storage path mismatch. Check AppPaths.storageRoot setting.", category: .processing)
-
-                // Mark as failed permanently - don't retry endlessly for missing files
-                try await updateFrameProcessingStatus(frameID, status: .failed)
-                return .success // Return success to not re-queue (it's a permanent failure)
+                throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
             }
 
             // Read from finalized video and convert JPEG payload for OCR.
@@ -670,21 +663,12 @@ public actor FrameProcessingQueue {
         Log.warning("[Queue] Retrying frame \(queuedFrame.frameID), attempt \(queuedFrame.retryCount + 1)", category: .processing)
     }
 
-    /// Mark frame as permanently failed, or delete if truly unrecoverable
-    /// SAFETY: Only deletes frames after verifying the video is genuinely unrecoverable
+    /// A failed repair changes availability, never ownership of retained evidence.
     private func markFrameAsFailed(_ frameID: Int64, error: Error, skipRetries: Bool = false) async throws {
         if skipRetries {
-            // Potential unrecoverable video error - verify before deleting
-            let shouldDelete = await verifyFrameIsUnrecoverable(frameID: frameID, error: error)
-
-            if shouldDelete {
-                try await databaseManager.deleteFrame(id: FrameID(value: frameID))
-                Log.warning("[Queue] Frame \(frameID) deleted (verified unrecoverable)", category: .processing)
-            } else {
-                // Not confirmed unrecoverable - mark as failed instead of deleting
-                try await updateFrameProcessingStatus(frameID, status: .failed)
-                Log.warning("[Queue] Frame \(frameID) marked as failed (deletion skipped - could not verify unrecoverable)", category: .processing)
-            }
+            let reason = mediaUnavailableReason(for: error)
+            try await databaseManager.recordFrameMediaUnavailable(frameID: FrameID(value: frameID), reason: reason)
+            Log.warning("[Queue] Frame \(frameID) media unavailable (\(reason.rawValue)); retained text and provenance preserved", category: .processing)
         } else {
             // Actual processing failure after retries - mark as failed
             try await updateFrameProcessingStatus(frameID, status: .failed)
@@ -692,54 +676,17 @@ public actor FrameProcessingQueue {
         }
     }
 
-    /// Verify a frame is truly unrecoverable before deletion
-    /// Returns true only if we're certain the video data cannot be recovered
-    private func verifyFrameIsUnrecoverable(frameID: Int64, error: Error) async -> Bool {
-        let errorDesc = error.localizedDescription
-
-        // SAFETY CHECK 1: Only delete for specific known-unrecoverable error types
-        let isKnownUnrecoverableError =
-            errorDesc.contains("Frame index") && errorDesc.contains("out of range") ||  // Frame index doesn't exist in video
-            errorDesc.contains("Video file is empty")  // 0-byte video file
-
-        guard isKnownUnrecoverableError else {
-            return false
+    private func mediaUnavailableReason(for error: Error) -> EvidenceUnavailableReason {
+        if let failure = error as? FrameProcessingFailure,
+           case .mediaUnavailable(let reason) = failure { return reason }
+        if let storageError = error as? StorageError,
+           case .fileNotFound = storageError { return .recordingMissing }
+        let description = error.localizedDescription.lowercased()
+        if description.contains("video file is empty") || description.contains("file not found")
+            || description.contains("no such file") {
+            return .recordingMissing
         }
-
-        // SAFETY CHECK 2: Verify the frame actually exists and get its video info
-        guard let frameRef = try? await databaseManager.getFrame(id: FrameID(value: frameID)) else {
-            return false
-        }
-
-        // SAFETY CHECK 3: Verify the video segment exists in DB
-        guard let videoSegment = try? await databaseManager.getVideoSegment(id: frameRef.videoID) else {
-            return true  // Video record doesn't exist, frame is orphaned
-        }
-
-        // SAFETY CHECK 4: Extract segment ID and verify file state
-        let pathComponents = videoSegment.relativePath.split(separator: "/")
-        guard let lastComponent = pathComponents.last,
-              let _ = Int64(lastComponent) else {
-            return false
-        }
-
-        // SAFETY CHECK 5: For "frame index out of range" - verify the video has fewer frames than expected
-        if errorDesc.contains("Frame index") && errorDesc.contains("out of range") {
-            // The error message format is: "Frame index X out of range (0..<Y)"
-            // We've already failed to read this frame, so we know it's out of range
-            return true
-        }
-
-        // SAFETY CHECK 6: For "empty file" - verify file is actually 0 bytes
-        if errorDesc.contains("Video file is empty") {
-            if let exists = try? await storage.segmentExists(id: VideoSegmentID(value: Int64(pathComponents.last!)!)), !exists {
-                return true
-            }
-            // File exists but we got empty error - this is suspicious, don't delete
-            return false
-        }
-
-        return false
+        return .integrityFailure
     }
 
     /// Re-enqueue frames that were processing during a crash
@@ -822,6 +769,7 @@ public actor FrameProcessingQueue {
     /// Check if an error indicates an unrecoverable video file issue
     /// These errors (damaged/missing files) won't be fixed by retrying
     private func isUnrecoverableVideoError(_ error: Error) -> Bool {
+        if error is FrameProcessingFailure { return true }
         let errorDescription = error.localizedDescription.lowercased()
         let nsError = error as NSError
 
@@ -999,6 +947,10 @@ private struct QueuedFrame {
     let queueID: Int64
     let frameID: Int64
     let retryCount: Int
+}
+
+private enum FrameProcessingFailure: Error, Sendable {
+    case mediaUnavailable(EvidenceUnavailableReason)
 }
 
 public enum FrameProcessingStatus: Int, Sendable {

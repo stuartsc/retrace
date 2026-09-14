@@ -1,10 +1,55 @@
 # Updates and changelog
 
-Last updated: 2026-09-11.
+Last updated: 2026-09-14.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### Local trial 2609.14.1 — 2026-09-14
+
+- Installed and launched the activity notification correction at **10:54:45 Brisbane** after **866 tests, five intentional skips and zero failures**, optimized compilation and independent package verification. A bounded post-launch check found sixteen fresh completed captures.
+- Saved links still open the two distinct same-title proposals and preserve the selected extraction revision across the app replacement. The previous 2609.13.1 app is retained for rollback with the current V21 library; the installer did not write the library.
+- Activity collection was returned Off while ordinary recording stayed On. The shared-desktop probe disclosed foreground-context gaps and did not include Ghostty, so matched native coverage and resource acceptance remain open.
+- Phase 0/1 source and this validation record are committed for continued development. This remains an unreleased local trial; installed measurement details and remaining Mac/Timely acceptance are recorded in [the validation ledger](docs/progressive-recall-validation.md#notification-correction--2026-09-14).
+
+### 2026-09-14 — Activity notification correction
+
+- Repeated AX title/move notifications preserve the observed window identity instead of manufacturing new focus visits and document enrichments. A separate notification revision rejects stale metadata, delayed enrichment and screenshots interrupted by an A→B→A transition.
+- Document enrichment keeps one read in flight and one pending resample. A delayed retry samples the current app with explicit retry provenance; it cannot replay a previously focused app as a new visit.
+- Twelve new regressions exercise the production notification route, real native window IDs and temporary SQLite. The **42-test focused selection** and final **866-test full suite** pass, with five intentional full-suite skips and zero failures. An existing maintenance test received a longer functional wait after a recorded timeout; its SQLite and shutdown assertions remain intact. Independent review has no remaining findings. Signed build and installed follow-up are tracked in [the validation ledger](docs/progressive-recall-validation.md#notification-correction--2026-09-14).
+
+### Local trial 2609.13.1 — 2026-09-14
+
+- Installed and launched the reviewed progressive-recall Phase 1 build at **09:33:55 Brisbane**. The installed executable matches the signed candidate; live read-only inspection confirms schema V21. Activity context was disabled at first launch and enabled through the UI for the authored-document trial.
+- Retained the original app and a verified native library rollback copy. The separate copied-database V20→V21 migration, second-run no-op and defensive system/Python reader checks passed with bounded legacy-record and FTS preservation. The installed build corresponds to the **854-test, five-skip, zero-failure** checkpoint.
+- Installed exact-evidence checks distinguished two same-title proposals (**42000 / DRAFT** and **47000 / SENT**), reopened UI-copied links and retained the selected extraction revision. The shared-desktop trial exposed excessive activity events from repeated AX title/move notifications; activity collection was restored Off while ordinary screen recording stayed On. A scoped correction is being tested before the next build.
+- Installed recall checks and remaining Mac/Timely acceptance are tracked in [the trial ledger](docs/progressive-recall-validation.md#recovery-and-installed-trial--2026-09-14). At this checkpoint, source was uncommitted; this was not a public release or completed performance comparison.
+
+### 2026-09-13 — Activity timing and controlled-trial preparation
+
+- Activity notification latency now measures monotonic elapsed time through successful database acknowledgement. The old metric stopped at a timestamp assigned before COMMIT. Real SQLite tests cover a held acknowledgement, failed append and early test-gate release; prior Word/Claude measurement claims are corrected in the [validation ledger](docs/progressive-recall-validation.md#controlled-trial-preparation--2026-09-13).
+- Quit now cancels and joins startup, prevents late recording starts, and awaits pipeline shutdown. Repeated Quit requests join the same operation; partial failure remains visible and retryable. Timeline metrics retain only unacknowledged increments across failures, timeouts and shortcut reloads. Real SQLite and AsyncStream regressions pass independent review; the rebuilt package and installed trial are tracked separately below.
+- Corrected the data-access reference for retained OCR region text, exact media identity, supported V21 writers and coherent library recovery. The reference is now retained in Git. UI guidance distinguishes global recorded-text search (`Cmd+K`) from search within the current frame (`Cmd+F`) and respects configured global shortcuts.
+- Recorded a bounded authored-Word baseline on the installed **2609.9.1** build, including Timely settings, exact action times, processing outcomes, corrected CPU units and host-load limitations. This follow-up has not yet installed a candidate; the full Mac acceptance gates remain open.
+- The final integrated check passed **854 tests, five skips, zero failures**; optimized **2609.13.1** is signed, staged and independently reviewed. An external launch request restarted the old app during recovery verification, so installation remains paused. **2609.9.1** has been returned to normal recording, with four fresh completed captures verified. Failed copies remain explicitly incomplete; see [the recovery and restored-state checkpoint](docs/progressive-recall-validation.md#external-restart-and-restored-baseline--2026-09-13).
+
+### 2026-09-12 — Progressive recall acceptance follow-up and pixel comparison cost
+
+- Reworked the consequential-pixel safeguard with native SIMD while preserving the reviewed one-digit change, noise, alpha and boundary behavior. Warm 4K full-scan CPU p95 measured **2.93–5.08 ms** across three runs; cold and wall-time variability leave the strict performance gate open.
+- Added opt-in native application acceptance against temporary SQLite. Word's unsaved document and two same-title saved documents passed metadata search before OCR, with distinct saved-file identities. Claude's generic window title passed; conversation/pane identity remains unavailable.
+- Two finalized Word recordings passed copied-library keyword search, exact service resolution and immutable-link reopen. Each reopened image matched its original bytes; legacy context remains uncertain. The private temporary-alias adaptation and separate installed-navigation gate are documented in the validation record.
+- Hardened benchmark receipts against incomplete pagination and accidental source/sidecar replacement. Both query shapes passed **27 focused tests**; the experimental metadata-loading order had mixed performance and was not adopted.
+- Copied-library validation exposed persisted full-text shadow triggers that defensive SQLite readers reject. Revision tracking now uses connection-local temporary triggers on supported writers; defensive settings remain enabled. Five new real-database regressions and the 37-test focused check pass.
+- The corrected package check passed **826 tests, five intentional skips, zero failures** with coverage enabled. Optimized candidate **2609.12.2** is signed and staged; **2609.12.1** was superseded before installation. **2609.9.1** remains installed. This is not an installed local trial or release. See [continued acceptance evidence and remaining gates](docs/progressive-recall-validation.md#continued-acceptance--2026-09-12-afternoon).
+
+### 2026-09-12 — Progressive recall Phase 0 and Phase 1 implementation
+
+- Added independent opt-in activity capture, durable feed/checkpoints, confirmed correction receipts and an episode → interval → evidence timeline. Gaps, pause/sleep and delayed document enrichment remain explicit; selected corrections preserve their scope and original captured facts.
+- Fixed constrained search pagination and evidence-dropping deduplication. Real rendered-screen tests also exposed a lexical threshold that discarded valid amount/negation matches and a sampled pixel comparison that dropped a one-digit amount change; both now have regressions and fixes.
+- Search selections and recorded-screen links use immutable source/store/frame/extraction references with strict encoded-frame and journal validation. Source changes, deletions and late async completion cannot substitute another screen or newer text. Queued OCR uses retained pixels and saved metadata; repair failures preserve existing text and provenance.
+- Serialized capture startup/stop, preserved explicit pause during concurrent failure recovery, and joined final capture writes before replacement recording. Added privacy scrubbing, separate stage health and action metrics.
+- The initial complete-package run passed **814 tests, four intentional skips, zero failures** with code coverage enabled; independent review and the sleep guardrail passed. Real SQLite, Vision, HEVC, journal, filesystem, AsyncStream and native-view validation, performance limits and remaining Mac/Timely acceptance work are recorded in [progressive recall validation](docs/progressive-recall-validation.md). This is an uninstalled development change; the prior local trial remains the installed version.
 
 Status at 2026-09-09: **0.7.6 (2609.9.1) is installed and running**, launched at **07:15:27 Brisbane** after a fresh recovery snapshot and normal shutdown. The fixed 90-second trial completed **all eight captures**, with **1.005-second median** and **5.003-second maximum** capture-to-OCR completion; three sampled frames and all three controlled text screens passed actual FTS checks. At 07:31:32, sharply increased host load coincided with 10 newer frames pending and one processing, so sustained freshness remains variable. Missing historical source video and the newest unfinished-video preview remain separate limitations. This is a local trial, not a public release or an equal-workload accuracy, energy or disk benchmark.
 

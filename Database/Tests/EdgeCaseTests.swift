@@ -562,7 +562,12 @@ final class EdgeCaseTests: XCTestCase {
         let retrieved = try await database.getFrame(id: frameID)
         XCTAssertNil(retrieved?.metadata.appName, "Unicode is preserved in the session window title; app display names are not persisted")
         XCTAssertEqual(retrieved?.metadata.windowName, "日本語アプリ — Émojis: 😀🎉🚀 and más")
-        XCTAssertEqual(retrieved?.metadata.browserURL, "https://example.com/путь")
+        // Capture metadata uses the canonical, scrubbed URL representation. Its
+        // percent encoding must preserve the original Unicode path through SQLite.
+        let retainedString = try XCTUnwrap(retrieved?.metadata.browserURL)
+        let retainedURL = try XCTUnwrap(URL(string: retainedString))
+        XCTAssertEqual(retainedString, "https://example.com/%D0%BF%D1%83%D1%82%D1%8C")
+        XCTAssertEqual(retainedURL.path, "/путь")
     }
 
     func testDocument_WithSQLInjectionAttempt_SafelyStored() async throws {

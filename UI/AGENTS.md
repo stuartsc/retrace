@@ -2,7 +2,7 @@
 
 You are the **UI** agent responsible for building the SwiftUI interface for Retrace.
 
-**Status**: ✅ Fully implemented with modern SwiftUI design. Timeline, dashboard, search, settings, onboarding, feedback, audio transcripts, and push-to-dictate views all working. Global hotkeys functional (Cmd+Shift+T for timeline, Cmd+Shift+D for dashboard, Ctrl+Space hold for dictation). Menu bar integration complete. **Apple Silicon required**.
+**Status**: ✅ Fully implemented with modern SwiftUI design. Timeline, dashboard, search, settings, onboarding, feedback, audio transcripts, and push-to-dictate views all working. Global hotkeys use the user's saved Settings → General configuration; use the menu labels when documenting a smoke sequence instead of assuming default keys. Menu bar integration complete. **Apple Silicon required**.
 
 ## Your Directory
 
@@ -13,10 +13,9 @@ UI/
 │   └── CreatorProfile.imageset/        # Creator profile image shown in onboarding/milestones
 ├── Views/
 │   ├── Timeline/
-│   │   ├── TimelineView.swift           # Main timeline scrubber
-│   │   ├── TimelineBar.swift            # Horizontal scrollable bar
-│   │   ├── FrameThumbnail.swift         # Individual frame preview
-│   │   └── SessionIndicator.swift       # App session markers
+│   │   ├── ActivityTimelineController.swift # Activity/evidence window lifecycle and source-qualified search routing
+│   │   ├── ActivityTimelineView.swift       # Episodes, intervals, corrections, metadata search, context control and health
+│   │   ├── ExactEvidenceView.swift          # Exact retained revision, verified image/regions and unavailable-media text
 │   ├── FullscreenTimeline/
 │   │   ├── SpotlightSearchOverlay.swift # Primary search overlay UI
 │   │   └── SearchFilterBar.swift        # Search filters and controls
@@ -38,19 +37,27 @@ UI/
 │       └── AdvancedSettings.swift       # Power user options
 ├── Components/
 │   ├── AppResourceBundle.swift          # Packaged app resource bundle and SwiftPM/Xcode fallbacks
+│   ├── ApplicationTerminationWorkflow.swift # Coalesced startup cancellation and async metrics/service shutdown before Quit
+│   ├── TimelineSessionMetrics.swift     # Shared duration/scrub write ownership and acknowledgement across hide/Quit/retry
 │   ├── BoundingBoxOverlay.swift         # Text region highlighting
+│   ├── SearchEvidenceThumbnailLoader.swift # Bounded exact-source search previews and cancellable row presentation
 │   ├── SessionTimeline.swift            # App session visualization
 │   ├── DeeplinkHandler.swift            # URL scheme routing
 │   ├── ProcessCPUMonitor.swift          # Shared process CPU+memory sampler + 24h aggregation service
 │   ├── ProcessCPUSummaryCard.swift      # System Monitor CPU table/card UI
 │   └── ProcessMemorySummaryCard.swift   # System Monitor memory table/card UI
 ├── ViewModels/
+│   ├── ActivityTimelineViewModel.swift     # Cancellable metadata paging, corrections, links and exact evidence resolution
 │   ├── TimelineViewModel.swift
 │   ├── SearchViewModel.swift
 │   ├── DashboardViewModel.swift
 │   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
 │   └── SettingsViewModel.swift
 └── Tests/
+    ├── ApplicationTerminationWorkflowTests.swift # Async Quit/startup ordering, retry and real SQLite commit-before-close regressions
+    ├── TimelineSessionMetricsTests.swift # Real SQLite retry, partial failure, hide/reopen, reconfiguration and timeout acknowledgements
+    ├── ActivityTimelineViewModelTests.swift # Real SQLite paging/correction/control and delayed evidence regressions
+    ├── SearchEvidenceThumbnailTests.swift # Real SQLite source/privacy/deletion checks before thumbnail exposure
     ├── AppResourceBundleTests.swift      # Real app/resource bundle layout and lazy fallback checks
     ├── TestLogger.swift                  # UI behavior + deeplink parsing tests
     ├── HotkeyHoldReleasePolicyTests.swift # Hold-hotkey modifier release regression tests
@@ -64,9 +71,29 @@ UI/
 
 ## Feature Requirements
 
+### Application termination
+
+`ApplicationTerminationWorkflow` owns one launch task and one confirmed-Quit drain. Repeated Quit stays `terminateLater` while coordinator shutdown preparation, metrics, cancelled initialization and coordinator shutdown are awaited in that order. Preparation permanently fences recording entry points and cancels owned startup before the join. Startup cancellation checkpoints must prevent a late autostart or window reveal; normal startup runs once. The coordinator's shutdown route preserves recording intent for the next launch. A service shutdown failure replies false, reports that services may be partially stopped and permits a fresh Quit attempt without restarting initialization. Ask, Run in Background and Cancel retain their existing behavior.
+
+`TimelineSessionMetrics` owns duration/scrub increments across hide, reopen and Quit. It bounds pending state to two numeric totals and serializes writes; each acknowledgement consumes only the written increment. A retry therefore retains unacknowledged values without replaying committed ones or clearing a newer session. The timeout remains cooperative: even on expiry the owned writer is cancelled and joined before database closure. A failed flush is logged, and no durable metric success is inferred from it.
+
+Shortcut reloads call `TimelineWindowController.configure(coordinator:)` again with the same app coordinator. They must retain the existing metric owner and pending drain. A different coordinator requires a separate controller lifetime; replacement is rejected before changing controller state so pending metrics cannot move to another database.
+
+### Progressive recall
+
+The **Activity & Evidence** menu/dashboard entry opens three levels: episodes, observed intervals and exact recorded evidence. Metadata search works before OCR and advances the returned cursor even when current privacy filters leave a page empty. Brief visits stay visible by default; optional hiding reports its count and can be reversed. Grouping is a rebuildable local projection and must preserve every interval and unknown gap.
+
+`ActivityTimelineViewModel` performs I/O through async closures backed by `ProgressiveRecallService`; generation checks prevent an old or cancelled selection from overwriting a newer one. Activity-linked screens must validate the association both before and after resolving the exact source/store/observation/revision. A deleted association does not imply the screen was deleted. Image failure may show separately permitted retained text, with an explicit unavailable-image state. Only verified immutable block geometry may overlay an image. Opening the current URL remains a separate action.
+
+Corrections require a concrete selected scope and explicit confirmation; drafts, pending application, applied, conflicts and append-only undo remain distinct. Hiding presentation, excluding future capture and deleting activity are separate controls. The activity context opt-in applies only while master recording permits capture. Stage health distinguishes activity observed/persisted, image admitted/retained, text queue/processing/failures and audio processing without inferring stopped stages from missing timestamps.
+
+Search rows and thumbnail keys must include `SearchResult.sourceQualifiedID`; numeric frame IDs can collide between libraries. Search evidence clicks route through `ActivityTimelineController`, never the old nearest-timestamp fallback. `retrace://evidence` retains the exact reference. A concurrent search revision change presents an explicit refresh action rather than silently ending pagination. New actions emit safe `progressive_recall_action` metrics; critical activity/evidence opens record latency.
+
+`SpotlightSearchOverlay` previews resolve the original `SearchResult` proof through the exact evidence service on every row appearance. They do not expose the old memory/disk thumbnail cache or look up media and OCR nodes by bare IDs. A shared actor limits decoding to two concurrent requests and 32 queued requests; Core Graphics resizing runs off main. Per-row pixels are cleared on disappearance, and cancellation plus request identity prevent late publication. Previews show the full verified image without cropping to mutable OCR nodes; exact evidence owns immutable block highlighting. This trades repeated decode work for current source, privacy and deletion checks; `search.thumbnail.exact` records latency.
+
 ### 1. Timeline View (Primary Interface)
 
-**Activation**: Global keyboard shortcut `Cmd+Shift+T`
+**Activation**: **Open Timeline** in the menu bar, or the user's configured global shortcut in Settings → General.
 
 **Layout**:
 ```
@@ -101,6 +128,8 @@ UI/
   - `Shift+←/→`: Jump 1 minute
   - `Cmd+←/→`: Jump 1 hour
   - `Space`: Play/pause auto-scroll
+  - `Cmd+K`: Open global recorded-text search
+  - `Cmd+F`: Toggle search within the current frame
   - `/`: Focus search bar
 
 **Session Indicators**:
@@ -121,13 +150,15 @@ UI/
 ### 2. Search View
 
 **Activation**:
-- Keyboard shortcut: `Cmd+F`
+- Keyboard shortcut in the timeline: `Cmd+K` (global recorded-text search)
 - Click search bar in timeline
+
+`Cmd+F` toggles **Search this frame**; it does not open global search.
 
 **Layout**:
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Search: [error message in chrome         ] [⌘F]   │
+│  Search: [error message in chrome         ] [⌘K]   │
 │  Filters: [App ▼] [Date ▼] [OCR/Audio ▼]           │
 ├─────────────────────────────────────────────────────┤
 │  Results (142 matches)                              │
@@ -405,7 +436,7 @@ struct BoundingBoxOverlay: View {
 │ Advanced     │                                       │
 │              │ Keyboard Shortcuts:                   │
 │              │ Timeline:  [⌘⇧T]  [Edit]             │
-│              │ Search:    [⌘F]   [Edit]             │
+│              │ Search:    [⌘K]   [Edit]             │
 │              │                                       │
 └──────────────┴──────────────────────────────────────┘
 ```
@@ -503,7 +534,8 @@ struct BoundingBoxOverlay: View {
 | `Cmd+Shift+R` | Toggle Recording |
 | `Cmd+Shift+M` | Open System Monitor |
 | `Ctrl+Space` | Hold Voice Dictation |
-| `Cmd+F` | Open Search |
+| `Cmd+K` | Open global recorded-text search in the timeline |
+| `Cmd+F` | Toggle Search this frame |
 | `Cmd+,` | Open Settings |
 | `/` | Focus search bar |
 | `←/→` | Previous/Next frame |

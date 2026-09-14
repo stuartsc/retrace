@@ -32,8 +32,10 @@ public class AppCoordinatorWrapper: ObservableObject {
     // MARK: - Lifecycle
 
     public func initialize() async throws {
+        try Task.checkCancellation()
         Log.debug("[AppCoordinatorWrapper] initialize() called - starting coordinator.initialize()", category: .app)
         try await coordinator.initialize()
+        try Task.checkCancellation()
         Log.debug("[AppCoordinatorWrapper] coordinator.initialize() completed", category: .app)
 
         // Set up accessibility permission warning callback
@@ -42,8 +44,10 @@ public class AppCoordinatorWrapper: ObservableObject {
                 self?.showAccessibilityPermissionWarning = true
             }
         }
+        try Task.checkCancellation()
 
         let hasCompletedOnboarding = await coordinator.onboardingManager.hasCompletedOnboarding
+        try Task.checkCancellation()
         if !hasCompletedOnboarding {
             Log.debug("[AppCoordinatorWrapper] Skipping auto-start: onboarding not completed", category: .app)
             return
@@ -56,9 +60,14 @@ public class AppCoordinatorWrapper: ObservableObject {
             Log.debug("[AppCoordinatorWrapper] Auto-starting recording based on previous state", category: .app)
             do {
                 try await coordinator.startPipeline()
+                try Task.checkCancellation()
                 await updateStatus()
+                try Task.checkCancellation()
                 Log.debug("[AppCoordinatorWrapper] Auto-start recording succeeded", category: .app)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 Log.error("[AppCoordinatorWrapper] Auto-start recording failed: \(error)", category: .app)
             }
         } else {
@@ -115,8 +124,21 @@ public class AppCoordinatorWrapper: ObservableObject {
         await updateStatus()
     }
 
+    public func prepareForShutdown() async {
+        await coordinator.prepareForShutdown()
+    }
+
     public func shutdown() async throws {
-        try await coordinator.shutdown()
+        do {
+            try await coordinator.shutdown()
+            await updateStatus()
+        } catch {
+            // A failed shutdown may have stopped only part of the pipeline.
+            // Refresh actual state and expose the failure; do not imply rollback.
+            await updateStatus()
+            lastError = "Quit did not complete. Services may be partially stopped."
+            throw error
+        }
     }
 
     // MARK: - Status Updates

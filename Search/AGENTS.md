@@ -9,20 +9,17 @@ You are responsible for the **Search** module of Retrace. Your job is to impleme
 ```
 Search/
 ├── SearchManager.swift            # Main SearchProtocol implementation
+├── IngestionManager.swift         # Search-index ingestion
 ├── QueryParser/
-│   ├── QueryParser.swift          # QueryParserProtocol implementation
-│   ├── QueryTokenizer.swift       # Tokenize raw query strings
-│   └── FilterExtractor.swift      # Extract filters (app:, date:, etc.)
+│   └── QueryParser.swift          # QueryParserProtocol implementation and filter parsing
 ├── Ranking/
-│   ├── ResultRanker.swift         # Rank and sort results
-│   └── SnippetGenerator.swift     # Generate highlighted snippets
+│   └── ResultRanker.swift         # Rank and sort results
 ├── VectorSearchTODO/              # NOT YET IMPLEMENTED (future)
 │   ├── Embedding/
 │   └── VectorStore/
 └── Tests/
     ├── QueryParserTests.swift
-    ├── SearchManagerTests.swift
-    └── RankingTests.swift
+    └── TestLogger.swift
 ```
 
 ## Protocols You Must Implement
@@ -39,6 +36,11 @@ Search/
 **Note**: EmbeddingProtocol and VectorStoreProtocol exist but are NOT yet implemented. Semantic/vector search is planned for a future release.
 
 ## Key Implementation Details
+
+Lexical matches remain evidence regardless of their BM25 magnitude. Do not apply
+`minimumRelevanceScore` after the database's final limit. The rendered JPEG/HEVC/Vision
+pipelines in `Database/Tests/{OCRPipelineTests,AsyncQueuePipelineTests}.swift` exercise
+fallback retrieval of changed amounts and retained negations with real SQLite.
 
 ### 1. Query Parser
 

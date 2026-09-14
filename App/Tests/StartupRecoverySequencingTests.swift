@@ -55,8 +55,16 @@ final class StartupRecoverySequencingTests: XCTestCase {
     func testLegacyMaintenanceRepeatsBoundedWorkAndStopsBeforeDatabaseTeardown() async throws {
         let databaseConnection = await database.getConnection()
         let connection = try XCTUnwrap(databaseConnection)
-        let trace = StartupMaintenanceSQLTrace()
-        sqlite3_trace_v2(connection, UInt32(SQLITE_TRACE_STMT), { _, context, statement, _ in
+        let committedPages = expectation(description: "Two bounded maintenance pages committed")
+        committedPages.expectedFulfillmentCount = 2
+        // A further tick may finish before stop joins the task.
+        committedPages.assertForOverFulfill = false
+        let trace = StartupMaintenanceSQLTrace { statement in
+            if statement == "COMMIT" { committedPages.fulfill() }
+        }
+        // PROFILE observes completed statements. Metrics autocommit individually;
+        // only the actual maintenance pages issue explicit COMMIT statements.
+        sqlite3_trace_v2(connection, UInt32(SQLITE_TRACE_PROFILE), { _, context, statement, _ in
             guard let context, let statement,
                   let sql = sqlite3_sql(OpaquePointer(statement)) else { return 0 }
             Unmanaged<StartupMaintenanceSQLTrace>.fromOpaque(context)
@@ -65,17 +73,25 @@ final class StartupRecoverySequencingTests: XCTestCase {
         }, Unmanaged.passUnretained(trace).toOpaque())
         defer { sqlite3_trace_v2(connection, 0, nil, nil) }
 
-        await coordinator.startLegacyOCRNodeTextMaintenance(interval: .milliseconds(20))
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while trace.statements.filter({ $0.contains("INSERT INTO daily_metrics") }).count < 4,
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10), clock: .continuous)
-        }
+        // Exercise repetition rather than background timer coalescing. A 20 ms
+        // background sleep can be delayed enough to exhaust a wall-time poll.
+        await coordinator.startLegacyOCRNodeTextMaintenance(interval: .zero)
+        // This checks committed repetition and joined shutdown, not background
+        // scheduling latency. Allow admission under concurrent desktop/test work
+        // without raising production priority or weakening the SQL assertions.
+        await fulfillment(of: [committedPages], timeout: 20)
         await coordinator.stopLegacyOCRNodeTextMaintenance()
         let finishedStatements = trace.statements
         XCTAssertGreaterThanOrEqual(finishedStatements.filter {
-            $0.contains("INSERT INTO daily_metrics")
-        }.count, 4, "Maintenance must resume scanning after an empty page, rather than stop permanently")
+            $0 == "COMMIT"
+        }.count, 2, "Maintenance must commit another page after an empty page")
+        XCTAssertGreaterThanOrEqual(finishedStatements.filter {
+            $0 == "UPDATE ocr_backfill_state SET nodeCursor=0,nodeUpperBound=NULL WHERE id=1"
+        }.count, 2, "The completed transactions must include repeated empty-page maintenance")
+        let nodePages = finishedStatements.filter { $0.contains("FROM node WHERE id>") }
+        XCTAssertGreaterThanOrEqual(nodePages.count, 2)
+        XCTAssertTrue(nodePages.allSatisfy { $0.hasSuffix("ORDER BY id LIMIT ?") },
+                      "Every repeat must retain the bounded node-page query")
 
         try await Task.sleep(for: .milliseconds(80), clock: .continuous)
         XCTAssertEqual(trace.statements, finishedStatements,
@@ -479,11 +495,17 @@ private extension ServiceContainer {
 private final class StartupMaintenanceSQLTrace: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [String] = []
+    private let onStatement: (@Sendable (String) -> Void)?
+
+    init(onStatement: (@Sendable (String) -> Void)? = nil) {
+        self.onStatement = onStatement
+    }
 
     func record(_ statement: String) {
         lock.lock()
-        defer { lock.unlock() }
         recorded.append(statement)
+        lock.unlock()
+        onStatement?(statement)
     }
 
     var statements: [String] {

@@ -33,6 +33,13 @@ public actor FTSManager: FTSProtocol {
             let errorMsg = db.map { String(cString: sqlite3_errmsg($0)) } ?? "Unknown error"
             throw DatabaseError.connectionFailed(underlying: errorMsg)
         }
+        do {
+            try RecallSearchRevisionHooks.install(db: db!)
+        } catch {
+            sqlite3_close_v2(db)
+            db = nil
+            throw error
+        }
     }
 
     /// Close the database connection

@@ -1,6 +1,13 @@
 import Foundation
 import CoreGraphics
 
+public extension DatabaseProtocol {
+    func recordFrameMediaUnavailable(frameID: FrameID, reason: EvidenceUnavailableReason) async throws {
+        throw DatabaseError.queryFailed(query: "recordFrameMediaUnavailable", underlying: "Media receipts are unsupported")
+    }
+    func frameMediaUnavailable(frameID: FrameID) async throws -> EvidenceUnavailableReason? { nil }
+}
+
 // MARK: - Database Protocol
 
 /// Core database operations for frame and text storage
@@ -67,6 +74,10 @@ public protocol DatabaseProtocol: Actor {
     ///   - frameID: The frame ID to update
     ///   - status: The new processing status (0=pending, 1=processing, 2=completed, 3=failed, 4=not yet readable)
     func updateFrameProcessingStatus(frameID: Int64, status: Int) async throws
+
+    /// Persist a failed media-repair receipt without deleting retained text or provenance.
+    func recordFrameMediaUnavailable(frameID: FrameID, reason: EvidenceUnavailableReason) async throws
+    func frameMediaUnavailable(frameID: FrameID) async throws -> EvidenceUnavailableReason?
 
     // MARK: - Video Segment Operations (Video Files)
 

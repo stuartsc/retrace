@@ -29,7 +29,7 @@ public actor CaptureManager: CaptureProtocol {
     private let displayMonitor: DisplayMonitor
     private let displaySwitchMonitor: DisplaySwitchMonitor
     private let deduplicator: FrameDeduplicator
-    private let appInfoProvider: AppInfoProvider
+    private let appInfoProvider: any FrontmostMetadataProviding
 
     private var currentConfig: CaptureConfig
     private var lastKeptFrame: CapturedFrame?
@@ -79,6 +79,15 @@ public actor CaptureManager: CaptureProtocol {
         self.displaySwitchMonitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
         self.deduplicator = FrameDeduplicator()
         self.appInfoProvider = AppInfoProvider()
+    }
+
+    init(config: CaptureConfig = .default, metadataProvider: any FrontmostMetadataProviding) {
+        self.currentConfig = config
+        self.cgWindowListCapture = CGWindowListCapture()
+        self.displayMonitor = DisplayMonitor()
+        self.displaySwitchMonitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
+        self.deduplicator = FrameDeduplicator()
+        self.appInfoProvider = metadataProvider
     }
 
     // MARK: - CaptureProtocol - Lifecycle
@@ -294,7 +303,7 @@ public actor CaptureManager: CaptureProtocol {
         await syncCaptureDisplayIfNeeded()
 
         // Get current context for window-change decisions.
-        let currentMetadata = await appInfoProvider.getFrontmostAppInfo()
+        let currentMetadata = await appInfoProvider.getFrontmostAppInfo(includeBrowserURL: true)
         let currentTitle = currentMetadata.windowName ?? ""
         let currentBundleID = currentMetadata.appBundleID ?? ""
 
@@ -538,32 +547,10 @@ public actor CaptureManager: CaptureProtocol {
 
     }
 
-    /// Enrich frame with app metadata
-    private func enrichFrameMetadata(_ frame: CapturedFrame) async -> CapturedFrame {
-        let frontmostMetadata = await appInfoProvider.getFrontmostAppInfo(includeBrowserURL: true)
-        let redactionReason = frame.metadata.redactionReason
-        let preservedDisplayID = frame.metadata.displayID != 0 ? frame.metadata.displayID : frontmostMetadata.displayID
-        let redactedAppBundleID = frame.metadata.appBundleID
-        let redactedAppName = frame.metadata.appName
-
-        let enrichedMetadata = FrameMetadata(
-            appBundleID: redactionReason == nil ? frontmostMetadata.appBundleID : (redactedAppBundleID ?? frontmostMetadata.appBundleID),
-            appName: redactionReason == nil ? frontmostMetadata.appName : (redactedAppName ?? frontmostMetadata.appName),
-            windowName: redactionReason == nil ? frontmostMetadata.windowName : nil,
-            browserURL: redactionReason == nil ? frontmostMetadata.browserURL : nil,
-            redactionReason: redactionReason,
-            displayID: preservedDisplayID
-        )
-
-        // Create new frame with enriched metadata
-        return CapturedFrame(
-            timestamp: frame.timestamp,
-            imageData: frame.imageData,
-            width: frame.width,
-            height: frame.height,
-            bytesPerRow: frame.bytesPerRow,
-            metadata: enrichedMetadata
-        )
+    /// Capture-time metadata is immutable. Unknown context stays unknown; a
+    /// later frontmost app cannot supply provenance for pixels already saved.
+    func enrichFrameMetadata(_ frame: CapturedFrame) async -> CapturedFrame {
+        frame
     }
 
     /// Compare active display vs capture display and force a switch when they drift apart.

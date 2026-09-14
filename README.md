@@ -7,6 +7,8 @@ A local-first screen recording and search application for macOS, inspired by Rew
 
 See [Updates and changelog](CHANGELOG.md) for bug fixes, improvements, validation and release status.
 
+Progressive recall Phase 0/1 is in development on `feature/push-to-dictate`: an opt-in activity timeline, metadata search during OCR backlog, confirmed organisation changes, and exact saved evidence navigation. Activity context starts disabled and can be enabled with **Collect activity context while recording**; master pause still applies. [Validation and remaining Mac/Timely acceptance](docs/progressive-recall-validation.md) are tracked separately from installation and release.
+
 ## What is Retrace?
 
 Retrace is an open source alternative to Rewind AI that gives you photographic memory of everything you've seen on your screen. It continuously captures screenshots (every 2 seconds by default), extracts text using OCR, and stores everything in a searchable database—entirely on your Mac with no cloud dependencies.
@@ -24,13 +26,13 @@ Retrace is an open source alternative to Rewind AI that gives you photographic m
 - **Settings panel** - Comprehensive controls for capture, storage, privacy, and shortcuts
 - **Global hotkeys** - Quick access (Cmd+Shift+T for timeline, Cmd+Shift+D for dashboard)
 - **HEVC video encoding** - Working but not yet optimized for efficiency
-- **Search highlighting** - Visual highlighting of search results in frames
+- **Search highlighting** - Exact evidence shows overlays only when retained text and geometry agree; unsupported legacy boxes are suppressed
 - **Privacy controls** - Exclude apps and private browsing windows
+- **Audio transcription and push-to-dictate** - Local audio processing and dictation history
 
 ### 🚧 Coming Soon
 
 - **Optimized storage** - Improving HEVC compression efficiency
-- **Audio recording and transcription** - Whisper.cpp integration ready but disabled
 - **Advanced keyboard shortcuts** - More customizable shortcuts
 - **Decrypt and backup Rewind database** - Export your Rewind data
 

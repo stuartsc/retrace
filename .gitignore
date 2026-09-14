@@ -65,6 +65,7 @@ temp/
 
 # Markdown files (except key docs)
 *.md
+!docs/progressive-recall-validation.md
 !README.md
 !AGENTS.md
 !CONTRIBUTING.md
@@ -72,6 +73,7 @@ temp/
 !*/README.md
 !*/AGENTS.md
 !docs/roadmap.md
+!/docs/DATA_ACCESS.md
 !/docs/capture-improvements-validation.md
 !/docs/progressive-recall-plan.md
 

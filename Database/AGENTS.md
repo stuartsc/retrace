@@ -21,6 +21,7 @@ Database/
 │   ├── V18_NodeText.swift
 │   ├── V19_ProcessingQueueFrameIndex.swift
 │   ├── V20_OCRBackfillState.swift
+│   ├── V21_ProgressiveRecall.swift
 │   ├── V1_InitialSchema.swift
 │   ├── V2_UnfinalisedVideoTracking.swift
 │   ├── V3_TagSystem.swift
@@ -40,10 +41,15 @@ Database/
 │   ├── FrameQueries.swift
 │   ├── NodeQueries.swift
 │   └── SegmentQueries.swift
+├── TestSupport/                  # Test-only C bridge for SQLite defensive configuration
+│   ├── DatabaseTestSupport.c
+│   └── include/DatabaseTestSupport.h
 ├── Tests/
 │   ├── _future/
 │   │   └── AudioTranscriptionQueriesTests.swift
 │   ├── AsyncQueuePipelineTests.swift
+│   ├── ActivityPersistenceTests.swift
+│   ├── ActivityScreenLinkTests.swift
 │   ├── AudioRepairPolicyTests.swift
 │   ├── AudioTranscriptionPaginationTests.swift
 │   ├── DatabaseManagerTests.swift
@@ -55,16 +61,26 @@ Database/
 │   ├── LegacyOCRBackfillPagingTests.swift
 │   ├── OCRPipelineTests.swift
 │   ├── QueryBuilderTests.swift
+│   ├── ProgressivePersistenceTestAssertions.swift
+│   ├── RecallReadConnectionTests.swift
+│   ├── RecallSearchRevisionTests.swift
+│   ├── RenderedRecallFixture.swift
 │   ├── RetentionPersistenceTests.swift
+│   ├── ScreenEvidencePersistenceTests.swift
+│   ├── SearchRevisionCompatibilityTests.swift
 │   └── TestLogger.swift
 ├── DatabaseConfig.swift
+├── ActivityPersistence.swift
+├── ActivityScreenLinkPersistence.swift
 ├── DatabaseConnection.swift
 ├── DatabaseManager.swift
 ├── FTSManager.swift
 ├── FramePipelinePersistence.swift
 ├── IDMappingService.swift
 ├── LegacyOCRBackfillPersistence.swift
+├── RecallSearchRevisionHooks.swift
 ├── RetentionPersistence.swift
+├── ScreenEvidencePersistence.swift
 └── Schema.swift
 ```
 
@@ -80,6 +96,30 @@ Database/
 - Full-text search queries
 - Match counting
 - Index maintenance
+
+### 3. `ActivityStoreProtocol` and `EvidenceStoreProtocol` (from `Shared/Protocols/`)
+- Independent metadata events, bounded feed pages and durable consumer checkpoints
+- Confirmed correction outbox, revision conflicts, acknowledgement and append-only revoke
+- Durable source/store UUIDs, immutable capture metadata and extraction revisions
+- Source-qualified screen snapshot resolution and retained media-unavailable receipts
+
+## Progressive recall persistence
+
+`ActivityScreenLinkPersistence.swift` admits native image links only with matching captured session, process/window generations, display/document/pane identity and actual capture time. Timestamp proximity alone is insufficient. Reads page by feed sequence. A later committed activity boundary whose monotonic time predates the pixels invalidates an earlier association in the same transaction, redacts its old feed payload and appends a link tombstone while retaining the screen. Explicit activity/frame deletion uses the same append-only link deletion receipt.
+
+`SQLiteConnection(readOnlyDatabasePath:)` owns an independent read-only handle with bounded busy timeout; `init(db:)` borrows its handle and never closes it. Search must use the owned reader in production so another actor cannot expose a partially committed extraction. V21 `recall_search_revision` triggers track identity and filtering changes within their original transactions. `RecallSearchRevisionHooks` installs TEMP FTS-content triggers on the canonical `DatabaseManager` connection through `MigrationRunner`, and on `FTSManager.initialize`; no FTS shadow trigger is persisted in the database schema. This preserves defensive SQLite reader compatibility and atomic revision updates for direct SQL through supported native writers. Arbitrary external native SQL writers are outside that contract. Activity, metrics, materialization and OCR status-only updates do not advance the stamp. Paged search checks it to detect concurrent changes explicitly.
+
+`SearchRevisionCompatibilityTests` uses real disk databases to exercise defensive read-only reopen, two managed writer transactions, same-length edits, rollback and connection reopening. Its test-only `DatabaseTestSupport` C shim enables defensive mode through SQLite's variadic configuration API; Swift cannot safely call that API directly. Standalone pre-V21/empty FTS initialization remains supported, while a V21 writer missing its revision table fails initialization.
+
+`commitFrameOCR` binds Processing's unassigned `FrameID(0)` text and regions to the requested persisted frame, and rejects a conflicting positive frame ID. Immutable snapshots retain the original capture metadata and every extraction revision. Actual Vision/queue integration validates this boundary, in addition to the focused SQLite tests.
+
+Compatibility `insertDocument`, `updateDocument` and `indexFrameText` also publish a new immutable extraction inside the FTS transaction. Their flat text does not claim replacement geometry; old citations retain their original text. Canonical `deleteFrames(ids:)` keeps a selected native batch and all dependent cleanup in one transaction. The App adapter's separate reader cannot write, and imported stores must not be mutated through it.
+
+`ActivityPersistence.swift` and additive V21 own native activity events, the resumable feed, consumer checkpoints and correction commands on the existing database actor. Event/feed/metrics and command/feed/metrics publication share synchronous short transactions. A repeated UUID is idempotent only for identical content. Session sequences are contiguous except explicit gap markers; monotonic session time cannot regress. Administrative markers omit captured context. Search applies time/app/text constraints before its bounded page and lookahead. Confirmation remains distinct from application: drafts are drafts, confirmed commands remain pending until an explicit acknowledgement, and stale targets/revisions produce conflicts. Annotation revisions refer to the local command projection until a companion writer is connected. Explicit activity deletion sanitizes dependent command and feed payloads and retains opaque tombstones.
+
+`ScreenEvidencePersistence.swift` creates a durable native store UUID and capture-time observation UUIDs. Imported source identities are registered by bounded caller-supplied identity hashes; imported databases remain read-only. Native insertion stores original frame metadata, and `commitFrameOCR` appends an extraction in the same transaction as FTS, nodes and processing completion. Earlier revisions remain resolvable and never borrow newer text. Pixel dimensions are established from the linked video or the first verified materialization/OCR; they cannot later change. Block IDs are zero-based ordinals in main regions followed by chrome regions, not `TextRegion.id` hashes. Highlight proof requires coherent text and finite in-image pixel bounds; legacy materialization never claims highlight proof. V21 does not scan old frames or OCR at startup.
+
+Frame deletion triggers remove all native snapshots and media receipts and create opaque tombstones inside the caller's deletion transaction, covering direct, retention and video-cascade routes without colliding with imported frame IDs. Missing/damaged media is a retained typed receipt plus failed processing status, not evidence deletion. Successful OCR clears that receipt. `ActivityPersistenceTests` and `ScreenEvidencePersistenceTests` exercise real SQLite commits, rollbacks, paging, revision retention, identity rejection, corrections, receipts and deletion.
 
 ## Capture and retention persistence
 

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Processing Protocol
 
-/// Text extraction from frames (OCR + Accessibility)
+/// Retained-pixel OCR and a separate, explicit live Accessibility API.
 /// Owner: PROCESSING agent
 public protocol ProcessingProtocol: Actor {
 
@@ -14,7 +14,7 @@ public protocol ProcessingProtocol: Actor {
     // MARK: - Text Extraction
 
     /// Extract text from a captured frame
-    /// Combines OCR and Accessibility API results
+    /// Uses retained pixels and saved metadata only; never reads live Accessibility.
     func extractText(from frame: CapturedFrame) async throws -> ExtractedText
 
     /// Extract text using only OCR

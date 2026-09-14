@@ -66,7 +66,7 @@ public actor SearchManager: SearchProtocol {
 
         // Build FTS query
         let searchableColumnsFTSQuery = Self.buildScopedFTSQuery(for: parsed)
-        Log.debug("[SearchManager] Raw query: '\(query.text)' → FTS query: '\(searchableColumnsFTSQuery)' | terms: \(parsed.searchTerms) | phrases: \(parsed.phrases) | excluded: \(parsed.excludedTerms)", category: .search)
+        try Task.checkCancellation()
 
         // Build filters
         var filters = query.filters
@@ -119,20 +119,13 @@ public actor SearchManager: SearchProtocol {
                 // ⚠️ RELEASE 2 ONLY - Use simple matched text extraction for Release 1
                 let matchedText = match.snippet.components(separatedBy: " ").prefix(5).joined(separator: " ")
 
-                Log.debug("[SearchManager] Creating SearchResult: frameID=\(match.frameID.value), videoID=\(match.videoID.value), frameIndex=\(match.frameIndex), snippet='\(match.snippet.prefix(50))...'", category: .search)
-
                 let result = SearchResult(
                     id: match.frameID,
                     timestamp: match.timestamp,
                     snippet: match.snippet,
                     matchedText: matchedText,
                     relevanceScore: normalizeRank(match.rank),
-                    metadata: FrameMetadata(
-                        appBundleID: nil,
-                        appName: match.appName,
-                        windowName: match.windowName,
-                        browserURL: nil
-                    ),
+                    metadata: frame.metadata,
                     segmentID: frame.segmentID,
                     videoID: match.videoID,
                     frameIndex: match.frameIndex
@@ -144,8 +137,10 @@ public actor SearchManager: SearchProtocol {
         // Rank results
         let rankedResults = resultRanker.rank(results, forQuery: query.text)
 
-        // Filter by minimum relevance score
-        let filteredResults = rankedResults.filter { $0.relevanceScore >= config.minimumRelevanceScore }
+        // An FTS MATCH is lexical evidence. BM25 is corpus-relative, not a confidence probability;
+        // a post-LIMIT threshold would erase common amounts/negations and exhaust pages early.
+        let filteredResults = rankedResults
+        try Task.checkCancellation()
 
         let searchTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
 
@@ -153,7 +148,7 @@ public actor SearchManager: SearchProtocol {
         totalSearches += 1
         searchTimes.append(Double(searchTimeMs))
 
-        Log.searchQuery(query: query.text, resultCount: filteredResults.count, timeMs: searchTimeMs)
+        Log.recordLatency("search.lexical_fallback", valueMs: Double(searchTimeMs), category: .search)
 
         return SearchResults(
             query: query,

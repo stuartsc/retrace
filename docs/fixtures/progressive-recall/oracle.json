@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "kind": "authored non-private rendered screen corpus",
+  "reviewStatus": "independent visual review completed 2026-09-11 before reviewer read oracle or tests",
+  "reviewMethod": "Review agent inspected only the two rendered JPEGs first; independently transcribed title, amount, status, approval and meeting text. Amount and status change; approval remains NOT GRANTED in both.",
+  "screens": [
+    {
+      "file": "1700000000.jpeg",
+      "captureTimestamp": 1700000000,
+      "title": "Cedar proposal",
+      "amount": "42000",
+      "status": "DRAFT",
+      "approval": "NOT GRANTED"
+    },
+    {
+      "file": "1700000002.jpeg",
+      "captureTimestamp": 1700000002,
+      "title": "Cedar proposal",
+      "amount": "47000",
+      "status": "SENT",
+      "approval": "NOT GRANTED"
+    }
+  ],
+  "questions": [
+    {"id": "Q01", "question": "What was the proposal amount before it was sent?", "screen": "1700000000.jpeg", "answer": "42000"},
+    {"id": "Q02", "question": "What amount was on the sent proposal, and was it approved?", "screen": "1700000002.jpeg", "answer": "47000; approval NOT GRANTED"},
+    {"id": "Q03", "question": "Does focusing the proposal prove its amount or approval?", "screen": null, "answer": "No. Activity metadata alone cannot establish contents."}
+  ],
+  "acceptance": {
+    "wrongFrameDisplaysAllowed": 0,
+    "sameTitleDeduplicationAllowed": false,
+    "unsupportedHighlightGeometryAllowed": false,
+    "realUserQuestionCorpus": false,
+    "matchedTimelyComparison": false
+  }
+}

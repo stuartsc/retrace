@@ -74,6 +74,8 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         XCTAssertEqual(state.status, 0, "Not-yet-written pixels must stay pending")
         XCTAssertEqual(state.priority, 10, "A fresh source retry must not move behind the historical backlog")
         XCTAssertEqual(state.retryCount, 0, "Waiting for capture does not consume processing-error retries")
+        let deferredStatistics = await queue.getStatistics()
+        XCTAssertEqual(deferredStatistics.totalFailed, 0, "Source deferral itself is not a processing failure")
         guard state.status == 0 else { return }
 
         let expected = rawFrame(value: 63)
@@ -86,10 +88,8 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         await queue.startWorkers()
         let status = try await waitForTerminalStatus(fixture.frameID)
         let delivered = await processor.frames
-        let statistics = await queue.getStatistics()
         XCTAssertEqual(status, 2)
         XCTAssertEqual(delivered.map(\.imageData), [expected.imageData])
-        XCTAssertEqual(statistics.totalFailed, 0)
     }
 
     func testFinalizedMissingVideoWithoutWALRemainsTerminalAndPreservesFrameRecord() async throws {
@@ -104,6 +104,9 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         XCTAssertNotNil(frame)
         XCTAssertNil(queuePosition, "A finalized source with neither video nor WAL must not loop forever")
         XCTAssertTrue(delivered.isEmpty)
+        let statistics = await queue.getStatistics()
+        XCTAssertEqual(statistics.totalFailed, 1)
+        XCTAssertEqual(statistics.totalProcessed, 0, "Missing media must not be counted as completed OCR")
     }
 
     func testRetainedIncompleteWALAfterRestartDoesNotRetryFinalizedMissingVideoForever() async throws {

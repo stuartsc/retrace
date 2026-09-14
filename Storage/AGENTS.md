@@ -13,6 +13,7 @@ Storage/
 ├── IncrementalSegmentWriter.swift       # Normal capture writer; raw WAL before encoding
 ├── SegmentWriterImpl.swift              # Video-only writer; recovery keeps the original WAL
 ├── ImageExtractor.swift                 # Frame/image extraction
+├── ExactFrameReader.swift               # Exact evidence decoding and typed unavailable states
 ├── ImageExtractor.swift.bak             # Existing backup; not production source
 ├── Audio/
 │   ├── AudioFileDecoder.swift
@@ -30,6 +31,8 @@ Storage/
 └── Tests/
     ├── DirectoryManagerTests.swift
     ├── HEVCEncoderTests.swift
+    ├── ExactFrameReaderTests.swift
+    ├── ExactWALFrameTests.swift
     ├── StorageManagerTests.swift
     ├── WALRecoveryTests.swift
     └── TestLogger.swift
@@ -38,6 +41,8 @@ Storage/
 The storage root is configurable through `AppPaths`. Screen video lives under `chunks/YYYYMM/DD/{timestampID}` (extensionless MP4); raw recovery files live under `wal/active_segment_{timestampID}/`. The timestamp-based path ID is distinct from the database `video.id`. Never substitute one for the other.
 
 Strict encoded-frame reads retry a stale image generator once, then reject a timestamp mismatch instead of returning a neighboring capture. Explicitly tolerant playback remains available. `StorageManagerTests` covers this with a real HEVC timestamp gap.
+
+Exact screen evidence uses `ExactFrameReader` and `WALManager.readExactFrame`. Encoded reads create fresh image generators, validate finite sample timestamps and expected dimensions, check source-file stability, and propagate cancellation. WAL evidence requires a conflict-free database frame ID map and a validated record boundary; capture index is never a fallback. Timestamp tolerance is at most the native database's one millisecond precision. The dedicated exact-media tests encode real HEVC samples and write real binary WAL records; these fixtures do not establish installed-app latency.
 
 ## Recovery invariants
 

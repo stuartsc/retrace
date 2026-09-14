@@ -20,6 +20,11 @@ actor WALRecoveryReader {
 
     deinit { try? handle.close() }
 
+    /// A conflict-checked persisted mapping; callers must still prove its record boundary.
+    func frameOffset(for frameID: Int64) -> UInt64? {
+        frameIDsByOffset.first(where: { $0.value == frameID })?.key
+    }
+
     func scan() throws -> WALRecoveryScan {
         var offset: UInt64 = 0
         var count = 0

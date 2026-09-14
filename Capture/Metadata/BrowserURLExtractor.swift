@@ -2,6 +2,10 @@ import Foundation
 import ApplicationServices
 import Shared
 
+private enum BrowserURLRequestContext {
+    @TaskLocal static var identity: String?
+}
+
 // MARK: - AppleScript Coordination
 
 struct BrowserURLAppleScriptResult: Sendable {
@@ -164,7 +168,7 @@ actor BrowserURLAppleScriptCoordinator {
         let key = BrowserURLAppleScriptKey(
             bundleID: browserBundleID,
             pid: pid,
-            windowIdentity: normalizedWindowIdentity
+            windowIdentity: BrowserURLRequestContext.identity ?? normalizedWindowIdentity
         )
         let now = Date()
         maybeEmitBenchmarkLogIfNeeded(now: now)
@@ -181,7 +185,7 @@ actor BrowserURLAppleScriptCoordinator {
             if ageSeconds <= effectiveCacheTTL {
                 if cacheTTLOverrideSeconds != nil {
                     Log.debug(
-                        "[AppleScript] [\(browserBundleID):\(pid)] [\(scriptLabel)] cache hit age=\(String(format: "%.2f", ageSeconds))s ttl=\(String(format: "%.2f", effectiveCacheTTL))s windowKey=\(normalizedWindowIdentity.isEmpty ? "<empty>" : normalizedWindowIdentity)",
+                        "[AppleScript] [\(browserBundleID):\(pid)] [\(scriptLabel)] cache hit age=\(String(format: "%.2f", ageSeconds))s ttl=\(String(format: "%.2f", effectiveCacheTTL))s",
                         category: .capture
                     )
                 }
@@ -230,10 +234,14 @@ actor BrowserURLAppleScriptCoordinator {
            !rawOutput.isEmpty,
            outputValidator(rawOutput) {
             benchmark.successes += 1
-            cache[key] = CacheEntry(url: rawOutput, timestamp: Date())
+            let safeOutput = CapturedURLPolicy.sanitize(rawOutput)
+            if let safeOutput {
+                if cache.count >= 128 { cache.removeAll(keepingCapacity: true) }
+                cache[key] = CacheEntry(url: safeOutput, timestamp: Date())
+            }
             backoffByKey.removeValue(forKey: key)
             return BrowserURLAppleScriptResult(
-                output: rawOutput,
+                output: safeOutput,
                 didTimeOut: result.didTimeOut,
                 permissionDenied: result.permissionDenied,
                 completedWithoutTimeout: result.completedWithoutTimeout,
@@ -501,7 +509,15 @@ struct BrowserURLExtractor: Sendable {
     /// 1. Browser-specific method (AX attributes or AppleScript)
     /// 2. Generic AXWebArea → AXURL traversal
     /// 3. Address bar text field search
-    static func getURL(bundleID: String, pid: pid_t, windowCacheKey: String? = nil) async -> String? {
+    static func getURL(bundleID: String, pid: pid_t, windowCacheKey: String? = nil,
+                       contextIdentity: String? = nil) async -> String? {
+        // Unqualified requests never share a title/PID cache or in-flight result.
+        await BrowserURLRequestContext.$identity.withValue(contextIdentity ?? UUID().uuidString) {
+            CapturedURLPolicy.sanitize(await getUncachedURL(bundleID: bundleID, pid: pid, windowCacheKey: windowCacheKey))
+        }
+    }
+
+    private static func getUncachedURL(bundleID: String, pid: pid_t, windowCacheKey: String?) async -> String? {
         if bundleID == "com.apple.finder" {
             return await getFinderTargetURL(pid: pid, windowCacheKey: windowCacheKey)
         }
@@ -1182,7 +1198,7 @@ struct BrowserURLExtractor: Sendable {
         if process.terminationReason == .uncaughtSignal {
             Log.error("[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript crashed with signal \(process.terminationStatus)", category: .capture)
             if !stderr.isEmpty {
-                Log.error("[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript stderr: \(stderr)", category: .capture)
+                Log.error("[AppleScript] [\(browserBundleID)] [\(scriptLabel)] subprocess diagnostics suppressed", category: .capture)
             }
             return BrowserURLAppleScriptResult(completedWithoutTimeout: true, elapsedMs: elapsedMs())
         }
@@ -1194,7 +1210,7 @@ struct BrowserURLExtractor: Sendable {
             let codeSuffix = failureCode.map { ", applescriptCode=\($0)" } ?? ""
 
             Log.error(
-                "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript failed (exitCode=\(process.terminationStatus)\(codeSuffix), elapsed=\(String(format: "%.1f", elapsedMs()))ms): \(normalizedStderr)",
+                "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] osascript failed (exitCode=\(process.terminationStatus)\(codeSuffix), elapsed=\(String(format: "%.1f", elapsedMs()))ms)",
                 category: .capture
             )
 
@@ -1240,11 +1256,11 @@ struct BrowserURLExtractor: Sendable {
         }
 
         Log.debug(
-            "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] Successfully got URL in \(String(format: "%.1f", elapsedMs()))ms: \(output.prefix(50))...",
+            "[AppleScript] [\(browserBundleID)] [\(scriptLabel)] Successfully got URL in \(String(format: "%.1f", elapsedMs()))ms",
             category: .capture
         )
         return BrowserURLAppleScriptResult(
-            output: output,
+            output: CapturedURLPolicy.sanitize(output),
             completedWithoutTimeout: true,
             elapsedMs: elapsedMs()
         )

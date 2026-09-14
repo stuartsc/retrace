@@ -891,6 +891,10 @@ public class MenuBarManager: ObservableObject {
         timelineItem.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
         menu.addItem(timelineItem)
 
+        let activityItem = NSMenuItem(title: "Activity & Evidence", action: #selector(openActivityTimeline), keyEquivalent: "")
+        activityItem.image = NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: nil)
+        menu.addItem(activityItem)
+
         // Open Dashboard
         let isDashboardFrontAndCenter = visibleDashboardContent == .dashboard
         let dashboardItem = NSMenuItem(
@@ -1155,6 +1159,13 @@ public class MenuBarManager: ObservableObject {
     @objc private func openTimeline() {
         // Open the fullscreen timeline overlay
         toggleTimelineOverlay()
+    }
+
+    @objc private func openActivityTimeline() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            ActivityTimelineController.shared.show(coordinator: coordinator)
+        }
     }
 
     @objc private func openSearch() {

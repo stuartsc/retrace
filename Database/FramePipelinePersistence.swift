@@ -28,6 +28,7 @@ extension DatabaseManager {
             guard let frame = try FrameQueries.getByID(db: db, id: frameID) else {
                 throw PipelineSQL.failure("OCR frame no longer exists")
             }
+            let canonicalText = try ScreenEvidenceSQL.commitOCR(db, frame: frame, text: text, width: frameWidth, height: frameHeight)
             try PipelineSQL.deleteFrameText(db, frameID: frameID.value)
             try NodeQueries.deleteByFrameID(db: db, frameID: frameID)
             var docid: Int64 = 0
@@ -35,7 +36,7 @@ extension DatabaseManager {
                 docid = try FTSQueries.indexFrame(
                     db: db, mainText: text.fullText,
                     chromeText: text.chromeText.isEmpty ? nil : text.chromeText,
-                    windowTitle: text.metadata.windowName ?? frame.metadata.windowName,
+                    windowTitle: canonicalText.metadata.windowName,
                     segmentId: frame.segmentID.value, frameId: frameID.value
                 )
                 var nodes: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)] = []
@@ -125,11 +126,13 @@ extension DatabaseManager {
                         )
                     }
                     newGroup = (appSegmentID, descriptor.metadata, descriptor.timestamp)
-                    frameID = try FrameQueries.insert(db: db, frame: FrameReference(
+                    let capturedDescriptor = FrameReference(
                         id: FrameID(value: 0), timestamp: descriptor.timestamp,
                         segmentID: AppSegmentID(value: appSegmentID), videoID: VideoSegmentID(value: videoID),
                         frameIndexInSegment: index, metadata: descriptor.metadata, source: .native
-                    ))
+                    )
+                    frameID = try FrameQueries.insert(db: db, frame: capturedDescriptor)
+                    try ScreenEvidenceSQL.capture(db, frameID: frameID, descriptor: capturedDescriptor)
                 }
                 // Existing completed OCR remains valid for exactly the same recovered pixels.
                 try PipelineSQL.execute(db, "UPDATE frame SET processingStatus=CASE WHEN processingStatus=2 THEN 2 ELSE 0 END WHERE id=?", [.integer(frameID)])

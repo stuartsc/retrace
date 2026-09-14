@@ -297,6 +297,10 @@ public actor AppCoordinator {
     // MARK: - Properties
 
     private let services: ServiceContainer
+    private var activityMonitor: ActivityMonitor?
+    private var recallService: ProgressiveRecallService?
+    private let recordingLifecycle = RecordingLifecycle()
+    private var masterCaptureRequested = false
     private var captureTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
     private var refinementLoopTask: Task<Void, Never>?
@@ -317,17 +321,7 @@ public actor AppCoordinator {
     // Segment tracking (app focus sessions - Rewind compatible)
     private var currentSegmentID: Int64?
 
-    private struct RecentClosedNilBrowserURLSegment: Sendable {
-        let segmentID: Int64
-        let bundleID: String
-        let normalizedWindowName: String
-        let closedAt: Date
-    }
-
-    private var recentClosedNilBrowserURLSegments: [RecentClosedNilBrowserURLSegment] = []
-    private let recentClosedSegmentBackfillWindowSeconds: TimeInterval = 3.0
-
-    // Idle detection - track last frame timestamp to detect gaps
+    private var lastSegmentContext: ActivityContext?
     private var lastFrameTimestamp: Date?
 
     // Timeline visibility tracking - pause capture when timeline is open
@@ -561,6 +555,96 @@ public actor AppCoordinator {
     /// Update capture configuration
     public func updateCaptureConfig(_ config: CaptureConfig) async throws {
         try await services.capture.updateConfig(config)
+        await activityMonitor?.configurationChanged()
+        try? await services.database.recordMetricEvent(metricType: .progressiveRecallAction,
+            metadata: "{\"action\":\"captureSettingChanged\",\"count\":1,\"outcome\":\"success\"}")
+    }
+
+    public func activityMonitorHealth() async -> ActivityMonitorHealth? { await activityMonitor?.health() }
+
+    public func isActivityContextEnabled() -> Bool {
+        Self.userDefaultsSuite.bool(forKey: "activityContextEnabled")
+    }
+
+    /// Independent opt-in for future context collection. Master pause still applies.
+    public func setActivityContextEnabled(_ enabled: Bool) async {
+        Self.userDefaultsSuite.set(enabled, forKey: "activityContextEnabled")
+        if enabled && masterCaptureRequested {
+            let permitted = await services.capture.hasPermission()
+            if permitted && isActivityContextEnabled() && masterCaptureRequested {
+                await independentActivityMonitor().start()
+                if !isActivityContextEnabled() || !masterCaptureRequested { await activityMonitor?.stop() }
+            }
+        } else {
+            await activityMonitor?.stop()
+        }
+        try? await services.database.recordMetricEvent(metricType: .progressiveRecallAction,
+            metadata: "{\"action\":\"captureSettingChanged\",\"count\":1,\"outcome\":\"success\"}")
+    }
+
+    public func progressiveRecallHealth() async -> ProgressiveRecallStageHealth {
+        let monitor = await activityMonitor?.health()
+        let activity = try? await services.database.activityHealth()
+        let capture = await services.capture.getStatistics()
+        let queue = await getQueueStatistics()
+        let adapter = await services.dataAdapter
+        let retained = try? await adapter?.getMostRecentFrameTimestamp()
+        let oldest = try? await adapter?.oldestPendingTextAt()
+        let audio = await services.audioProcessing.getStatistics()
+        return ProgressiveRecallStageHealth(contextEnabled: isActivityContextEnabled(), collecting: monitor?.collecting ?? false,
+            degraded: (monitor?.degraded ?? false) || activity == nil, activity: activity,
+            imageAdmittedAt: capture.lastFrameTime, imageRetainedAt: retained,
+            deduplicatedImages: capture.framesDeduped, pendingText: queue?.pendingCount,
+            processingText: queue?.processingCount, failedText: queue?.totalFailed,
+            oldestPendingTextAt: oldest, audioProcessedAt: audio.lastProcessedAt,
+            audioTranscriptions: audio.totalTranscriptionsGenerated)
+    }
+
+    public func progressiveRecall() async throws -> ProgressiveRecallService {
+        if let service = recallService { return service }
+        guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
+        // Actor reentrancy may have created the service during the adapter await.
+        if let service = recallService { return service }
+        let capture = services.capture
+        let service = ProgressiveRecallService(database: services.database, adapter: adapter,
+            configuration: { await capture.getConfig() }, imageReader: { [weak self] frame in
+                guard let self else { throw EvidenceUnavailableReason.recordingMissing }
+                return try await self.exactEvidenceImage(frame)
+            })
+        recallService = service
+        return service
+    }
+
+    private func exactEvidenceImage(_ item: FrameWithVideoInfo) async throws -> CGImage {
+        guard let adapter = await services.dataAdapter else { throw EvidenceUnavailableReason.sourceDisconnected }
+        let url = try await adapter.resolveEvidenceVideoURL(item)
+        guard let video = item.videoInfo, let width = video.width, let height = video.height,
+              width > 0, height > 0 else { throw EvidenceUnavailableReason.frameFinalising }
+        do {
+            if item.frame.source == .native && !video.isVideoFinalized {
+                let wal = await services.storage.getWALManager()
+                let raw = try await wal.readExactFrame(videoID: activeWALSegmentID(from: video.videoPath),
+                    frameID: item.frame.id.value, expectedTimestamp: item.frame.timestamp,
+                    expectedWidth: width, expectedHeight: height, expectedDisplayID: item.frame.metadata.displayID)
+                return try cgImage(fromRawBGRAFrame: raw)
+            }
+            return try await ExactFrameReader.readFrame(videoURL: url, frameIndex: video.frameIndex,
+                frameRate: video.frameRate, expectedWidth: width, expectedHeight: height)
+        } catch let error as ExactFrameReadError {
+            switch error {
+            case .recordingMissing: throw EvidenceUnavailableReason.recordingMissing
+            case .frameFinalising: throw EvidenceUnavailableReason.frameFinalising
+            case .integrityFailure, .cancelled: throw EvidenceUnavailableReason.integrityFailure
+            }
+        }
+    }
+
+    private func independentActivityMonitor() -> ActivityMonitor {
+        if let monitor = activityMonitor { return monitor }
+        let capture = services.capture
+        let monitor = ActivityMonitor(store: services.database, configuration: { await capture.getConfig() })
+        activityMonitor = monitor
+        return monitor
     }
 
     // MARK: - Timeline Visibility
@@ -771,21 +855,31 @@ public actor AppCoordinator {
 
     /// Start the capture pipeline
     public func startPipeline() async throws {
+        try await recordingLifecycle.start(operation: { try await self.startPipelineNow() },
+            rollback: { await self.rollbackPipelineStartup() })
+    }
+
+    private func startPipelineNow() async throws {
+        try Task.checkCancellation()
         guard !isRunning else {
             Log.warning("Pipeline already running", category: .app)
             return
         }
 
         Log.info("Starting capture pipeline...", category: .app)
-
-        // Ensure whisper model is available (downloads if needed, then upgrades transcription service)
-        await ensureWhisperModel()
+        masterCaptureRequested = true
 
         // Check permissions first
         guard await services.capture.hasPermission() else {
             Log.error("Screen recording permission not granted", category: .app)
             throw AppError.permissionDenied(permission: "screen recording")
         }
+
+        try Task.checkCancellation()
+        if isActivityContextEnabled() { await independentActivityMonitor().start() }
+        // Activity persistence is independent of optional audio model readiness.
+        await ensureWhisperModel()
+        try Task.checkCancellation()
 
         // Set up callback for when capture stops unexpectedly (e.g., user clicks "Stop sharing")
         services.capture.onCaptureStopped = { [weak self] in
@@ -795,9 +889,11 @@ public actor AppCoordinator {
 
         // Start screen capture
         try await services.capture.startCapture(config: await services.capture.getConfig())
+        try Task.checkCancellation()
 
         // Start permission monitoring to detect if user revokes permissions while recording
         await startPermissionMonitoring()
+        try Task.checkCancellation()
 
         // Start audio capture
         do {
@@ -807,6 +903,7 @@ public actor AppCoordinator {
         } catch {
             Log.warning("Audio capture failed to start: \(error)", category: .app)
         }
+        try Task.checkCancellation()
 
         // Start processing pipelines
         isRunning = true
@@ -905,7 +1002,33 @@ public actor AppCoordinator {
         persistState: Bool,
         reason: PipelineStopReason
     ) async throws {
+        try await recordingLifecycle.stop(onRequest: { await self.preparePipelineStop(reason: reason, persistState: persistState) },
+            operation: { try await self.stopPipelineNow(persistState: persistState, reason: reason) })
+    }
+
+    private func preparePipelineStop(reason: PipelineStopReason, persistState: Bool) async {
+        if reason == .normal {
+            masterCaptureRequested = false
+            if persistState { saveRecordingState(false) }
+            await activityMonitor?.stop()
+        }
+    }
+
+    private func rollbackPipelineStartup() async {
+        masterCaptureRequested = false
+        await activityMonitor?.stop()
+        if isRunning {
+            try? await stopPipelineNow(persistState: false, reason: .normal)
+        } else {
+            await stopPermissionMonitoring()
+            try? await services.capture.stopCapture()
+            try? await services.audioCapture.stopCapture()
+        }
+    }
+
+    private func stopPipelineNow(persistState: Bool, reason: PipelineStopReason) async throws {
         guard isRunning else {
+            if reason == .normal && persistState { saveRecordingState(false) }
             Log.warning("Pipeline not running", category: .app)
             return
         }
@@ -921,8 +1044,10 @@ public actor AppCoordinator {
         stopStorageHealthNotifications()
 
         // Stop screen capture
+        var screenStopError: Error?
         if stopPlan.stopScreenCapture {
-            try await services.capture.stopCapture()
+            do { try await services.capture.stopCapture() }
+            catch { screenStopError = error }
         }
 
         // Stop audio capture
@@ -936,9 +1061,11 @@ public actor AppCoordinator {
 
         // Cancel pipeline tasks
         if stopPlan.cancelPipelineTasks {
-            captureTask?.cancel()
+            let endingTasks = [captureTask, audioTask].compactMap { $0 }
+            // Final media/segment writes belong to this recording, and must finish
+            // before the lifecycle gate permits a replacement recording to start.
+            await RecordingLifecycle.cancelAndJoin(endingTasks)
             captureTask = nil
-            audioTask?.cancel()
             audioTask = nil
         }
         if stopPlan.cancelRefinementLoop {
@@ -959,6 +1086,7 @@ public actor AppCoordinator {
             saveRecordingState(false)
         }
 
+        if let screenStopError { throw screenStopError }
         Log.info("Capture pipeline stopped successfully", category: .app)
     }
 
@@ -1040,8 +1168,17 @@ public actor AppCoordinator {
         try? await stopPipeline()
     }
 
+    /// Fence future recording requests before awaiting termination work.
+    public func prepareForShutdown() async {
+        await recordingLifecycle.beginShutdown()
+    }
+
     /// Shutdown all services
     public func shutdown() async throws {
+        await prepareForShutdown()
+        // Join cancelled device startup before closing its canonical database writer.
+        try await stopPipeline(persistState: false)
+        await activityMonitor?.stop(shutdown: true)
         // Join recovery before stopping services/closing SQLite. A cancelled
         // startup task must never start OCR workers after shutdown has begun.
         startupRecoveryTask?.cancel()
@@ -1049,11 +1186,6 @@ public actor AppCoordinator {
         await startupRecoveryTask?.value
         startupRecoveryTask = nil
         await stopLegacyOCRNodeTextMaintenance()
-
-        if isRunning {
-            // Don't persist state as stopped - we want to auto-start on next launch
-            try await stopPipeline(persistState: false)
-        }
 
         // Stop periodic cleanup tasks
         stopOrphanedVideoCleanup()
@@ -1371,7 +1503,11 @@ public actor AppCoordinator {
             logPipelineMemorySnapshot(writersByResolution: writersByResolution, reason: reason)
         }
 
-        for await frame in frameStream {
+        for await captured in frameStream {
+            let identity = await activityMonitor?.captureIdentity(for: captured.metadata, at: captured.timestamp)
+            let frame = CapturedFrame(timestamp: captured.timestamp, imageData: captured.imageData,
+                width: captured.width, height: captured.height, bytesPerRow: captured.bytesPerRow,
+                metadata: captured.metadata.linkingActivity(identity))
             Log.verbose("[Pipeline] Received frame from stream: \(frame.width)x\(frame.height), app=\(frame.metadata.appName)", category: .app)
 
             if Task.isCancelled {
@@ -1476,6 +1612,22 @@ public actor AppCoordinator {
                     source: .native
                 )
                 let frameID = try await services.database.insertFrame(frameRef)
+
+                let storedFrame = FrameReference(id: FrameID(value: frameID), timestamp: frame.timestamp,
+                    segmentID: frameRef.segmentID, videoID: frameRef.videoID,
+                    frameIndexInSegment: frameIndexInSegment, metadata: frame.metadata, source: .native)
+                let storeID = try await services.database.activityStoreID()
+                let snapshot = try await services.database.materializeScreenEvidence(frame: storedFrame, storeID: storeID,
+                    width: frame.width, height: frame.height, text: nil)
+                if let identity {
+                    do {
+                        _ = try await services.database.linkActivityScreen(eventID: identity.activityEventID,
+                            screen: snapshot.ref, capturedAt: frame.timestamp, method: "bracketed-capture-window-generation-v1")
+                    } catch {
+                        // A late gap or focus transition can invalidate a once-current observer receipt.
+                        Log.debug("[Activity] Recorded screen retained without an unproved activity link", category: .app)
+                    }
+                }
 
                 // Persist WAL mapping for exact frameID -> raw frame lookup while segment is unfinalized.
                 var didRegisterWALMapping = false
@@ -1797,182 +1949,29 @@ public actor AppCoordinator {
     /// closes the current segment and creates a new one on the next frame
     private func trackSessionChange(frame: CapturedFrame) async throws {
         let metadata = frame.metadata
-        let captureConfig = await services.capture.getConfig()
-        let normalizedBrowserURL: String?
-        if let rawBrowserURL = metadata.browserURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !rawBrowserURL.isEmpty {
-            normalizedBrowserURL = rawBrowserURL
-        } else {
-            normalizedBrowserURL = nil
+        let current: Segment?
+        if let id = currentSegmentID { current = try await services.database.getSegment(id: id) }
+        else { current = nil }
+        let context = metadata.captureContext
+        let identityChanged = context?.processGeneration != lastSegmentContext?.processGeneration
+            || context?.windowID != lastSegmentContext?.windowID
+            || context?.windowGeneration != lastSegmentContext?.windowGeneration
+            || context?.documentID != lastSegmentContext?.documentID
+            || context?.paneID != lastSegmentContext?.paneID
+        let changed = current == nil || current?.bundleID != metadata.appBundleID
+            || current?.windowName != metadata.windowName || current?.browserUrl != metadata.browserURL || identityChanged
+        if changed {
+            if let id = currentSegmentID, let lastFrameTimestamp {
+                try await services.database.updateSegmentEndDate(id: id, endDate: lastFrameTimestamp)
+            }
+            currentSegmentID = try await services.database.insertSegment(
+                bundleID: metadata.appBundleID ?? "unknown", startDate: frame.timestamp, endDate: frame.timestamp,
+                windowName: metadata.windowName, browserUrl: metadata.browserURL, type: 0)
+            lastSegmentContext = context
+            Log.debug("[Segment] Started immutable captured-context segment", category: .app)
         }
-        pruneRecentClosedNilBrowserURLSegments(referenceTime: frame.timestamp)
-
-        // Get current segment if exists
-        var currentSegment: Segment? = nil
-        if let segID = currentSegmentID {
-            currentSegment = try await services.database.getSegment(id: segID)
-        }
-
-        // Check if app or window changed
-        let appChanged = currentSegment?.bundleID != metadata.appBundleID
-        let windowChanged = currentSegment?.windowName != metadata.windowName
-
-        // Check for idle gap - if time since last frame exceeds threshold, treat as idle
-        var idleDetected = false
-        if let lastTimestamp = lastFrameTimestamp,
-           captureConfig.idleThresholdSeconds > 0,
-           currentSegment != nil {
-            let timeSinceLastFrame = frame.timestamp.timeIntervalSince(lastTimestamp)
-            if timeSinceLastFrame > captureConfig.idleThresholdSeconds {
-                idleDetected = true
-                Log.info("Idle detected: \(Int(timeSinceLastFrame))s gap (threshold: \(Int(captureConfig.idleThresholdSeconds))s)", category: .app)
-            }
-        }
-
-        if appChanged || windowChanged || currentSegment == nil || idleDetected {
-            // Close previous segment
-            if let segID = currentSegmentID {
-                // For idle detection, set end date to last frame timestamp + a small buffer
-                // This prevents the segment from appearing to span the idle period
-                let segmentEndDate: Date
-                if idleDetected, let lastTimestamp = lastFrameTimestamp {
-                    segmentEndDate = lastTimestamp
-                } else {
-                    segmentEndDate = frame.timestamp
-                }
-                try await services.database.updateSegmentEndDate(id: segID, endDate: segmentEndDate)
-                Log.debug("Closed segment: \(currentSegment?.bundleID ?? "unknown") - \(currentSegment?.windowName ?? "nil")", category: .app)
-
-                if let closedSegment = currentSegment,
-                   closedSegment.browserUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
-                   let normalizedWindowName = normalizedWindowNameForStrictBackfill(closedSegment.windowName) {
-                    recentClosedNilBrowserURLSegments.append(
-                        RecentClosedNilBrowserURLSegment(
-                            segmentID: segID,
-                            bundleID: closedSegment.bundleID,
-                            normalizedWindowName: normalizedWindowName,
-                            closedAt: segmentEndDate
-                        )
-                    )
-                    pruneRecentClosedNilBrowserURLSegments(referenceTime: frame.timestamp)
-                }
-            }
-
-            // Create new segment
-            let newSegmentID = try await services.database.insertSegment(
-                bundleID: metadata.appBundleID ?? "unknown",
-                startDate: frame.timestamp,
-                endDate: frame.timestamp,  // Will be updated as frames are captured
-                windowName: metadata.windowName,
-                browserUrl: normalizedBrowserURL,
-                type: 0  // 0 = screen capture
-            )
-
-            currentSegmentID = newSegmentID
-            Log.debug(
-                "Started segment: \(metadata.appBundleID ?? "unknown") - \(metadata.windowName ?? "nil") [segmentID=\(newSegmentID), browserURL=\(normalizedBrowserURL == nil ? "nil" : "present")]",
-                category: .app
-            )
-            if let browserURL = normalizedBrowserURL {
-                try await backfillRecentClosedNilBrowserURLSegments(
-                    bundleID: metadata.appBundleID,
-                    windowName: metadata.windowName,
-                    browserURL: browserURL,
-                    referenceTime: frame.timestamp
-                )
-            }
-        } else if let segID = currentSegmentID,
-                  let browserURL = normalizedBrowserURL {
-            let existingBrowserURL: String?
-            if let rawBrowserURL = currentSegment?.browserUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !rawBrowserURL.isEmpty {
-                existingBrowserURL = rawBrowserURL
-            } else {
-                existingBrowserURL = nil
-            }
-
-            if existingBrowserURL == nil {
-                try await services.database.updateSegmentBrowserURL(
-                    id: segID,
-                    browserURL: browserURL,
-                    onlyIfNull: true
-                )
-                let host = URL(string: browserURL)?.host ?? browserURL
-                Log.info(
-                    "[SegmentURL] Backfilled browserUrl for segmentID=\(segID), bundle=\(metadata.appBundleID ?? "unknown"), host=\(host)",
-                    category: .app
-                )
-                try await backfillRecentClosedNilBrowserURLSegments(
-                    bundleID: metadata.appBundleID,
-                    windowName: metadata.windowName,
-                    browserURL: browserURL,
-                    referenceTime: frame.timestamp
-                )
-            } else if existingBrowserURL != browserURL {
-                try await services.database.updateSegmentBrowserURL(
-                    id: segID,
-                    browserURL: browserURL,
-                    onlyIfNull: false
-                )
-                let previousLength = existingBrowserURL?.count ?? 0
-                let newLength = browserURL.count
-                Log.debug(
-                    "[SegmentURL] Corrected browserUrl for segmentID=\(segID), bundle=\(metadata.appBundleID ?? "unknown"), oldLen=\(previousLength), newLen=\(newLength)",
-                    category: .app
-                )
-            }
-        }
-
-        // Update last frame timestamp for idle detection
+        // Missing retained images do not establish inactivity. The independent stream owns coverage.
         lastFrameTimestamp = frame.timestamp
-    }
-
-    private func normalizedWindowNameForStrictBackfill(_ windowName: String?) -> String? {
-        guard let windowName else { return nil }
-        let normalized = windowName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace })
-            .map(String.init)
-            .joined(separator: " ")
-            .lowercased()
-        return normalized.isEmpty ? nil : normalized
-    }
-
-    private func pruneRecentClosedNilBrowserURLSegments(referenceTime: Date) {
-        recentClosedNilBrowserURLSegments.removeAll { entry in
-            referenceTime.timeIntervalSince(entry.closedAt) > recentClosedSegmentBackfillWindowSeconds
-        }
-    }
-
-    private func backfillRecentClosedNilBrowserURLSegments(
-        bundleID: String?,
-        windowName: String?,
-        browserURL: String,
-        referenceTime: Date
-    ) async throws {
-        guard let bundleID,
-              let normalizedWindowName = normalizedWindowNameForStrictBackfill(windowName) else {
-            return
-        }
-
-        pruneRecentClosedNilBrowserURLSegments(referenceTime: referenceTime)
-
-        let matchingEntries = recentClosedNilBrowserURLSegments.filter { entry in
-            entry.bundleID == bundleID && entry.normalizedWindowName == normalizedWindowName
-        }
-        guard !matchingEntries.isEmpty else { return }
-
-        let matchingSegmentIDs = Set(matchingEntries.map(\.segmentID))
-        for segmentID in matchingSegmentIDs {
-            try await services.database.updateSegmentBrowserURL(id: segmentID, browserURL: browserURL)
-        }
-
-        recentClosedNilBrowserURLSegments.removeAll { matchingSegmentIDs.contains($0.segmentID) }
-        let host = URL(string: browserURL)?.host ?? browserURL
-        Log.info(
-            "[SegmentURL] Backfilled browserUrl for \(matchingSegmentIDs.count) recently-closed segment(s), bundle=\(bundleID), windowName=\(windowName ?? "nil"), host=\(host)",
-            category: .app
-        )
     }
 
     /// Audio pipeline: AudioCapture → AudioProcessing (whisper.cpp) → Database
@@ -2050,17 +2049,8 @@ public actor AppCoordinator {
     /// Advanced search with filters
     /// Routes to DataAdapter which prioritizes Rewind data source
     public func search(query: SearchQuery) async throws -> SearchResults {
-        // Try DataAdapter first (routes to Rewind if available)
-        if let adapter = await services.dataAdapter {
-            do {
-                return try await adapter.search(query: query)
-            } catch {
-                Log.warning("[AppCoordinator] DataAdapter search failed, falling back to FTS: \(error)", category: .app)
-            }
-        }
-
-        // Fallback to native FTS search
-        return try await services.search.search(query: query)
+        guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
+        return try await adapter.search(query: query)
     }
 
     // MARK: - Frame Retrieval

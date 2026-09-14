@@ -3,10 +3,141 @@ import AppKit
 import ApplicationServices
 import Shared
 
+protocol FrontmostMetadataProviding: Sendable {
+    func getFrontmostAppInfo(includeBrowserURL: Bool) async -> FrameMetadata
+}
+
 /// Provides information about the currently active application
-struct AppInfoProvider: Sendable {
+struct AppInfoProvider: FrontmostMetadataProviding {
+
+    /// A bounded metadata snapshot of the originally notified process. No OCR or AppleScript.
+    /// Called from the activity worker, never the main actor.
+    func activityContext(for app: ActivityApplicationSnapshot, isStillFocused: Bool,
+                         config: CaptureConfig) -> ActivityContext? {
+        guard !config.excludedAppBundleIDs.contains(app.bundleID),
+              !["com.apple.loginwindow", "com.apple.SecurityAgent"].contains(app.bundleID) else { return nil }
+        let browser = BrowserURLExtractor.isBrowser(app.bundleID)
+        guard isStillFocused else {
+            // Cannot safely establish private/title/URL exclusions for an unsampled old window.
+            guard !browser, config.redactWindowTitlePatterns.isEmpty, config.redactBrowserURLPatterns.isEmpty else { return nil }
+            return ActivityContext(appBundleID: app.bundleID, appName: app.name, processID: app.pid,
+                                   processGeneration: app.generation, uncertainty: ["Window was not sampled before focus changed"])
+        }
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+              let window = windows.first(where: {
+                  ($0[kCGWindowOwnerPID as String] as? Int32) == app.pid &&
+                  ($0[kCGWindowLayer as String] as? Int) == 0 &&
+                  ($0[kCGWindowIsOnscreen as String] as? Bool) == true
+              }) else { return nil }
+        let title = window[kCGWindowName as String] as? String
+        let lower = title?.lowercased() ?? ""
+        let privatePatterns = ["incognito", "private browsing", "inprivate", "(private)"] + config.customPrivateWindowPatterns
+        if config.excludePrivateWindows && browser && (title == nil || privatePatterns.contains(where: { lower.contains($0.lowercased()) })) { return nil }
+        if config.redactWindowTitlePatterns.contains(where: { !$0.isEmpty && lower.contains($0.lowercased()) }) { return nil }
+        // Until a URL has been validated, URL-redacted applications have unknown activity coverage.
+        if browser && !config.redactBrowserURLPatterns.isEmpty { return nil }
+        let windowID = window[kCGWindowNumber as String] as? UInt32
+        let visibleWindowIDs = Set(windows.compactMap { item -> UInt32? in
+            guard (item[kCGWindowOwnerPID as String] as? Int32) == app.pid,
+                  (item[kCGWindowLayer as String] as? Int) == 0 else { return nil }
+            return item[kCGWindowNumber as String] as? UInt32
+        })
+        let windowGeneration = windowID.flatMap {
+            ObservedWindowGenerations.shared.generation(processID: app.pid, processGeneration: app.generation,
+                windowID: $0, visibleWindowIDs: visibleWindowIDs)
+        }
+        let bounds = (window[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+        var displayID: UInt32?
+        if let bounds {
+            var displays = [CGDirectDisplayID](repeating: 0, count: 16)
+            var count: UInt32 = 0
+            if CGGetDisplaysWithRect(bounds, 16, &displays, &count) == .success {
+                displayID = displays.prefix(Int(count)).max(by: {
+                    CGDisplayBounds($0).intersection(bounds).area < CGDisplayBounds($1).intersection(bounds).area
+                })
+            }
+        }
+        let adapter: String
+        switch app.bundleID.lowercased() {
+        case "com.microsoft.word": adapter = "word-document-v1"
+        case "com.microsoft.excel": adapter = "excel-document-v1"
+        case "com.openai.chat": adapter = "chatgpt-conversation-v1"
+        case let id where id.contains("codex"): adapter = "codex-session-v1"
+        case let id where id.contains("claude"): adapter = "claude-conversation-v1"
+        case let id where id.contains("cursor"): adapter = "cursor-window-v1"
+        case "com.apple.finder": adapter = "finder-window-v1"
+        default: adapter = browser ? "browser-window-v1" : "window-metadata-v1"
+        }
+        return ActivityContext(appBundleID: app.bundleID, appName: app.name, processID: app.pid,
+                               processGeneration: app.generation, windowID: windowID, windowGeneration: windowGeneration, windowTitle: title,
+                               displayID: displayID, adapter: adapter,
+                               uncertainty: ["Document and pane identity unavailable; focus is not engagement"])
+    }
 
     // MARK: - App Info Retrieval
+
+    /// Read only the captured process's visible focused-window document attribute.
+    /// Never walks hidden children or substitutes a newly frontmost application.
+    func activityDocumentContext(_ context: ActivityContext, app: ActivityApplicationSnapshot) -> ActivityContext? {
+        guard context.windowID != nil, context.windowGeneration != nil,
+              AXIsProcessTrusted(), app.pid != ProcessInfo.processInfo.processIdentifier else { return nil }
+        let element = AXUIElementCreateApplication(app.pid)
+        AXUIElementSetMessagingTimeout(element, 0.1)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let window = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, 0.1)
+        var titleValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleValue) == .success,
+              CapturedURLPolicy.sanitizeLabel(titleValue as? String) == context.windowTitle,
+              uniquelyMatchesCapturedWindow(window, context: context) else { return nil }
+        var documentValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXDocumentAttribute as CFString, &documentValue) == .success,
+              let raw = documentValue as? String, let safe = CapturedURLPolicy.sanitize(raw),
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+              let top = windows.first(where: {
+                  ($0[kCGWindowOwnerPID as String] as? Int32) == app.pid && ($0[kCGWindowLayer as String] as? Int) == 0
+              }), (top[kCGWindowNumber as String] as? UInt32) == context.windowID,
+              CapturedURLPolicy.sanitizeLabel(top[kCGWindowName as String] as? String) == context.windowTitle else { return nil }
+        var focusedAfter: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &focusedAfter) == .success,
+              let focusedAfter, CFEqual(window, focusedAfter),
+              uniquelyMatchesCapturedWindow(window, context: context) else { return nil }
+        return ActivityContext(appBundleID: context.appBundleID, appName: context.appName,
+                               processID: context.processID, processGeneration: context.processGeneration,
+                               windowID: context.windowID, windowGeneration: context.windowGeneration,
+                               windowTitle: context.windowTitle, displayID: context.displayID,
+                               documentID: CapturedURLPolicy.navigationIdentity(raw), safeURL: safe,
+                               adapter: context.adapter,
+                               uncertainty: ["Document identity is URL-derived; pane and background execution unavailable"])
+    }
+
+    /// Public AX has no portable WindowServer ID attribute. Require exactly one
+    /// same-process visible window matching the focused AX window's geometry and
+    /// title; ambiguous same-title/overlapping windows stay unenriched.
+    private func uniquelyMatchesCapturedWindow(_ window: AXUIElement, context: ActivityContext) -> Bool {
+        var positionValue: CFTypeRef?, sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue, let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return false }
+        var position = CGPoint.zero, size = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return false }
+        let matches = windows.compactMap { item -> UInt32? in
+            guard (item[kCGWindowOwnerPID as String] as? Int32) == context.processID,
+                  (item[kCGWindowLayer as String] as? Int) == 0,
+                  CapturedURLPolicy.sanitizeLabel(item[kCGWindowName as String] as? String) == context.windowTitle,
+                  let dictionary = item[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary),
+                  abs(bounds.minX - position.x) <= 1, abs(bounds.minY - position.y) <= 1,
+                  abs(bounds.width - size.width) <= 1, abs(bounds.height - size.height) <= 1 else { return nil }
+            return item[kCGWindowNumber as String] as? UInt32
+        }
+        return matches.count == 1 && matches.first == context.windowID
+    }
 
     /// Get information about the frontmost application
     /// - Returns: FrameMetadata with app info, or minimal metadata if unavailable
@@ -167,4 +298,8 @@ struct AppInfoProvider: Sendable {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
+}
+
+private extension CGRect {
+    var area: CGFloat { isNull ? 0 : width * height }
 }

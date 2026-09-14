@@ -46,6 +46,7 @@ Processing/
 │   ├── AudioTranscriptionCompletenessPolicyTests.swift
 │   ├── FrameProcessingWakeSignalTests.swift
 │   ├── FrameProcessingSourceReadinessTests.swift
+│   ├── HistoricalOCREvidenceTests.swift
 │   ├── NativeSpeechTranscriptionServiceTests.swift
 │   ├── TestLogger.swift
 │   ├── VisionOCRIncrementalTests.swift
@@ -61,7 +62,7 @@ Processing/
 ## Protocols You Must Implement
 
 ### 1. `ProcessingProtocol` (from `Shared/Protocols/ProcessingProtocol.swift`)
-- Text extraction (combined OCR + Accessibility)
+- Retained-frame OCR with saved metadata; separately requested live Accessibility extraction
 - Processing queue management
 - Configuration
 
@@ -74,10 +75,13 @@ Processing/
 
 ## Current Implementation
 
+- `ProcessingManager` routes saved/captured-frame extraction through a private `RetainedFrameTextExtractor` actor whose only input is retained pixels, saved metadata and OCR configuration. It cannot query live Accessibility; the separately named live-AX APIs remain explicit. Flattened OCR and chrome text are derived from the same ordered regions used for geometry and offsets.
+- Complete retained extractions are ordered through cancellation-aware task chaining. Actor reentrancy must not mix previous pixels with a concurrently updated OCR cache or saturate cooperative threads with parallel synchronous Vision waits. Parallel-worker regression fixtures change separate amounts and decisions on real rasterised screens.
 - `VisionOCR` uses Apple's Vision framework, an accurate full-frame cache and bounded native-pixel region crops. Expand changed crops to cover complete cached text regions before invalidation. Preserve coordinate transforms and the actual row stride for each frame.
 - Full-frame and incremental OCR both disable language correction to preserve identifiers. The incremental crop pixel fraction is a work-area estimate, not a measured energy saving.
 - `FrameProcessingQueue` is the existing cross-module integration boundary. Database claims are atomic. Automatic priorities 1–10 are current only for captures made within 60 seconds; older automatic work joins priority 0, negative and NULL-priority work in historical enqueue order. One historical claim follows three current automatic claims when available. Manual priorities above 10 take precedence without consuming or resetting that fairness counter. Displayed positions use the same schedule and count distinct pending frames. The wake signal prevents idle polling latency without losing enqueues during registration.
 - Publish OCR text, highlight nodes and completed status through `DatabaseManager.commitFrameOCR` in one transaction. Return deferred/cancelled claims through `releaseFrameProcessingClaim`. Never split those writes into separate awaits.
+- Media repair failures publish a durable unavailable reason and failed status through `recordFrameMediaUnavailable`; no repair branch deletes frames, existing OCR/FTS, highlight nodes or extraction revisions. Missing/empty media and integrity failures remain distinct; only explicit deletion or retention owns evidence removal. Finalized missing media counts as failed work, never successful OCR.
 - Prefer a readable exact-frame-ID WAL over encoded video even when database metadata says finalized: an active container can still be empty or return an earlier frame. Missing/incomplete live WAL or nonfinalized sources defer at automatic priority 10 without consuming error retries, retaining the 0.5-second backoff; capture-age expiry still sends old work to historical FIFO. An unreadable retained WAL from a prior process falls back to strict encoded reads when metadata is finalized, so damaged evidence cannot cause endless retries. Missing finalized media still reaches the existing terminal failure path without deleting the retained WAL. The source-readiness tests exercise real WAL pixels, SQLite claims, fresh-retry precedence over backlog, restart ownership and completion through the production worker.
 - `AudioStoragePolicy` preserves canonical batch recordings and prevents duplicate sentence files. Whisper remains the production transcription backend.
 - `NativeSpeechTranscriptionService` is an opt-in macOS 26 batch comparison backend, not a production routing change. Exact module asset readiness must be checked in the calling app; locale support alone is insufficient. Tests may explicitly prepare assets for comparison.
@@ -125,4 +129,4 @@ throw ProcessingError.imageConversionFailed
 
 ## Validation
 
-Run `swift test --filter 'VisionOCRIncrementalTests|FrameProcessingWakeSignalTests|NativeSpeechTranscriptionServiceTests'`. Vision tests render actual CoreText images and exercise the real Vision API. Native audio comparison requires explicit local fixture/model paths; the normal test run skips those cases.
+Run `swift test --filter 'VisionOCRIncrementalTests|HistoricalOCRIsolationTests|OCRRepairEvidencePreservationTests|FrameProcessingSourceReadinessTests|FrameProcessingWakeSignalTests|NativeSpeechTranscriptionServiceTests'`. Vision tests render actual CoreText images and exercise the real Vision API. Historical isolation tests inject unrelated live AX while recognizing retained pixels. Repair tests use real SQLite and actual empty-video/decode-all out-of-range errors, including media-disappearance and explicit-deletion races. Native audio comparison requires explicit local fixture/model paths; the normal test run skips those cases.

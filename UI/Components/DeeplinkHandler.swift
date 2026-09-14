@@ -20,6 +20,8 @@ public class DeeplinkHandler: ObservableObject {
         activeRoute = route
 
         switch route {
+        case .evidence:
+            Log.info("[DeeplinkHandler] Opening exact evidence", category: .ui)
         case let .search(query, timestamp, appBundleID):
             Log.info("[DeeplinkHandler] Navigating to search: query=\(query ?? "nil"), timestamp=\(String(describing: timestamp)), app=\(appBundleID ?? "nil")", category: .ui)
         case let .timeline(timestamp):
@@ -42,6 +44,8 @@ public class DeeplinkHandler: ObservableObject {
         let queryParams = url.queryParameters
 
         switch host.lowercased() {
+        case "evidence":
+            return EvidenceRef(deepLink: url).map(DeeplinkRoute.evidence)
         case "search":
             let query = queryParams["q"].flatMap { $0.trimmedOrNil }
             let timestamp = parseTimestamp(queryParams: queryParams)
@@ -124,11 +128,14 @@ public class DeeplinkHandler: ObservableObject {
 // MARK: - Deeplink Route
 
 public enum DeeplinkRoute: Equatable {
+    case evidence(EvidenceRef)
     case search(query: String?, timestamp: Date?, appBundleID: String?)
     case timeline(timestamp: Date?)
 
     public static func == (lhs: DeeplinkRoute, rhs: DeeplinkRoute) -> Bool {
         switch (lhs, rhs) {
+        case let (.evidence(first), .evidence(second)):
+            return first == second
         case let (.search(q1, t1, a1), .search(q2, t2, a2)):
             return q1 == q2 && t1 == t2 && a1 == a2
         case let (.timeline(t1), .timeline(t2)):

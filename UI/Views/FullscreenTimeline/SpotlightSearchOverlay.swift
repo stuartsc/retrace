@@ -43,6 +43,7 @@ public struct SpotlightSearchOverlay: View {
     @State private var isDismissing = false
     @State private var overlaySessionID = "unknown"
     @State private var isSearchFieldFocused = false
+    @State private var thumbnailLoader = SearchEvidenceThumbnailLoader()
 
     private let panelWidth: CGFloat = 1000
     private let collapsedWidth: CGFloat = 450
@@ -1077,6 +1078,12 @@ public struct SpotlightSearchOverlay: View {
 
     @ViewBuilder
     private var resultsArea: some View {
+        if let message = viewModel.error {
+            HStack {
+                Text(message).font(.caption).foregroundColor(.orange)
+                Button("Refresh search") { viewModel.rerunSearchImmediately(trigger: "evidence.refresh") }
+            }.padding(12)
+        }
         if viewModel.isSearching && viewModel.results == nil {
             searchingView
                 .frame(height: reservedResultsHeight)
@@ -1096,11 +1103,13 @@ public struct SpotlightSearchOverlay: View {
         return ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVGrid(columns: gridColumns, spacing: 16) {
-                    ForEach(Array(visibleResults.enumerated()), id: \.element.id) { index, result in
+                    ForEach(Array(visibleResults.enumerated()), id: \.element.sourceQualifiedID) { index, result in
                         GalleryResultCard(
                             result: result,
                             thumbnailKey: thumbnailKey(for: result),
                             thumbnailSize: thumbnailSize,
+                            thumbnailLoader: thumbnailLoader,
+                            coordinator: coordinator,
                             index: index,
                             isKeyboardSelected: isResultKeyboardNavigationActive && keyboardSelectedResultIndex == index,
                             onSelect: {
@@ -1113,7 +1122,6 @@ public struct SpotlightSearchOverlay: View {
                             viewModel: viewModel
                         )
                         .onAppear {
-                            loadThumbnail(for: result)
                             loadAppIcon(for: result)
 
                             // Infinite scroll: load more when near the end
@@ -1167,7 +1175,7 @@ public struct SpotlightSearchOverlay: View {
                 if viewModel.savedScrollPosition > 0 {
                     let targetIndex = Int(viewModel.savedScrollPosition)
                     guard visibleResults.indices.contains(targetIndex) else { return }
-                    let targetResultID = visibleResults[targetIndex].id
+                    let targetResultID = visibleResults[targetIndex].sourceQualifiedID
                     // Scroll to the saved position with a slight delay to ensure layout is complete
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         withAnimation(.easeOut(duration: 0.2)) {
@@ -1179,7 +1187,7 @@ public struct SpotlightSearchOverlay: View {
             .onChange(of: keyboardSelectedResultIndex) { selectedIndex in
                 guard let selectedIndex else { return }
                 guard visibleResults.indices.contains(selectedIndex) else { return }
-                let selectedResultID = visibleResults[selectedIndex].id
+                let selectedResultID = visibleResults[selectedIndex].sourceQualifiedID
                 withAnimation(.easeOut(duration: 0.15)) {
                     proxy.scrollTo(selectedResultID, anchor: .center)
                 }
@@ -1267,313 +1275,7 @@ public struct SpotlightSearchOverlay: View {
     private func thumbnailKey(for result: SearchResult) -> String {
         // Use committedSearchQuery (set on Enter) instead of live searchQuery
         // This prevents thumbnails from reloading while user is typing
-        "\(result.segmentID.stringValue)_\(result.timestamp.timeIntervalSince1970)_\(viewModel.committedSearchQuery)"
-    }
-
-    private func loadThumbnail(for result: SearchResult) {
-        let key = thumbnailKey(for: result)
-        // Use committedSearchQuery for highlighting (the query that was actually searched)
-        let searchQuery = viewModel.committedSearchQuery
-        let currentGeneration = viewModel.searchGeneration
-
-        if viewModel.thumbnailCache[key] != nil {
-            viewModel.markThumbnailAccessed(key)
-            return
-        }
-
-        guard viewModel.beginThumbnailLoadIfNeeded(key) else {
-            return
-        }
-
-        let startTime = Date()
-
-        Task {
-            if await viewModel.loadThumbnailFromDiskIfAvailable(for: key, generation: currentGeneration) {
-                viewModel.loadingThumbnails.remove(key)
-                return
-            }
-
-            do {
-                // 1. Fetch frame image (prefer direct path to avoid per-thumbnail DB lookups and JPEG round-trips)
-                let fullImage: NSImage
-                if let videoPath = result.videoPath {
-                    let cgImage = try await coordinator.getFrameCGImage(
-                        videoPath: videoPath,
-                        frameIndex: result.frameIndex,
-                        frameRate: result.videoFrameRate,
-                        source: result.source
-                    )
-                    fullImage = NSImage(
-                        cgImage: cgImage,
-                        size: NSSize(width: cgImage.width, height: cgImage.height)
-                    )
-                } else {
-                    // Fallback for legacy cached results lacking video path/frame rate.
-                    let imageData = try await coordinator.getFrameImageByIndex(
-                        videoID: result.videoID,
-                        frameIndex: result.frameIndex,
-                        source: result.source
-                    )
-                    guard let decodedImage = NSImage(data: imageData) else {
-                        Log.error("\(searchLog) Failed to create NSImage from fallback data", category: .ui)
-                        viewModel.failThumbnailLoad(with: nil, for: key, generation: currentGeneration)
-                        return
-                    }
-                    fullImage = decodedImage
-                }
-                // Check if search generation changed (user started a new search)
-                guard viewModel.searchGeneration == currentGeneration else {
-                    viewModel.failThumbnailLoad(with: nil, for: key, generation: currentGeneration)
-                    return
-                }
-
-                let thumbnail: NSImage
-                if let matchNode = result.highlightNode {
-                    thumbnail = createHighlightedThumbnail(
-                        from: fullImage,
-                        matchX: matchNode.x,
-                        matchY: matchNode.y,
-                        matchWidth: matchNode.width,
-                        matchHeight: matchNode.height,
-                        size: thumbnailSize
-                    )
-                } else {
-                    // 2. Get OCR nodes for this frame (use frameID for exact match)
-                    let ocrNodes = try await coordinator.getAllOCRNodes(
-                        frameID: result.frameID,
-                        source: result.source
-                    )
-
-                    // Check if search generation changed again
-                    guard viewModel.searchGeneration == currentGeneration else {
-                        viewModel.failThumbnailLoad(with: nil, for: key, generation: currentGeneration)
-                        return
-                    }
-
-                    // 3. Find the matching OCR node for the search query
-                    let matchingNode = findMatchingOCRNode(query: searchQuery, nodes: ocrNodes)
-
-                    // 4. Create the highlighted thumbnail
-                    if let matchNode = matchingNode {
-                        thumbnail = createHighlightedThumbnail(
-                            from: fullImage,
-                            matchingNode: matchNode,
-                            size: thumbnailSize
-                        )
-                    } else {
-                        thumbnail = createThumbnail(from: fullImage, size: thumbnailSize)
-                    }
-                }
-
-                viewModel.finishThumbnailLoad(
-                    thumbnail,
-                    for: key,
-                    generation: currentGeneration
-                )
-            } catch {
-                let duration = Date().timeIntervalSince(startTime) * 1000
-                Log.error("\(searchLog) ❌ THUMBNAIL FAILED after \(Int(duration))ms: \(error)", category: .ui)
-                Log.error("\(searchLog) ❌ Details: videoID=\(result.videoID), frameIndex=\(result.frameIndex), source=\(result.source)", category: .ui)
-
-                // Create a placeholder thumbnail so the UI doesn't show infinite loading
-                let placeholder = createPlaceholderThumbnail(size: thumbnailSize)
-                viewModel.failThumbnailLoad(
-                    with: placeholder,
-                    for: key,
-                    generation: currentGeneration
-                )
-            }
-        }
-    }
-
-    /// Create a placeholder thumbnail when frame extraction fails
-    private func createPlaceholderThumbnail(size: CGSize) -> NSImage {
-        let thumbnail = NSImage(size: size)
-        thumbnail.lockFocus()
-
-        // Dark gray background
-        NSColor(white: 0.15, alpha: 1.0).setFill()
-        NSRect(origin: .zero, size: size).fill()
-
-        // Draw "unavailable" icon
-        let iconSize: CGFloat = 40
-        let iconRect = NSRect(
-            x: (size.width - iconSize) / 2,
-            y: (size.height - iconSize) / 2,
-            width: iconSize,
-            height: iconSize
-        )
-
-        NSColor.white.withAlphaComponent(0.3).setStroke()
-        let iconPath = NSBezierPath(ovalIn: iconRect.insetBy(dx: 5, dy: 5))
-        iconPath.lineWidth = 2
-        iconPath.stroke()
-
-        // Draw X through circle
-        let xPath = NSBezierPath()
-        xPath.move(to: NSPoint(x: iconRect.minX + 10, y: iconRect.minY + 10))
-        xPath.line(to: NSPoint(x: iconRect.maxX - 10, y: iconRect.maxY - 10))
-        xPath.move(to: NSPoint(x: iconRect.maxX - 10, y: iconRect.minY + 10))
-        xPath.line(to: NSPoint(x: iconRect.minX + 10, y: iconRect.maxY - 10))
-        xPath.lineWidth = 2
-        xPath.stroke()
-
-        thumbnail.unlockFocus()
-        return thumbnail
-    }
-
-    /// Find the OCR node that best matches the search query
-    /// Handles both exact phrase matching (quoted queries) and individual term matching
-    private func findMatchingOCRNode(query: String, nodes: [OCRNodeWithText]) -> OCRNodeWithText? {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespaces)
-
-        // Check if this is an exact phrase search (wrapped in quotes)
-        let isExactPhraseSearch = trimmedQuery.hasPrefix("\"") && trimmedQuery.hasSuffix("\"") && trimmedQuery.count > 2
-
-        if isExactPhraseSearch {
-            // Extract phrase without quotes and search for exact consecutive match
-            let phrase = String(trimmedQuery.dropFirst().dropLast()).lowercased()
-
-            // Only match if the exact phrase appears in the node
-            for node in nodes {
-                if node.text.lowercased().contains(phrase) {
-                    return node
-                }
-            }
-
-            // No fallback for exact phrase search - return nil if not found
-            return nil
-        }
-
-        // Non-quoted search: split into terms and search for any term
-        let queryTerms = trimmedQuery.lowercased()
-            .components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
-
-        // First pass: find node containing any query term as exact word
-        for node in nodes {
-            let nodeText = node.text.lowercased()
-            for term in queryTerms {
-                let pattern = "\\b\(NSRegularExpression.escapedPattern(for: term))\\b"
-                if let regex = try? NSRegularExpression(pattern: pattern, options: []),
-                   regex.firstMatch(in: nodeText, options: [], range: NSRange(nodeText.startIndex..., in: nodeText)) != nil {
-                    return node
-                }
-            }
-        }
-
-        // Second pass: find any substring match as fallback
-        for node in nodes {
-            let nodeText = node.text.lowercased()
-            for term in queryTerms {
-                if nodeText.contains(term) {
-                    return node
-                }
-            }
-        }
-
-        return nil
-    }
-
-    /// Create a thumbnail cropped around the matching OCR node with a yellow highlight
-    private func createHighlightedThumbnail(
-        from image: NSImage,
-        matchingNode: OCRNodeWithText,
-        size: CGSize
-    ) -> NSImage {
-        createHighlightedThumbnail(
-            from: image,
-            matchX: matchingNode.x,
-            matchY: matchingNode.y,
-            matchWidth: matchingNode.width,
-            matchHeight: matchingNode.height,
-            size: size
-        )
-    }
-
-    private func createHighlightedThumbnail(
-        from image: NSImage,
-        matchX: Double,
-        matchY: Double,
-        matchWidth: Double,
-        matchHeight: Double,
-        size: CGSize
-    ) -> NSImage {
-        let imageSize = image.size
-
-        // OCR coordinates use top-left origin (y=0 at top), but NSImage uses bottom-left origin (y=0 at bottom)
-        // We need to flip the Y coordinate: flippedY = 1.0 - y - height
-        let flippedNodeY = 1.0 - matchY - matchHeight
-
-        // Calculate the crop region centered on the match with padding
-        // OCR coordinates are normalized (0.0-1.0), convert to pixel coordinates
-        let matchCenterX = (matchX + matchWidth / 2) * imageSize.width
-        let matchCenterY = (flippedNodeY + matchHeight / 2) * imageSize.height
-
-        // Determine crop size to maintain aspect ratio of thumbnail
-        // Use a zoom factor to show context around the match
-        let zoomFactor: CGFloat = 3.5  // How much to zoom in (higher = more zoom)
-        let cropWidth = imageSize.width / zoomFactor
-        let cropHeight = cropWidth * (size.height / size.width)  // Maintain aspect ratio
-
-        // Calculate crop origin, ensuring we stay within bounds
-        var cropX = matchCenterX - cropWidth / 2
-        var cropY = matchCenterY - cropHeight / 2
-
-        // Clamp to image bounds
-        cropX = max(0, min(cropX, imageSize.width - cropWidth))
-        cropY = max(0, min(cropY, imageSize.height - cropHeight))
-
-        let cropRect = NSRect(x: cropX, y: cropY, width: cropWidth, height: cropHeight)
-
-        // Create the thumbnail
-        let thumbnail = NSImage(size: size)
-        thumbnail.lockFocus()
-
-        // Draw the cropped region of the source image
-        let destRect = NSRect(origin: .zero, size: size)
-        image.draw(in: destRect, from: cropRect, operation: .copy, fraction: 1.0)
-
-        // Calculate where the highlight box should be drawn in the thumbnail
-        // Convert match coordinates from image space to crop space, then to thumbnail space
-        // Use the flipped Y coordinate for NSImage drawing
-        let matchXInCrop = (matchX * imageSize.width - cropX) / cropWidth * size.width
-        let matchYInCrop = (flippedNodeY * imageSize.height - cropY) / cropHeight * size.height
-        let matchWidthInThumb = (matchWidth * imageSize.width) / cropWidth * size.width
-        let matchHeightInThumb = (matchHeight * imageSize.height) / cropHeight * size.height
-
-        // Add some padding to the highlight box
-        let padding: CGFloat = 4
-        let highlightRect = NSRect(
-            x: matchXInCrop - padding,
-            y: matchYInCrop - padding,
-            width: matchWidthInThumb + padding * 2,
-            height: matchHeightInThumb + padding * 2
-        )
-
-        // Draw yellow highlight box (matching the style used in SimpleTimelineView)
-        // Use explicit RGB to match SwiftUI's Color.yellow exactly
-        let highlightColor = NSColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 0.9)
-        let highlightPath = NSBezierPath(roundedRect: highlightRect, xRadius: 3, yRadius: 3)
-        highlightColor.setStroke()
-        highlightPath.lineWidth = 2
-        highlightPath.stroke()
-
-        thumbnail.unlockFocus()
-        return thumbnail
-    }
-
-    private func createThumbnail(from image: NSImage, size: CGSize) -> NSImage {
-        let thumbnail = NSImage(size: size)
-        thumbnail.lockFocus()
-
-        let sourceRect = NSRect(origin: .zero, size: image.size)
-        let destRect = NSRect(origin: .zero, size: size)
-
-        image.draw(in: destRect, from: sourceRect, operation: .copy, fraction: 1.0)
-
-        thumbnail.unlockFocus()
-        return thumbnail
+        "\(result.sourceQualifiedID)_\(result.evidenceRef?.extractionRevision ?? -1)_\(viewModel.searchGeneration)_\(viewModel.committedSearchQuery)"
     }
 
     // MARK: - App Icon Loading
@@ -1813,16 +1515,15 @@ private struct GalleryResultCard: View {
     let result: SearchResult
     let thumbnailKey: String
     let thumbnailSize: CGSize
+    let thumbnailLoader: SearchEvidenceThumbnailLoader
+    let coordinator: AppCoordinator
     let index: Int
     let isKeyboardSelected: Bool
     let onSelect: () -> Void
     @ObservedObject var viewModel: SearchViewModel
 
     @State private var isHovered = false
-
-    private var thumbnail: NSImage? {
-        viewModel.thumbnailCache[thumbnailKey]
-    }
+    @StateObject private var thumbnailPreview = SearchEvidenceThumbnailPreview()
 
     private var appIcon: NSImage? {
         viewModel.appIconCache[result.appBundleID ?? ""]
@@ -1839,7 +1540,7 @@ private struct GalleryResultCard: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 0) {
-                // Thumbnail (highlight is baked into the cropped thumbnail)
+                // A verified full-image preview; exact evidence owns immutable OCR highlighting.
                 thumbnailView
 
                 // Title bar with app icon
@@ -1921,6 +1622,11 @@ private struct GalleryResultCard: View {
             }
         }
         .animation(.easeOut(duration: 0.2).delay(Double(index) * 0.03), value: true)
+        .task(id: thumbnailKey) {
+            await thumbnailPreview.show(result, key: thumbnailKey, loader: thumbnailLoader, size: thumbnailSize,
+                service: { try await coordinator.progressiveRecall() })
+        }
+        .onDisappear { thumbnailPreview.hide() }
     }
 
     @ViewBuilder
@@ -1928,12 +1634,19 @@ private struct GalleryResultCard: View {
         ZStack {
             Color.black
 
-            if let thumbnail = thumbnail {
-                Image(nsImage: thumbnail)
+            if let thumbnail = thumbnailPreview.image(for: thumbnailKey) {
+                Image(decorative: thumbnail, scale: 1)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: .fit)
                     .frame(width: thumbnailSize.width, height: thumbnailSize.height)
                     .clipped()
+            } else if thumbnailPreview.isUnavailable(for: thumbnailKey) {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                    Text("Preview unavailable")
+                        .font(.retraceCaption2)
+                }
+                .foregroundColor(.white.opacity(0.5))
             } else {
                 SpinnerView(size: 16, lineWidth: 2, color: .white.opacity(0.4))
             }

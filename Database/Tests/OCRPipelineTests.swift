@@ -30,7 +30,7 @@ final class OCRPipelineTests: XCTestCase {
 
     /// Path to test screenshots (set via TEST_SCREENSHOT_PATH env var)
     var screenshotPath: String {
-        ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] ?? NSString(string: "~/ScreenMemoryData/screenshots").expandingTildeInPath
+        ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] ?? testRoot.appendingPathComponent("screenshots").path
     }
 
     /// Database path for this test (isolated temp location)
@@ -53,6 +53,9 @@ final class OCRPipelineTests: XCTestCase {
         testRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("RetraceOCRPipelineTests_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] == nil {
+            try RenderedRecallFixture.write(to: URL(fileURLWithPath: screenshotPath))
+        }
 
         // Create isolated storage directory for this test run
         try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
@@ -346,6 +349,9 @@ final class OCRPipelineTests: XCTestCase {
         }
 
         XCTAssertEqual(nullVideoCount, 0, "All frames should have a valid videoId after processing")
+        if ProcessInfo.processInfo.environment["TEST_SCREENSHOT_PATH"] == nil {
+            try await RenderedRecallFixture.assertSearchEvidence(search)
+        }
     }
 
     // MARK: - Helper Methods
