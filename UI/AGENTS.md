@@ -13,13 +13,16 @@ UI/
 │   └── CreatorProfile.imageset/        # Creator profile image shown in onboarding/milestones
 ├── Views/
 │   ├── Timeline/
-│   │   ├── ActivityTimelineController.swift # Activity/evidence window lifecycle and source-qualified search routing
-│   │   ├── ActivityTimelineView.swift       # Episodes, intervals, corrections, metadata search, context control and health
-│   │   ├── ExactEvidenceView.swift          # Exact retained revision, verified image/regions and unavailable-media text
+│   │   ├── ExactEvidenceView.swift          # Shared exact image/context inspector and retained-media states
+│   │   └── EvidenceTextView.swift           # Bounded OCR pages with explicit continuation and provenance
 │   ├── FullscreenTimeline/
+│   │   ├── SimpleTimelineView.swift      # Active timeline, frame canvas and search selection
+│   │   ├── TimelineWindowController.swift # Timeline presentation and focus lifecycle
 │   │   ├── SpotlightSearchOverlay.swift # Primary search overlay UI
 │   │   └── SearchFilterBar.swift        # Search filters and controls
 │   ├── Dashboard/
+│   │   ├── DashboardWindowController.swift # Persistent Settings/dashboard destinations and native presentation
+│   │   ├── ScreenshotEvidencePreview.swift # Shared immutable evidence selection and verified screenshot preview
 │   │   ├── DashboardView.swift          # Voice-first dashboard, visual memory, and live intelligence UI
 │   │   ├── DashboardVoiceLayout.swift   # Dashboard layout, transcript, and screenshot policies
 │   │   ├── ChangelogView.swift          # Appcast-powered release notes view
@@ -30,11 +33,7 @@ UI/
 │   │   ├── TranscriptContentView.swift  # Continuous transcript display
 │   │   └── TranscriptWindowController.swift # Transcript window lifecycle
 │   └── Settings/
-│       ├── SettingsView.swift           # Settings root
-│       ├── CaptureSettings.swift        # Capture config
-│       ├── StorageSettings.swift        # Storage/retention
-│       ├── PrivacySettings.swift        # Exclusions/permissions
-│       └── AdvancedSettings.swift       # Power user options
+│       └── SettingsView.swift           # Settings root and all General/Capture/Storage/Privacy/Power sections
 ├── Components/
 │   ├── AppResourceBundle.swift          # Packaged app resource bundle and SwiftPM/Xcode fallbacks
 │   ├── ApplicationTerminationWorkflow.swift # Coalesced startup cancellation and async metrics/service shutdown before Quit
@@ -47,8 +46,9 @@ UI/
 │   ├── ProcessCPUSummaryCard.swift      # System Monitor CPU table/card UI
 │   └── ProcessMemorySummaryCard.swift   # System Monitor memory table/card UI
 ├── ViewModels/
-│   ├── ActivityTimelineViewModel.swift     # Cancellable metadata paging, corrections, links and exact evidence resolution
-│   ├── TimelineViewModel.swift
+│   ├── EvidenceViewModel.swift           # Cancellable exact selection independent of activity/project queries
+│   ├── EvidenceTextViewModel.swift       # One bounded text page, revalidated back/forward navigation
+│   ├── SimpleTimelineViewModel.swift     # Active historical timeline state and media loading
 │   ├── SearchViewModel.swift
 │   ├── DashboardViewModel.swift
 │   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
@@ -56,7 +56,11 @@ UI/
 └── Tests/
     ├── ApplicationTerminationWorkflowTests.swift # Async Quit/startup ordering, retry and real SQLite commit-before-close regressions
     ├── TimelineSessionMetricsTests.swift # Real SQLite retry, partial failure, hide/reopen, reconfiguration and timeout acknowledgements
-    ├── ActivityTimelineViewModelTests.swift # Real SQLite paging/correction/control and delayed evidence regressions
+    ├── DashboardScreenshotIdentityTests.swift # Real native/imported SQLite collisions through list and selection policy
+    ├── DashboardSettingsRoutingTests.swift # Native offscreen menu/notification and cold/hidden Settings routing
+    ├── EvidenceViewModelTests.swift      # Real SQLite retained text, revision refresh and compatibility evidence
+    ├── EvidenceTextViewModelTests.swift  # Real SQLite bounded pages, privacy changes and stale completion
+    ├── TimelineEvidenceSelectionTests.swift # Exact search/frame selection, late work and timeline pinning
     ├── SearchEvidenceThumbnailTests.swift # Real SQLite source/privacy/deletion checks before thumbnail exposure
     ├── AppResourceBundleTests.swift      # Real app/resource bundle layout and lazy fallback checks
     ├── TestLogger.swift                  # UI behavior + deeplink parsing tests
@@ -79,17 +83,19 @@ UI/
 
 Shortcut reloads call `TimelineWindowController.configure(coordinator:)` again with the same app coordinator. They must retain the existing metric owner and pending drain. A different coordinator requires a separate controller lifetime; replacement is rejected before changing controller state so pending metrics cannot move to another database.
 
-### Progressive recall
+### Progressive recall (Phase 2 scope)
 
-The **Activity & Evidence** menu/dashboard entry opens three levels: episodes, observed intervals and exact recorded evidence. Metadata search works before OCR and advances the returned cursor even when current privacy filters leave a page empty. Brief visits stay visible by default; optional hiding reports its count and can be reversed. Grouping is a rebuildable local projection and must preserve every interval and unknown gap.
+Stuart's September 14 direction is evidence collection and exact replay. Remove project assignment, visit/episode grouping, focus-duration presentation and correction controls from the active UI. Preserve captured data and historical protocol compatibility. Optional bookmarking/selection of evidence is a roadmap possibility only. The standalone Activity & Evidence product surface is being retired in favour of the main Screenshots image/OCR/context inspector.
 
-`ActivityTimelineViewModel` performs I/O through async closures backed by `ProgressiveRecallService`; generation checks prevent an old or cancelled selection from overwriting a newer one. Activity-linked screens must validate the association both before and after resolving the exact source/store/observation/revision. A deleted association does not imply the screen was deleted. Image failure may show separately permitted retained text, with an explicit unavailable-image state. Only verified immutable block geometry may overlay an image. Opening the current URL remains a separate action.
+The Capture settings card owns the existing context opt-in. Its async initial read is fenced against concurrent setting changes; publish the setter acknowledgement only after the coordinator returns. Existing capture preferences and master pause remain authoritative.
 
-Corrections require a concrete selected scope and explicit confirmation; drafts, pending application, applied, conflicts and append-only undo remain distinct. Hiding presentation, excluding future capture and deleting activity are separate controls. The activity context opt-in applies only while master recording permits capture. Stage health distinguishes activity observed/persisted, image admitted/retained, text queue/processing/failures and audio processing without inferring stopped stages from missing timestamps.
+Keep exact evidence selection independent of activity queries and correction/projection loading. A search result stays inside the historical timeline; it must not close that window or restore the previous foreground app. Validate the entire source/store/frame/time/revision reference, including already-indexed hits. Missing or denied evidence stays explicitly unavailable; never substitute a nearby frame, current capture or mutable OCR revision.
 
-Search rows and thumbnail keys must include `SearchResult.sourceQualifiedID`; numeric frame IDs can collide between libraries. Search evidence clicks route through `ActivityTimelineController`, never the old nearest-timestamp fallback. `retrace://evidence` retains the exact reference. A concurrent search revision change presents an explicit refresh action rather than silently ending pagination. New actions emit safe `progressive_recall_action` metrics; critical activity/evidence opens record latency.
+Evidence presentation uses cancellable async dependencies and request generations. Coalesce duplicate in-flight requests, fence late source/image/OCR/neighbourhood results, and cancel on explicit scrub, new selection or close. Structured text, geometry and context come from the same immutable observation. Unknown ownership and legacy highlight limitations remain explicit. New actions emit safe `progressive_recall_action` or existing screenshot metrics and critical opens record latency.
 
-`SpotlightSearchOverlay` previews resolve the original `SearchResult` proof through the exact evidence service on every row appearance. They do not expose the old memory/disk thumbnail cache or look up media and OCR nodes by bare IDs. A shared actor limits decoding to two concurrent requests and 32 queued requests; Core Graphics resizing runs off main. Per-row pixels are cleared on disappearance, and cancellation plus request identity prevent late publication. Previews show the full verified image without cropping to mutable OCR nodes; exact evidence owns immutable block highlighting. This trades repeated decode work for current source, privacy and deletion checks; `search.thumbnail.exact` records latency.
+The initiating async caller owns cancellation of its newly created evidence or text-page task. Cancelling a duplicate caller that merely joined must not cancel the shared request. Guard cancellation cleanup by the request generation so it cannot close a later selection. Keep complete OCR matching out of SwiftUI rendering: calculate the matched source-qualified row IDs in cancellable background work keyed by query, source epoch and row/text revision, then render that result.
+
+`SpotlightSearchOverlay` previews resolve the original `SearchResult` proof through the exact evidence service on every row appearance. They do not expose the old memory/disk thumbnail cache or look up media and OCR nodes by bare IDs. A shared actor limits decoding to two concurrent requests and 32 queued requests; Core Graphics resizing runs off main. Per-row pixels are cleared on disappearance, and cancellation plus request identity prevent late publication. Previews show the full verified image without cropping to mutable OCR nodes; exact evidence owns immutable block highlighting. `search.thumbnail.exact` records latency.
 
 ### 1. Timeline View (Primary Interface)
 
@@ -650,3 +656,11 @@ The screenshot dashboard's latest-page poll does not cover every retained histor
 8. Write UI tests
 
 Focus on getting the timeline + search working first before polishing dashboard/settings.
+
+### Phase 2 structured evidence presentation
+
+`ExactEvidenceView` is shared by the historical timeline and the main Screenshots inspector. The screenshot preview and text inspector use the same selected immutable reference. A current OCR revision is offered explicitly; background refresh never replaces the selected text. `EvidenceTextViewModel` retains one bounded page and opaque previous-page cursors. Back/forward requests revalidate current source, deletion and privacy, coalesce duplicate requests, and fence late results by selection generation. The service records expansion requests/failures; presentation records accepted page outcomes through `daily_metrics` without captured content.
+
+Project assignment, visit grouping, correction forms and the separate Activity & Evidence window are removed. Old backend Codable/storage contracts remain compatible. Full structured-observation projection belongs on a background service/model path, never in SwiftUI `body`; render only bounded fragments and the selected verified highlight ordinals.
+
+Screenshot lists must retain source + frame + capture time + acquired source-generation proof with each row. Key selection, row identity, caches and async admission consistently. A selected row that disappears is unavailable, not permission to select the first remaining row. Bracket source reads and validate the original token at selection/presentation; source reconfiguration invalidates all older work. Reuse exact-thumbnail admission rather than an unvalidated image cache. A disconnected imported OCR request must never fall back to native data with the same numeric ID.

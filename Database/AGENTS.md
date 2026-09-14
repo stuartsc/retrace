@@ -66,6 +66,7 @@ Database/
 │   ├── RecallSearchRevisionTests.swift
 │   ├── RenderedRecallFixture.swift
 │   ├── RetentionPersistenceTests.swift
+│   ├── StructuredScreenObservationTests.swift # Real SQLite/Vision publication, geometry and legacy payloads
 │   ├── ScreenEvidencePersistenceTests.swift
 │   ├── SearchRevisionCompatibilityTests.swift
 │   └── TestLogger.swift
@@ -575,3 +576,7 @@ With junction tables and proper indexes:
 - **Database size**: ~500MB metadata/month + ~150GB text regions + ~50MB junctions
 
 Trade-off: Slightly more complex writes (populate junction tables + text regions), but **massive** read speedups and professional UI.
+
+### Structured screen observations (Phase 2)
+
+Canonical OCR commits append immutable optional structured payloads through `ScreenEvidencePersistence`; they retain original main-then-chrome block ordinals, exact flat-text parity, UTF16 channel ranges, frame-pixel geometry and explicit unknown block ownership. Incoherent legacy text remains an unstructured channel with no fabricated highlights. Old JSON decodes without rewriting retained revisions or requiring a schema migration. Chrome-only text must enter FTS just as main text does. `StructuredScreenObservationTests` uses real SQLite publication and rendered JPEG/Vision input; expansion itself remains a currently authorised service read with per-page access checks.

@@ -891,10 +891,6 @@ public class MenuBarManager: ObservableObject {
         timelineItem.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
         menu.addItem(timelineItem)
 
-        let activityItem = NSMenuItem(title: "Activity & Evidence", action: #selector(openActivityTimeline), keyEquivalent: "")
-        activityItem.image = NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: nil)
-        menu.addItem(activityItem)
-
         // Open Dashboard
         let isDashboardFrontAndCenter = visibleDashboardContent == .dashboard
         let dashboardItem = NSMenuItem(
@@ -927,13 +923,7 @@ public class MenuBarManager: ObservableObject {
         menu.addItem(NSMenuItem.separator())
 
         // Settings
-        let settingsItem = NSMenuItem(
-            title: "Settings...",
-            action: #selector(openSettings),
-            keyEquivalent: ","
-        )
-        settingsItem.keyEquivalentModifierMask = .command
-        settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        let settingsItem = Self.makeSettingsMenuItem(target: self)
         menu.addItem(settingsItem)
 
         // Check for updates
@@ -1161,13 +1151,6 @@ public class MenuBarManager: ObservableObject {
         toggleTimelineOverlay()
     }
 
-    @objc private func openActivityTimeline() {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            ActivityTimelineController.shared.show(coordinator: coordinator)
-        }
-    }
-
     @objc private func openSearch() {
         // Open timeline with search focused
         Task { @MainActor in
@@ -1271,8 +1254,16 @@ public class MenuBarManager: ObservableObject {
         }
     }
 
+    static func makeSettingsMenuItem(target: AnyObject, action: Selector = #selector(MenuBarManager.openSettings)) -> NSMenuItem {
+        let item = NSMenuItem(title: "Settings...", action: action, keyEquivalent: ",")
+        item.target = target
+        item.keyEquivalentModifierMask = .command
+        item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        return item
+    }
+
     @objc private func openSettings() {
-        NotificationCenter.default.post(name: .openSettings, object: nil)
+        Task { @MainActor in DashboardWindowController.shared.showSettings() }
     }
 
     @objc private func openFeedback() {

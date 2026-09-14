@@ -14,8 +14,8 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 0/1 implementation authorised; acceptance tracked separately)
-- **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions and matched Mac/Timely acceptance)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2 authorised; evidence collection and exact replay; acceptance tracked separately)
+- **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
 ---
@@ -56,7 +56,7 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── progressive-recall-plan.md # Authorised contextual recall plan; Phase 0/1 in progress
+│   ├── progressive-recall-plan.md # Authorised evidence-focused recall plan; Phase 2 commencing
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
 │   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle and same-title Word RTF fixtures
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
@@ -75,6 +75,8 @@ retrace/
 │   │   ├── Frame.swift          # FrameID, CapturedFrame, VideoSegment
 │   │   ├── Activity.swift       # Immutable focus events, coverage, corrections and feed contracts
 │   │   ├── Evidence.swift       # Source-qualified references, snapshots and typed exact resolution
+│   │   ├── StructuredScreenObservation.swift # Immutable OCR blocks, channels, ranges and unknown ownership
+│   │   ├── ScreenEvidenceExpansion.swift # Bounded exact text fragments and opaque revision-bound continuation
 │   │   ├── Text.swift           # ExtractedText, OCRTextRegion
 │   │   ├── TextRegion.swift     # OCR text region types
 │   │   ├── Search.swift         # SearchQuery, SearchResult
@@ -168,8 +170,8 @@ retrace/
 ├── App/                         # Main application coordinator
 │   ├── AppCoordinator.swift     # Central coordinator (orchestrates all modules)
 │   ├── RecordingLifecycle.swift # Coalesced startup and cancellation/teardown ownership
-│   ├── ProgressiveRecallService.swift # Local activity/evidence access with current privacy checks
-│   ├── ActivityTimelineProjection.swift # Derived episodes and timed document/coverage intervals
+│   ├── ProgressiveRecallService.swift # Local exact evidence access, bounded text expansion and current privacy checks
+│   ├── ActivityTimelineProjection.swift # Legacy episode projection retained for compatibility; no assignment UI
 │   ├── DataAdapter.swift        # Data layer adapter (DB queries, transformations)
 │   ├── ServiceContainer.swift   # Dependency injection container
 │   ├── AppLifecycle.swift       # App lifecycle management
@@ -189,7 +191,7 @@ retrace/
     │   ├── Dashboard/           # App usage analytics and dictation history views
     │   ├── Audio/               # Transcript window views
     │   ├── FullscreenTimeline/  # Timeline scrubbing & playback (10 views)
-    │   ├── Timeline/            # Activity episodes, exact evidence and window controller
+    │   ├── Timeline/            # Shared exact evidence image/context and bounded text views
     │   ├── Search/              # Search UI (SearchView, ResultRow, FrameViewer)
     │   ├── Settings/            # Settings panel
     │   ├── Onboarding/          # Onboarding flow
@@ -209,9 +211,9 @@ retrace/
 
 ### Progressive recall implementation and validation
 
-`App/Tests/ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover constrained/source-aware search, exact navigation, source failure propagation, timed organisation and cancelled device startup. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
+`App/Tests/ScreenEvidenceExpansionTests.swift`, `ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover bounded exact text, constrained/source-aware search, exact navigation, source failure propagation, legacy projection compatibility and cancelled device startup. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
 
-Activity context is independently opt-in (`activityContextEnabled`, default false) in the activity timeline and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a legacy hit by bare numeric ID. Local corrections can be confirmed but remain pending until the companion writer acknowledges them. Implementation and automated evidence do not establish installed Mac/Timely acceptance; see the validation ledger.
+Capture context is independently opt-in (`activityContextEnabled`, default false), exposed in Capture settings, and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a hit by bare numeric ID. Screenshots/OCR and timeline selection use exact evidence without project assignment or visit grouping. Existing correction records remain for compatibility; the assignment workflow is outside the active scope. Implementation and automated evidence do not establish installed Mac acceptance; see the validation ledger.
 
 ## Module Ownership & Responsibilities
 
@@ -499,7 +501,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-12_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-15_
 
 
 <claude-mem-context>

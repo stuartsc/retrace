@@ -66,6 +66,13 @@ struct RetraceApp: App {
             // Remove "New Window" since we're a menu bar app
         }
 
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                DashboardWindowController.shared.showSettings()
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+
         // Add Dashboard and Timeline to the app menu (top left, after "About Retrace")
         CommandGroup(after: .appInfo) {
             Button("Open Dashboard") {
@@ -108,9 +115,8 @@ struct RetraceApp: App {
             Divider()
 
             Button("Settings") {
-                DashboardWindowController.shared.toggleSettings()
+                DashboardWindowController.shared.showSettings()
             }
-            .keyboardShortcut(",", modifiers: .command)
         }
 
         CommandMenu("Recording") {
@@ -1386,7 +1392,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch route {
         case .evidence(let reference):
             if let coordinator = coordinatorWrapper?.coordinator {
-                ActivityTimelineController.shared.show(coordinator: coordinator, evidence: reference)
+                Task { await TimelineWindowController.shared.openEvidence(reference, coordinator: coordinator) }
             }
         case let .timeline(timestamp):
             Log.info("[AppDelegate] Opening timeline deeplink at timestamp: \(String(describing: timestamp))", category: .app)

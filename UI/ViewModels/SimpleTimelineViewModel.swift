@@ -828,6 +828,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Start auto-advancing frames at the current playback speed
     public func startPlayback() {
         guard !isPlaying else { return }
+        closeExactEvidence()
         isPlaying = true
         schedulePlaybackTimer()
     }
@@ -1351,6 +1352,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Current timeline frame (frame + video info) - derived from currentIndex
     public var currentTimelineFrame: TimelineFrame? {
+        if evidence.isPresentingEvidence {
+            return evidence.selectedFrame.map { TimelineFrame(frame: $0, videoInfo: nil, processingStatus: 2) }
+        }
         guard currentIndex >= 0 && currentIndex < frames.count else { return nil }
         return frames[currentIndex]
     }
@@ -1577,6 +1581,8 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     deinit {
+        evidenceSelectionTask?.cancel()
+        evidenceNeighbourhoodTask?.cancel()
         commentSearchTask?.cancel()
         diskFrameBufferMemoryLogTask?.cancel()
         diskFrameBufferInactivityCleanupTask?.cancel()
@@ -1814,6 +1820,11 @@ public class SimpleTimelineViewModel: ObservableObject {
     // MARK: - Dependencies
 
     let coordinator: AppCoordinator
+    let evidence: EvidenceViewModel
+    private let backgroundServicesEnabled: Bool
+    private var evidenceNavigationGeneration: UInt64 = 0
+    private var evidenceSelectionTask: Task<Void, Never>?
+    private var evidenceNeighbourhoodTask: Task<Void, Never>?
 
 #if DEBUG
     // Test-only hooks for deterministic concurrency race coverage around refreshProcessingStatuses().
@@ -1836,12 +1847,15 @@ public class SimpleTimelineViewModel: ObservableObject {
     var test_refreshProcessingStatusesHooks = RefreshProcessingStatusesTestHooks()
     var test_refreshFrameDataHooks = RefreshFrameDataTestHooks()
     var test_windowFetchHooks = WindowFetchTestHooks()
+    var test_ocrNodesRead: ((FrameID, FrameSource) async throws -> [OCRNodeWithText])?
 #endif
 
     // MARK: - Initialization
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
+        self.evidence = EvidenceViewModel(client: .live(service: { try await coordinator.progressiveRecall() }))
+        self.backgroundServicesEnabled = true
         self.diskFrameBufferDirectoryURL = Self.defaultDiskFrameBufferDirectoryURL()
 
         // Restore search overlay visibility from last session
@@ -1882,6 +1896,164 @@ public class SimpleTimelineViewModel: ObservableObject {
         startDiskFrameBufferMemoryReporting()
     }
 
+#if DEBUG
+    /// An authored-store test owner does not register observers, persist preferences,
+    /// create the production disk buffer or start background service work.
+    init(coordinator: AppCoordinator, evidenceClient: EvidenceClient, transientDirectory: URL) {
+        self.coordinator = coordinator
+        self.evidence = EvidenceViewModel(client: evidenceClient)
+        self.backgroundServicesEnabled = false
+        self.diskFrameBufferDirectoryURL = transientDirectory
+    }
+#endif
+
+    func openSearchResult(_ result: SearchResult) async {
+        evidenceSelectionTask?.cancel(); evidenceSelectionTask = nil
+        await performSearchResultSelection(result)
+    }
+
+    private func performSearchResultSelection(_ result: SearchResult) async {
+        guard !Task.isCancelled else { return }
+        let token = beginExactSelection()
+        await evidence.openSearchResult(result)
+        await anchorExactSelection(generation: token)
+    }
+
+    func openEvidence(_ reference: EvidenceRef) async {
+        evidenceSelectionTask?.cancel(); evidenceSelectionTask = nil
+        guard !Task.isCancelled else { return }
+        let token = beginExactSelection()
+        await evidence.openEvidence(reference)
+        await anchorExactSelection(generation: token)
+    }
+
+    @discardableResult
+    func revalidateExactEvidence() -> Task<Void, Never> {
+        let reference = evidence.evidenceReference
+        evidenceSelectionTask?.cancel()
+        let token = beginExactSelection()
+        evidence.invalidateForSourceChange()
+        let pending: Task<Void, Never> = Task { [weak self] in
+            guard let self, !Task.isCancelled, token == evidenceNavigationGeneration else { return }
+            // A pending raw frame has no validated citation yet. Never look it up
+            // again against a replacement store merely because its row ID agrees.
+            if let reference {
+                await evidence.openEvidence(reference)
+                await anchorExactSelection(generation: token)
+            }
+            if token == evidenceNavigationGeneration { evidenceSelectionTask = nil }
+        }
+        evidenceSelectionTask = pending
+        return pending
+    }
+
+    func closeExactEvidence(recordMetric: Bool = true, resumeHistory: Bool = true) {
+        let wasPresenting = evidence.isPresentingEvidence
+        guard wasPresenting || evidenceSelectionTask != nil || evidenceNeighbourhoodTask != nil else { return }
+        var verifiedImage: CGImage?
+        if resumeHistory, case .screen(let snapshot, let image) = evidence.resolution,
+           frames.indices.contains(currentIndex) {
+            let historical = frames[currentIndex].frame
+            if historical.source == snapshot.frame.source, historical.id == snapshot.frame.id,
+               abs(historical.timestamp.timeIntervalSince(snapshot.frame.timestamp)) < 0.001 {
+                verifiedImage = image
+            }
+        }
+        evidenceNavigationGeneration &+= 1
+        evidenceSelectionTask?.cancel(); evidenceSelectionTask = nil
+        evidenceNeighbourhoodTask?.cancel(); evidenceNeighbourhoodTask = nil
+        evidence.closeEvidence()
+        if wasPresenting, recordMetric { Task { await evidence.track(.evidenceClosed) } }
+        if let verifiedImage {
+            currentImage = NSImage(cgImage: verifiedImage, size: .zero)
+            frameLoadError = false; frameNotReady = false
+        } else if wasPresenting, resumeHistory, backgroundServicesEnabled {
+            loadImageIfNeeded()
+        }
+    }
+
+    @discardableResult
+    func selectSearchResult(_ result: SearchResult) -> Task<Void, Never> {
+        evidenceSelectionTask?.cancel()
+        let pending: Task<Void, Never> = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            await self?.performSearchResultSelection(result)
+        }
+        evidenceSelectionTask = pending
+        return pending
+    }
+
+    private func beginExactSelection() -> UInt64 {
+        evidenceNavigationGeneration &+= 1
+        evidenceNeighbourhoodTask?.cancel(); evidenceNeighbourhoodTask = nil
+        stopPlayback()
+        cancelBoundaryLoadTasks(reason: "exact evidence selection")
+        cancelForegroundFrameLoad(reason: "exact evidence selection")
+        cancelCacheExpansion(reason: "exact evidence selection")
+        liveOCRDebounceTask?.cancel(); liveOCRDebounceTask = nil
+        ocrStatusPollingTask?.cancel(); ocrStatusPollingTask = nil
+        isInLiveMode = false; liveScreenshot = nil; isLiveOCRProcessing = false
+        setLoadingState(false, reason: "exact evidence selection")
+        clearError()
+        currentImage = nil; frameLoadError = false; frameNotReady = false
+        clearSearchHighlightImmediately(); clearTextSelection(); setOCRNodes([])
+        closeInFrameSearch(clearQuery: true)
+        resetFrameZoom()
+        isTapeHidden = false
+        return evidenceNavigationGeneration
+    }
+
+    private func anchorExactSelection(generation token: UInt64) async {
+        guard token == evidenceNavigationGeneration, !Task.isCancelled,
+              evidence.isPresentingEvidence, let frame = evidence.selectedFrame else { return }
+        let reference = evidence.evidenceReference
+        // A verified target is always present, including beyond the bounded query.
+        // Neighbourhood frames provide scrubbing context, never substitute evidence.
+        filterCriteria = .none
+        frames = [TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2)]
+        currentIndex = 0
+        updateWindowBoundaries()
+        guard backgroundServicesEnabled else { return }
+        let pending = Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard case .screen(let screen) = reference else { return }
+                let service = try await coordinator.progressiveRecall()
+                let sourceGeneration = try await service.sourceGeneration(source: frame.source)
+                guard let retained = await service.retainedScreen(screen, for: .localUser),
+                      retained.frame.source == frame.source, retained.frame.id == frame.id,
+                      abs(retained.frame.timestamp.timeIntervalSince(frame.timestamp)) < 0.001 else { return }
+                guard !Task.isCancelled, token == evidenceNavigationGeneration else { return }
+                let nearby = try await fetchFramesWithVideoInfoLogged(
+                    from: frame.timestamp.addingTimeInterval(-300), to: frame.timestamp.addingTimeInterval(300),
+                    limit: 1_000, filters: .none, reason: "exactEvidence.neighbourhood")
+                guard try await service.sourceGeneration(source: frame.source) == sourceGeneration else { return }
+                guard !Task.isCancelled, token == evidenceNavigationGeneration,
+                      evidence.isPresentingEvidence, evidence.evidenceReference == reference else { return }
+                var context = nearby.filter { $0.frame.source == frame.source && $0.frame.id != frame.id }
+                    .map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+                let target = nearby.first {
+                    $0.frame.source == frame.source && $0.frame.id == frame.id &&
+                    abs($0.frame.timestamp.timeIntervalSince(frame.timestamp)) < 0.001
+                }
+                context.append(TimelineFrame(frame: frame, videoInfo: target?.videoInfo, processingStatus: 2))
+                context.sort { $0.frame.timestamp == $1.frame.timestamp
+                    ? $0.frame.id.value < $1.frame.id.value : $0.frame.timestamp < $1.frame.timestamp }
+                frames = context
+                currentIndex = context.firstIndex { $0.frame.id == frame.id && $0.frame.source == frame.source } ?? 0
+                updateWindowBoundaries()
+            } catch {
+                // The exact selection stays available if surrounding history cannot load.
+                if !Task.isCancelled, token == evidenceNavigationGeneration {
+                    Log.warning("[TIMELINE] Exact evidence neighbourhood unavailable", category: .ui)
+                }
+            }
+        }
+        evidenceNeighbourhoodTask = pending
+        await pending.value
+        if token == evidenceNavigationGeneration { evidenceNeighbourhoodTask = nil }
+    }
+
     /// Set up Combine observer to track when any dialog/overlay is open
     private func setupDialogStateObserver() {
         Publishers.CombineLatest4(
@@ -1904,6 +2076,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Check if audio transcriptions exist near the current timeline position (±30 min)
     public func checkNearbyAudio() {
+        guard backgroundServicesEnabled else { return }
         nearbyAudioCheckTask?.cancel()
         nearbyAudioCheckTask = Task { [weak self] in
             // Debounce: wait 300ms before querying
@@ -2180,6 +2353,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Call this when the timeline view disappears.
     public func handleTimelineClosed() {
+        closeExactEvidence(resumeHistory: false)
+        guard backgroundServicesEnabled else { return }
         cancelForegroundFrameLoad(reason: "timeline closed")
         cancelCacheExpansion(reason: "timeline closed")
         if shouldClearDiskFrameBufferOnTimelineClose() {
@@ -2491,6 +2666,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Called when data sources change (e.g., Rewind toggled on/off)
     @MainActor
     public func invalidateCachesAndReload() {
+        if evidence.isPresentingEvidence || evidenceSelectionTask != nil {
+            revalidateExactEvidence()
+            return
+        }
         Log.info("[DataSourceChange] invalidateCachesAndReload() called", category: .ui)
 
         // Clear disk frame buffer metadata/files
@@ -2538,6 +2717,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Reload frames around a specific timestamp (used after data source changes and app quick filter)
     private func reloadFramesAroundTimestamp(_ timestamp: Date, cmdFTrace: CmdFQuickFilterLatencyTrace? = nil) async {
+        guard !evidence.isPresentingEvidence else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
         let reloadStart = CFAbsoluteTimeGetCurrent()
         Log.debug("[DataSourceChange] reloadFramesAroundTimestamp() starting for timestamp: \(timestamp)", category: .ui)
         if let cmdFTrace {
@@ -2566,6 +2747,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: filterCriteria,
                 reason: "reloadFramesAroundTimestamp"
             )
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
             let queryElapsedMs = (CFAbsoluteTimeGetCurrent() - queryStart) * 1000
             Log.debug("[DataSourceChange] Fetched \(framesWithVideoInfo.count) frames from data adapter", category: .ui)
 
@@ -2658,6 +2840,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 return
             }
         } catch {
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
             Log.error("[DataSourceChange] Failed to reload frames: \(error)", category: .ui)
             if let cmdFTrace {
                 let totalElapsedMs = (CFAbsoluteTimeGetCurrent() - cmdFTrace.startedAt) * 1000
@@ -5033,6 +5216,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Capture current timestamp before applying filters to preserve position
         let timestampToPreserve = currentTimestamp
+        closeExactEvidence(resumeHistory: false)
         let cmdFTrace = pendingCmdFQuickFilterLatencyTrace
         pendingCmdFQuickFilterLatencyTrace = nil
         logCmdFPlayheadState(
@@ -5884,6 +6068,8 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Load the most recent frame on startup
     /// - Parameter clickStartTime: Optional start time from dashboard tab click for end-to-end timing
     public func loadMostRecentFrame(clickStartTime: CFAbsoluteTime? = nil) async {
+        guard !Task.isCancelled, !evidence.isPresentingEvidence else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
         // Coalesce concurrent startup loads (e.g., TimelineWindowController.prepareWindow + SimpleTimelineView.onAppear).
         // Joining avoids skipping a caller and makes the load semantics deterministic.
         if isInitialLoadInProgress {
@@ -5922,6 +6108,8 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: filterCriteria,
                 reason: "loadMostRecentFrame"
             )
+            guard !Task.isCancelled, evidenceGeneration == evidenceNavigationGeneration,
+                  !evidence.isPresentingEvidence else { return }
 
             guard !framesWithVideoInfo.isEmpty else {
                 // No frames found - check if filters are active
@@ -5999,6 +6187,8 @@ public class SimpleTimelineViewModel: ObservableObject {
             setLoadingState(false, reason: "loadMostRecentFrame.success")
 
         } catch {
+            guard !Task.isCancelled, evidenceGeneration == evidenceNavigationGeneration,
+                  !evidence.isPresentingEvidence else { return }
             self.error = "Failed to load frames: \(error.localizedDescription)"
             setLoadingState(false, reason: "loadMostRecentFrame.error")
         }
@@ -6009,6 +6199,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     ///   - framesWithVideoInfo: Pre-fetched frames from parallel query
     ///   - clickStartTime: Start time for end-to-end timing
     public func loadFramesDirectly(_ framesWithVideoInfo: [FrameWithVideoInfo], clickStartTime: CFAbsoluteTime? = nil) async {
+        guard !evidence.isPresentingEvidence else { return }
         // Guard against concurrent calls - use dedicated flag to avoid race conditions
         guard !isInitialLoadInProgress && !isLoading else {
             Log.debug("[SimpleTimelineViewModel] loadFramesDirectly skipped - already loading", category: .ui)
@@ -6072,6 +6263,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         navigateToNewest: Bool = true,
         allowNearLiveAutoAdvance: Bool = true
     ) async {
+        guard !evidence.isPresentingEvidence else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
         // If we have frames and a current position, just refresh the current image
         if !frames.isEmpty {
             // Background refresh rules:
@@ -6108,6 +6301,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                         filters: filterCriteria,
                         reason: "refreshFrameData.navigateToNewest=\(shouldNavigateToNewest)"
                     )
+                    guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
 
                     // Filter to only truly new frames
                     let newFrames = newerFrames.filter { $0.frame.timestamp > newestCachedTimestamp }
@@ -6179,6 +6373,8 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// This updates stale processingStatus values (e.g., p=4 frames that are now readable)
     /// and also refreshes videoInfo for frames whose status changed
     public func refreshProcessingStatuses() async {
+        guard !evidence.isPresentingEvidence else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
         // Find all frames that aren't completed (status != 2)
         let framesToRefresh = Array(frames.enumerated()) // .filter { $0.element.processingStatus != 2 }
 
@@ -6190,6 +6386,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         do {
             let updatedStatuses = try await fetchFrameProcessingStatusesForRefresh(frameIDs: frameIDs)
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
 
             var updatedCount = 0
             var currentFrameUpdated = false
@@ -6211,6 +6408,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
                 // Re-fetch the full frame with updated videoInfo.
                 if let updatedFrame = try await fetchFrameWithVideoInfoByIDForRefresh(id: frameID) {
+                    guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
                     // Array may have changed while awaiting; resolve again before writing.
                     guard let liveIndexAfterAwait = frames.firstIndex(where: { $0.frame.id == frameID }) else {
                         continue
@@ -6222,6 +6420,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                         processingStatus: updatedFrame.processingStatus
                     )
                 } else {
+                    guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
                     // Array may have changed while awaiting; resolve again before writing.
                     guard let liveIndexAfterAwait = frames.firstIndex(where: { $0.frame.id == frameID }) else {
                         continue
@@ -6299,6 +6498,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to a specific index in the frames array
     public func navigateToFrame(_ index: Int, fromScroll: Bool = false) {
+        let clampedIndex = max(0, min(frames.count - 1, index))
+        closeExactEvidence(resumeHistory: clampedIndex == currentIndex)
         // Exit live mode on explicit navigation
         if isInLiveMode {
             exitLiveMode()
@@ -6310,7 +6511,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         // Clamp to valid range
-        let clampedIndex = max(0, min(frames.count - 1, index))
         guard clampedIndex != currentIndex else { return }
         let previousIndex = currentIndex
 
@@ -6452,6 +6652,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             Log.debug("[PlayheadUndo] No position to undo to (history size: \(stoppedPositionHistory.count))", category: .ui)
             return false
         }
+        closeExactEvidence()
 
         // Remove the current position (most recent) and move it to redo history.
         let currentPosition = stoppedPositionHistory.removeLast()
@@ -6502,6 +6703,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         guard let nextPosition = undonePositionHistory.popLast() else {
             return false
         }
+        closeExactEvidence()
 
         // Cancel pending stop-detection work to avoid stale position snapshots during redo.
         cancelPendingStoppedPositionRecording()
@@ -6536,9 +6738,11 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     /// Navigate to an undo position by reloading frames around the timestamp
-    /// Similar to navigateToSearchResult but without search highlighting
+    /// Uses the ordinary historical window reload after explicit undo navigation.
     @MainActor
     private func navigateToUndoPosition(_ position: StoppedPosition) async {
+        guard !evidence.isPresentingEvidence else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
         // Exit live mode - we're navigating to a historical frame
         if isInLiveMode {
             exitLiveMode()
@@ -6547,6 +6751,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Reuse the shared reload path so boundary-state reset/load-more behavior stays consistent.
         clearDiskFrameBuffer(reason: "undo navigation")
         await reloadFramesAroundTimestamp(position.timestamp)
+        guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
 
         guard !frames.isEmpty else {
             Log.warning("[PlayheadUndo] Reload window empty after undo navigation", category: .ui)
@@ -6565,118 +6770,6 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         Log.info("[PlayheadUndo] Navigation complete, now at index \(currentIndex)", category: .ui)
-    }
-
-    /// Navigate to a specific frame by ID and highlight the search query
-    /// Used when selecting a search result
-    public func navigateToSearchResult(frameID: FrameID, timestamp: Date, highlightQuery: String) async {
-        // Exit live mode immediately - we're navigating to a specific historical frame
-        if isInLiveMode {
-            exitLiveMode()
-        }
-
-        // Clear any active filters so the target frame is guaranteed to be found
-        if filterCriteria.hasActiveFilters {
-            Log.info("[SearchNavigation] Clearing active filters before navigating to search result", category: .ui)
-            clearFilterState()
-            isFilterPanelVisible = false
-        }
-
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        df.timeZone = .current
-        Log.info("[SearchNavigation] Navigating to search result: frameID=\(frameID.stringValue), timestamp=\(df.string(from: timestamp)) (epoch: \(timestamp.timeIntervalSince1970)), query='\(highlightQuery)'", category: .ui)
-
-        // Log current frames window for debugging
-        if let first = frames.first, let last = frames.last {
-        } else {
-        }
-
-        // First, try to find a frame with this ID in our current data
-        if let index = frames.firstIndex(where: { $0.frame.id == frameID }) {
-            navigateToFrame(index)
-            showSearchHighlight(query: highlightQuery)
-            return
-        }
-
-
-        // If not found, load frames in a ±10 minute window around the target timestamp
-        // This approach (same as Cmd+G date search) guarantees the target frame is included
-        do {
-            setLoadingState(true, reason: "navigateToSearchResult")
-
-            // Calculate ±10 minute window around target timestamp
-            let calendar = Calendar.current
-            let startDate = calendar.date(byAdding: .minute, value: -10, to: timestamp) ?? timestamp
-            let endDate = calendar.date(byAdding: .minute, value: 10, to: timestamp) ?? timestamp
-
-
-            // Fetch all frames in the 20-minute window with video info (single optimized query)
-            // Always pass filterCriteria to ensure hidden filter is applied (default: .hide)
-            let framesWithVideoInfo = try await fetchFramesWithVideoInfoLogged(
-                from: startDate,
-                to: endDate,
-                limit: 1000,
-                filters: filterCriteria,
-                reason: "navigateToSearchResult"
-            )
-
-            guard !framesWithVideoInfo.isEmpty else {
-                Log.warning("[SearchNavigation] No frames found in time range", category: .ui)
-                setLoadingState(false, reason: "navigateToSearchResult.noFrames")
-                return
-            }
-
-            // Clear disk frame buffer since we're jumping to a new time window
-            let oldCacheCount = diskFrameBufferIndex.count
-            clearDiskFrameBuffer(reason: "search navigation")
-            if oldCacheCount > 0 {
-            }
-
-            // Convert to TimelineFrame - video info is already included from the JOIN
-            let timelineFrames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
-
-            // Replace current frames with new window
-            frames = timelineFrames
-
-            // Update window boundaries
-            if let firstFrame = frames.first, let lastFrame = frames.last {
-                oldestLoadedTimestamp = firstFrame.frame.timestamp
-                newestLoadedTimestamp = lastFrame.frame.timestamp
-            }
-
-            // Find and navigate to the target frame by ID
-            if let index = frames.firstIndex(where: { $0.frame.id == frameID }) {
-                currentIndex = index
-            } else {
-                // Fallback: find closest frame by timestamp if ID not found
-                let closest = frames.enumerated().min(by: {
-                    abs($0.element.frame.timestamp.timeIntervalSince(timestamp)) <
-                    abs($1.element.frame.timestamp.timeIntervalSince(timestamp))
-                })
-                currentIndex = closest?.offset ?? 0
-                if let closestFrame = closest {
-                    let diff = abs(closestFrame.element.frame.timestamp.timeIntervalSince(timestamp))
-                    Log.warning("[SearchNavigation] Frame ID not found in loaded frames, using closest by timestamp at index \(closestFrame.offset), \(diff)s from target", category: .ui)
-                }
-            }
-
-            loadImageIfNeeded()
-
-            // Check if we need to pre-load more frames (near edge of loaded window)
-            checkAndLoadMoreFrames()
-
-            // Wait for OCR nodes to load before showing highlight
-            // (loadImageIfNeeded calls loadOCRNodes but doesn't await it)
-            await loadOCRNodesAsync()
-            showSearchHighlight(query: highlightQuery)
-            setLoadingState(false, reason: "navigateToSearchResult.success")
-            Log.info("[SearchNavigation] Navigation complete, now at index \(currentIndex)", category: .ui)
-
-        } catch {
-            Log.error("[SearchNavigation] Failed to navigate to search result: \(error)", category: .ui)
-            setLoadingState(false, reason: "navigateToSearchResult.error")
-        }
     }
 
     /// Show search highlight for the given query after a 0.5-second delay
@@ -7144,6 +7237,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Load image for image-based frames (Retrace) if needed
     private func loadImageIfNeeded() {
+        guard !evidence.isPresentingEvidence, backgroundServicesEnabled else { return }
         // Skip during live mode - live screenshot is already displayed and OCR is handled separately
         guard !isInLiveMode else { return }
         cancelDiskFrameBufferInactivityCleanup()
@@ -7303,7 +7397,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 if loadedFromDiskBuffer {
                     removeDiskFrameBufferEntries([frameID], reason: "decode failure")
                 }
-                if currentTimelineFrame?.frame.id == frame.id {
+                if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                     currentImage = nil
                     frameNotReady = false
                     frameLoadError = true
@@ -7342,7 +7436,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 criticalThresholdMs: loadedFromDiskBuffer ? 120 : 260
             )
 
-            if currentTimelineFrame?.frame.id == frame.id {
+            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                 currentImage = image
                 frameNotReady = false
                 frameLoadError = false
@@ -7357,7 +7451,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             if Self.isVerboseTimelineLoggingEnabled {
                 Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) video still being written (processingStatus=\(timelineFrame.processingStatus))", category: .app)
             }
-            if currentTimelineFrame?.frame.id == frame.id {
+            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                 currentImage = nil
                 frameLoadError = false
                 if timelineFrame.processingStatus != 2 {
@@ -7369,7 +7463,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             if Self.isVerboseTimelineLoggingEnabled {
                 Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) not yet in video file (still encoding, processingStatus=\(timelineFrame.processingStatus))", category: .app)
             }
-            if currentTimelineFrame?.frame.id == frame.id {
+            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                 currentImage = nil
                 if timelineFrame.processingStatus != 2 {
                     frameNotReady = true
@@ -7384,7 +7478,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             if Self.isVerboseTimelineLoggingEnabled {
                 Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) video not ready yet (no fragments, processingStatus=\(timelineFrame.processingStatus))", category: .app)
             }
-            if currentTimelineFrame?.frame.id == frame.id {
+            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                 currentImage = nil
                 if timelineFrame.processingStatus != 2 {
                     frameNotReady = true
@@ -7397,7 +7491,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         } catch {
             diskFrameBufferTelemetry.storageReadFailures += 1
             Log.error("[SimpleTimelineViewModel] Failed to load image: \(error)", category: .app)
-            if currentTimelineFrame?.frame.id == frame.id {
+            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                 currentImage = nil
                 frameNotReady = false
                 frameLoadError = true
@@ -7677,7 +7771,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                     source: frame.source
                 )
                 // Only update if we're still on the same frame
-                if currentTimelineFrame?.frame.id == frame.id {
+                if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
                     urlBoundingBox = boundingBox
                     if let box = boundingBox {
                         Log.debug("[URLBoundingBox] Found URL '\(box.url)' at (\(box.x), \(box.y), \(box.width), \(box.height))", category: .ui)
@@ -7749,6 +7843,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Load all OCR nodes for the current frame
     private func loadOCRNodes() {
+        guard !evidence.isPresentingEvidence, backgroundServicesEnabled else { return }
         // Don't overwrite live OCR results with database results
         guard !isInLiveMode else { return }
 
@@ -7772,6 +7867,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Load OCR nodes and wait for completion (used when we need to await the result)
     private func loadOCRNodesAsync() async {
+        guard !evidence.isPresentingEvidence, backgroundServicesEnabled else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
         // Cancel any existing polling task
         ocrStatusPollingTask?.cancel()
         ocrStatusPollingTask = nil
@@ -7793,9 +7890,10 @@ public class SimpleTimelineViewModel: ObservableObject {
             )
 
             let (status, nodes) = try await (statusTask, nodesTask)
+            guard isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
 
             // Only update if we're still on the same frame
-            if currentTimelineFrame?.frame.id == frame.id {
+            if isCurrentHistoricalFrame(frame, generation: evidenceGeneration) {
                 // Update OCR status
                 ocrStatus = status
 
@@ -7816,6 +7914,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 setOCRNodes(filteredNodes)
             }
         } catch {
+            guard isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
             Log.error("[SimpleTimelineViewModel] Failed to load OCR nodes: \(error)", category: .app)
             setOCRNodes([])
             ocrStatus = .unknown
@@ -7823,9 +7922,12 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     /// Start polling for OCR status updates
-    /// Polls every 500ms until OCR completes or frame changes
+    /// Polls every two seconds until OCR completes or the selected capture changes.
     private func startOCRStatusPolling(for frameID: FrameID) {
         ocrStatusPollingTask?.cancel()
+        guard let frame = currentTimelineFrame?.frame, frame.id == frameID else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
+        guard isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
 
         ocrStatusPollingTask = Task { [weak self] in
             guard let self = self else { return }
@@ -7834,37 +7936,22 @@ public class SimpleTimelineViewModel: ObservableObject {
                 // Wait 2000ms between polls (coalesces with other 2s timers for power efficiency)
                 try? await Task.sleep(for: .nanoseconds(Int64(2_000_000_000)), clock: .continuous)
 
-                guard !Task.isCancelled else { return }
-
-                // Check if we're still on the same frame
-                guard let currentFrame = await MainActor.run(body: { self.currentTimelineFrame?.frame }),
-                      currentFrame.id == frameID else {
-                    return
-                }
+                guard self.isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
 
                 // Fetch updated status
                 do {
                     let status = try await self.coordinator.getOCRStatus(frameID: frameID)
 
-                    await MainActor.run {
-                        // Only update if still on the same frame
-                        guard self.currentTimelineFrame?.frame.id == frameID else { return }
-
-                        self.ocrStatus = status
-
-                        // If completed, also reload the OCR nodes
-                        if !status.isInProgress {
-                            Task {
-                                await self.reloadOCRNodesOnly(for: frameID)
-                            }
-                        }
-                    }
+                    guard self.isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
+                    self.ocrStatus = status
 
                     // Stop polling if OCR is no longer in progress
                     if !status.isInProgress {
+                        await self.reloadOCRNodesOnly(for: frameID)
                         return
                     }
                 } catch {
+                    guard self.isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
                     Log.error("[OCR-POLL] Failed to poll OCR status: \(error)", category: .ui)
                 }
             }
@@ -7872,17 +7959,15 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     /// Reload only OCR nodes without fetching status (used after OCR completes)
-    private func reloadOCRNodesOnly(for frameID: FrameID) async {
+    func reloadOCRNodesOnly(for frameID: FrameID) async {
         guard let frame = currentTimelineFrame?.frame, frame.id == frameID else { return }
+        let evidenceGeneration = evidenceNavigationGeneration
+        guard isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
 
         do {
-            let nodes = try await coordinator.getAllOCRNodes(
-                frameID: frame.id,
-                source: frame.source
-            )
+            let nodes = try await readOCRNodesForReload(frame)
 
-            // Only update if still on the same frame
-            guard currentTimelineFrame?.frame.id == frameID else { return }
+            guard isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
 
             let filteredNodes = nodes.filter { node in
                 node.x >= 0.0 && node.x <= 1.0 &&
@@ -7893,8 +7978,22 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             setOCRNodes(filteredNodes)
         } catch {
+            guard isCurrentHistoricalFrame(frame, generation: evidenceGeneration) else { return }
             Log.error("[OCR-POLL] Failed to reload OCR nodes: \(error)", category: .ui)
         }
+    }
+
+    private func isCurrentHistoricalFrame(_ frame: FrameReference, generation: UInt64) -> Bool {
+        guard !Task.isCancelled, generation == evidenceNavigationGeneration,
+              !evidence.isPresentingEvidence, let current = currentTimelineFrame?.frame else { return false }
+        return current.id == frame.id && current.source == frame.source && current.timestamp == frame.timestamp
+    }
+
+    private func readOCRNodesForReload(_ frame: FrameReference) async throws -> [OCRNodeWithText] {
+#if DEBUG
+        if let test_ocrNodesRead { return try await test_ocrNodesRead(frame.id, frame.source) }
+#endif
+        return try await coordinator.getAllOCRNodes(frameID: frame.id, source: frame.source)
     }
 
     /// Select all text (Cmd+A) - respects zoom region if active
@@ -9380,6 +9479,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to the most recent frame — jumps to end of tape if already loaded, otherwise reloads from DB
     public func goToNow() {
+        closeExactEvidence(resumeHistory: false)
         // Cmd+J should snap to an exact frame center, not preserve partial scrub offset.
         cancelTapeDragMomentum()
         scrollDebounceTask?.cancel()
@@ -9530,6 +9630,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to a specific hour from the calendar picker
     public func navigateToHour(_ hour: Date) async {
+        closeExactEvidence(resumeHistory: false)
         clearActiveFiltersBeforeJumpIfNeeded(trigger: "calendar jump")
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
             isCalendarPickerVisible = false
@@ -9617,6 +9718,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to a specific date (start of day or specific time)
     private func navigateToDate(_ targetDate: Date) async {
+        closeExactEvidence(resumeHistory: false)
+        let evidenceGeneration = evidenceNavigationGeneration
         setLoadingState(true, reason: "navigateToDate")
         clearError()
         cancelBoundaryLoadTasks(reason: "navigateToDate")
@@ -9643,6 +9746,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: filterCriteria,
                 reason: "navigateToDate"
             )
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
 
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around \(formatLocalDateForError(targetDate))")
@@ -9670,6 +9774,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             _ = checkAndLoadMoreFrames(reason: "navigateToDate")
             setLoadingState(false, reason: "navigateToDate.success")
         } catch {
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
             self.error = "Failed to navigate: \(error.localizedDescription)"
             setLoadingState(false, reason: "navigateToDate.error")
         }
@@ -9679,6 +9784,8 @@ public class SimpleTimelineViewModel: ObservableObject {
     public func searchForDate(_ searchText: String, source: String = "timeline_date_search") async {
         let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSearchText.isEmpty else { return }
+        closeExactEvidence(resumeHistory: false)
+        let evidenceGeneration = evidenceNavigationGeneration
         let lookedLikeFrameID = Int64(trimmedSearchText) != nil
         var frameIDLookupAttempted = false
 
@@ -9710,7 +9817,10 @@ public class SimpleTimelineViewModel: ObservableObject {
             // If frame ID search is enabled and input looks like a frame ID (pure number), try that first
             if enableFrameIDSearch, let frameID = Int64(trimmedSearchText) {
                 frameIDLookupAttempted = true
-                if await searchForFrameID(frameID) {
+                let foundFrame = await searchForFrameID(frameID)
+                guard !Task.isCancelled, evidenceGeneration == evidenceNavigationGeneration,
+                      !evidence.isPresentingEvidence else { return }
+                if foundFrame {
                     DashboardViewModel.recordDateSearchOutcome(
                         coordinator: coordinator,
                         source: source,
@@ -9752,6 +9862,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 parsedDate: targetDate,
                 input: trimmedSearchText
             )
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
 
             // Load frames around the target date (±10 minutes window)
             let calendar = Calendar.current
@@ -9768,6 +9879,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: filterCriteria,
                 reason: "searchForDate"
             )
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
 
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around \(formatLocalDateForError(targetDate))")
@@ -9829,6 +9941,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             closeDateSearch()
 
         } catch {
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
             self.error = "Failed to search for date: \(error.localizedDescription)"
             Log.error("[DateJump:\(jumpTraceID)] FAILED: \(error)", category: .ui)
             setLoadingState(false, reason: "searchForDate.error")
@@ -9846,13 +9959,17 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Search for a frame by its ID and navigate to it
     /// Returns true if frame was found and navigation succeeded
     private func searchForFrameID(_ frameID: Int64, includeHiddenSegments: Bool = false) async -> Bool {
+        closeExactEvidence(resumeHistory: false)
+        let evidenceGeneration = evidenceNavigationGeneration
         cancelBoundaryLoadTasks(reason: "searchForFrameID")
         cancelPendingStoppedPositionRecording()
         _ = recordCurrentPositionImmediatelyForUndo(reason: "searchForFrameID.source")
 
         do {
             // Try to get the frame by ID
-            guard let frameWithVideo = try await coordinator.getFrameWithVideoInfoByID(id: FrameID(value: frameID)) else {
+            let loaded = try await coordinator.getFrameWithVideoInfoByID(id: FrameID(value: frameID))
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return false }
+            guard let frameWithVideo = loaded else {
                 error = "Frame #\(frameID) not found"
                 setLoadingState(false, reason: "searchForFrameID.notFound")
                 return false
@@ -9881,6 +9998,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 filters: jumpFilters,
                 reason: "searchForFrameID"
             )
+            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return false }
 
             guard !framesWithVideoInfo.isEmpty else {
                 showErrorWithAutoDismiss("No frames found around frame #\(frameID)")

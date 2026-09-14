@@ -5,6 +5,20 @@ import AppKit
 
 private let searchLog = "[SpotlightSearch]"
 
+/// One mounted overlay delivers a selection synchronously to its timeline owner.
+/// The presentation animation does not own a later navigation callback.
+@MainActor
+struct SpotlightSelectionDelivery {
+    private var delivered = false
+    mutating func deliver(_ result: SearchResult, query: String,
+                          to selection: (SearchResult, String) -> Void) -> Bool {
+        guard !delivered else { return false }
+        delivered = true
+        selection(result, query)
+        return true
+    }
+}
+
 /// Spotlight-style search overlay that appears center-screen
 /// Triggered by Cmd+K or search icon click
 public struct SpotlightSearchOverlay: View {
@@ -44,6 +58,8 @@ public struct SpotlightSearchOverlay: View {
     @State private var overlaySessionID = "unknown"
     @State private var isSearchFieldFocused = false
     @State private var thumbnailLoader = SearchEvidenceThumbnailLoader()
+    @State private var selectionDelivery = SpotlightSelectionDelivery()
+    @State private var dismissalTask: Task<Void, Never>?
 
     private let panelWidth: CGFloat = 1000
     private let collapsedWidth: CGFloat = 450
@@ -180,6 +196,8 @@ public struct SpotlightSearchOverlay: View {
             .animation(.easeOut(duration: 0.15), value: isRecentEntriesPopoverVisible)
         }
         .onAppear {
+            selectionDelivery = SpotlightSelectionDelivery()
+            isDismissing = false
             overlaySessionID = String(UUID().uuidString.prefix(8))
             overlayOpenStartTime = CFAbsoluteTimeGetCurrent()
             didRecordOpenLatency = false
@@ -208,6 +226,7 @@ public struct SpotlightSearchOverlay: View {
             logRecentEntriesState(context: "onAppear:afterRefresh")
         }
         .onDisappear {
+            dismissalTask?.cancel(); dismissalTask = nil
             recentEntriesRevealTask?.cancel()
             recentEntriesRevealTask = nil
             recentEntriesMetadataWarmupTask?.cancel()
@@ -1294,19 +1313,11 @@ public struct SpotlightSearchOverlay: View {
     // MARK: - Actions
 
     private func selectResult(_ result: SearchResult) {
+        guard !isDismissing else { return }
         let query = viewModel.searchQuery
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        df.timeZone = .current
-        Log.info("\(searchLog) Result selected: query='\(query)', frameID=\(result.frameID.stringValue), timestamp=\(df.string(from: result.timestamp)) (epoch: \(result.timestamp.timeIntervalSince1970)), segmentID=\(result.segmentID.stringValue), app=\(result.appName ?? "unknown")", category: .ui)
-
-        // Dismiss overlay WITHOUT clearing search state - user selected a result
+        guard selectionDelivery.deliver(result, query: query, to: onResultSelected) else { return }
+        Log.info("\(searchLog) Exact result selected", category: .ui)
         dismissOverlayPreservingSearch()
-
-        // Small delay to allow dismiss animation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            onResultSelected(result, query)
-        }
     }
 
     /// Dismisses the overlay without clearing search state (used when selecting a result)
@@ -1381,7 +1392,11 @@ public struct SpotlightSearchOverlay: View {
             isVisible = false
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + dismissAnimationDuration) {
+        dismissalTask?.cancel()
+        dismissalTask = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(dismissAnimationDuration)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
             // Clear only after fade-out completes so dismiss is visually smooth.
             if clearSearchState {
                 viewModel.searchQuery = ""
@@ -1389,7 +1404,6 @@ public struct SpotlightSearchOverlay: View {
                 viewModel.resetSearchOrderToDefault()
             }
             onDismiss()
-            isDismissing = false
         }
     }
 

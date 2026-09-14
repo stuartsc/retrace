@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import Shared
+import App
 
 enum DashboardContentTab: String, CaseIterable, Identifiable {
     case dictation
@@ -193,6 +194,113 @@ enum DashboardScreenshotNavigationDirection {
     case older
 }
 
+/// Dashboard's shared row admission path. Keeping this outside the native view
+/// lets authored SQLite source rows exercise the actual selection and merge.
+enum DashboardScreenshotIdentityPolicy {
+    static func selectedFrame<Item: DashboardScreenshotRepresentable>(in frames: [Item], selection: ScreenshotEvidenceSelection?) -> Item? {
+        guard let selection else { return frames.first }
+        return frames.first { $0.screenshotIdentity == selection }
+    }
+
+    static func appending<Item: DashboardScreenshotRepresentable>(_ incoming: [Item], to existing: [Item]) -> [Item] {
+        var ids = Set(existing.map(\.screenshotIdentity))
+        return existing + incoming.filter { ids.insert($0.screenshotIdentity).inserted }
+    }
+
+    static func mergedLatest<Item: DashboardScreenshotRepresentable>(_ latest: [Item], into existing: [Item], maxCount: Int?) -> [Item] {
+        DashboardLiveMemoryPolicy.mergedLatest(latest, into: existing, id: { $0.screenshotIdentity }, maxCount: maxCount)
+    }
+
+    static func adjacentSelection<Item: DashboardScreenshotRepresentable>(from selection: ScreenshotEvidenceSelection?, direction: DashboardScreenshotNavigationDirection,
+                                  frames: [Item]) -> ScreenshotEvidenceSelection? {
+        guard let selection else { return frames.first?.screenshotIdentity }
+        guard let index = frames.firstIndex(where: { $0.screenshotIdentity == selection }) else { return nil }
+        let next = direction == .older ? index + 1 : index - 1
+        return frames.indices.contains(next) ? frames[next].screenshotIdentity : nil
+    }
+
+    /// Native and imported queries are separate actor reads. Keep unavailable
+    /// sources absent and compare both sides rather than relabeling old rows.
+    static func sourceGenerations(_ read: @Sendable (FrameSource) async throws -> String) async throws -> [FrameSource: String] {
+        var values: [FrameSource: String] = [:]
+        for source in FrameSource.allCases {
+            try Task.checkCancellation()
+            values[source] = try? await read(source)
+        }
+        try Task.checkCancellation()
+        return values
+    }
+
+    static func retainingCurrentRows(_ rows: [DashboardScreenshotRow], generations: [FrameSource: String]) -> [DashboardScreenshotRow] {
+        rows.filter { generations[$0.frame.source] == $0.sourceGeneration }
+    }
+
+    static func validateContext(_ row: DashboardScreenshotRow, service: ProgressiveRecallService) async throws -> ScreenEvidenceRef {
+        guard try await service.sourceGeneration(source: row.frame.source) == row.sourceGeneration else {
+            throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        let reference = try await service.reference(frameID: row.frame.id, source: row.frame.source)
+        try await validateContext(row, reference: reference, service: service)
+        return reference
+    }
+
+    private static func validateContext(_ row: DashboardScreenshotRow, reference: ScreenEvidenceRef,
+                                        service: ProgressiveRecallService) async throws {
+        try Task.checkCancellation()
+        guard let retained = await service.retainedScreen(reference, for: .localUser), row.id.matches(retained.frame) else {
+            throw EvidenceUnavailableReason.integrityFailure
+        }
+        guard try await service.sourceGeneration(source: row.frame.source) == row.sourceGeneration else {
+            throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        try Task.checkCancellation()
+    }
+
+    static func readContext(_ row: DashboardScreenshotRow, service: ProgressiveRecallService,
+                            load: @Sendable () async throws -> [OCRNodeWithText]) async throws -> [OCRNodeWithText] {
+        let reference = try await validateContext(row, service: service)
+        let nodes = try await load()
+        try await validateContext(row, reference: reference, service: service)
+        return nodes
+    }
+
+    static func readRows(sourceGeneration: @Sendable (FrameSource) async throws -> String,
+                         load: @Sendable () async throws -> [FrameWithVideoInfo]) async throws -> [DashboardScreenshotRow] {
+        for _ in 0..<2 {
+            let before = try await sourceGenerations(sourceGeneration)
+            let frames = try await load()
+            let after = try await sourceGenerations(sourceGeneration)
+            guard before == after else { continue }
+            return frames.compactMap { frame in
+                before[frame.frame.source].map { DashboardScreenshotRow(value: frame, sourceGeneration: $0) }
+            }
+        }
+        throw EvidenceUnavailableReason.sourceDisconnected
+    }
+
+    /// Evaluate the captured row/OCR snapshot off main. Cancellation belongs to
+    /// this query, so typing again cannot leave earlier scans running indefinitely.
+    @MainActor
+    static func filterRows(_ rows: [DashboardScreenshotRow],
+                           matches: @escaping @Sendable (DashboardScreenshotRow) -> Bool) async throws -> Set<ScreenshotEvidenceSelection> {
+        try Task.checkCancellation()
+        let task = Task.detached(priority: .utility) {
+            var result: Set<ScreenshotEvidenceSelection> = []
+            for row in rows {
+                try Task.checkCancellation()
+                if matches(row) { result.insert(row.id) }
+            }
+            return result
+        }
+        return try await withTaskCancellationHandler {
+            let result = try await task.value
+            try Task.checkCancellation()
+            return result
+        } onCancel: { task.cancel() }
+    }
+
+}
+
 enum DashboardScreenshotNavigationPolicy {
     static func adjacentID(
         from selectedID: Int64?,
@@ -228,6 +336,16 @@ enum DashboardScreenshotPaginationPolicy {
     static let minimumScrollOffset: CGFloat = 24
     static let minimumDownwardDelta: CGFloat = 1
     static let preloadDistance: CGFloat = 160
+
+    static func shouldLoadOlder(previousOffsetY: CGFloat, currentOffsetY: CGFloat,
+                                contentHeight: CGFloat, containerHeight: CGFloat,
+                                boundary: ScreenshotEvidenceSelection?, lastRequestedBoundary: ScreenshotEvidenceSelection?,
+                                canLoadMore: Bool, isLoading: Bool) -> Bool {
+        shouldLoadOlder(previousOffsetY: previousOffsetY, currentOffsetY: currentOffsetY,
+            contentHeight: contentHeight, containerHeight: containerHeight,
+            boundaryID: boundary == nil ? nil : 1, lastRequestedBoundaryID: boundary == lastRequestedBoundary ? 1 : nil,
+            canLoadMore: canLoadMore, isLoading: isLoading)
+    }
 
     static func shouldLoadOlder(
         previousOffsetY: CGFloat,
@@ -365,15 +483,15 @@ enum DashboardLiveMemoryPolicy {
         return merged
     }
 
-    static func retainedCacheIDs(
-        preferredIDs: [Int64],
-        selectedID: Int64?,
+    static func retainedCacheIDs<ID: Hashable>(
+        preferredIDs: [ID],
+        selectedID: ID?,
         maxCount: Int
-    ) -> Set<Int64> {
+    ) -> Set<ID> {
         guard maxCount > 0 else { return [] }
 
-        var retained: [Int64] = []
-        var seen = Set<Int64>()
+        var retained: [ID] = []
+        var seen = Set<ID>()
 
         if let selectedID {
             retained.append(selectedID)
@@ -399,7 +517,7 @@ final class DashboardSelectedFrameRefresher {
     }
 
     private var generation = 0
-    private var pending: (frameID: FrameID, generation: Int, task: Task<Snapshot?, Error>)?
+    private var pending: (selection: ScreenshotEvidenceSelection, generation: Int, task: Task<Snapshot?, Error>)?
 
     func cancel() {
         generation += 1
@@ -414,8 +532,8 @@ final class DashboardSelectedFrameRefresher {
         loadNodes: @escaping @Sendable (FrameWithVideoInfo) async throws -> [OCRNodeWithText]
     ) async throws -> Snapshot? {
         guard selected.frame.source == .native, !Task.isCancelled else { return nil }
-        let request: (frameID: FrameID, generation: Int, task: Task<Snapshot?, Error>)
-        if let pending, pending.frameID == selected.frame.id {
+        let request: (selection: ScreenshotEvidenceSelection, generation: Int, task: Task<Snapshot?, Error>)
+        if let pending, pending.selection == selected.frame.screenshotIdentity {
             request = pending
         } else {
             cancel()
@@ -429,13 +547,13 @@ final class DashboardSelectedFrameRefresher {
                 try Task.checkCancellation()
                 guard let frame = try await loadFrame(selected.frame.id),
                       frame.frame.id == selected.frame.id,
-                      frame.frame.source == selected.frame.source else { return nil as Snapshot? }
+                      ScreenshotEvidenceSelection(selected.frame).matches(frame.frame) else { return nil as Snapshot? }
                 try Task.checkCancellation()
                 let nodes = frame.processingStatus == 2 && loadedStatus != 2 ? try await loadNodes(frame) : nil
                 try Task.checkCancellation()
                 return Snapshot(frame: frame, nodes: nodes)
             }
-            request = (selected.frame.id, generation, task)
+            request = (selected.frame.screenshotIdentity, generation, task)
             pending = request
         }
         defer {
@@ -467,6 +585,23 @@ final class DashboardSelectedFrameRefresher {
         }
         return true
     }
+    static func apply(_ snapshot: Snapshot, selected: ScreenshotEvidenceSelection?,
+                      frames: inout [DashboardScreenshotRow],
+                      nodes: inout [ScreenshotEvidenceSelection: [OCRNodeWithText]],
+                      loadedStatuses: inout [ScreenshotEvidenceSelection: Int]) -> Bool {
+        guard let selected, selected.matches(snapshot.frame.frame),
+              let index = frames.firstIndex(where: { $0.id == selected }) else { return false }
+        frames[index] = DashboardScreenshotRow(value: snapshot.frame, sourceGeneration: frames[index].sourceGeneration)
+        if let refreshed = snapshot.nodes {
+            nodes[selected] = refreshed
+            loadedStatuses[selected] = snapshot.frame.processingStatus
+        } else if loadedStatuses[selected] != snapshot.frame.processingStatus {
+            nodes.removeValue(forKey: selected)
+            loadedStatuses.removeValue(forKey: selected)
+        }
+        return true
+    }
+
 }
 
 enum DashboardLiveAudioPaginationPolicy {

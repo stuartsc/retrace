@@ -97,6 +97,8 @@ public struct SettingsView: View {
 
     /// Optional initial tab to open (passed from parent when navigating to specific section)
     private let initialTab: SettingsTab?
+    private let initialScrollTargetID: String?
+    private let navigationRevision: UInt64
     private let launchOnLoginReminderManager: LaunchOnLoginReminderManager?
 
     @State private var selectedTab: SettingsTab = .general
@@ -121,9 +123,12 @@ public struct SettingsView: View {
     public init(
         initialTab: SettingsTab? = nil,
         initialScrollTargetID: String? = nil,
+        navigationRevision: UInt64 = 0,
         launchOnLoginReminderManager: LaunchOnLoginReminderManager? = nil
     ) {
         self.initialTab = initialTab
+        self.initialScrollTargetID = initialScrollTargetID
+        self.navigationRevision = navigationRevision
         self.launchOnLoginReminderManager = launchOnLoginReminderManager
         // Set initial selected tab if provided
         if let tab = initialTab {
@@ -174,6 +179,10 @@ public struct SettingsView: View {
     @AppStorage("deleteDuplicateFrames", store: settingsStore) private var deleteDuplicateFrames: Bool = SettingsDefaults.deleteDuplicateFrames
     @AppStorage("deduplicationThreshold", store: settingsStore) private var deduplicationThreshold: Double = SettingsDefaults.deduplicationThreshold
     @AppStorage("captureOnWindowChange", store: settingsStore) private var captureOnWindowChange: Bool = SettingsDefaults.captureOnWindowChange
+
+    @State private var captureContextEnabled: Bool?
+    @State private var changingCaptureContext = false
+    @State private var captureContextReadRevision: UInt64 = 0
 
     // MARK: Storage Settings
     @AppStorage("retentionDays", store: settingsStore) private var retentionDays: Int = SettingsDefaults.retentionDays
@@ -373,6 +382,8 @@ public struct SettingsView: View {
         SettingsSearchEntry(id: "general.aboutSupport", tab: .general, cardTitle: "About & Support", cardIcon: "heart",
             searchableText: ["about", "support", "help", "creator", "haseab", "feedback"]),
         // Capture
+        SettingsSearchEntry(id: "capture.context", tab: .capture, cardTitle: "Recorded Context", cardIcon: "text.viewfinder",
+            searchableText: ["recorded context", "app names", "window titles", "document", "evidence", "activity context"]),
         SettingsSearchEntry(id: "capture.rate", tab: .capture, cardTitle: "Capture Rate", cardIcon: "gauge.with.dots.needle.50percent",
             searchableText: ["capture rate", "capture interval", "capture on window change", "frame rate", "screenshot frequency"]),
         SettingsSearchEntry(id: "capture.compression", tab: .capture, cardTitle: "Compression", cardIcon: "archivebox",
@@ -509,6 +520,16 @@ public struct SettingsView: View {
         }
         .onChange(of: selectedTab) { newTab in
             postSelectedTabNotification(newTab)
+        }
+        .onChange(of: navigationRevision) { _ in
+            // A new request updates the existing Settings view; its remaining
+            // local state and any open sheet retain their identity.
+            if let initialTab { selectedTab = initialTab }
+            if let initialScrollTargetID {
+                requestNavigation(to: initialScrollTargetID)
+            } else {
+                pendingScrollTargetID = nil
+            }
         }
         .onChange(of: timelineShortcut) { _ in
             Task { await saveShortcuts() }
@@ -1744,6 +1765,7 @@ public struct SettingsView: View {
 
     private var captureSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            captureContextCard
             captureRateCard
             compressionCard
             Color.clear
@@ -1780,6 +1802,33 @@ public struct SettingsView: View {
 //                    isOn: .constant(false)
 //                )
 //            }
+        }
+    }
+
+    private var captureContextCard: some View {
+        ModernSettingsCard(title: "Recorded Context", icon: "text.viewfinder") {
+            ModernToggleRow(
+                title: "Collect app and document context",
+                subtitle: "Keep observed app names, window titles and available document locations with your recordings. Recording pause and privacy exclusions still apply.",
+                isOn: Binding(get: { captureContextEnabled ?? false }, set: { enabled in
+                    guard !changingCaptureContext else { return }
+                    changingCaptureContext = true
+                    captureContextReadRevision &+= 1
+                    Task {
+                        await coordinatorWrapper.coordinator.setActivityContextEnabled(enabled)
+                        captureContextEnabled = await coordinatorWrapper.coordinator.isActivityContextEnabled()
+                        changingCaptureContext = false
+                    }
+                })
+            )
+            .disabled(captureContextEnabled == nil || changingCaptureContext)
+        }
+        .task {
+            guard !changingCaptureContext else { return }
+            let revision = captureContextReadRevision
+            let enabled = await coordinatorWrapper.coordinator.isActivityContextEnabled()
+            guard !Task.isCancelled, !changingCaptureContext, revision == captureContextReadRevision else { return }
+            captureContextEnabled = enabled
         }
     }
 
@@ -4128,6 +4177,7 @@ public struct SettingsView: View {
         case "general.startup": startupCard
         case "general.appearance": appearanceCard
         case "general.aboutSupport": aboutSupportCard
+        case "capture.context": captureContextCard
         case "capture.rate": captureRateCard
         case "capture.compression": compressionCard
         case "capture.pauseReminder": pauseReminderCard

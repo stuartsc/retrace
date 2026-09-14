@@ -70,10 +70,27 @@ public struct ScreenEvidenceSnapshot: Codable, Sendable {
     public let text: ExtractedText?
     public let legacyContext: Bool
     public let highlightsVerified: Bool
+    /// Optional for backwards-compatible decoding. Only new immutable payloads record structure.
+    public let structuredObservation: StructuredScreenObservation?
     public init(ref: ScreenEvidenceRef, frame: FrameReference, width: Int, height: Int,
-                text: ExtractedText?, legacyContext: Bool, highlightsVerified: Bool) {
+                text: ExtractedText?, legacyContext: Bool, highlightsVerified: Bool,
+                structuredObservation: StructuredScreenObservation? = nil) {
         self.ref = ref; self.frame = frame; self.width = width; self.height = height
         self.text = text; self.legacyContext = legacyContext; self.highlightsVerified = highlightsVerified
+        self.structuredObservation = structuredObservation
+    }
+
+    /// Uniform read-only projection. Unrecorded or conflicting structure cannot manufacture provenance or geometry.
+    public var observation: StructuredScreenObservation {
+        if let stored = structuredObservation {
+            let expected = StructuredScreenObservation.project(text: text, width: width, height: height,
+                provenance: stored.provenance, geometryVerified: highlightsVerified && !legacyContext)
+            // Use the canonical text's actual code units even if String equality
+            // considers a differently encoded stored spelling equivalent.
+            if stored == expected { return expected }
+        }
+        return StructuredScreenObservation.project(text: text, width: width, height: height,
+            provenance: .init(origin: .legacyUnknown), geometryVerified: false)
     }
 }
 

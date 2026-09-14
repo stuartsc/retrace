@@ -641,6 +641,23 @@ public actor DataAdapter {
         return storeID
     }
 
+    /// Opaque configuration/store identity for bracketing local evidence reads; never contains paths or content.
+    public func evidenceSourceGeneration(source: FrameSource) async throws -> String {
+        try Task.checkCancellation()
+        guard isInitialized else { throw DataAdapterError.notInitialized }
+        let generation = selectionSourceGeneration(source)
+        let (connection, _) = try evidenceConnection(for: source)
+        guard connection.getConnection() != nil else { throw DataAdapterError.sourceNotAvailable(source) }
+        let identity = source == .rewind ? try Self.importedStoreIdentity(connection) : nil
+        let storeID = try await evidenceStoreID(source: source)
+        try Task.checkCancellation()
+        guard isInitialized, generation == selectionSourceGeneration(source),
+              identity == (source == .rewind ? try Self.importedStoreIdentity(connection) : nil) else {
+            throw SearchPaginationError.dataChanged
+        }
+        return "\(generation):\(storeID.uuidString)"
+    }
+
     public func savedEvidenceText(frame: FrameReference) throws -> ExtractedText? {
         let (connection, _) = try evidenceConnection(for: frame.source)
         let sql = "SELECT sc.c0, sc.c1 FROM doc_segment ds JOIN searchRanking_content sc ON sc.id=ds.docid WHERE ds.frameId=? ORDER BY ds.docid DESC LIMIT 1"
@@ -885,10 +902,7 @@ public actor DataAdapter {
             throw DataAdapterError.notInitialized
         }
 
-        let connection = frameSource == .rewind && rewindConnection != nil
-            ? rewindConnection!
-            : retraceConnection
-
+        let (connection, _) = try evidenceConnection(for: frameSource)
         return try getAllOCRNodes(frameID: frameID, connection: connection)
     }
 

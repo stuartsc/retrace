@@ -1631,7 +1631,7 @@ public class SearchViewModel: ObservableObject {
     public func selectResult(_ result: SearchResult) {
         selectedResult = result
         showingFrameViewer = false
-        ActivityTimelineController.shared.openSearchResult(result, coordinator: coordinator)
+        Task { await TimelineWindowController.shared.openSearchResult(result, coordinator: coordinator) }
     }
 
     public func closeFrameViewer() {

@@ -49,6 +49,44 @@ actor SearchEvidenceThumbnailLoader {
         }
     }
 
+    func load(_ frame: FrameReference, expectedSourceGeneration: String,
+              service: ProgressiveRecallService, size: CGSize) async throws -> CGImage {
+        guard size.width.isFinite, size.height.isFinite,
+              (1...1024).contains(size.width), (1...1024).contains(size.height) else {
+            throw EvidenceUnavailableReason.unsupported
+        }
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        let start = Date()
+        defer { Log.recordLatency("dashboard.thumbnail.exact", valueMs: Date().timeIntervalSince(start) * 1000, category: .ui) }
+        let row = DashboardScreenshotRow(value: FrameWithVideoInfo(frame: frame, videoInfo: nil),
+            sourceGeneration: expectedSourceGeneration)
+        let reference = try await DashboardScreenshotIdentityPolicy.validateContext(row, service: service)
+        switch await service.resolve(.screen(reference), for: .localUser) {
+        case .screen(let snapshot, let image):
+            guard ScreenshotEvidenceSelection(frame).matches(snapshot.frame) else { throw EvidenceUnavailableReason.integrityFailure }
+            guard try await service.sourceGeneration(source: frame.source) == expectedSourceGeneration else {
+                throw EvidenceUnavailableReason.sourceDisconnected
+            }
+            try Task.checkCancellation()
+            let thumbnail = try resize(image, size: size)
+            // Image decoding is not permission to retain pixels after the source
+            // or current privacy rules change during this suspension.
+            guard let retained = await service.retainedScreen(reference, for: .localUser),
+                  ScreenshotEvidenceSelection(frame).matches(retained.frame) else {
+                throw EvidenceUnavailableReason.integrityFailure
+            }
+            guard try await service.sourceGeneration(source: frame.source) == expectedSourceGeneration else {
+                throw EvidenceUnavailableReason.sourceDisconnected
+            }
+            try Task.checkCancellation()
+            return thumbnail
+        case .unavailable(let reason): throw reason
+        case .activity: throw EvidenceUnavailableReason.integrityFailure
+        }
+    }
+
     private func acquire() async throws {
         try Task.checkCancellation()
         if active < maxConcurrent {
@@ -109,13 +147,25 @@ final class SearchEvidenceThumbnailPreview: ObservableObject {
 
     func show(_ result: SearchResult, key: String, loader: SearchEvidenceThumbnailLoader, size: CGSize,
               service: () async throws -> ProgressiveRecallService) async {
+        await show(key: key) { try await loader.load(result, service: service(), size: size) }
+    }
+
+    func show(_ frame: FrameReference, expectedSourceGeneration: String, key: String,
+              loader: SearchEvidenceThumbnailLoader, size: CGSize,
+              service: () async throws -> ProgressiveRecallService) async {
+        await show(key: key) {
+            try await loader.load(frame, expectedSourceGeneration: expectedSourceGeneration, service: service(), size: size)
+        }
+    }
+
+    private func show(key: String, load: () async throws -> CGImage) async {
         let requestID = UUID()
         self.requestID = requestID
         self.key = key
         pixels = nil
         unavailable = false
         do {
-            let image = try await loader.load(result, service: service(), size: size)
+            let image = try await load()
             guard self.requestID == requestID, !Task.isCancelled else { return }
             pixels = image
         } catch {

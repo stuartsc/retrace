@@ -32,7 +32,7 @@ extension DatabaseManager {
             try PipelineSQL.deleteFrameText(db, frameID: frameID.value)
             try NodeQueries.deleteByFrameID(db: db, frameID: frameID)
             var docid: Int64 = 0
-            if !text.isEmpty {
+            if !text.fullText.isEmpty || !text.chromeText.isEmpty {
                 docid = try FTSQueries.indexFrame(
                     db: db, mainText: text.fullText,
                     chromeText: text.chromeText.isEmpty ? nil : text.chromeText,

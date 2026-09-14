@@ -79,7 +79,7 @@ extension DatabaseManager: EvidenceStoreProtocol {
             WHERE o.storeID=? AND o.source=? AND o.frameID=? AND o.observationID=? AND e.revision=?
             """, [.text(ref.storeID.uuidString), .text(ref.source.rawValue), .integer(ref.frameID.value),
                      .text(ref.observationID.uuidString), .integer(ref.extractionRevision)]) {
-            try RecallSQL.decode(ScreenEvidenceSnapshot.self, RecallSQL.string($0, 0))
+            try ScreenEvidenceSQL.decodeSnapshot(RecallSQL.string($0, 0))
         }.first
         guard let snapshot, snapshot.ref.storeID == ref.storeID, snapshot.ref.source == ref.source,
               snapshot.ref.frameID == ref.frameID, snapshot.ref.observationID == ref.observationID,
@@ -173,8 +173,21 @@ enum ScreenEvidenceSQL {
 
     static func current(_ db: OpaquePointer, frameID: FrameID, storeID: UUID) throws -> ScreenEvidenceSnapshot? {
         try PipelineSQL.query(db, "SELECT e.payload FROM screen_observation o JOIN screen_extraction e ON e.observationID=o.observationID AND e.revision=o.preferredRevision WHERE o.storeID=? AND o.frameID=?", [.text(storeID.uuidString), .integer(frameID.value)]) {
-            try RecallSQL.decode(ScreenEvidenceSnapshot.self, RecallSQL.string($0, 0))
+            try decodeSnapshot(RecallSQL.string($0, 0))
         }.first
+    }
+
+    /// Earlier payloads may have used canonical String equality for an offset proof.
+    /// Revalidate on read without rewriting the retained extraction or upgrading its provenance.
+    static func decodeSnapshot(_ payload: String) throws -> ScreenEvidenceSnapshot {
+        let saved = try RecallSQL.decode(ScreenEvidenceSnapshot.self, payload)
+        guard saved.highlightsVerified,
+              saved.legacyContext || !coherent(saved.text, frameID: saved.frame.id, width: saved.width, height: saved.height) else {
+            return saved
+        }
+        return ScreenEvidenceSnapshot(ref: saved.ref, frame: saved.frame, width: saved.width, height: saved.height,
+            text: saved.text, legacyContext: saved.legacyContext, highlightsVerified: false,
+            structuredObservation: saved.structuredObservation)
     }
 
     static func commitOCR(_ db: OpaquePointer, frame: FrameReference, text: ExtractedText, width: Int, height: Int) throws -> ExtractedText {
@@ -204,18 +217,21 @@ enum ScreenEvidenceSQL {
             chromeRegions: bind(text.chromeRegions), fullText: text.fullText, chromeText: text.chromeText, metadata: original.metadata)
         _ = try append(db, frame: original, storeID: storeID, observationID: observationID,
             revision: (existing?.ref.extractionRevision ?? -1) + 1, width: width, height: height,
-            text: canonical, legacy: existing?.legacyContext ?? true)
+            text: canonical, legacy: existing?.legacyContext ?? true, provenance: .init(origin: .ocr))
         try PipelineSQL.execute(db, "DELETE FROM frame_media_unavailable WHERE frameID=?", [.integer(frame.id.value)])
         return canonical
     }
 
     static func append(_ db: OpaquePointer, frame: FrameReference, storeID: UUID, observationID: UUID, revision: Int64,
-                       width: Int, height: Int, text: ExtractedText?, legacy: Bool) throws -> ScreenEvidenceSnapshot {
+                       width: Int, height: Int, text: ExtractedText?, legacy: Bool,
+                       provenance: EvidenceExtractionProvenance? = nil) throws -> ScreenEvidenceSnapshot {
         let ref = ScreenEvidenceRef(storeID: storeID, source: frame.source, observationID: observationID,
                                     frameID: frame.id, extractionRevision: revision)
         let verified = !legacy && coherent(text, frameID: frame.id, width: width, height: height)
+        let observation = StructuredScreenObservation.project(text: text, width: width, height: height,
+            provenance: provenance ?? .init(origin: legacy ? .legacyUnknown : .unknown), geometryVerified: verified)
         let snapshot = ScreenEvidenceSnapshot(ref: ref, frame: frame, width: width, height: height,
-                                              text: text, legacyContext: legacy, highlightsVerified: verified)
+            text: text, legacyContext: legacy, highlightsVerified: verified, structuredObservation: observation)
         let payload = try RecallSQL.encode(snapshot)
         guard payload.utf8.count <= 8_388_608 else { throw RecallSQL.failure("Extraction snapshot exceeds size bound") }
         try PipelineSQL.execute(db, "INSERT INTO screen_extraction(observationID,revision,payload) VALUES(?,?,?)", [.text(observationID.uuidString), .integer(revision), .text(payload)])
@@ -225,8 +241,8 @@ enum ScreenEvidenceSQL {
 
     static func coherent(_ text: ExtractedText?, frameID: FrameID, width: Int, height: Int) -> Bool {
         guard let text, width > 0, height > 0,
-              text.fullText == text.regions.map(\.text).joined(separator: " "),
-              text.chromeText == text.chromeRegions.map(\.text).joined(separator: " ") else { return false }
+              text.fullText.utf8.elementsEqual(text.regions.map(\.text).joined(separator: " ").utf8),
+              text.chromeText.utf8.elementsEqual(text.chromeRegions.map(\.text).joined(separator: " ").utf8) else { return false }
         let regions = text.regions + text.chromeRegions
         guard !regions.isEmpty else { return false }
         return regions.allSatisfy {

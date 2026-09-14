@@ -11,6 +11,7 @@ public struct SimpleTimelineView: View {
     // MARK: - Properties
 
     @ObservedObject private var viewModel: SimpleTimelineViewModel
+    @ObservedObject private var evidence: EvidenceViewModel
     @State private var hasInitialized = false
     /// Forces a SwiftUI refresh when global appearance preferences change.
     @State private var appearanceRefreshTick = 0
@@ -32,6 +33,7 @@ public struct SimpleTimelineView: View {
     public init(coordinator: AppCoordinator, viewModel: SimpleTimelineViewModel, onClose: @escaping () -> Void) {
         self.coordinator = coordinator
         self.viewModel = viewModel
+        self.evidence = viewModel.evidence
         self.onClose = onClose
     }
 
@@ -65,7 +67,9 @@ public struct SimpleTimelineView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 // Search-result highlights should sit above the frame, but below timeline controls/tape.
-                searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
+                if !evidence.isPresentingEvidence {
+                    searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
+                }
 
                 // Bottom blur + gradient backdrop (behind timeline controls)
                 VStack {
@@ -170,7 +174,7 @@ public struct SimpleTimelineView: View {
                             DebugFrameIDBadge(viewModel: viewModel)
                         }
                         // OCR status indicator (only visible when OCR is in progress)
-                        OCRStatusIndicator(viewModel: viewModel)
+                        if !evidence.isPresentingEvidence { OCRStatusIndicator(viewModel: viewModel) }
                         #if DEBUG
                         DeveloperActionsMenu(viewModel: viewModel, onClose: onClose)
                         #endif
@@ -737,8 +741,8 @@ public struct SimpleTimelineView: View {
             SpotlightSearchOverlay(
                 coordinator: coordinator,
                 viewModel: viewModel.searchViewModel,
-                onResultSelected: { result, query in
-                    ActivityTimelineController.shared.openSearchResult(result, coordinator: coordinator)
+                onResultSelected: { result, _ in
+                    viewModel.selectSearchResult(result)
                 },
                 onDismiss: {
                     viewModel.isSearchOverlayVisible = false
@@ -777,7 +781,12 @@ public struct SimpleTimelineView: View {
 
 	    @ViewBuilder
 	    private var frameDisplay: some View {
-            if isAwaitingLiveScreenshot {
+            if evidence.isPresentingEvidence {
+                ExactEvidenceView(model: evidence, onClose: {
+                    viewModel.closeExactEvidence(recordMetric: false)
+                })
+                .padding(.bottom, TimelineScaleFactor.tapeBottomPadding + 130 * TimelineScaleFactor.current)
+            } else if isAwaitingLiveScreenshot {
                 // Live-mode launch: hide the frame canvas until live screenshot arrives.
                 // The tape and controls still render above this.
                 Color.clear
@@ -969,7 +978,7 @@ public struct SimpleTimelineView: View {
     private var topRightControls: some View {
         let scale = TimelineScaleFactor.current
         return HStack(spacing: 10 * scale) {
-            if viewModel.isInFrameSearchVisible {
+            if viewModel.isInFrameSearchVisible && !evidence.isPresentingEvidence {
                 inFrameSearchBar
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }

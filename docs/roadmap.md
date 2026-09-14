@@ -17,9 +17,9 @@ Together, they create a local-first capture layer plus a high-grade intelligence
 
 **Requirement clarified by Stuart on 9 September 2026:** an agent using text alone should be able to understand what was visible on the Mac, which document or conversation contained it, and what activity the observations support. Exact screen coordinates are secondary. Screenshots remain evidence for inspection, while the normal intelligence input must be a self-contained textual account.
 
-This extends the capture layer's responsibility beyond recognizing words. Retrace should preserve the source, grouping, visible content and changes needed for later reasoning. FuseIntel remains responsible for broader activity interpretation and connecting those observations to people, projects and other sources. An observation can become an input to an episode; it does not replace the existing episode boundary.
+This extends the capture layer's responsibility beyond recognizing words. Retrace preserves source context, visible content and supported changes for later reasoning. FuseIntel remains responsible for wider interpretation in its own system. Stuart clarified on **14 September 2026** that project assignment, app-visit grouping and a separate activity dashboard are outside the current Retrace scope. The product should collect evidence and bring the image, OCR text and context together in Screenshots.
 
-**Status:** this section records the product requirement and a proposed implementation direction. Build 2609.9.1 has basic frame/foreground-window metadata and OCR; it does not yet implement the full representation below. No installed capability follows from this roadmap update.
+**Status:** progressive-recall Phase 2 is authorised and commencing. The latest verified local trial is **2609.14.3**; its Phase 0/1 identity, extraction and acceptance evidence is in [the validation ledger](progressive-recall-validation.md). The complete multi-surface and semantic representation below is not yet implemented. The numbered product phases later in this roadmap are distinct from the progressive-recall implementation phases.
 
 ### Required Information
 
@@ -61,12 +61,12 @@ For charts, diagrams, images and other meaningful visual content, preserve avail
 
 ### Proposed Implementation Order
 
-The [amended progressive recall plan](progressive-recall-plan.md) defines the complete delivery sequence: baseline fixtures and a matched Timely comparison, then independent durable activity capture, a document-first episode/interval/evidence timeline, retrieval correctness and exact citation-driven navigation (including journal-backed previews). Phase 0/1 implementation was authorised on 2026-09-11 and is tracked in the [validation ledger](progressive-recall-validation.md); installed Mac/Timely acceptance remains separate. Richer observations, hybrid retrieval, coordinated inspection and measured idle refinement remain proposed. Activity context is independently opt-in and continues through OCR/encoding backlog, while explicit pause/exclusion still controls collection; confirmed corrections change derived organisation rather than captured facts. The sequence below describes the richer screen-context subsystem within that plan; it does not postpone activity capture or exact evidence navigation until model refinement.
+The [progressive recall plan](progressive-recall-plan.md) now prioritises evidence collection and exact replay. Phase 2 starts by repairing Settings and historical search navigation, retiring project/visit controls, integrating evidence with Screenshots/OCR, and adding structured observations with bounded exact expansion. Durable evidence publication/bootstrap and local hybrid retrieval follow as explicit slices. Context collection remains independently opt-in and obeys master pause/exclusion. The earlier Timely comparison is historical research, not a gate for this revised delivery.
 
 1. **Preserve context at capture time.** Snapshot per-window identity and metadata alongside the accepted frame, with acquisition timing and consistency checks. Keep earlier context immutable when titles or URLs change. Context-only changes must survive image deduplication. Late OCR must use the saved context, never the current desktop as a substitute for an old capture.
 2. **Attribute and structure visible content.** Combine captured window information with bounded accessibility labels and OCR. Apply visibility/occlusion checks and the same exclusions to every extraction path. Keep uncertain blocks unassigned rather than attributing an entire display to its foreground app.
 3. **Provide one agent-facing representation.** Persist context, text and relationships together and render complete structured/text observations through a documented bridge. Preserve the last usable observation until a retry commits; retries must not look like repeated user activity. Captured source text must stay delimited as data when an agent consumes it.
-4. **Build temporal intelligence on those observations.** Group changes into candidate episodes, then let FuseIntel infer activities and connect them to external evidence. Optional richer visual interpretation can follow once its accuracy and cost are measured.
+4. **Extend retrieval over those observations.** Add a durable revision/deletion feed, bounded context expansion and benchmarked local hybrid search. Wider interpretation stays in FuseIntel; richer visual interpretation follows only after accuracy and cost are measured.
 
 macOS exposes window ownership and titles through native window metadata, providing a starting point for attribution; this does not establish complete document or pane understanding. See [Apple SCWindow ownership](https://developer.apple.com/documentation/screencapturekit/scwindow/owningapplication). The initial work should reuse suitable native facilities and existing capture data rather than assume that a new capture backend or model is required.
 
@@ -191,7 +191,7 @@ Example FuseIntel outputs shown inside Retrace:
 Retrace UI surfaces:
 
 - Intel cards attached to timeline moments.
-- Episode summaries powered by FuseIntel.
+- Evidence-backed summaries powered by FuseIntel.
 - Open-loop overlays.
 - Context panels beside dictation, search, and replay.
 - Evidence links that jump back into raw Retrace recordings.
@@ -201,35 +201,11 @@ Boundary:
 - Retrace shows and anchors the intelligence.
 - FuseIntel produces and maintains the intelligence.
 
-### 4. Episodes As A Shared Interface
+### 4. Source Evidence As The Shared Interface
 
-Episodes should become the bridge object between Retrace and FuseIntel.
+The bridge between Retrace and FuseIntel should identify the source observation, capture time, extraction revision and available screen/audio evidence. Captured app, window, document and conversation labels carry their provenance and uncertainty. They are context for inspecting a record, not project assignments or measures of attention.
 
-Retrace episode inputs:
-
-- Screen activity.
-- Audio transcript windows.
-- Apps, windows, browser URLs, and files.
-- Dictation sessions.
-- Search and replay references.
-
-FuseIntel episode enrichments:
-
-- Related emails, SMS, Teams messages, Otter transcripts, Notion pages, calendar events, and documents.
-- People, organizations, projects, promises, decisions, and deadlines.
-- Summaries, contradictions, open loops, and recommended follow-up.
-
-Examples:
-
-- "Debugging Ctrl+Space dictation hotkey"
-- "Teams meeting about roadmap"
-- "Reviewing customer emails before proposal"
-- "Implementing dashboard tabs"
-- "Reconciling Otter notes with Notion tasks"
-
-Why this makes the system distinct:
-
-Raw timelines are hard to navigate. Episodes turn recordings and external data into operational memory.
+A consumer can expand a precise source reference and explain which retained content supports its interpretation. Changed or deleted sources invalidate derived results. No episode classifier or assignment workflow is required for collection, search or replay.
 
 ### 5. Memory Cockpit Dashboard
 
@@ -240,9 +216,9 @@ Suggested Retrace dashboard sections:
 - Now: recording, transcription, storage, model state, and current capture permissions.
 - Dictation: recent inserts, failures, target apps, and rewrite modes.
 - Recall: local searches, saved moments, and source-backed evidence.
-- Episodes: work blocks with FuseIntel enrichment when available.
+- Screenshots: recorded images, captured context and OCR text in one evidence inspector.
 - Intel: FuseIntel cards, open loops, related entities, and briefings.
-- App Usage: retained as supporting analytics, not the hero surface.
+- Project assignment, visit grouping and focus-duration dashboards are outside the current evidence-collection delivery.
 
 Why this makes Retrace yours:
 
@@ -267,7 +243,7 @@ Roadmap requirements:
 Easy exporting should be equally prominent:
 
 - Export any time range as video.
-- Export any episode as a package with video, screenshots, transcript, metadata, and links.
+- Export a selected time range or evidence collection as a package with video, screenshots, transcript, metadata, and exact source links.
 - Export transcripts as Markdown, JSON, CSV, and plain text.
 - Export search results with timestamps and source context.
 - Export a portable archive for backup or migration.
@@ -342,7 +318,7 @@ Goal: make the product boundary explicit and technically clean.
 
 - Define a local event/evidence API from Retrace to FuseIntel, carrying complete screen observations in both structured and readable text forms.
 - Define a FuseIntel insight feed back into Retrace.
-- Create stable IDs for moments, episodes, apps, windows, transcript spans, screenshots, and exports.
+- Create stable source-qualified IDs for observations, apps/windows, transcript spans, screenshots, revisions and exports.
 - Add permission gates for FuseIntel access to Retrace data.
 - Add audit logs showing what FuseIntel requested from Retrace.
 
@@ -351,20 +327,11 @@ Success criteria:
 - FuseIntel can enrich Retrace moments without owning Retrace's local recording store.
 - Retrace can display FuseIntel intelligence without becoming the ingestion platform.
 
-### Phase 4: Episodes And Intel Cards
+### Phase 4: Optional Evidence Selections And Intel Cards
 
-Goal: use FuseIntel to add meaning around Retrace recordings.
+**Later possibility, not current implementation:** allow the user to bookmark or collect chosen recorded screens, text regions or audio spans as evidence. Selection must reference the original source/revision and must not change the recorded facts. It is not an app-visit or project-time assignment flow, and ordinary capture/search needs no manual marking.
 
-- Detect Retrace-side candidate episodes from app/window/audio continuity.
-- Send episode candidates to FuseIntel for enrichment.
-- Display FuseIntel summaries, entities, related source records, open loops, and recommended follow-up inside Retrace.
-- Link every intelligence card back to raw Retrace evidence and external FuseIntel sources.
-- Allow users to export enriched episodes as evidence packages.
-
-Success criteria:
-
-- A user can browse their day as meaningful work blocks instead of frame streams.
-- FuseIntel can explain why an episode matters using both Retrace and external source data.
+Optional FuseIntel cards can expose separately sourced summaries, entities, related records and follow-up, with links to their supporting Retrace and external evidence. Broader correlation remains owned by FuseIntel. Introduce these controls only when they serve a clear evidence-review workflow.
 
 ### Phase 5: Storage, Compression, And Export
 
@@ -372,7 +339,7 @@ Goal: make months of local computer memory practical.
 
 - Optimize HEVC settings and deduplication for the 10-15 GB/month target.
 - Add storage projection and quality controls.
-- Add export flows for time ranges, episodes, transcripts, screenshots, and evidence packages.
+- Add export flows for time ranges, transcripts, screenshots and evidence packages.
 - Add archive and restore flows.
 - Add retention policies that explain what will be deleted before it happens.
 

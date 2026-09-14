@@ -36,6 +36,16 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     private let configuration: @Sendable () async -> CaptureConfig
     private let imageReader: @Sendable (FrameWithVideoInfo) async throws -> CGImage
 
+    #if DEBUG
+    // Deterministic actor-reentrancy test boundary after real SQLite reads.
+    // The unset hook adds no suspension point, and is absent from optimized builds.
+    private var expansionFinalReadCheckpoint: (@Sendable () async -> Void)?
+
+    func setExpansionFinalReadCheckpoint(_ checkpoint: (@Sendable () async -> Void)?) {
+        expansionFinalReadCheckpoint = checkpoint
+    }
+    #endif
+
     public init(database: DatabaseManager, adapter: DataAdapter,
                 configuration: @escaping @Sendable () async -> CaptureConfig,
                 imageReader: @escaping @Sendable (FrameWithVideoInfo) async throws -> CGImage) {
@@ -213,7 +223,7 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
                 try Task.checkCancellation()
                 let selected = ScreenEvidenceSnapshot(ref: ref, frame: snapshot.frame, width: snapshot.width,
                     height: snapshot.height, text: snapshot.text, legacyContext: snapshot.legacyContext,
-                    highlightsVerified: snapshot.highlightsVerified)
+                    highlightsVerified: snapshot.highlightsVerified, structuredObservation: snapshot.structuredObservation)
                 return .screen(selected, image: image)
             case .audio: return .unavailable(.unsupported)
             }
@@ -242,8 +252,85 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
                   try await database.screenEvidence(ref) != nil, !Task.isCancelled else { return nil }
             return ScreenEvidenceSnapshot(ref: ref, frame: snapshot.frame, width: snapshot.width,
                 height: snapshot.height, text: snapshot.text, legacyContext: snapshot.legacyContext,
-                highlightsVerified: snapshot.highlightsVerified)
+                highlightsVerified: snapshot.highlightsVerified, structuredObservation: snapshot.structuredObservation)
         } catch { return nil }
+    }
+
+    public func expandScreenEvidence(_ request: ScreenEvidenceExpansionRequest,
+                                     for audience: EvidenceAudience) async throws -> ScreenEvidenceExpansionPage {
+        if case .agent = audience { throw EvidenceUnavailableReason.notPermitted }
+        await track(.textExpanded, outcome: "pending")
+        do {
+            try Task.checkCancellation()
+            try request.validate()
+            let generation = try await sourceGeneration(source: request.reference.source)
+            let snapshot = try await readableExpansionSnapshot(request.reference, generation: generation,
+                missingExtraction: .extractionUnavailable)
+            let page = try snapshot.expansionPage(for: request)
+            _ = try await readableExpansionSnapshot(request.reference, generation: generation,
+                missingExtraction: .evidenceDeleted)
+            try Task.checkCancellation()
+            // The UI records success only after its own selection-generation fence admits this page.
+            // No telemetry await may reopen a disclosure window after these final checks.
+            return page
+        } catch {
+            let failure = Self.evidenceAccessError(error)
+            await track(.textExpanded, outcome: failure is CancellationError ? "cancelled" : "failed", count: 0)
+            throw failure
+        }
+    }
+
+    public func sourceGeneration(source: FrameSource) async throws -> String {
+        do { return try await adapter.evidenceSourceGeneration(source: source) }
+        catch { throw Self.evidenceAccessError(error) }
+    }
+
+    private func readableExpansionSnapshot(_ ref: ScreenEvidenceRef, generation: String,
+                                          missingExtraction: EvidenceUnavailableReason) async throws -> ScreenEvidenceSnapshot {
+        let config = await configuration()
+        try Task.checkCancellation()
+        guard try await sourceGeneration(source: ref.source) == generation,
+              try await adapter.evidenceStoreID(source: ref.source) == ref.storeID else {
+            throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        guard let item = try await adapter.getFrameWithVideoInfoByID(id: ref.frameID, source: ref.source) else {
+            throw EvidenceUnavailableReason.evidenceDeleted
+        }
+        guard let snapshot = try await database.screenEvidence(ref) else { throw missingExtraction }
+        guard snapshot.frame.id == ref.frameID, snapshot.frame.source == ref.source,
+              item.frame.id == ref.frameID, item.frame.source == ref.source,
+              abs(item.frame.timestamp.timeIntervalSince(snapshot.frame.timestamp)) < 0.001 else {
+            throw EvidenceUnavailableReason.integrityFailure
+        }
+        guard Self.permits(snapshot.frame.metadata, config: config) else { throw EvidenceUnavailableReason.notPermitted }
+        guard try await sourceGeneration(source: ref.source) == generation else {
+            throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        guard let current = try await adapter.getFrameWithVideoInfoByID(id: ref.frameID, source: ref.source),
+              try await database.screenEvidence(ref) != nil else { throw EvidenceUnavailableReason.evidenceDeleted }
+        guard current.frame.source == ref.source,
+              abs(current.frame.timestamp.timeIntervalSince(snapshot.frame.timestamp)) < 0.001 else {
+            throw EvidenceUnavailableReason.integrityFailure
+        }
+        #if DEBUG
+        if let checkpoint = expansionFinalReadCheckpoint { await checkpoint() }
+        #endif
+        guard try await sourceGeneration(source: ref.source) == generation else {
+            throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        try Task.checkCancellation()
+        return snapshot
+    }
+
+    private static func evidenceAccessError(_ error: Error) -> Error {
+        switch error {
+        case is CancellationError: return CancellationError()
+        case let reason as EvidenceUnavailableReason: return reason
+        case let error as ScreenEvidenceExpansionError: return error
+        case DataAdapterError.sourceNotAvailable, SearchPaginationError.dataChanged:
+            return EvidenceUnavailableReason.sourceDisconnected
+        default: return EvidenceUnavailableReason.integrityFailure
+        }
     }
 
     private func permits(_ context: ActivityContext) async -> Bool {

@@ -1,10 +1,18 @@
 # Updates and changelog
 
-Last updated: 2026-09-14.
+Last updated: 2026-09-15.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-09-15 — Evidence in Screenshots and reliable timeline navigation
+
+- Settings menu commands now open the requested panel before the dashboard first mounts, after it is hidden, and while another Settings section is already open. Repeated commands preserve the mounted view and its requested destination.
+- Selecting a text-search result keeps its exact recording and extraction revision inside the historical timeline. Late OCR, source replacement, cancellation and old hide completions cannot substitute another frame or restore another app over the selection.
+- Screenshots now shares the exact image, captured context and OCR inspector. Text is read in bounded pages; a newer extraction is an explicit choice. Pending screenshots can retry when ready. Project assignment, visit grouping and the separate Activity & Evidence window are removed; existing captured records remain intact and context collection is controlled in Capture settings.
+- Screenshot selection and caches distinguish native/imported libraries, capture time and source replacement. Disconnected imported OCR no longer falls back to native text. Full OCR filtering runs off main, and exact thumbnail work is bounded.
+- New OCR commits retain structured text, ranges, provenance and verified geometry, with explicit unknown ownership and compatible legacy fallback. Oversized payloads preserve the previous extraction and search contents through rollback. The full suite passes **938 tests with five intentional skips and zero failures**; a subsequent test-only addition passes in the final **167-test** focused selection. Optimized compilation and candidate signing pass; installed validation remains separate at this checkpoint. Phase 2A/2B progress and the later evidence-feed, semantic retrieval and optional bookmarking work are tracked in the [revised plan](docs/progressive-recall-plan.md) and [validation record](docs/progressive-recall-validation.md#evidence-focused-phase-2--2026-09-14). Installed build **2609.14.3** is unchanged so far.
 
 ### 2026-09-14 — Preserve final words in audio timing
 

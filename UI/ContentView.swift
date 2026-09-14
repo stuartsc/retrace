@@ -204,7 +204,7 @@ public struct ContentView: View {
 
         switch route {
         case .evidence(let reference):
-            ActivityTimelineController.shared.show(coordinator: coordinator, evidence: reference)
+            Task { await TimelineWindowController.shared.openEvidence(reference, coordinator: coordinator) }
         case let .search(query, timestamp, appBundleID):
             // Open fullscreen timeline and apply deeplink search state.
             TimelineWindowController.shared.showSearch(

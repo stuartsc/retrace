@@ -23,19 +23,46 @@ public class DashboardWindowController: NSObject {
 
     private(set) var window: NSWindow?
     private var coordinator: AppCoordinator?
+    let navigation = DashboardNavigationState()
+    private let notificationCenter: NotificationCenter
+    private let windowFactory: (@MainActor (DashboardNavigationState) -> NSWindow)?
+    private let presentWindow: @MainActor (NSWindow) -> Void
+    private let hideApplication: @MainActor () -> Void
+    private var notificationObservers: [NSObjectProtocol] = []
 
     /// Whether the dashboard window is currently visible
     public private(set) var isVisible = false
 
     // MARK: - Initialization
 
-    private override init() {
+    private override convenience init() {
+        self.init(notificationCenter: .default)
+    }
+
+    /// The native window/presentation boundary keeps routing independently
+    /// testable without starting application services or activating a test app.
+    init(notificationCenter: NotificationCenter,
+         windowFactory: (@MainActor (DashboardNavigationState) -> NSWindow)? = nil,
+         presentWindow: @escaping @MainActor (NSWindow) -> Void = { window in
+             NSApp.activate(ignoringOtherApps: true)
+             window.makeKeyAndOrderFront(nil)
+             window.orderFrontRegardless()
+         },
+         hideApplication: @escaping @MainActor () -> Void = { NSApp.hide(nil) }) {
+        self.notificationCenter = notificationCenter
+        self.windowFactory = windowFactory
+        self.presentWindow = presentWindow
+        self.hideApplication = hideApplication
         super.init()
         setupNotifications()
     }
 
+    deinit {
+        for observer in notificationObservers { notificationCenter.removeObserver(observer) }
+    }
+
     private func setupNotifications() {
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(notificationCenter.addObserver(
             forName: .toggleDashboard,
             object: nil,
             queue: .main
@@ -43,6 +70,21 @@ public class DashboardWindowController: NSObject {
             Task { @MainActor in
                 self?.toggle()
             }
+        })
+
+        for name in DashboardNavigationState.notificationNames {
+            notificationObservers.append(notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] notification in
+                // NotificationCenter's main queue delivers synchronously on
+                // main. Admit the destination before any window/view is made.
+                MainActor.assumeIsolated {
+                    guard let self, (notification.object as? DashboardWindowController) !== self else { return }
+                    let shouldShow = self.navigation.receive(notification)
+                    self.updateWindowTitle(self.navigation.windowTitle)
+                    if shouldShow { self.show() }
+                }
+            })
         }
     }
 
@@ -58,6 +100,7 @@ public class DashboardWindowController: NSObject {
     /// Show the dashboard window
     public func show() {
         Log.info("[DashboardWindowController] show requested state=\(windowStateSnapshot())", category: .ui)
+        updateWindowTitle(navigation.windowTitle)
 
         // If window already exists and is visible, just bring it to front
         if let window = window, window.isVisible {
@@ -66,28 +109,30 @@ public class DashboardWindowController: NSObject {
             return
         }
 
-        guard let coordinator = coordinator else {
-            Log.error("[DashboardWindowController] Cannot show - coordinator not configured", category: .ui)
-            return
-        }
-
-        // Create window if needed
+        // Create window if needed.
         if window == nil {
-            Log.info("[DashboardWindowController] creating dashboard window", category: .ui)
-            window = createWindow(coordinator: coordinator)
+            if let windowFactory {
+                window = windowFactory(navigation)
+            } else if let coordinator {
+                Log.info("[DashboardWindowController] creating dashboard window", category: .ui)
+                window = createWindow(coordinator: coordinator)
+            } else {
+                Log.error("[DashboardWindowController] Cannot show - coordinator not configured", category: .ui)
+                return
+            }
         }
 
         guard let window = window else { return }
+        window.title = navigation.windowTitle
 
         // Show the window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        presentWindow(window)
 
         isVisible = true
         Log.info("[DashboardWindowController] show completed state=\(windowStateSnapshot())", category: .ui)
 
         // Post notification
-        NotificationCenter.default.post(name: .dashboardDidOpen, object: nil)
+        notificationCenter.post(name: .dashboardDidOpen, object: nil)
     }
 
     /// Hide the dashboard window
@@ -104,7 +149,7 @@ public class DashboardWindowController: NSObject {
         hideAppIfNoForegroundWindows(ignoring: window)
 
         // Post notification
-        NotificationCenter.default.post(name: .dashboardDidClose, object: nil)
+        notificationCenter.post(name: .dashboardDidClose, object: nil)
     }
 
     /// Toggle dashboard visibility
@@ -130,9 +175,7 @@ public class DashboardWindowController: NSObject {
         Log.info("[DashboardWindowController] bringToFront requested state=\(windowStateSnapshot())", category: .ui)
         guard let window = window else { return }
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        presentWindow(window)
         Log.info("[DashboardWindowController] bringToFront completed state=\(windowStateSnapshot())", category: .ui)
     }
 
@@ -145,7 +188,7 @@ public class DashboardWindowController: NSObject {
 
     private func createWindow(coordinator: AppCoordinator) -> NSWindow {
         // Create the SwiftUI view for the dashboard content
-        let dashboardContent = DashboardContentView(coordinator: coordinator)
+        let dashboardContent = DashboardContentView(coordinator: coordinator, navigation: navigation)
 
         // Create hosting controller
         let hostingController = NSHostingController(rootView: dashboardContent)
@@ -185,9 +228,12 @@ public class DashboardWindowController: NSObject {
     // MARK: - Navigate to View
 
     /// Navigate to settings view within the dashboard
-    public func showSettings() {
+    @objc public func showSettings() {
+        navigation.openSettings()
+        // Preserve the existing signal that lets the timeline hide before
+        // Settings is shown, without admitting our own request a second time.
+        notificationCenter.post(name: .openSettings, object: self)
         show()
-        NotificationCenter.default.post(name: .dashboardShowSettings, object: nil)
     }
 
     /// Toggle between settings and dashboard views
@@ -195,13 +241,13 @@ public class DashboardWindowController: NSObject {
     /// If on settings: go back to dashboard
     public func toggleSettings() {
         show()
-        NotificationCenter.default.post(name: .toggleSettings, object: nil)
+        notificationCenter.post(name: .toggleSettings, object: nil)
     }
 
     /// Navigate to changelog view within the dashboard
     public func showChangelog() {
         show()
-        NotificationCenter.default.post(
+        notificationCenter.post(
             name: .openDashboard,
             object: nil,
             userInfo: ["target": "changelog"]
@@ -217,12 +263,12 @@ extension DashboardWindowController: NSWindowDelegate {
         isVisible = false
         Log.info("[DashboardWindowController] windowWillClose state(after)=\(windowStateSnapshot())", category: .ui)
         hideAppIfNoForegroundWindows(ignoring: window)
-        NotificationCenter.default.post(name: .dashboardDidClose, object: nil)
+        notificationCenter.post(name: .dashboardDidClose, object: nil)
     }
 
     public func windowDidBecomeKey(_ notification: Notification) {
         // Post notification so dashboard can refresh its stats
-        NotificationCenter.default.post(name: .dashboardDidBecomeKey, object: nil)
+        notificationCenter.post(name: .dashboardDidBecomeKey, object: nil)
     }
 }
 
@@ -239,7 +285,7 @@ private extension DashboardWindowController {
         }
 
         Log.info("[DashboardWindowController] hiding app after dashboard hide (no foreground windows visible)", category: .ui)
-        NSApp.hide(nil)
+        hideApplication()
     }
 
     func windowStateSnapshot() -> String {
@@ -269,18 +315,16 @@ struct DashboardContentView: View {
     /// Dashboard view model - hoisted here so it persists across tab switches
     @StateObject private var dashboardViewModel: DashboardViewModel
 
-    @State private var selectedView: DashboardSelectedView = .dashboard
-    @State private var currentSettingsTabTitle = SettingsTab.general.rawValue
+    @ObservedObject var navigation: DashboardNavigationState
     @State private var showFeedbackSheet = false
     @State private var showOnboarding: Bool? = nil
-    @State private var initialSettingsTab: SettingsTab? = nil
-    @State private var initialSettingsScrollTargetID: String? = nil
     @State private var hasLoadedDashboard = false
     /// Forces a SwiftUI refresh when global appearance preferences change.
     @State private var appearanceRefreshTick = 0
 
-    init(coordinator: AppCoordinator) {
+    init(coordinator: AppCoordinator, navigation: DashboardNavigationState) {
         self.coordinator = coordinator
+        self.navigation = navigation
         self._coordinatorWrapper = StateObject(wrappedValue: AppCoordinatorWrapper(coordinator: coordinator))
         self._launchOnLoginReminderManager = StateObject(wrappedValue: LaunchOnLoginReminderManager(coordinator: coordinator))
         self._dashboardViewModel = StateObject(wrappedValue: DashboardViewModel(coordinator: coordinator))
@@ -306,7 +350,7 @@ struct DashboardContentView: View {
 
                     selectedContent
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    .animation(.easeInOut(duration: 0.2), value: selectedView)
+                    .animation(.easeInOut(duration: 0.2), value: navigation.selectedView)
                 }
             } else {
                 // Loading state
@@ -324,109 +368,13 @@ struct DashboardContentView: View {
         .onAppear {
             updateDashboardWindowTitle()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openDashboard)) { notification in
-            let target = notification.userInfo?["target"] as? String
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = target == "changelog" ? .changelog : .dashboard
-            }
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .dashboardShowSettings)) { _ in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            updateDashboardWindowTitle()
-        }
+        .onChange(of: navigation.selectedView) { _ in updateDashboardWindowTitle() }
+        .onChange(of: navigation.currentSettingsTabTitle) { _ in updateDashboardWindowTitle() }
         .onReceive(NotificationCenter.default.publisher(for: .colorThemeDidChange)) { _ in
             appearanceRefreshTick &+= 1
         }
         .onReceive(NotificationCenter.default.publisher(for: .fontStyleDidChange)) { _ in
             appearanceRefreshTick &+= 1
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleSettings)) { _ in
-            // Toggle: if on settings go to dashboard, otherwise go to settings
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = selectedView == .settings ? .dashboard : .settings
-            }
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
-            initialSettingsTab = nil
-            initialSettingsScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsAppearance)) { _ in
-            initialSettingsTab = nil
-            initialSettingsScrollTargetID = nil
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            // General tab contains Appearance settings - it's the default tab
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsPower)) { _ in
-            initialSettingsTab = .power
-            initialSettingsScrollTargetID = nil
-            currentSettingsTabTitle = SettingsTab.power.rawValue
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsTags)) { _ in
-            initialSettingsTab = .tags
-            initialSettingsScrollTargetID = nil
-            currentSettingsTabTitle = SettingsTab.tags.rawValue
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsPauseReminderInterval)) { _ in
-            initialSettingsTab = .capture
-            initialSettingsScrollTargetID = SettingsView.pauseReminderIntervalTargetID
-            currentSettingsTabTitle = SettingsTab.capture.rawValue
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRCard)) { _ in
-            initialSettingsTab = .power
-            initialSettingsScrollTargetID = SettingsView.powerOCRCardTargetID
-            currentSettingsTabTitle = SettingsTab.power.rawValue
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsPowerOCRPriority)) { _ in
-            initialSettingsTab = .power
-            initialSettingsScrollTargetID = SettingsView.powerOCRPriorityTargetID
-            currentSettingsTabTitle = SettingsTab.power.rawValue
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .settings
-            }
-            DashboardWindowController.shared.show()
-            updateDashboardWindowTitle()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .settingsSelectedTabDidChange)) { notification in
-            guard let tab = notification.userInfo?["tab"] as? String, !tab.isEmpty else {
-                return
-            }
-            currentSettingsTabTitle = tab
-            if selectedView == .settings {
-                updateDashboardWindowTitle()
-            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFeedback)) { _ in
             showFeedbackSheet = true
@@ -434,13 +382,13 @@ struct DashboardContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSystemMonitor)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
-                selectedView = .monitor
+                navigation.selectedView = .monitor
             }
             DashboardWindowController.shared.show()
             updateDashboardWindowTitle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleSystemMonitor)) { _ in
-            if selectedView == .monitor,
+            if navigation.selectedView == .monitor,
                DashboardWindowController.shared.isVisible,
                let window = DashboardWindowController.shared.window,
                (window.isKeyWindow || window.attachedSheet != nil) && NSApp.isActive {
@@ -449,7 +397,7 @@ struct DashboardContentView: View {
             } else {
                 // Show system monitor
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    selectedView = .monitor
+                    navigation.selectedView = .monitor
                 }
                 DashboardWindowController.shared.show()
                 updateDashboardWindowTitle()
@@ -461,38 +409,29 @@ struct DashboardContentView: View {
         }
     }
 
-    @ViewBuilder
     private var selectedContent: some View {
-        switch selectedView {
-        case .dashboard:
-            DashboardView(
-                viewModel: dashboardViewModel,
-                coordinator: coordinator,
-                launchOnLoginReminderManager: launchOnLoginReminderManager,
-                hasLoadedInitialData: $hasLoadedDashboard
-            )
-
-        case .settings:
-            SettingsView(
-                initialTab: initialSettingsTab,
-                initialScrollTargetID: initialSettingsScrollTargetID,
-                launchOnLoginReminderManager: launchOnLoginReminderManager
-            )
-            .environmentObject(coordinatorWrapper)
-            .onDisappear {
-                // Clear the initial tab when leaving settings
-                initialSettingsTab = nil
-                initialSettingsScrollTargetID = nil
-            }
-
-        case .changelog:
-            ChangelogView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-        case .monitor:
-            SystemMonitorView(coordinator: coordinator)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        DashboardDestinationView(
+            navigation: navigation,
+            dashboard: {
+                DashboardView(
+                    viewModel: dashboardViewModel,
+                    coordinator: coordinator,
+                    launchOnLoginReminderManager: launchOnLoginReminderManager,
+                    hasLoadedInitialData: $hasLoadedDashboard
+                )
+            },
+            settings: { destination in
+                SettingsView(
+                    initialTab: destination.tab,
+                    initialScrollTargetID: destination.scrollTargetID,
+                    navigationRevision: destination.revision,
+                    launchOnLoginReminderManager: launchOnLoginReminderManager
+                )
+                .environmentObject(coordinatorWrapper)
+            },
+            changelog: { ChangelogView().frame(maxWidth: .infinity, maxHeight: .infinity) },
+            monitor: { SystemMonitorView(coordinator: coordinator).frame(maxWidth: .infinity, maxHeight: .infinity) }
+        )
     }
 
     private func checkOnboarding() async {
@@ -503,19 +442,106 @@ struct DashboardContentView: View {
     }
 
     private func updateDashboardWindowTitle() {
-        let title: String
-        switch selectedView {
-        case .dashboard:
-            title = "Dashboard"
-        case .settings:
-            title = "Settings - \(currentSettingsTabTitle)"
-        case .changelog:
-            title = "Changelog"
-        case .monitor:
-            title = "System Monitor"
-        }
+        DashboardWindowController.shared.updateWindowTitle(navigation.windowTitle)
+    }
+}
 
-        DashboardWindowController.shared.updateWindowTitle(title)
+struct DashboardSettingsDestination: Equatable {
+    var tab: SettingsTab?
+    var scrollTargetID: String?
+    var revision: UInt64 = 0
+}
+
+/// Navigation outlives any individual SwiftUI destination or native window.
+@MainActor
+final class DashboardNavigationState: ObservableObject {
+    @Published var selectedView: DashboardSelectedView = .dashboard
+    @Published private(set) var settingsDestination = DashboardSettingsDestination()
+    @Published var currentSettingsTabTitle = SettingsTab.general.rawValue
+
+    static let notificationNames: [Notification.Name] = [
+        .openDashboard, .dashboardShowSettings, .toggleSettings, .openSettings,
+        .openSettingsAppearance, .openSettingsPower, .openSettingsTags,
+        .openSettingsPauseReminderInterval, .openSettingsPowerOCRCard,
+        .openSettingsPowerOCRPriority, .openSettingsTimelineScrollOrientation, .settingsSelectedTabDidChange
+    ]
+
+    var windowTitle: String {
+        switch selectedView {
+        case .dashboard: return "Dashboard"
+        case .settings: return "Settings - \(currentSettingsTabTitle)"
+        case .changelog: return "Changelog"
+        case .monitor: return "System Monitor"
+        }
+    }
+
+    /// Returns whether this notification also requests a visible window.
+    func receive(_ notification: Notification) -> Bool {
+        switch notification.name {
+        case .openDashboard:
+            selectedView = notification.userInfo?["target"] as? String == "changelog" ? .changelog : .dashboard
+            return false
+        case .dashboardShowSettings:
+            selectedView = .settings
+            return false
+        case .toggleSettings:
+            selectedView = selectedView == .settings ? .dashboard : .settings
+            return false
+        case .openSettings:
+            openSettings()
+        case .openSettingsAppearance:
+            openSettings(tab: .general)
+        case .openSettingsPower:
+            openSettings(tab: .power)
+        case .openSettingsTags:
+            openSettings(tab: .tags)
+        case .openSettingsPauseReminderInterval:
+            openSettings(tab: .capture, scrollTargetID: SettingsView.pauseReminderIntervalTargetID)
+        case .openSettingsPowerOCRCard:
+            openSettings(tab: .power, scrollTargetID: SettingsView.powerOCRCardTargetID)
+        case .openSettingsPowerOCRPriority:
+            openSettings(tab: .power, scrollTargetID: SettingsView.powerOCRPriorityTargetID)
+        case .openSettingsTimelineScrollOrientation:
+            openSettings(tab: .general, scrollTargetID: SettingsView.timelineScrollOrientationTargetID)
+        case .settingsSelectedTabDidChange:
+            if let title = notification.userInfo?["tab"] as? String, !title.isEmpty {
+                currentSettingsTabTitle = title
+            }
+            return false
+        default:
+            return false
+        }
+        return true
+    }
+
+    func openSettings(tab: SettingsTab? = nil, scrollTargetID: String? = nil) {
+        if let tab { currentSettingsTabTitle = tab.rawValue }
+        else if selectedView != .settings { currentSettingsTabTitle = SettingsTab.general.rawValue }
+        settingsDestination = DashboardSettingsDestination(
+            tab: tab, scrollTargetID: scrollTargetID, revision: settingsDestination.revision &+ 1
+        )
+        selectedView = .settings
+    }
+}
+
+/// The actual destination switch is independently hostable with inert content;
+/// routing tests therefore never instantiate live Settings or app services.
+struct DashboardDestinationView<Dashboard: View, Settings: View, Changelog: View, Monitor: View>: View {
+    @ObservedObject var navigation: DashboardNavigationState
+    var dashboard: () -> Dashboard
+    var settings: (DashboardSettingsDestination) -> Settings
+    var changelog: () -> Changelog
+    var monitor: () -> Monitor
+
+    var body: some View {
+        Group {
+            switch navigation.selectedView {
+            case .dashboard: dashboard()
+            case .settings: settings(navigation.settingsDestination)
+            case .changelog: changelog()
+            case .monitor: monitor()
+            }
+        }
     }
 }
 

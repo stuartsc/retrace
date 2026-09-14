@@ -68,6 +68,9 @@ public struct DashboardView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @StateObject private var coordinatorWrapper: AppCoordinatorWrapper
     @StateObject private var fuseIntelViewModel: FuseIntelViewModel
+    @StateObject private var screenshotEvidence: EvidenceViewModel
+    @State private var screenshotPresenter = DashboardScreenshotEvidencePresenter()
+    @State private var startedEvidenceSelection: ScreenshotEvidenceSelection?
     @ObservedObject var launchOnLoginReminderManager: LaunchOnLoginReminderManager
     @ObservedObject private var updaterManager = UpdaterManager.shared
     @State private var isPulsing = false
@@ -97,28 +100,26 @@ public struct DashboardView: View {
     @State private var lastAutoLoadedLiveAudioBoundaryRowID: Int64?
     @State private var lastAutoLoadedLiveAudioOffset: Int?
     @State private var expandedLiveAudioRowIDs: Set<Int64> = []
-    @State private var liveFrames: [FrameWithVideoInfo] = []
+    @State private var liveFrames: [DashboardScreenshotRow] = []
+    @State private var screenshotReadEpoch: UInt64 = 0
+    @State private var screenshotWindowVisible: Bool
+    @State private var screenshotThumbnailLoader = SearchEvidenceThumbnailLoader()
     @State private var liveFrameError: String?
     @State private var isLoadingLiveFrames = false
     @State private var isLoadingMoreLiveFrames = false
     @State private var canLoadMoreLiveFrames = true
-    @State private var lastAutoLoadedLiveFrameBoundaryID: Int64?
-    @State private var selectedLiveFrameID: Int64?
+    @State private var lastAutoLoadedLiveFrameBoundaryID: ScreenshotEvidenceSelection?
+    @State private var selectedLiveFrameSelection: ScreenshotEvidenceSelection?
     @State private var selectedLiveFrameRefresher = DashboardSelectedFrameRefresher()
-    @State private var liveFrameThumbnails: [Int64: NSImage] = [:]
-    @State private var liveFrameThumbnailLoadingIDs: Set<Int64> = []
-    @State private var liveFrameThumbnailFailureCounts: [Int64: Int] = [:]
-    @State private var liveFrameOCRNodes: [Int64: [OCRNodeWithText]] = [:]
-    @State private var liveFrameOCRLoadingIDs: Set<Int64> = []
-    @State private var liveFrameOCRLoadedStatuses: [Int64: Int] = [:]
+    @State private var liveFrameOCRNodes: [ScreenshotEvidenceSelection: [OCRNodeWithText]] = [:]
+    @State private var liveFrameOCRText: [ScreenshotEvidenceSelection: String] = [:]
+    @State private var liveFrameOCRLoadingIDs: Set<ScreenshotEvidenceSelection> = []
+    @State private var liveFrameOCRLoadedStatuses: [ScreenshotEvidenceSelection: Int] = [:]
     @State private var liveFrameAppNamesByBundleID: [String: String] = [:]
     @State private var screenshotSearchText = ""
-    @State private var selectedLiveFramePreview: NSImage?
-    @State private var selectedLiveFramePreviewID: Int64?
-    @State private var isLoadingSelectedLiveFramePreview = false
-    @State private var selectedLiveFramePreviewLoadingID: Int64?
-    @State private var selectedLiveFramePreviewError: String?
-    @State private var liveFramePreviewFailureCounts: [Int64: Int] = [:]
+    @State private var screenshotContentRevision: UInt64 = 0
+    @State private var completedScreenshotFilter: DashboardScreenshotFilterRequest?
+    @State private var matchingScreenshotIDs: Set<ScreenshotEvidenceSelection> = []
     @State private var recentActivityFrames: [FrameWithVideoInfo] = []
     @State private var latestLiveContextFrame: FrameWithVideoInfo?
     @State private var liveActivityBriefSnapshot = RetraceActivityBriefPolicy.make(moments: [], speech: [])
@@ -165,8 +166,12 @@ public struct DashboardView: View {
         hasLoadedInitialData: Binding<Bool> = .constant(false)
     ) {
         self.viewModel = viewModel
+        _screenshotWindowVisible = State(initialValue: viewModel.isWindowVisible)
         _coordinatorWrapper = StateObject(wrappedValue: AppCoordinatorWrapper(coordinator: coordinator))
         _fuseIntelViewModel = StateObject(wrappedValue: FuseIntelViewModel())
+        _screenshotEvidence = StateObject(wrappedValue: EvidenceViewModel(client: .live(service: {
+            try await coordinator.progressiveRecall()
+        })))
         self.launchOnLoginReminderManager = launchOnLoginReminderManager
         self._hasLoadedInitialData = hasLoadedInitialData
     }
@@ -283,7 +288,7 @@ public struct DashboardView: View {
                 Log.debug("[Dashboard] Tab switch - skipping reload", category: .ui)
             }
         }
-        .task(id: "\(selectedDashboardTab.rawValue):\(viewModel.isWindowVisible)") {
+        .task(id: "\(selectedDashboardTab.rawValue):\(viewModel.isWindowVisible):\(screenshotReadEpoch)") {
             guard viewModel.isWindowVisible else { return }
             switch selectedDashboardTab {
             case .dictation:
@@ -362,6 +367,31 @@ public struct DashboardView: View {
                 await refreshDictationDashboardData()
             }
         }
+        .task(id: screenshotEvidenceRequest) {
+            await showSelectedScreenshotEvidence()
+        }
+        .task(id: screenshotFilterRequest) {
+            let request = screenshotFilterRequest
+            guard !request.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                matchingScreenshotIDs = []
+                completedScreenshotFilter = request
+                return
+            }
+            let rows = liveFrames, text = liveFrameOCRText, names = liveFrameAppNamesByBundleID
+            do {
+                let matches = try await DashboardScreenshotIdentityPolicy.filterRows(rows) { row in
+                    let frame = row.frame
+                    let app = frame.metadata.appBundleID.flatMap { names[$0] }
+                        ?? frame.metadata.appName ?? frame.metadata.appBundleID
+                    return DashboardScreenshotFilterPolicy.matches(query: request.query, appName: app,
+                        windowName: frame.metadata.windowName, browserURL: frame.metadata.browserURL,
+                        ocrText: text[row.id])
+                }
+                guard !Task.isCancelled, request == screenshotFilterRequest else { return }
+                matchingScreenshotIDs = matches
+                completedScreenshotFilter = request
+            } catch { }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidBecomeKey)) { _ in
             Log.debug("[Dashboard] Window became key - refreshing", category: .ui)
             Task {
@@ -381,19 +411,27 @@ public struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidOpen)) { _ in
             viewModel.isWindowVisible = true
+            screenshotWindowVisible = true
+            invalidateScreenshotReads(clearRows: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataSourceDidChange)) { _ in
+            invalidateScreenshotReads(clearRows: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidClose)) { _ in
             viewModel.isWindowVisible = false
-            selectedLiveFrameRefresher.cancel()
+            screenshotWindowVisible = false
+            invalidateScreenshotReads(clearRows: false)
         }
         .onChange(of: selectedDashboardTab) { _ in
-            selectedLiveFrameRefresher.cancel()
+            invalidateScreenshotReads(clearRows: false)
         }
         .onChange(of: viewModel.isWindowVisible) { isVisible in
-            if !isVisible { selectedLiveFrameRefresher.cancel() }
+            screenshotWindowVisible = isVisible
+            if !isVisible { invalidateScreenshotReads(clearRows: false) }
         }
         .onDisappear {
-            selectedLiveFrameRefresher.cancel()
+            screenshotWindowVisible = false
+            invalidateScreenshotReads(clearRows: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .colorThemeDidChange)) { notification in
             if let newTheme = notification.object as? MilestoneCelebrationManager.ColorTheme {
@@ -1508,10 +1546,6 @@ public struct DashboardView: View {
                         .font(.retraceHeadline)
                         .foregroundColor(.retracePrimary)
 
-                    Button("Activity & Evidence") {
-                        ActivityTimelineController.shared.show(coordinator: coordinatorWrapper.coordinator)
-                    }.buttonStyle(.link)
-
                     Text("Find what you saw, recover the text, then jump back into that moment.")
                         .font(.retraceCaptionMedium)
                         .foregroundColor(.retraceSecondary)
@@ -1857,7 +1891,7 @@ public struct DashboardView: View {
     }
 
     @ViewBuilder
-    private func paginatedLiveScreenshotMomentList(_ displayedFrames: [FrameWithVideoInfo]) -> some View {
+    private func paginatedLiveScreenshotMomentList(_ displayedFrames: [DashboardScreenshotRow]) -> some View {
         if #available(macOS 15.0, *) {
             liveScreenshotMomentList(displayedFrames)
                 .onScrollGeometryChange(for: DashboardScreenshotScrollGeometry.self) { geometry in
@@ -1874,16 +1908,16 @@ public struct DashboardView: View {
         }
     }
 
-    private func liveScreenshotMomentList(_ displayedFrames: [FrameWithVideoInfo]) -> some View {
+    private func liveScreenshotMomentList(_ displayedFrames: [DashboardScreenshotRow]) -> some View {
         List {
-            ForEach(displayedFrames, id: \.frame.id.value) { frame in
+            ForEach(displayedFrames) { frame in
                 liveScreenshotRow(frame)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     .padding(.bottom, 6)
                     .onAppear {
-                        loadLiveFrameThumbnailIfNeeded(frame)
+                        loadLiveFrameContextIfNeeded(frame)
                     }
             }
 
@@ -1904,163 +1938,24 @@ public struct DashboardView: View {
         .environment(\.defaultMinListRowHeight, 1)
     }
 
+    private var screenshotEvidenceSelection: ScreenshotEvidenceSelection? {
+        guard selectedDashboardTab == .screenshots, screenshotWindowVisible else { return nil }
+        return selectedLiveFrameSelection
+    }
+
+    private var screenshotEvidenceRequest: DashboardScreenshotEvidenceRequest {
+        DashboardScreenshotEvidenceRequest(selection: screenshotEvidenceSelection,
+            available: selectedLiveFrame != nil, epoch: screenshotReadEpoch)
+    }
+
     private var selectedScreenshotPreviewPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let selectedFrame = selectedLiveFrame {
-                let frame = selectedFrame.frame
-                let frameID = frame.id.value
-
-                HStack(spacing: 8) {
-                    Image(systemName: "viewfinder")
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retraceAccent)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(liveFrameDisplayAppName(selectedFrame))
-                            .font(.retraceCalloutMedium)
-                            .foregroundColor(.retracePrimary)
-                            .lineLimit(1)
-
-                        Text(formatDashboardTimestamp(frame.timestamp))
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Text(screenshotOCRStatusLabel(selectedFrame))
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(screenshotOCRStatusColor(selectedFrame))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(screenshotOCRStatusColor(selectedFrame).opacity(0.10))
-                        .clipShape(Capsule())
-
-                    Button {
-                        openTimelineAt(date: frame.timestamp)
-                        recordScreenshotAction("open_timeline", frame: selectedFrame)
-                    } label: {
-                        Label("Open moment", systemImage: "arrow.up.right.square")
-                            .font(.retraceCaption2Medium)
-                            .foregroundColor(.retracePrimary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 6)
-                            .background(Color.retraceAccent.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open this moment in the timeline")
-                }
-
-                ZStack {
-                    RoundedRectangle(cornerRadius: 13)
-                        .fill(Color.black.opacity(0.24))
-
-                    if selectedLiveFramePreviewID == frameID,
-                       let image = selectedLiveFramePreview {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .padding(8)
-                            .transition(.opacity)
-                    } else if let thumbnail = liveFrameThumbnails[frameID] {
-                        Image(nsImage: thumbnail)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .padding(8)
-                            .overlay {
-                                if isLoadingSelectedLiveFramePreview {
-                                    ProgressView()
-                                        .scaleEffect(0.65)
-                                        .padding(8)
-                                        .background(Color.black.opacity(0.45))
-                                        .clipShape(Circle())
-                                }
-                            }
-                    } else if isLoadingSelectedLiveFramePreview {
-                        VStack(spacing: 9) {
-                            ProgressView()
-                                .scaleEffect(0.75)
-                            Text("Recovering this moment...")
-                                .font(.retraceCaption2Medium)
-                                .foregroundColor(.retraceSecondary)
-                        }
-                    } else {
-                        VStack(spacing: 10) {
-                            Image(systemName: "photo.badge.exclamationmark")
-                                .font(.system(size: 28, weight: .medium))
-                                .foregroundColor(.retraceWarning)
-
-                            Text(selectedLiveFramePreviewError ?? "This frame is not ready to display yet.")
-                                .font(.retraceCaptionMedium)
-                                .foregroundColor(.retraceSecondary)
-                                .multilineTextAlignment(.center)
-
-                            Button("Try again") {
-                                retrySelectedLiveFrameImage()
-                            }
-                            .buttonStyle(.plain)
-                            .font(.retraceCaption2Medium)
-                            .foregroundColor(.retraceAccent)
-                        }
-                        .padding(24)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 13))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 13)
-                        .stroke(Color.white.opacity(0.07), lineWidth: 1)
-                }
-
-                if let windowName = frame.metadata.windowName, !windowName.isEmpty {
-                    Text(windowName)
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retracePrimary)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                }
-
-                if let browserURL = frame.metadata.browserURL, !browserURL.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "link")
-                            .font(.retraceCaption2)
-                        Text(browserURL)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                        Button("Open") {
-                            openScreenshotURL(browserURL, frame: selectedFrame)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.retraceAccent)
-                    }
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceSecondary)
-                }
-            } else {
-                VStack(spacing: 10) {
-                    Image(systemName: "rectangle.stack")
-                        .font(.system(size: 28, weight: .medium))
-                        .foregroundColor(.retraceSecondary)
-                    Text("Select a moment to inspect it")
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retraceSecondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ScreenshotEvidencePreview(model: screenshotEvidence, selection: screenshotEvidenceSelection,
+            selectionAvailable: selectedLiveFrame != nil, completedSelection: startedEvidenceSelection,
+            retrySelection: { Task { await showSelectedScreenshotEvidence() } }) { reference in
+            recordScreenshotAction("open_timeline", frame: selectedLiveFrame)
+            Task {
+                await TimelineWindowController.shared.openEvidence(reference, coordinator: coordinatorWrapper.coordinator)
             }
-        }
-        .padding(12)
-        .background(
-            LinearGradient(
-                colors: [Color.retraceAccent.opacity(0.055), Color.white.opacity(0.025)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .cornerRadius(14)
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.retraceAccent.opacity(0.12), lineWidth: 1)
         }
     }
 
@@ -2816,159 +2711,30 @@ public struct DashboardView: View {
     }
 
     private var screenshotContextPanel: some View {
-        let selectedFrame = selectedLiveFrame
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "text.viewfinder")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceAccent)
-
-                Text("Inspector")
-                    .font(.retraceCalloutMedium)
-                    .foregroundColor(.retracePrimary)
-
-                Spacer()
-
-                if let selectedFrame {
-                    Text(selectedFrame.frame.source.displayName)
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                }
-            }
-
-            Text("Everything Retrace captured about this moment, without truncation.")
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-
-            if let selectedFrame {
-                liveFrameMetadataCard(selectedFrame)
-
-                let frameID = selectedFrame.frame.id.value
-                if liveFrameOCRLoadingIDs.contains(frameID) {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .scaleEffect(0.55)
-                        Text("Loading captured text...")
-                            .font(.retraceCaption2Medium)
-                            .foregroundColor(.retraceSecondary)
-                    }
-                    .padding(.vertical, 6)
-                } else if let nodes = liveFrameOCRNodes[frameID], !nodes.isEmpty {
-                    liveFrameOCRTextPanel(nodes)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(
-                            selectedFrame.processingStatus == 2 ? "No readable text found" : "Text indexing is still catching up",
-                            systemImage: selectedFrame.processingStatus == 2 ? "text.badge.xmark" : "clock.arrow.circlepath"
-                        )
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retraceSecondary)
-
-                        Text(selectedFrame.processingStatus == 2
-                            ? "The image is preserved and searchable by app, window, URL, and time."
-                            : "This panel updates automatically when OCR completes; no repair action is required."
-                        )
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary.opacity(0.8))
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.03))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
+        Group {
+            if let selection = screenshotEvidenceSelection, selectedLiveFrame != nil, startedEvidenceSelection == selection {
+                ExactEvidenceView(model: screenshotEvidence, showsImage: false, showsClose: false)
+            } else if screenshotEvidenceSelection != nil && selectedLiveFrame == nil {
+                Text("The selected screenshot is no longer available.").foregroundStyle(.secondary).padding()
+            } else if screenshotEvidenceSelection != nil {
+                ProgressView("Opening captured context…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text("Select a screenshot to inspect its context.")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                Text("Select a screenshot to inspect its context and text.")
+                    .foregroundStyle(.secondary).padding()
             }
         }
-        .padding(14)
-        .background(Color.white.opacity(0.025))
-        .cornerRadius(14)
+        .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private func liveFrameOCRTextPanel(_ nodes: [OCRNodeWithText]) -> some View {
-        let lines = DashboardOCRContextPolicy.readableLines(from: nodes)
-        let fullText = lines.map(\.text).joined(separator: "\n")
-
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("Captured Text")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceSecondary)
-
-                Spacer(minLength: 0)
-
-                Text("\(lines.count) lines · \(nodes.count) regions")
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceSecondary.opacity(0.8))
-
-                Button {
-                    copyTranscriptText(fullText, surface: "screenshot_ocr")
-                    recordScreenshotAction("copy_ocr", frame: selectedLiveFrame)
-                } label: {
-                    Label("Copy all", systemImage: "doc.on.doc")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceAccent)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if lines.isEmpty {
-                Text("OCR regions were captured, but no readable text was available.")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-            } else {
-                ScrollView(showsIndicators: false) {
-                    Text(fullText)
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retracePrimary)
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(Color.white.opacity(0.035))
-                        .cornerRadius(9)
-                }
-            }
-        }
-    }
-
-    private func liveScreenshotRow(_ item: FrameWithVideoInfo) -> some View {
+    private func liveScreenshotRow(_ item: DashboardScreenshotRow) -> some View {
         let frame = item.frame
-        let frameID = frame.id.value
-        let isSelected = selectedLiveFrameID == frameID
+        let isSelected = selectedLiveFrameSelection == item.id
 
         return HStack(alignment: .center, spacing: 9) {
-            ZStack {
-                if let image = liveFrameThumbnails[frameID] {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.white.opacity(0.035))
-                        .overlay {
-                            if liveFrameThumbnailLoadingIDs.contains(frameID) {
-                                ProgressView()
-                                    .scaleEffect(0.5)
-                            } else {
-                                Image(systemName: frame.isEncodedToVideo ? "photo" : "clock.badge.exclamationmark")
-                                    .font(.retraceCaptionMedium)
-                                    .foregroundColor(.retraceSecondary.opacity(0.7))
-                            }
-                        }
-                }
-            }
-            .frame(width: 82, height: 50)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
+            DashboardScreenshotThumbnail(row: item,
+                isVisible: screenshotWindowVisible && selectedDashboardTab == .screenshots,
+                epoch: screenshotReadEpoch, loader: screenshotThumbnailLoader,
+                service: { try await coordinatorWrapper.coordinator.progressiveRecall() })
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -3013,29 +2779,6 @@ public struct DashboardView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Screenshot from \(liveFrameDisplayAppName(item))")
         .accessibilityAddTraits(.isButton)
-    }
-
-    private func liveFrameMetadataCard(_ item: FrameWithVideoInfo) -> some View {
-        let frame = item.frame
-
-        return VStack(alignment: .leading, spacing: 8) {
-            metadataLine(label: "Time", value: formatDashboardTimestamp(frame.timestamp))
-            metadataLine(label: "App", value: liveFrameDisplayAppName(item))
-
-            if let windowName = frame.metadata.windowName, !windowName.isEmpty {
-                metadataLine(label: "Window", value: windowName)
-            }
-
-            if let browserURL = frame.metadata.browserURL, !browserURL.isEmpty {
-                metadataLine(label: "URL", value: browserURL)
-            }
-
-            metadataLine(label: "Frame", value: "#\(frame.id.value)")
-            metadataLine(label: "Video", value: frame.isEncodedToVideo ? "\(frame.videoID.value) · \(frame.frameIndexInSegment)" : "Pending encode")
-        }
-        .padding(10)
-        .background(Color.white.opacity(0.035))
-        .cornerRadius(10)
     }
 
     private func liveContextInsightCard(iconName: String, title: String, body: String) -> some View {
@@ -3205,21 +2948,6 @@ public struct DashboardView: View {
             section: selectedFuseIntelSection.rawValue,
             connectionState: fuseIntelConnectionLabel.lowercased()
         )
-    }
-
-    private func metadataLine(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.uppercased())
-                .font(.retraceCaption2Medium)
-                .foregroundColor(.retraceSecondary.opacity(0.7))
-
-            Text(value)
-                .font(.retraceCaption2)
-                .foregroundColor(.retracePrimary)
-                .lineLimit(3)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 
     private func loadOlderFooter(isLoading: Bool, idleText: String = "Scroll for older entries") -> some View {
@@ -3700,11 +3428,12 @@ public struct DashboardView: View {
         }
     }
 
-    private var selectedLiveFrame: FrameWithVideoInfo? {
-        guard let selectedLiveFrameID else {
-            return liveFrames.first
-        }
-        return liveFrames.first { $0.frame.id.value == selectedLiveFrameID } ?? liveFrames.first
+    private var selectedLiveFrame: DashboardScreenshotRow? {
+        DashboardScreenshotIdentityPolicy.selectedFrame(in: liveFrames, selection: selectedLiveFrameSelection)
+    }
+
+    private func liveFrameDisplayAppName(_ item: DashboardScreenshotRow) -> String {
+        liveFrameDisplayAppName(item.frame)
     }
 
     private func liveFrameDisplayAppName(_ item: FrameWithVideoInfo) -> String {
@@ -3719,35 +3448,22 @@ public struct DashboardView: View {
         return frame.metadata.appName ?? frame.metadata.appBundleID ?? "Unknown app"
     }
 
-    private var filteredLiveFrames: [FrameWithVideoInfo] {
-        guard !screenshotSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return liveFrames
-        }
+    private var screenshotFilterRequest: DashboardScreenshotFilterRequest {
+        DashboardScreenshotFilterRequest(query: screenshotSearchText, contentRevision: screenshotContentRevision,
+            epoch: screenshotReadEpoch)
+    }
 
-        return liveFrames.filter { item in
-            let frameID = item.frame.id.value
-            return DashboardScreenshotFilterPolicy.matches(
-                query: screenshotSearchText,
-                appName: liveFrameDisplayAppName(item),
-                windowName: item.frame.metadata.windowName,
-                browserURL: item.frame.metadata.browserURL,
-                ocrText: liveFrameOCRNodes[frameID].map(DashboardOCRContextPolicy.fullText(from:))
-            )
-        }
+    private var filteredLiveFrames: [DashboardScreenshotRow] {
+        guard !screenshotSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return liveFrames }
+        guard completedScreenshotFilter == screenshotFilterRequest else { return [] }
+        return liveFrames.filter { matchingScreenshotIDs.contains($0.id) }
     }
 
     private var screenshotNavigationControls: some View {
-        let orderedIDs = filteredLiveFrames.map(\.frame.id.value)
-        let newerID = DashboardScreenshotNavigationPolicy.adjacentID(
-            from: selectedLiveFrameID,
-            direction: .newer,
-            orderedIDs: orderedIDs
-        )
-        let olderID = DashboardScreenshotNavigationPolicy.adjacentID(
-            from: selectedLiveFrameID,
-            direction: .older,
-            orderedIDs: orderedIDs
-        )
+        let newerID = DashboardScreenshotIdentityPolicy.adjacentSelection(
+            from: selectedLiveFrameSelection, direction: .newer, frames: filteredLiveFrames)
+        let olderID = DashboardScreenshotIdentityPolicy.adjacentSelection(
+            from: selectedLiveFrameSelection, direction: .older, frames: filteredLiveFrames)
 
         return HStack(spacing: 1) {
             screenshotNavigationButton(
@@ -3790,30 +3506,25 @@ public struct DashboardView: View {
         .help(help)
     }
 
-    private func selectLiveFrame(_ item: FrameWithVideoInfo) {
-        if selectedLiveFrameID != item.frame.id.value || selectedLiveFrame?.frame.source != item.frame.source {
+    private func selectLiveFrame(_ item: DashboardScreenshotRow) {
+        if selectedLiveFrameSelection != item.id {
             selectedLiveFrameRefresher.cancel()
         }
-        selectedLiveFrameID = item.frame.id.value
+        selectedLiveFrameSelection = item.id
         Log.debug("[Dashboard] Selected live screenshot frame \(item.frame.id.value)", category: .ui)
         DashboardViewModel.recordDashboardLiveFrameSelected(
             coordinator: coordinatorWrapper.coordinator,
             frameID: item.frame.id.value,
             source: item.frame.source.rawValue
         )
-        loadLiveFrameThumbnailIfNeeded(item)
         loadLiveFrameContextIfNeeded(item)
-        loadSelectedLiveFramePreview(item)
         Task { await refreshSelectedLiveFrameState() }
     }
 
     private func navigateScreenshots(_ direction: DashboardScreenshotNavigationDirection) {
-        let orderedIDs = filteredLiveFrames.map(\.frame.id.value)
-        guard let targetID = DashboardScreenshotNavigationPolicy.adjacentID(
-            from: selectedLiveFrameID,
-            direction: direction,
-            orderedIDs: orderedIDs
-        ), let item = liveFrames.first(where: { $0.frame.id.value == targetID }) else {
+        guard let target = DashboardScreenshotIdentityPolicy.adjacentSelection(
+            from: selectedLiveFrameSelection, direction: direction, frames: filteredLiveFrames
+        ), let item = DashboardScreenshotIdentityPolicy.selectedFrame(in: liveFrames, selection: target) else {
             return
         }
 
@@ -3822,33 +3533,11 @@ public struct DashboardView: View {
     }
 
     private func ensureFilteredLiveFrameSelection() {
-        guard let first = filteredLiveFrames.first else { return }
-        guard filteredLiveFrames.contains(where: { $0.frame.id.value == selectedLiveFrameID }) else {
-            selectLiveFrame(first)
-            return
-        }
+        guard selectedLiveFrameSelection == nil, let first = filteredLiveFrames.first else { return }
+        selectLiveFrame(first)
     }
 
-    private func retrySelectedLiveFrameImage() {
-        guard let selectedLiveFrame else { return }
-        let frameID = selectedLiveFrame.frame.id.value
-        liveFrameThumbnailFailureCounts[frameID] = 0
-        liveFramePreviewFailureCounts[frameID] = 0
-        selectedLiveFramePreviewError = nil
-        loadLiveFrameThumbnailIfNeeded(selectedLiveFrame)
-        loadSelectedLiveFramePreview(selectedLiveFrame, force: true)
-        recordScreenshotAction("retry_image", frame: selectedLiveFrame)
-    }
-
-    private func openScreenshotURL(_ value: String, frame: FrameWithVideoInfo) {
-        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            return
-        }
-        NSWorkspace.shared.open(url)
-        recordScreenshotAction("open_url", frame: frame)
-    }
-
-    private func recordScreenshotAction(_ action: String, frame: FrameWithVideoInfo?) {
+    private func recordScreenshotAction(_ action: String, frame: DashboardScreenshotRow?) {
         DashboardViewModel.recordDashboardScreenshotAction(
             coordinator: coordinatorWrapper.coordinator,
             action: action,
@@ -3913,14 +3602,14 @@ public struct DashboardView: View {
         previous: DashboardScreenshotScrollGeometry,
         current: DashboardScreenshotScrollGeometry
     ) {
-        let boundaryID = liveFrames.last?.frame.id.value
+        let boundaryID = liveFrames.last?.id
         guard DashboardScreenshotPaginationPolicy.shouldLoadOlder(
             previousOffsetY: previous.offsetY,
             currentOffsetY: current.offsetY,
             contentHeight: current.contentHeight,
             containerHeight: current.containerHeight,
-            boundaryID: boundaryID,
-            lastRequestedBoundaryID: lastAutoLoadedLiveFrameBoundaryID,
+            boundary: boundaryID,
+            lastRequestedBoundary: lastAutoLoadedLiveFrameBoundaryID,
             canLoadMore: canLoadMoreLiveFrames,
             isLoading: isLoadingMoreLiveFrames
         ) else { return }
@@ -4335,60 +4024,59 @@ public struct DashboardView: View {
     private func loadLiveFramesDashboardData(reset: Bool = true) async {
         guard reset || canLoadMoreLiveFrames else { return }
         guard !isLoadingLiveFrames && !isLoadingMoreLiveFrames else { return }
-
+        let epoch = screenshotReadEpoch
         if reset {
-            isLoadingLiveFrames = liveFrames.isEmpty
+            isLoadingLiveFrames = true
             canLoadMoreLiveFrames = true
             lastAutoLoadedLiveFrameBoundaryID = nil
         } else {
             isLoadingMoreLiveFrames = true
         }
         defer {
-            isLoadingLiveFrames = false
-            isLoadingMoreLiveFrames = false
-        }
-
-        do {
-            let frames: [FrameWithVideoInfo]
-            if reset {
-                frames = try await coordinatorWrapper.coordinator.getMostRecentFramesWithVideoInfo(
-                    limit: DashboardLiveLayoutPolicy.screenshotPageSize
-                )
-            } else if let oldestTimestamp = liveFrames.last?.frame.timestamp {
-                frames = try await coordinatorWrapper.coordinator.getFramesWithVideoInfoBefore(
-                    timestamp: oldestTimestamp,
-                    limit: DashboardLiveLayoutPolicy.screenshotPageSize
-                )
-            } else {
-                frames = []
+            if epoch == screenshotReadEpoch {
+                isLoadingLiveFrames = false
+                isLoadingMoreLiveFrames = false
             }
-
-            await resolveLiveFrameAppNames(frames)
-
-            if reset {
-                liveFrames = frames
-            } else {
+        }
+        do {
+            let coordinator = coordinatorWrapper.coordinator
+            let service = try await coordinator.progressiveRecall()
+            let oldest = liveFrames.last?.frame.timestamp
+            let frames = try await DashboardScreenshotIdentityPolicy.readRows(
+                sourceGeneration: { try await service.sourceGeneration(source: $0) }
+            ) {
+                if reset {
+                    return try await coordinator.getMostRecentFramesWithVideoInfo(limit: DashboardLiveLayoutPolicy.screenshotPageSize)
+                } else if let oldest {
+                    return try await coordinator.getFramesWithVideoInfoBefore(timestamp: oldest, limit: DashboardLiveLayoutPolicy.screenshotPageSize)
+                }
+                return []
+            }
+            await resolveLiveFrameAppNames(frames.map(\.value))
+            let tokens = try await DashboardScreenshotIdentityPolicy.sourceGenerations { try await service.sourceGeneration(source: $0) }
+            guard epoch == screenshotReadEpoch, !Task.isCancelled else { return }
+            liveFrames = DashboardScreenshotIdentityPolicy.retainingCurrentRows(liveFrames, generations: tokens)
+            ensureSelectedLiveFrame()
+            guard DashboardScreenshotIdentityPolicy.retainingCurrentRows(frames, generations: tokens).count == frames.count else {
+                trimLiveFrameOCRCache()
+                throw EvidenceUnavailableReason.sourceDisconnected
+            }
+            if reset { liveFrames = frames }
+            else {
                 appendLiveFrames(frames)
                 if !frames.isEmpty {
-                    DashboardViewModel.recordDashboardTranscriptLoadOlder(
-                        coordinator: coordinatorWrapper.coordinator,
-                        surface: "live_screenshots"
-                    )
+                    DashboardViewModel.recordDashboardTranscriptLoadOlder(coordinator: coordinator, surface: "live_screenshots")
                 }
             }
-
             canLoadMoreLiveFrames = frames.count == DashboardLiveLayoutPolicy.screenshotPageSize
             liveFrameError = nil
             ensureSelectedLiveFrame()
-            trimLiveFrameCaches()
-            retryTransientLiveFrameImages()
+            trimLiveFrameOCRCache()
         } catch {
+            guard epoch == screenshotReadEpoch, !Task.isCancelled else { return }
             liveFrameError = "Unable to load screenshots"
-            DashboardViewModel.recordDashboardLoadFailed(
-                coordinator: coordinatorWrapper.coordinator,
-                surface: "live_screenshots",
-                error: error
-            )
+            DashboardViewModel.recordDashboardLoadFailed(coordinator: coordinatorWrapper.coordinator,
+                surface: "live_screenshots", error: error)
             Log.error("[Dashboard] Failed to load live screenshots", category: .ui, error: error)
         }
     }
@@ -4399,32 +4087,45 @@ public struct DashboardView: View {
             await loadLiveFramesDashboardData(reset: true)
             return
         }
-
+        let epoch = screenshotReadEpoch
+        isLoadingLiveFrames = true
+        defer { if epoch == screenshotReadEpoch { isLoadingLiveFrames = false } }
         do {
-            let frames = try await coordinatorWrapper.coordinator.getMostRecentFramesWithVideoInfo(
-                limit: DashboardLiveLayoutPolicy.screenshotPageSize
-            )
-            await resolveLiveFrameAppNames(frames)
-            guard !Task.isCancelled else { return }
+            let coordinator = coordinatorWrapper.coordinator
+            let service = try await coordinator.progressiveRecall()
+            let frames = try await DashboardScreenshotIdentityPolicy.readRows(
+                sourceGeneration: { try await service.sourceGeneration(source: $0) }
+            ) {
+                try await coordinator.getMostRecentFramesWithVideoInfo(limit: DashboardLiveLayoutPolicy.screenshotPageSize)
+            }
+            await resolveLiveFrameAppNames(frames.map(\.value))
+            let tokens = try await DashboardScreenshotIdentityPolicy.sourceGenerations { try await service.sourceGeneration(source: $0) }
+            guard epoch == screenshotReadEpoch, !Task.isCancelled else { return }
+            liveFrames = DashboardScreenshotIdentityPolicy.retainingCurrentRows(liveFrames, generations: tokens)
+            ensureSelectedLiveFrame()
+            guard DashboardScreenshotIdentityPolicy.retainingCurrentRows(frames, generations: tokens).count == frames.count else {
+                trimLiveFrameOCRCache()
+                throw EvidenceUnavailableReason.sourceDisconnected
+            }
             mergeLatestLiveFrames(frames)
             if liveFrames.count <= DashboardLiveLayoutPolicy.screenshotPageSize {
                 canLoadMoreLiveFrames = frames.count == DashboardLiveLayoutPolicy.screenshotPageSize
             }
             liveFrameError = nil
             await refreshSelectedLiveFrameState()
-            guard !Task.isCancelled,
-                  DashboardRefreshLoopPolicy.shouldContinue(loopTab: .screenshots, selectedTab: selectedDashboardTab, isWindowVisible: viewModel.isWindowVisible) else { return }
+            guard epoch == screenshotReadEpoch, !Task.isCancelled,
+                  DashboardRefreshLoopPolicy.shouldContinue(loopTab: .screenshots, selectedTab: selectedDashboardTab,
+                      isWindowVisible: screenshotWindowVisible) else { return }
             ensureSelectedLiveFrame()
             refreshSelectedLiveFrameOCRIfCompleted()
-            trimLiveFrameCaches()
-            retryTransientLiveFrameImages()
+            await showSelectedScreenshotEvidence()
+            guard epoch == screenshotReadEpoch, !Task.isCancelled else { return }
+            trimLiveFrameOCRCache()
         } catch {
+            guard epoch == screenshotReadEpoch, !Task.isCancelled else { return }
             liveFrameError = "Unable to refresh screenshots"
-            DashboardViewModel.recordDashboardLoadFailed(
-                coordinator: coordinatorWrapper.coordinator,
-                surface: "live_screenshots",
-                error: error
-            )
+            DashboardViewModel.recordDashboardLoadFailed(coordinator: coordinatorWrapper.coordinator,
+                surface: "live_screenshots", error: error)
             Log.error("[Dashboard] Failed to refresh live screenshots", category: .ui, error: error)
         }
     }
@@ -4514,9 +4215,8 @@ public struct DashboardView: View {
         }
     }
 
-    private func appendLiveFrames(_ frames: [FrameWithVideoInfo]) {
-        let existingIDs = Set(liveFrames.map(\.frame.id.value))
-        liveFrames.append(contentsOf: frames.filter { !existingIDs.contains($0.frame.id.value) })
+    private func appendLiveFrames(_ frames: [DashboardScreenshotRow]) {
+        liveFrames = DashboardScreenshotIdentityPolicy.appending(frames, to: liveFrames)
     }
 
     private func resolveLiveFrameAppNames(_ frames: [FrameWithVideoInfo]) async {
@@ -4535,343 +4235,163 @@ public struct DashboardView: View {
         }
     }
 
-    private func mergeLatestLiveFrames(_ frames: [FrameWithVideoInfo]) {
+    private func mergeLatestLiveFrames(_ frames: [DashboardScreenshotRow]) {
         let retentionLimit = max(
             DashboardLiveMemoryPolicy.passiveScreenshotRetentionLimit,
             liveFrames.count
         )
-        liveFrames = DashboardLiveMemoryPolicy.mergedLatest(
-            frames,
-            into: liveFrames,
-            id: { $0.frame.id.value },
-            maxCount: retentionLimit
-        )
+        liveFrames = DashboardScreenshotIdentityPolicy.mergedLatest(frames, into: liveFrames, maxCount: retentionLimit)
     }
 
-    private func trimLiveFrameCaches() {
-        trimLiveFrameThumbnailCache()
-        trimLiveFrameOCRCache()
+    private func showSelectedScreenshotEvidence() async {
+        let request = screenshotEvidenceRequest
+        guard !Task.isCancelled, let selection = request.selection,
+              request.available, let row = selectedLiveFrame else {
+            startedEvidenceSelection = nil
+            screenshotPresenter.close(model: screenshotEvidence)
+            return
+        }
+        if startedEvidenceSelection != selection { startedEvidenceSelection = nil }
+        await screenshotPresenter.show(row, model: screenshotEvidence)
+        guard !Task.isCancelled, request == screenshotEvidenceRequest else { return }
+        startedEvidenceSelection = selection
     }
 
-    private func trimLiveFrameThumbnailCache() {
-        let retainedIDs = DashboardLiveMemoryPolicy.retainedCacheIDs(
-            preferredIDs: liveFrames.map(\.frame.id.value),
-            selectedID: selectedLiveFrameID,
-            maxCount: DashboardLiveMemoryPolicy.thumbnailCacheLimit
-        )
-        liveFrameThumbnails = liveFrameThumbnails.filter { retainedIDs.contains($0.key) }
-        liveFrameThumbnailFailureCounts = liveFrameThumbnailFailureCounts.filter { retainedIDs.contains($0.key) }
-        liveFramePreviewFailureCounts = liveFramePreviewFailureCounts.filter { retainedIDs.contains($0.key) }
+    private func invalidateScreenshotReads(clearRows: Bool) {
+        screenshotReadEpoch &+= 1
+        selectedLiveFrameRefresher.cancel()
+        startedEvidenceSelection = nil
+        screenshotPresenter.close(model: screenshotEvidence)
+        isLoadingLiveFrames = false
+        isLoadingMoreLiveFrames = false
+        liveFrameOCRNodes.removeAll()
+        liveFrameOCRText.removeAll()
+        liveFrameOCRLoadingIDs.removeAll()
+        liveFrameOCRLoadedStatuses.removeAll()
+        matchingScreenshotIDs.removeAll()
+        completedScreenshotFilter = nil
+        screenshotContentRevision &+= 1
+        if clearRows {
+            liveFrames.removeAll()
+            liveFrameError = nil
+            canLoadMoreLiveFrames = true
+            lastAutoLoadedLiveFrameBoundaryID = nil
+        }
     }
 
     private func trimLiveFrameOCRCache() {
         let retainedIDs = DashboardLiveMemoryPolicy.retainedCacheIDs(
-            preferredIDs: liveFrames.map(\.frame.id.value),
-            selectedID: selectedLiveFrameID,
-            maxCount: DashboardLiveMemoryPolicy.ocrCacheLimit
-        )
+            preferredIDs: liveFrames.map(\.id), selectedID: selectedLiveFrame?.id,
+            maxCount: DashboardLiveMemoryPolicy.ocrCacheLimit)
         liveFrameOCRNodes = liveFrameOCRNodes.filter { retainedIDs.contains($0.key) }
+        liveFrameOCRText = liveFrameOCRText.filter { retainedIDs.contains($0.key) }
         liveFrameOCRLoadedStatuses = liveFrameOCRLoadedStatuses.filter { retainedIDs.contains($0.key) }
-    }
-
-    private func isRetainedLiveFrame(_ frameID: Int64) -> Bool {
-        liveFrames.contains { $0.frame.id.value == frameID }
+        screenshotContentRevision &+= 1
     }
 
     private func ensureSelectedLiveFrame() {
-        if let selectedLiveFrameID,
-           liveFrames.contains(where: { $0.frame.id.value == selectedLiveFrameID }) {
-            if let selected = liveFrames.first(where: { $0.frame.id.value == selectedLiveFrameID }) {
-                loadLiveFrameThumbnailIfNeeded(selected)
-                loadLiveFrameContextIfNeeded(selected)
-                loadSelectedLiveFramePreview(selected)
-            }
-            return
+        if selectedLiveFrameSelection == nil {
+            selectedLiveFrameSelection = liveFrames.first?.id
         }
-
-        selectedLiveFrameRefresher.cancel()
-        selectedLiveFrameID = liveFrames.first?.frame.id.value
-        if let first = liveFrames.first {
-            loadLiveFrameThumbnailIfNeeded(first)
-            loadLiveFrameContextIfNeeded(first)
-            loadSelectedLiveFramePreview(first)
+        if let selected = selectedLiveFrame { loadLiveFrameContextIfNeeded(selected) }
+        else if selectedLiveFrameSelection != nil {
+            startedEvidenceSelection = nil
+            screenshotPresenter.close(model: screenshotEvidence)
         }
     }
 
-    private func loadLiveFrameThumbnailIfNeeded(_ item: FrameWithVideoInfo) {
-        let frame = item.frame
-        let frameID = frame.id.value
-        guard liveFrameThumbnails[frameID] == nil else { return }
-        guard !liveFrameThumbnailLoadingIDs.contains(frameID) else { return }
-        let failureCount = liveFrameThumbnailFailureCounts[frameID, default: 0]
-        guard DashboardScreenshotRetryPolicy.shouldRetry(attemptCount: failureCount) else { return }
-
-        liveFrameThumbnailLoadingIDs.insert(frameID)
-
+    private func loadLiveFrameContextIfNeeded(_ item: DashboardScreenshotRow) {
+        let key = item.id
+        guard screenshotWindowVisible, selectedDashboardTab == .screenshots,
+              liveFrameOCRNodes[key] == nil, !liveFrameOCRLoadingIDs.contains(key) else { return }
+        let epoch = screenshotReadEpoch
+        liveFrameOCRLoadingIDs.insert(key)
         let coordinator = coordinatorWrapper.coordinator
-
-        Task.detached(priority: .utility) {
-            do {
-                let cgImage = try await coordinator.getLiveFrameCGImage(frameWithInfo: item)
-                let thumbnailData = Self.dashboardThumbnailPNGData(from: cgImage)
-
-                guard let thumbnailData,
-                      let image = NSImage(data: thumbnailData) else {
-                    throw NSError(
-                        domain: "DashboardLiveScreenshot",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Unable to create screenshot thumbnail"]
-                    )
-                }
-
-                await MainActor.run {
-                    if isRetainedLiveFrame(frameID) {
-                        liveFrameThumbnails[frameID] = image
-                        liveFrameThumbnailFailureCounts.removeValue(forKey: frameID)
-                        trimLiveFrameThumbnailCache()
-                    }
-                    _ = liveFrameThumbnailLoadingIDs.remove(frameID)
-                }
-            } catch {
-                await MainActor.run {
-                    liveFrameThumbnailFailureCounts[frameID, default: 0] += 1
-                    _ = liveFrameThumbnailLoadingIDs.remove(frameID)
-                }
-                Log.warning("[Dashboard] Failed to load live screenshot thumbnail \(frameID): \(error)", category: .ui)
-            }
-        }
-    }
-
-    private func loadSelectedLiveFramePreview(_ item: FrameWithVideoInfo, force: Bool = false) {
-        let frameID = item.frame.id.value
-        if !force,
-           selectedLiveFramePreviewID == frameID,
-           selectedLiveFramePreview != nil {
-            return
-        }
-        guard selectedLiveFramePreviewLoadingID != frameID else { return }
-        if !force {
-            let failureCount = liveFramePreviewFailureCounts[frameID, default: 0]
-            guard DashboardScreenshotRetryPolicy.shouldRetry(attemptCount: failureCount) else { return }
-        }
-
-        selectedLiveFramePreview = nil
-        selectedLiveFramePreviewID = nil
-        selectedLiveFramePreviewError = nil
-        isLoadingSelectedLiveFramePreview = true
-        selectedLiveFramePreviewLoadingID = frameID
-
-        let coordinator = coordinatorWrapper.coordinator
-        Task.detached(priority: .userInitiated) {
-            do {
-                let cgImage = try await coordinator.getLiveFrameCGImage(frameWithInfo: item)
-                guard let imageData = Self.dashboardPreviewJPEGData(from: cgImage),
-                      let image = NSImage(data: imageData) else {
-                    throw NSError(
-                        domain: "DashboardScreenshotPreview",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Unable to prepare the screenshot preview"]
-                    )
-                }
-
-                await MainActor.run {
-                    guard selectedLiveFrameID == frameID else { return }
-                    selectedLiveFramePreview = image
-                    selectedLiveFramePreviewID = frameID
-                    selectedLiveFramePreviewError = nil
-                    liveFramePreviewFailureCounts.removeValue(forKey: frameID)
-                    isLoadingSelectedLiveFramePreview = false
-                    selectedLiveFramePreviewLoadingID = nil
-                }
-            } catch {
-                await MainActor.run {
-                    guard selectedLiveFrameID == frameID else { return }
-                    selectedLiveFramePreviewError = "The active capture is still being finalized. Retrace will retry automatically."
-                    liveFramePreviewFailureCounts[frameID, default: 0] += 1
-                    isLoadingSelectedLiveFramePreview = false
-                    selectedLiveFramePreviewLoadingID = nil
-                }
-                Log.warning("[Dashboard] Failed to load selected screenshot preview \(frameID): \(error)", category: .ui)
-            }
-        }
-    }
-
-    nonisolated private static func dashboardPreviewJPEGData(from image: CGImage) -> Data? {
-        let preview = downscaledCGImage(image, maxPixelDimension: 1_600) ?? image
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data,
-            "public.jpeg" as CFString,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-        let options = [kCGImageDestinationLossyCompressionQuality: 0.84] as CFDictionary
-        CGImageDestinationAddImage(destination, preview, options)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
-    }
-
-    private func retryTransientLiveFrameImages() {
-        for frame in liveFrames.prefix(8) {
-            let frameID = frame.frame.id.value
-            guard liveFrameThumbnails[frameID] == nil else { continue }
-            loadLiveFrameThumbnailIfNeeded(frame)
-        }
-
-        if selectedLiveFramePreview == nil,
-           selectedLiveFramePreviewError != nil,
-           let selectedLiveFrame,
-           DashboardScreenshotRetryPolicy.shouldRetry(
-               attemptCount: liveFramePreviewFailureCounts[selectedLiveFrame.frame.id.value, default: 0]
-           ) {
-            loadSelectedLiveFramePreview(selectedLiveFrame, force: true)
-        }
-    }
-
-    nonisolated private static func dashboardThumbnailPNGData(from data: Data) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return nil
-        }
-
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: DashboardLiveMemoryPolicy.thumbnailMaxPixelDimension,
-            kCGImageSourceShouldCacheImmediately: true
-        ]
-        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        return pngData(from: thumbnail)
-    }
-
-    nonisolated private static func dashboardThumbnailPNGData(from image: CGImage) -> Data? {
-        let thumbnail = downscaledCGImage(
-            image,
-            maxPixelDimension: DashboardLiveMemoryPolicy.thumbnailMaxPixelDimension
-        ) ?? image
-        return pngData(from: thumbnail)
-    }
-
-    nonisolated private static func downscaledCGImage(_ image: CGImage, maxPixelDimension: Int) -> CGImage? {
-        let width = image.width
-        let height = image.height
-        let largestDimension = max(width, height)
-        guard largestDimension > maxPixelDimension else {
-            return image
-        }
-
-        let scale = CGFloat(maxPixelDimension) / CGFloat(largestDimension)
-        let targetWidth = max(1, Int((CGFloat(width) * scale).rounded()))
-        let targetHeight = max(1, Int((CGFloat(height) * scale).rounded()))
-        let colorSpace = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-
-        guard let context = CGContext(
-            data: nil,
-            width: targetWidth,
-            height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        ) else {
-            return nil
-        }
-
-        context.interpolationQuality = .medium
-        context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        return context.makeImage()
-    }
-
-    nonisolated private static func pngData(from image: CGImage) -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data,
-            "public.png" as CFString,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-        return data as Data
-    }
-
-    private func loadLiveFrameContextIfNeeded(_ item: FrameWithVideoInfo) {
-        let frame = item.frame
-        let frameID = frame.id.value
-        guard liveFrameOCRNodes[frameID] == nil else { return }
-        guard !liveFrameOCRLoadingIDs.contains(frameID) else { return }
-
-        liveFrameOCRLoadingIDs.insert(frameID)
-
         Task {
+            defer { if epoch == screenshotReadEpoch { liveFrameOCRLoadingIDs.remove(key) } }
             do {
-                let nodes = try await coordinatorWrapper.coordinator.getAllOCRNodes(
-                    frameID: frame.id,
-                    source: frame.source
-                )
-                await MainActor.run {
-                    if let retained = liveFrames.first(where: { $0.frame.id == frame.id && $0.frame.source == frame.source }),
-                       retained.processingStatus == item.processingStatus {
-                        liveFrameOCRNodes[frameID] = nodes
-                        liveFrameOCRLoadedStatuses[frameID] = item.processingStatus
-                        trimLiveFrameOCRCache()
-                    }
-                    _ = liveFrameOCRLoadingIDs.remove(frameID)
+                let service = try await coordinator.progressiveRecall()
+                let nodes = try await DashboardScreenshotIdentityPolicy.readContext(item, service: service) {
+                    try await coordinator.getAllOCRNodes(frameID: item.frame.id, source: item.frame.source)
                 }
+                let text = await Task.detached(priority: .utility) { DashboardOCRContextPolicy.fullText(from: nodes) }.value
+                _ = try await DashboardScreenshotIdentityPolicy.validateContext(item, service: service)
+                guard epoch == screenshotReadEpoch, !Task.isCancelled,
+                      let retained = liveFrames.first(where: { $0.id == key }),
+                      retained.processingStatus == item.processingStatus else { return }
+                liveFrameOCRNodes[key] = nodes
+                liveFrameOCRText[key] = text
+                liveFrameOCRLoadedStatuses[key] = item.processingStatus
+                trimLiveFrameOCRCache()
             } catch {
-                await MainActor.run {
-                    // A transient read failure is not a completed empty OCR result.
-                    _ = liveFrameOCRLoadingIDs.remove(frameID)
-                }
-                Log.warning("[Dashboard] Failed to load live frame OCR \(frameID): \(error)", category: .ui)
+                // Failure is not a completed empty OCR result; a future visible
+                // appearance or selected-row refresh can retry with current permission.
+                guard epoch == screenshotReadEpoch, !Task.isCancelled else { return }
+                liveFrameOCRNodes.removeValue(forKey: key)
+                liveFrameOCRText.removeValue(forKey: key)
+                liveFrameOCRLoadedStatuses.removeValue(forKey: key)
+                screenshotContentRevision &+= 1
             }
         }
     }
 
     private func refreshSelectedLiveFrameOCRIfCompleted() {
         guard let selectedLiveFrame else { return }
-        let frameID = selectedLiveFrame.frame.id.value
-        guard liveFrameOCRLoadedStatuses[frameID] != selectedLiveFrame.processingStatus else { return }
-
-        liveFrameOCRNodes.removeValue(forKey: frameID)
-        liveFrameOCRLoadedStatuses.removeValue(forKey: frameID)
+        let key = selectedLiveFrame.id
+        guard liveFrameOCRLoadedStatuses[key] != selectedLiveFrame.processingStatus else { return }
+        liveFrameOCRNodes.removeValue(forKey: key)
+        liveFrameOCRText.removeValue(forKey: key)
+        liveFrameOCRLoadedStatuses.removeValue(forKey: key)
+        screenshotContentRevision &+= 1
         loadLiveFrameContextIfNeeded(selectedLiveFrame)
     }
 
     @MainActor
     private func refreshSelectedLiveFrameState() async {
         guard !Task.isCancelled,
-              DashboardRefreshLoopPolicy.shouldContinue(loopTab: .screenshots, selectedTab: selectedDashboardTab, isWindowVisible: viewModel.isWindowVisible),
-              let selected = selectedLiveFrame,
-              selected.frame.source == .native else { return }
-        let frameID = selected.frame.id.value
+              DashboardRefreshLoopPolicy.shouldContinue(loopTab: .screenshots, selectedTab: selectedDashboardTab,
+                  isWindowVisible: screenshotWindowVisible),
+              let selected = selectedLiveFrame, selected.frame.source == .native else { return }
+        let key = selected.id
+        let epoch = screenshotReadEpoch
         let coordinator = coordinatorWrapper.coordinator
-        let loadedStatus = liveFrameOCRNodes[frameID] == nil ? nil : liveFrameOCRLoadedStatuses[frameID]
+        let loadedStatus = liveFrameOCRNodes[key] == nil ? nil : liveFrameOCRLoadedStatuses[key]
         do {
+            let service = try await coordinator.progressiveRecall()
+            guard try await service.sourceGeneration(source: .native) == selected.sourceGeneration else { return }
             guard let snapshot = try await selectedLiveFrameRefresher.refresh(
-                selected,
-                loadedStatus: loadedStatus,
+                selected.value, loadedStatus: loadedStatus,
                 loadFrame: { try await coordinator.getFrameWithVideoInfoByID(id: $0) },
-                loadNodes: { try await coordinator.getAllOCRNodes(frameID: $0.frame.id, source: $0.frame.source) }
-            ), !Task.isCancelled,
-               DashboardRefreshLoopPolicy.shouldContinue(loopTab: .screenshots, selectedTab: selectedDashboardTab, isWindowVisible: viewModel.isWindowVisible) else { return }
-            if DashboardSelectedFrameRefresher.apply(snapshot, selectedID: selectedLiveFrameID, frames: &liveFrames, nodes: &liveFrameOCRNodes, loadedStatuses: &liveFrameOCRLoadedStatuses) {
-                loadLiveFrameContextIfNeeded(snapshot.frame)
+                loadNodes: { frame in
+                    try await DashboardScreenshotIdentityPolicy.readContext(
+                        DashboardScreenshotRow(value: frame, sourceGeneration: selected.sourceGeneration), service: service) {
+                        try await coordinator.getAllOCRNodes(frameID: frame.frame.id, source: frame.frame.source)
+                    }
+                }
+            ), try await service.sourceGeneration(source: .native) == selected.sourceGeneration,
+               epoch == screenshotReadEpoch, selectedLiveFrameSelection == key, !Task.isCancelled,
+               DashboardRefreshLoopPolicy.shouldContinue(loopTab: .screenshots, selectedTab: selectedDashboardTab,
+                   isWindowVisible: screenshotWindowVisible) else { return }
+            let text = await Task.detached(priority: .utility) {
+                snapshot.nodes.map(DashboardOCRContextPolicy.fullText(from:))
+            }.value
+            _ = try await DashboardScreenshotIdentityPolicy.validateContext(selected, service: service)
+            guard epoch == screenshotReadEpoch, selectedLiveFrameSelection == key, !Task.isCancelled else { return }
+            if DashboardSelectedFrameRefresher.apply(snapshot, selected: key, frames: &liveFrames,
+                nodes: &liveFrameOCRNodes, loadedStatuses: &liveFrameOCRLoadedStatuses) {
+                if snapshot.nodes != nil { liveFrameOCRText[key] = text }
+                else if liveFrameOCRNodes[key] == nil { liveFrameOCRText.removeValue(forKey: key) }
+                if let current = selectedLiveFrame { loadLiveFrameContextIfNeeded(current) }
                 trimLiveFrameOCRCache()
             }
         } catch is CancellationError {
             return
         } catch {
-            Log.warning("[Dashboard] Unable to refresh selected screenshot status: \(error)", category: .ui)
+            guard epoch == screenshotReadEpoch else { return }
+            liveFrameOCRNodes.removeValue(forKey: key)
+            liveFrameOCRText.removeValue(forKey: key)
+            liveFrameOCRLoadedStatuses.removeValue(forKey: key)
+            screenshotContentRevision &+= 1
         }
     }
 
