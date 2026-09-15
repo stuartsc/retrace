@@ -27,6 +27,8 @@ public enum ProgressiveRecallAction: String, Sendable {
     case evidenceClosed, deletionOpened, deletionCancelled, correctionDraftSaved, screenLinksRequested
     case evidenceRequested, evidenceResolved, evidenceUnavailable, deepLinkCopied, currentDocumentOpened
     case captureSettingChanged, correctionConfirmed, correctionRevoked, activityDeleted
+    case evidenceFeedStatusRequested, evidenceBootstrapRequested, evidenceFeedAdvanced
+    case evidenceConsumerStatusRequested, evidenceFeedCompacted
 }
 
 /// Local presentation service. A broker is not an implicit grant to disclose captured evidence.
@@ -51,6 +53,67 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
                 imageReader: @escaping @Sendable (FrameWithVideoInfo) async throws -> CGImage) {
         self.database = database; self.adapter = adapter
         self.configuration = configuration; self.imageReader = imageReader
+    }
+
+    /// Internal local maintenance only. These endpoints stage opaque references,
+    /// never text or ready results, and do not grant a worker disclosure permission.
+    public func screenEvidenceFeedStatus(for audience: EvidenceAudience) async throws -> ScreenEvidenceFeedStatus {
+        try await performFeedAction(.evidenceFeedStatusRequested, for: audience) { [database] in
+            try await database.screenEvidenceFeedStatus()
+        }
+    }
+
+    public func beginScreenEvidenceBootstrap(consumerID: UUID, leaseDuration: TimeInterval = 86_400,
+                                            for audience: EvidenceAudience) async throws -> ScreenEvidenceConsumerStatus {
+        try await performFeedAction(.evidenceBootstrapRequested, for: audience) { [database] in
+            try await database.beginScreenEvidenceBootstrap(consumerID: consumerID, leaseDuration: leaseDuration)
+        }
+    }
+
+    public func advanceScreenEvidenceConsumer(cursor: ScreenEvidenceConsumerCursor, limit: Int = 100,
+                                             for audience: EvidenceAudience) async throws -> ScreenEvidenceConsumerPage {
+        try await performFeedAction(.evidenceFeedAdvanced, for: audience, count: { $0.inspectedCount }) { [database] in
+            try await database.advanceScreenEvidenceConsumer(cursor: cursor, limit: limit)
+        }
+    }
+
+    public func screenEvidenceConsumerStatus(cursor: ScreenEvidenceConsumerCursor,
+                                            for audience: EvidenceAudience) async throws -> ScreenEvidenceConsumerStatus {
+        try await performFeedAction(.evidenceConsumerStatusRequested, for: audience) { [database] in
+            try await database.screenEvidenceConsumerStatus(cursor: cursor)
+        }
+    }
+
+    public func compactScreenEvidenceFeed(limit: Int = 500, for audience: EvidenceAudience) async throws -> ScreenEvidenceFeedCompaction {
+        try await performFeedAction(.evidenceFeedCompacted, for: audience,
+            count: { $0.deletedEventCount + $0.expiredConsumerCount }) { [database] in
+            try await database.compactScreenEvidenceFeed(limit: limit)
+        }
+    }
+
+    private func performFeedAction<Result: Sendable>(
+        _ action: ProgressiveRecallAction, for audience: EvidenceAudience,
+        count: @Sendable (Result) -> Int = { _ in 1 },
+        operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        // Denial precedes all writer/source/cursor/metric access, including when
+        // the writer is closed. A local broker is not an external disclosure grant.
+        guard case .localUser = audience else { throw EvidenceUnavailableReason.notPermitted }
+        let started = ProcessInfo.processInfo.systemUptime
+        defer {
+            Log.recordLatency("recall.\(action.rawValue)",
+                valueMs: (ProcessInfo.processInfo.systemUptime - started) * 1_000, category: .app)
+        }
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            let examined = max(0, count(result))
+            await track(action, outcome: examined == 0 ? "no_results" : "success", count: examined)
+            return result
+        } catch {
+            await track(action, outcome: error is CancellationError ? "cancelled" : "failed", count: 0)
+            throw error
+        }
     }
 
     public func activity(_ query: ActivityQuery) async throws -> ActivityPage {

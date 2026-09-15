@@ -22,6 +22,7 @@ Database/
 │   ├── V19_ProcessingQueueFrameIndex.swift
 │   ├── V20_OCRBackfillState.swift
 │   ├── V21_ProgressiveRecall.swift
+│   ├── V22_ScreenEvidenceFeed.swift
 │   ├── V1_InitialSchema.swift
 │   ├── V2_UnfinalisedVideoTracking.swift
 │   ├── V3_TagSystem.swift
@@ -68,6 +69,8 @@ Database/
 │   ├── RetentionPersistenceTests.swift
 │   ├── StructuredScreenObservationTests.swift # Real SQLite/Vision publication, geometry and legacy payloads
 │   ├── ScreenEvidencePersistenceTests.swift
+│   ├── ScreenEvidenceFeedPublicationTests.swift
+│   ├── ScreenEvidenceFeedConsumerTests.swift
 │   ├── SearchRevisionCompatibilityTests.swift
 │   └── TestLogger.swift
 ├── DatabaseConfig.swift
@@ -82,6 +85,8 @@ Database/
 ├── RecallSearchRevisionHooks.swift
 ├── RetentionPersistence.swift
 ├── ScreenEvidencePersistence.swift
+├── ScreenEvidenceFeedPublication.swift
+├── ScreenEvidenceFeedConsumerPersistence.swift
 └── Schema.swift
 ```
 
@@ -103,6 +108,13 @@ Database/
 - Confirmed correction outbox, revision conflicts, acknowledgement and append-only revoke
 - Durable source/store UUIDs, immutable capture metadata and extraction revisions
 - Source-qualified screen snapshot resolution and retained media-unavailable receipts
+
+### 4. `ScreenEvidenceFeedStoreProtocol` (from `Shared/Protocols/`)
+- V22 publishes native materialized observation revisions/tombstones and media/redaction state in existing writer transactions through ordinary-table triggers, including retained V21 writer paths.
+- Stable feed/store identity and a retained floor fence durable leased cursors; bootstrap scans only materialized native keys through a fixed maximum, then replays intervening events.
+- The database chooses and applies each bounded page, atomically recording event identities, separate lexical/vector work and checkpoint progress. Clients cannot acknowledge arbitrary sequences.
+- Work contains only references/state and is blocked, invalidated or deleted; never ready. No OCR copies, worker loop, model, permission grant or index-readiness acceptance is introduced. Future acceptance requires a durable capture-policy/source fence; current configuration reads are not that fence.
+- Rebootstrap changes the lease generation so old work is inaccessible immediately; compaction and expiry cleanup remain bounded. A compacted gap requires explicit rebootstrap.
 
 ## Progressive recall persistence
 

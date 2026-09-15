@@ -2,7 +2,7 @@
 
 This document describes what Retrace records and how external agents or scripts can read the captured data.
 
-Schema and release status are separate. As verified on **2026-09-14**, **0.7.6 (2609.14.2)** is installed and running as an unreleased local trial, and its native database has the additive **V21** progressive-recall schema. The prior app is retained for rollback with the current library; the earlier verified whole-library recovery copy is also retained. See the [validation ledger](progressive-recall-validation.md#foreground-process-identity-investigation--2026-09-14) for installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
+Schema and release status are separate. On **2026-09-15**, **0.7.6 (2609.15.1)** was installed and launched for an unreleased local trial; its native database was verified at **V21**. The prior app is retained for rollback with that library. The V22 feed is implemented and tested, but has not been installed. See the [validation ledger](progressive-recall-validation.md) for installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
 
 ## What the app records
 
@@ -106,11 +106,19 @@ Legacy observations include `word` (per-word alignments) and `microphone` / `mic
 ### `audio_captures_fts` (FTS5)
 Full-text search over audio text.
 
-### V21 progressive recall (candidate implementation)
+### V21 progressive recall
 
 V21 adds activity events, correction/feed receipts, source/store identities and immutable screen/extraction snapshots. In-process `ProgressiveRecallService` resolves source-qualified `EvidenceRef` values with current permission, exclusion, deletion and source checks. A search selection must retain its original immutable reference or selection proof; a numeric frame ID and current source are insufficient. Legacy materialization remains labelled as legacy, and unverified geometry must not produce highlights. These APIs do not establish an external agent disclosure endpoint or permission to export captured content.
 
 The durable `recall_search_revision` fence tracks search-affecting transactions. Ordinary-table triggers are persisted. FTS-content triggers are **TEMP triggers**, installed separately on the supported native `DatabaseManager` and `FTSManager` writer connections; they are not persisted on FTS shadow tables, preserving defensive-reader compatibility. Arbitrary external native SQL writers do not receive those hooks and are outside the revision-fence contract. Do not use direct writes to maintain or repair this schema.
+
+### V22 native screen feed (implemented, uninstalled)
+
+The separate screen feed covers already-materialized native observations. It does not enumerate all legacy frames or monitor external imported stores. `screen_evidence_feed` contains source-qualified reference/state events; `screen_evidence_feed_state` retains the stable feed identity, durable head and compaction floor. `screen_evidence_source_state` preserves the current revision, ordered availability/redaction facts and absorbing tombstones. These tables do not copy OCR, URLs or titles.
+
+Use `ScreenEvidenceFeedStoreProtocol` through the local-only service for maintenance. Begin/resume a leased consumer, then advance bounded pages chosen by the canonical writer. Bootstrap records a boundary and maximum materialized frame ID, scans current state in short keyset pages, then replays intervening events. The transaction records applied-event identities and separate lexical/vector work before advancing the checkpoint; there is no arbitrary acknowledgement API. Expired or gapped consumers require a new bootstrap generation. Compaction retains the history needed by unexpired cursors. The initial contract allows 32 registered consumer IDs; reuse an existing ID after expiry. Page limits are 1–200 records, compaction limits 1–1,000 events, and leases last at most seven days.
+
+Work contains only identity/state and is blocked, invalidated or deleted; it is never ready. A consumed event or retained extraction is not a ready lexical/vector index, a disclosure grant or a verified media file. No automatic consumer, model or result-acceptance API is enabled. Future result acceptance needs a durable policy/source fence in the same writer transaction; a prior configuration read is insufficient. Continue using exact resolution for currently permitted evidence access. Do not mutate feed, cursor, work or applied-event tables through direct SQL.
 
 ---
 

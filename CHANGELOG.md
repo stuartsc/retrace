@@ -6,6 +6,13 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-09-15 — Durable native evidence feed and resumable bootstrap
+
+- Native screen extraction, media/redaction changes and deletion now publish source-qualified events in the same database transaction. Current evidence state survives event compaction, and older events cannot replace newer state. The additive V22 migration preserves retained V21 data without scanning or backfilling the whole library.
+- Added bounded, resumable bootstrap and replay for materialized native observations. Durable leases, applied-event identities, separate lexical/vector work and checkpoints commit together; interrupted writes roll back, and expired or gapped consumers require a fresh bootstrap. Work remains unready pending the later indexer and its policy/source checks.
+- Local-only service calls record content-free action metrics. Debug tests can suppress file diagnostics at process launch, preserving live logs while native helper tests run normally. The complete suite passes **989 tests with five intentional skips and zero failures**, including the existing real Whisper regression. Optimized compilation passes and independent reviews are clear; see the [Phase 2C validation record](docs/progressive-recall-validation.md#native-screen-feed-and-bootstrap--2026-09-15).
+- This is an uninstalled implementation. The installed **2609.15.1** trial and its last-verified V21 library remain separate; hybrid retrieval is the next plan slice.
+
 ### 2026-09-15 — Evidence in Screenshots and reliable timeline navigation
 
 - Settings menu commands now open the requested panel before the dashboard first mounts, after it is hidden, and while another Settings section is already open. Repeated commands preserve the mounted view and its requested destination.

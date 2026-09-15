@@ -365,17 +365,32 @@ private final class LatencyRecorder: @unchecked Sendable {
 
 /// Writes logs to a file for persistence and fast retrieval
 /// Used for feedback diagnostics (avoids slow OSLogStore)
-private final class LogFile: @unchecked Sendable {
-    static let shared = LogFile()
+final class LogFile: @unchecked Sendable {
+    static let shared = LogFile(directory: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/Retrace"))
+
+    /// Process-launch admission for debug test runs. Release builds always
+    /// retain their normal file diagnostics; there is no runtime toggle.
+    private static let defaultPersistenceEnabled: Bool = {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["RETRACE_TEST_DISABLE_FILE_LOGGING"] != "1"
+        #else
+        return true
+        #endif
+    }()
 
     private let fileURL: URL
+    private let persistenceEnabled: Bool
     private let lock = NSLock()
     private var fileHandle: FileHandle?
     private let maxFileSize: Int64 = 5 * 1024 * 1024  // 5MB max, then rotate
 
-    private init() {
-        let logDir = NSHomeDirectory() + "/Library/Logs/Retrace"
-        self.fileURL = URL(fileURLWithPath: logDir + "/retrace.log")
+    /// The explicit destination lets tests exercise the real file backend.
+    /// The singleton and default test construction share launch-time admission.
+    init(directory: URL, persistenceEnabled: Bool? = nil) {
+        let logDir = directory.path
+        self.fileURL = directory.appendingPathComponent("retrace.log")
+        self.persistenceEnabled = persistenceEnabled ?? Self.defaultPersistenceEnabled
+        guard self.persistenceEnabled else { return }
 
         // Create directory if needed
         try? FileManager.default.createDirectory(
@@ -393,6 +408,7 @@ private final class LogFile: @unchecked Sendable {
     }
 
     func append(_ entry: String) {
+        guard persistenceEnabled else { return }
         lock.lock()
         defer { lock.unlock() }
 
@@ -430,6 +446,7 @@ private final class LogFile: @unchecked Sendable {
     }
 
     func readLastLines(count: Int) -> [String] {
+        guard persistenceEnabled else { return [] }
         lock.lock()
         defer { lock.unlock() }
 

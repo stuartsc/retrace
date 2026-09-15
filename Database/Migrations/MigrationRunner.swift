@@ -109,7 +109,8 @@ actor MigrationRunner {
             V18_NodeText(),
             V19_ProcessingQueueFrameIndex(),
             V20_OCRBackfillState(),
-            V21_ProgressiveRecall()
+            V21_ProgressiveRecall(),
+            V22_ScreenEvidenceFeed()
         ]
     }
 

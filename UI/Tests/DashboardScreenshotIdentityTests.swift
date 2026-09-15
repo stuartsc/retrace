@@ -119,14 +119,14 @@ final class DashboardScreenshotIdentityTests: XCTestCase {
         XCTAssertLessThan(delta, 0.001)
         XCTAssertTrue(ScreenshotEvidenceSelection(nativeInput).matches(native.frame))
         XCTAssertFalse(ScreenshotEvidenceSelection(nativeInput).matches(imported.frame))
-        try await replaceNativeCaptureTime(with: native.frame.timestamp.addingTimeInterval(2))
+        try await corruptNativeCaptureTime(with: native.frame.timestamp.addingTimeInterval(2))
         let (replacement, _) = try await sourceRows()
         XCTAssertFalse(ScreenshotEvidenceSelection(nativeInput).matches(replacement.frame))
     }
 
     func testNativeRefresherRejectsSameRowAfterActualCaptureTimeReplacement() async throws {
         let (selected, _) = try await sourceRows()
-        try await replaceNativeCaptureTime(with: selected.frame.timestamp.addingTimeInterval(20))
+        try await corruptNativeCaptureTime(with: selected.frame.timestamp.addingTimeInterval(20))
         let database = database!
         let refresher = DashboardSelectedFrameRefresher()
         let result = try await refresher.refresh(selected, loadedStatus: nil,
@@ -207,7 +207,7 @@ final class DashboardScreenshotIdentityTests: XCTestCase {
             }, loadNodes: { _ in [] })
         }
         await fulfillment(of: [entered], timeout: 2)
-        try await replaceNativeCaptureTime(with: old.frame.timestamp.addingTimeInterval(20))
+        try await corruptNativeCaptureTime(with: old.frame.timestamp.addingTimeInterval(20))
         let (newer, _) = try await sourceRows()
         let newerFinished = expectation(description: "newer capture read completed independently")
         let second = Task {
@@ -437,9 +437,13 @@ final class DashboardScreenshotIdentityTests: XCTestCase {
         return (native, imported)
     }
 
-    private func replaceNativeCaptureTime(with timestamp: Date) async throws {
+    private func corruptNativeCaptureTime(with timestamp: Date) async throws {
         let pointer = await database.getConnection()
         let database = try XCTUnwrap(pointer)
+        // V22 rejects this mutation on canonical writers. Deliberately corrupt
+        // only this test-owned in-memory fixture to keep exercising reader-side
+        // selection defenses against externally altered/legacy rows.
+        XCTAssertEqual(sqlite3_exec(database, "DROP TRIGGER screen_evidence_native_capture_time", nil, nil, nil), SQLITE_OK)
         var statement: OpaquePointer?
         XCTAssertEqual(sqlite3_prepare_v2(database, "UPDATE frame SET createdAt=? WHERE id=?", -1, &statement, nil), SQLITE_OK)
         let prepared = try XCTUnwrap(statement)

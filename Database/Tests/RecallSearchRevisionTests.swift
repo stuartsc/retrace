@@ -77,9 +77,8 @@ final class RecallSearchRevisionTests: XCTestCase {
             frameWidth: 100, frameHeight: 100)
         expectGreaterThan(try revision(), previous)
         previous = try revision()
-        try PipelineSQL.execute(db, "UPDATE evidence_store SET identity='renamed-native' WHERE storeID=?", [.text(storeID.uuidString)])
-        expectGreaterThan(try revision(), previous)
-        previous = try revision()
+        XCTAssertThrowsError(try PipelineSQL.execute(db, "UPDATE evidence_store SET identity='renamed-native' WHERE storeID=?", [.text(storeID.uuidString)]))
+        XCTAssertEqual(try revision(), previous, "Rejected native identity edits cannot invalidate a retained search page")
         try PipelineSQL.execute(db, "DELETE FROM frame WHERE id=1")
         expectGreaterThan(try revision(), previous)
     }

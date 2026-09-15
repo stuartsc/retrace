@@ -95,6 +95,8 @@ Evidence presentation uses cancellable async dependencies and request generation
 
 The initiating async caller owns cancellation of its newly created evidence or text-page task. Cancelling a duplicate caller that merely joined must not cancel the shared request. Guard cancellation cleanup by the request generation so it cannot close a later selection. Keep complete OCR matching out of SwiftUI rendering: calculate the matched source-qualified row IDs in cancellable background work keyed by query, source epoch and row/text revision, then render that result.
 
+V22 canonical writers reject changing a retained native capture timestamp. The deliberate corruption cases in `DashboardScreenshotIdentityTests` disable only their private in-memory fixture's timestamp guard, preserving reader-side rejection coverage for externally altered or legacy rows. Production identity guards must remain enabled.
+
 `SpotlightSearchOverlay` previews resolve the original `SearchResult` proof through the exact evidence service on every row appearance. They do not expose the old memory/disk thumbnail cache or look up media and OCR nodes by bare IDs. A shared actor limits decoding to two concurrent requests and 32 queued requests; Core Graphics resizing runs off main. Per-row pixels are cleared on disappearance, and cancellation plus request identity prevent late publication. Previews show the full verified image without cropping to mutable OCR nodes; exact evidence owns immutable block highlighting. `search.thumbnail.exact` records latency.
 
 ### 1. Timeline View (Primary Interface)

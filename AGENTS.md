@@ -14,7 +14,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B implemented; evidence collection and exact replay; feed/retrieval and acceptance tracked separately)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B local trial; 2C feed/bootstrap implemented and uninstalled; hybrid retrieval and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
@@ -41,6 +41,8 @@ swift test --filter testSpecificMethod
 rm -rf .build/
 ```
 
+For debug test runs beside an installed app, set `RETRACE_TEST_DISABLE_FILE_LOGGING=1` at process launch to keep diagnostic file reads/writes out of the live log directory. Console and unified logging remain available. Release builds ignore this test switch. An inherited `sandbox-exec` profile can remove native helper bundle metadata even when it only denies log writes; use the process-local switch for native identity tests.
+
 ---
 
 ## Project Structure
@@ -56,7 +58,7 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── progressive-recall-plan.md # Evidence-focused recall plan; Phase 2A/2B local trial, feed/retrieval pending
+│   ├── progressive-recall-plan.md # Phase 2A/2B local trial, 2C feed/bootstrap uninstalled, hybrid retrieval next
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
 │   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle and same-title Word RTF fixtures
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
@@ -77,6 +79,7 @@ retrace/
 │   │   ├── Evidence.swift       # Source-qualified references, snapshots and typed exact resolution
 │   │   ├── StructuredScreenObservation.swift # Immutable OCR blocks, channels, ranges and unknown ownership
 │   │   ├── ScreenEvidenceExpansion.swift # Bounded exact text fragments and opaque revision-bound continuation
+│   │   ├── ScreenEvidenceFeed.swift # Native feed identity, leased bootstrap and blocked lexical/vector work
 │   │   ├── Text.swift           # ExtractedText, OCRTextRegion
 │   │   ├── TextRegion.swift     # OCR text region types
 │   │   ├── Search.swift         # SearchQuery, SearchResult
@@ -93,6 +96,7 @@ retrace/
 │       ├── DatabaseProtocol.swift
 │       ├── ActivityStoreProtocol.swift # Canonical activity/feed/correction writer interface
 │       ├── EvidenceStoreProtocol.swift # Immutable screen snapshot/store registry interface
+│       ├── ScreenEvidenceFeedStoreProtocol.swift # Atomic bounded native feed consumption; no result acceptance
 │       ├── StorageProtocol.swift
 │       ├── CaptureProtocol.swift
 │       ├── ProcessingProtocol.swift
@@ -109,6 +113,8 @@ retrace/
 │   ├── ActivityPersistence.swift # Durable context, feed/checkpoints and corrections
 │   ├── ActivityScreenLinkPersistence.swift # Proven capture-to-activity associations
 │   ├── ScreenEvidencePersistence.swift # Immutable screen/extraction snapshots and receipts
+│   ├── ScreenEvidenceFeedPublication.swift # V22 reference/state feed publication and status
+│   ├── ScreenEvidenceFeedConsumerPersistence.swift # Leased keyset bootstrap, atomic work/checkpoints and bounded compaction
 │   ├── LegacyOCRBackfillPersistence.swift # Bounded, resumable OCR node-text maintenance
 │   ├── RetentionPersistence.swift # Bounded frame cleanup and guarded video deletion
 │   ├── FTSManager.swift         # Full-text search management
@@ -211,7 +217,7 @@ retrace/
 
 ### Progressive recall implementation and validation
 
-`App/Tests/ScreenEvidenceExpansionTests.swift`, `ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover bounded exact text, constrained/source-aware search, exact navigation, source failure propagation, legacy projection compatibility and cancelled device startup. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
+`App/Tests/ScreenEvidenceExpansionTests.swift`, `ScreenEvidenceFeedIntegrationTests.swift`, `ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover bounded exact text, local-only feed bookkeeping/disclosure denial, constrained/source-aware search, exact navigation, source failure propagation, legacy projection compatibility and cancelled device startup. `DiagnosticFileLoggingTests.swift` exercises the real file backend in private temporary directories, including disabled creation/append/read/rotation and debug process-launch admission. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
 
 Capture context is independently opt-in (`activityContextEnabled`, default false), exposed in Capture settings, and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a hit by bare numeric ID. Screenshots/OCR and timeline selection use exact evidence without project assignment or visit grouping. Existing correction records remain for compatibility; the assignment workflow is outside the active scope. Implementation and automated evidence do not establish installed Mac acceptance; see the validation ledger.
 

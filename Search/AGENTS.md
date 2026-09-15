@@ -2,19 +2,21 @@
 
 You are responsible for the **Search** module of Retrace. Your job is to implement search functionality including query parsing, full-text search via SQLite FTS5, and result ranking.
 
-**Status**: ✅ Full-text search with FTS5 fully implemented. Query parser supports filters (app:, date:, -exclude). **No vector/semantic search yet** (planned for future release with llama.cpp embeddings).
+**Status**: Full-text search uses FTS5. The query parser supports app/date filters, phrases and exclusions. **No vector/semantic search is active.** `VectorSearchTODO/` contains excluded implementation sketches; its llama.cpp/Nomic configuration is historical, not a selected or verified model/runtime pin. See [the progressive recall plan](../docs/progressive-recall-plan.md) for the coordinated Phase 2 scope.
 
 ## Your Directory
 
 ```
 Search/
-├── SearchManager.swift            # Main SearchProtocol implementation
+├── SearchManager.swift            # SearchProtocol lexical fallback
 ├── IngestionManager.swift         # Search-index ingestion
 ├── QueryParser/
 │   └── QueryParser.swift          # QueryParserProtocol implementation and filter parsing
 ├── Ranking/
-│   └── ResultRanker.swift         # Rank and sort results
-├── VectorSearchTODO/              # NOT YET IMPLEMENTED (future)
+│   └── ResultRanker.swift         # Rank lexical fallback results
+├── VectorSearchTODO/              # Excluded from the Search target in Package.swift
+│   ├── Embedding.swift
+│   ├── HybridSearchManager.swift
 │   ├── Embedding/
 │   └── VectorStore/
 └── Tests/
@@ -22,7 +24,7 @@ Search/
     └── TestLogger.swift
 ```
 
-## Protocols You Must Implement
+## Existing Protocol Implementations
 
 ### 1. `SearchProtocol` (from `Shared/Protocols/SearchProtocol.swift`)
 - Full-text search via FTS5
@@ -33,7 +35,19 @@ Search/
 - Parse query syntax
 - Extract filters (app:, date:, -exclude)
 
-**Note**: EmbeddingProtocol and VectorStoreProtocol exist but are NOT yet implemented. Semantic/vector search is planned for a future release.
+`EmbeddingProtocol` and `VectorStoreProtocol` are not defined by the current compiled Shared search contract. References to them in excluded code and the sketches below do not establish available APIs.
+
+## Active Search and Future Integration
+
+The primary UI route is `SearchViewModel` → `AppCoordinator.search(query:)` → `DataAdapter.search(query:)`. DataAdapter owns source-specific filtering before limits, distinct-frame pagination and source/revision invalidation. `SearchManager.search(query:)` is a separate lexical fallback using `FTSProtocol`, `DatabaseProtocol` and `ResultRanker`; changing that ranker alone does not change the primary UI route. The Search target currently depends only on Shared.
+
+Preserve each result's immutable `evidenceRef` or `selectionToken`, source/store/frame/capture-time identity and source-generation proof through ranking and selection. `ProgressiveRecallService.reference(searchResult:)`, exact resolution and bounded expansion validate that proof. A bare numeric frame ID is insufficient across native and imported stores. Do not replace missing evidence with another frame or newer mutable text.
+
+Phase 2D must preserve the complete question. `SearchViewModel.buildSearchQuery()` currently truncates to 15 words; this remains a known integration limit, not acceptable semantic-query preprocessing. The excluded hybrid sketch also merges by bare frame ID, truncates embedding input and scans stored vectors. Do not enable it unchanged.
+
+Before an authored-corpus benchmark, pin the model artifact revision and SHA, tokenizer/prefix/pooling/normalization, inference-engine revision and dependency, backend/thread settings and ranking parameters. No such complete pin or ranking acceptance is established here. The reviewed Cedar JPEGs and oracle in `docs/fixtures/progressive-recall/` are a small smoke corpus, not a general retrieval-quality benchmark.
+
+Phase 2C's native evidence feed persists identity-only blocked lexical/vector work. It adds no embedding worker, copied text, readiness or result-acceptance API. Durable writer-owned policy/source fencing is required before a later implementation accepts derived results; current exact evidence checks remain authoritative for disclosure.
 
 ## Key Implementation Details
 
@@ -41,6 +55,8 @@ Lexical matches remain evidence regardless of their BM25 magnitude. Do not apply
 `minimumRelevanceScore` after the database's final limit. The rendered JPEG/HEVC/Vision
 pipelines in `Database/Tests/{OCRPipelineTests,AsyncQueuePipelineTests}.swift` exercise
 fallback retrieval of changed amounts and retained negations with real SQLite.
+
+The code examples below are retained design sketches, not the current implementation or drop-in APIs. Consult the Swift files and compiled Shared protocols before changing code. In particular, illustrative metadata constructors, generated segment IDs, model types and vector keys must not replace real evidence identity.
 
 ### 1. Query Parser
 
@@ -161,7 +177,7 @@ extension ParsedQuery {
 }
 ```
 
-### 3. Search Manager
+### 3. Search Manager (Historical Sketch)
 
 ```swift
 public actor SearchManager: SearchProtocol {
@@ -291,7 +307,9 @@ struct ResultRanker {
 }
 ```
 
-### 5. Autocomplete Suggestions
+### 5. Autocomplete Suggestions (Alternative Sketch)
+
+The current manager extracts suggestions from FTS result snippets. The vocabulary-table query below is an unimplemented alternative.
 
 ```swift
 extension SearchManager {
@@ -312,9 +330,9 @@ extension SearchManager {
 }
 ```
 
-### 6. Semantic Search (Optional)
+### 6. Semantic Search (Future Illustration)
 
-Use CoreML for text embeddings:
+This CoreML/MiniLM sketch illustrates an embedding boundary only. It is not active, a model recommendation, or an alternative pin to the excluded llama.cpp sketch:
 
 ```swift
 import CoreML
@@ -380,9 +398,9 @@ actor EmbeddingManager: EmbeddingProtocol {
 }
 ```
 
-### 7. Vector Store (Simple In-Memory)
+### 7. Vector Store (Historical In-Memory Illustration)
 
-For small-scale semantic search:
+The cosine calculation illustrates small-corpus comparison. The bare `FrameID` dictionary and unbounded full scan do not meet the current evidence or production-scale contract:
 
 ```swift
 actor VectorStore: VectorStoreProtocol {
@@ -440,7 +458,9 @@ actor VectorStore: VectorStoreProtocol {
 }
 ```
 
-### 8. Indexing Pipeline
+### 8. Indexing Pipeline (Future Sketch)
+
+The active ingestion path writes lexical documents. The embedding branch below is unimplemented and must not bypass the durable work, revision, deletion and policy/source fences required by the progressive recall plan.
 
 ```swift
 extension SearchManager {
@@ -486,8 +506,9 @@ Use errors from `Shared/Models/Errors.swift`:
 ```swift
 throw SearchError.invalidQuery(reason: "Empty query")
 throw SearchError.indexNotReady
-throw SearchError.modelLoadFailed(modelName: "MiniLM")
 ```
+
+The model-related error types in future sketches are not evidence that those APIs exist in the compiled contract.
 
 ## Testing Strategy
 
@@ -498,6 +519,8 @@ throw SearchError.modelLoadFailed(modelName: "MiniLM")
 5. Test semantic search (if implemented)
 6. Test indexing and removal
 7. Test edge cases (empty queries, special characters)
+
+Use real SQLite and the authored JPEG → Vision → immutable extraction fixtures for retrieval regressions. Keep lexical exact amounts/negations represented when comparing future semantic or hybrid channels. Fix questions and expected exact references before tuning; report benchmark quality separately from installation or user acceptance.
 
 ## Dependencies
 
@@ -515,17 +538,16 @@ throw SearchError.modelLoadFailed(modelName: "MiniLM")
 
 ## Performance Targets
 
+These are targets, not measured acceptance or permission to truncate a user's question:
+
 - Search: <100ms for typical queries
 - Autocomplete: <50ms
 - Indexing: <10ms per document
-- Semantic search: <500ms (acceptable since it's optional)
+- Future semantic search: benchmark latency, memory and indexing cost under an explicit local runtime pin before setting an acceptance budget
 
 ## Getting Started
 
-1. Create `Search/QueryParser/QueryParser.swift`
-2. Create `Search/Ranking/ResultRanker.swift`
-3. Create `Search/SearchManager.swift` conforming to `SearchProtocol`
-4. Write tests for query parsing
-5. (Optional) Create `Search/Semantic/` for embedding support
-
-Start with the query parser and FTS integration, then add ranking. Semantic search can be added last as it's optional.
+1. Read the existing parser, lexical fallback, ranker and their compiled Shared protocols.
+2. Trace whether the requested behavior uses the primary DataAdapter route or the fallback before choosing a test seam.
+3. Write and run a failing regression using real input, then make the smallest passing change.
+4. Coordinate cross-module contracts and any future model/dependency work through the progressive recall plan; keep excluded code excluded until its identity, policy and benchmark requirements are met.

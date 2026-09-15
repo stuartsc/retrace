@@ -153,7 +153,7 @@ final class ActivityPersistenceTests: XCTestCase {
         let first = try await store.activityStoreID()
         try await MigrationRunner(db: db).runMigrations()
         expectEqual(try await store.activityStoreID(), first)
-        expectEqual(try await scalar("SELECT MAX(version) FROM schema_migrations"), 21)
+        expectEqual(try await scalar("SELECT MAX(version) FROM schema_migrations"), 22)
         expectEqual(try await scalar("SELECT COUNT(*) FROM screen_observation"), 0)
     }
 

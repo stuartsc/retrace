@@ -164,8 +164,8 @@ final class FramePipelinePersistenceTests: XCTestCase {
     func testPriorityCaptureDoesNotStarveDurableBacklog() async throws {
         let old = try await insertPendingFrame(offset: -86400)
         for index in 0..<4 {
-            let id = try await insertPendingFrame(offset: Double(index))
-            try await setQueueTiming(frameID: id, capturedAt: Date(), enqueuedAt: Double(index + 1))
+            let id = try await insertPendingFrame(capturedAt: Date())
+            try await setQueueTiming(frameID: id, enqueuedAt: Double(index + 1))
             try await database.enqueueFrameForProcessing(frameID: id, priority: 10)
         }
         for _ in 0..<3 {
@@ -177,11 +177,11 @@ final class FramePipelinePersistenceTests: XCTestCase {
     }
 
     func testExpiredAutomaticPriorityDoesNotOvertakeCurrentCaptureOrRewriteEvidence() async throws {
-        let expired = try await insertPendingFrame()
-        let current = try await insertPendingFrame(offset: 1)
         let now = Date()
-        try await setQueueTiming(frameID: expired, capturedAt: now.addingTimeInterval(-61), enqueuedAt: now.timeIntervalSince1970, priority: 10)
-        try await setQueueTiming(frameID: current, capturedAt: now.addingTimeInterval(-30), enqueuedAt: 0, priority: 1)
+        let expired = try await insertPendingFrame(capturedAt: now.addingTimeInterval(-61))
+        let current = try await insertPendingFrame(capturedAt: now.addingTimeInterval(-30))
+        try await setQueueTiming(frameID: expired, enqueuedAt: now.timeIntervalSince1970, priority: 10)
+        try await setQueueTiming(frameID: current, enqueuedAt: 0, priority: 1)
         let originalDate = try await scalar("SELECT createdAt FROM frame WHERE id=\(expired)")
 
         let selected = try await database.dequeueFrameForProcessing()
@@ -205,8 +205,8 @@ final class FramePipelinePersistenceTests: XCTestCase {
         try await setQueueTiming(frameID: ordinary, enqueuedAt: 3, priority: 0)
         var current: [Int64] = []
         for index in 0..<4 {
-            let id = try await insertPendingFrame(offset: Double(index + 3))
-            try await setQueueTiming(frameID: id, capturedAt: Date(), enqueuedAt: Double(index + 4), priority: 10)
+            let id = try await insertPendingFrame(capturedAt: Date())
+            try await setQueueTiming(frameID: id, enqueuedAt: Double(index + 4), priority: 10)
             current.append(id)
         }
 
@@ -222,8 +222,8 @@ final class FramePipelinePersistenceTests: XCTestCase {
         try await setQueueTiming(frameID: historical, enqueuedAt: 0)
         var current: [Int64] = []
         for index in 0..<4 {
-            let id = try await insertPendingFrame(offset: Double(index + 1))
-            try await setQueueTiming(frameID: id, capturedAt: Date(), enqueuedAt: Double(index + 1), priority: 10)
+            let id = try await insertPendingFrame(capturedAt: Date())
+            try await setQueueTiming(frameID: id, enqueuedAt: Double(index + 1), priority: 10)
             current.append(id)
         }
         for expected in current.prefix(3) {
@@ -277,8 +277,8 @@ final class FramePipelinePersistenceTests: XCTestCase {
         try await setQueueTiming(frameID: historical, enqueuedAt: 0)
         var current: [Int64] = []
         for index in 0..<4 {
-            let id = try await insertPendingFrame(offset: Double(index + 1))
-            try await setQueueTiming(frameID: id, capturedAt: Date(), enqueuedAt: Double(index + 1), priority: 10)
+            let id = try await insertPendingFrame(capturedAt: Date())
+            try await setQueueTiming(frameID: id, enqueuedAt: Double(index + 1), priority: 10)
             current.append(id)
         }
         for expected in current.prefix(2) {
@@ -304,10 +304,10 @@ final class FramePipelinePersistenceTests: XCTestCase {
 
     func testClaimQueriesUseQueueIndexesThenFramePrimaryKeyWithoutTemporarySort() async throws {
         let historical = try await insertPendingFrame()
-        let current = try await insertPendingFrame(offset: 1)
+        let current = try await insertPendingFrame(capturedAt: Date())
         let manual = try await insertPendingFrame(offset: 2)
         try await setQueueTiming(frameID: historical, enqueuedAt: 0, priority: -1)
-        try await setQueueTiming(frameID: current, capturedAt: Date(), enqueuedAt: 1, priority: 10)
+        try await setQueueTiming(frameID: current, enqueuedAt: 1, priority: 10)
         try await setQueueTiming(frameID: manual, enqueuedAt: 2, priority: 75)
         let connection = await database.getConnection()
         let db = try XCTUnwrap(connection)
@@ -353,8 +353,8 @@ final class FramePipelinePersistenceTests: XCTestCase {
         try await setQueueTiming(frameID: expired, enqueuedAt: 1, priority: 10)
         var current: [Int64] = []
         for index in 0..<4 {
-            let id = try await insertPendingFrame(offset: Double(index + 2))
-            try await setQueueTiming(frameID: id, capturedAt: Date(), enqueuedAt: Double(index + 2), priority: 10)
+            let id = try await insertPendingFrame(capturedAt: Date())
+            try await setQueueTiming(frameID: id, enqueuedAt: Double(index + 2), priority: 10)
             current.append(id)
         }
         let manual = try await insertPendingFrame(offset: 10)
@@ -481,8 +481,10 @@ final class FramePipelinePersistenceTests: XCTestCase {
         XCTAssertEqual(original?.timestamp.timeIntervalSince1970 ?? 0, timestamp.timeIntervalSince1970 + 30, accuracy: 0.001)
     }
 
-    private func insertPendingFrame(offset: Double = 0, videoID: Int64 = 0, index: Int = 0) async throws -> Int64 {
-        let id = try await database.insertFrame(reference(offset: offset, videoID: videoID, index: index, appSegmentID: segmentID))
+    private func insertPendingFrame(offset: Double = 0, videoID: Int64 = 0, index: Int = 0, capturedAt: Date? = nil) async throws -> Int64 {
+        // Author the immutable capture time at insertion; queue setup must not rewrite evidence identity.
+        let captureOffset = capturedAt?.timeIntervalSince(timestamp) ?? offset
+        let id = try await database.insertFrame(reference(offset: captureOffset, videoID: videoID, index: index, appSegmentID: segmentID))
         try await database.updateFrameProcessingStatus(frameID: id, status: 0)
         try await database.enqueueFrameForProcessing(frameID: id)
         return id
@@ -508,12 +510,9 @@ final class FramePipelinePersistenceTests: XCTestCase {
         }
     }
 
-    private func setQueueTiming(frameID: Int64, capturedAt: Date? = nil, enqueuedAt: Double, priority: Int = 0) async throws {
+    private func setQueueTiming(frameID: Int64, enqueuedAt: Double, priority: Int = 0) async throws {
         let connection = await database.getConnection()
         let db = try XCTUnwrap(connection)
-        if let capturedAt {
-            try PipelineSQL.execute(db, "UPDATE frame SET createdAt=? WHERE id=?", [.integer(Schema.dateToTimestamp(capturedAt)), .integer(frameID)])
-        }
         try PipelineSQL.execute(db, "UPDATE processing_queue SET enqueuedAt=?,priority=? WHERE frameId=?", [.real(enqueuedAt), .integer(Int64(priority)), .integer(frameID)])
     }
 
