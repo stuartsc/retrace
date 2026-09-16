@@ -50,6 +50,9 @@ retrace_debug.log
 # Test coverage
 coverage/
 
+# Local authored-recall benchmark Python bytecode
+scripts/recall_benchmark/__pycache__/
+
 # Temporary files
 tmp/
 temp/

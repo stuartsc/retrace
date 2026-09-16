@@ -386,6 +386,10 @@ public class SearchViewModel: ObservableObject {
     // MARK: - Dependencies
 
     public let coordinator: AppCoordinator
+    private let defaults: UserDefaults
+    private nonisolated let cacheDirectory: URL
+    private let searchDispatch: @Sendable (SearchQuery) async throws -> SearchResults
+    private let submissionMetrics: @MainActor (String, String?) -> Void
     private var cancellables = Set<AnyCancellable>()
 
     // Active search tasks that can be cancelled
@@ -400,7 +404,6 @@ public class SearchViewModel: ObservableObject {
 
     private let debounceDelay: TimeInterval = 0.3
     private let defaultResultLimit = 50
-    private let maxSearchWords = 15  // Limit search queries to prevent performance issues
     private let memoryReportIntervalNs: UInt64 = 5_000_000_000
     private let maxInMemoryThumbnailCount = 60
     private static let thumbnailDiskCacheMaxBytes: Int64 = 512 * 1024 * 1024
@@ -465,31 +468,52 @@ public class SearchViewModel: ObservableObject {
     private nonisolated static let otherAppsCacheExpirationSeconds: TimeInterval = 24 * 60 * 60
 
     /// File path for cached other apps data
-    private static nonisolated var cachedOtherAppsPath: URL {
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return cacheDir.appendingPathComponent("other_apps_cache.json")
+    private nonisolated var cachedOtherAppsPath: URL {
+        cacheDirectory.appendingPathComponent("other_apps_cache.json")
     }
 
     /// File path for cached search results data
-    private static nonisolated var cachedSearchResultsPath: URL {
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return cacheDir.appendingPathComponent("search_results_cache.json")
+    private nonisolated var cachedSearchResultsPath: URL {
+        cacheDirectory.appendingPathComponent("search_results_cache.json")
     }
 
     /// File path for disk-backed search thumbnails.
-    private static nonisolated var cachedSearchThumbnailsDirectory: URL {
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return cacheDir.appendingPathComponent("search_thumbnails_v1", isDirectory: true)
+    private nonisolated var cachedSearchThumbnailsDirectory: URL {
+        cacheDirectory.appendingPathComponent("search_thumbnails_v1", isDirectory: true)
+    }
+
+    private static var defaultCacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
     }
 
     // MARK: - Initialization
 
-    public init(coordinator: AppCoordinator) {
+    public convenience init(coordinator: AppCoordinator) {
+        self.init(coordinator: coordinator, defaults: .standard, cacheDirectory: Self.defaultCacheDirectory)
+    }
+
+    /// The same submission and persistence paths can use an owned store without
+    /// starting cache maintenance or touching the application's preferences.
+    init(coordinator: AppCoordinator, defaults: UserDefaults, cacheDirectory: URL,
+         startBackgroundWork: Bool = true,
+         searchDispatch: (@Sendable (SearchQuery) async throws -> SearchResults)? = nil,
+         submissionMetrics: (@MainActor (String, String?) -> Void)? = nil) {
         self.coordinator = coordinator
+        self.defaults = defaults
+        self.cacheDirectory = cacheDirectory
+        self.searchDispatch = searchDispatch ?? { try await coordinator.search(query: $0) }
+        self.submissionMetrics = submissionMetrics ?? { query, filters in
+            DashboardViewModel.recordSearch(coordinator: coordinator, query: query)
+            if let filters {
+                DashboardViewModel.recordFilteredSearch(coordinator: coordinator, query: query, filters: filters)
+            }
+        }
         loadRecentSearchEntries()
         setupBindings()
-        startMemoryReporting()
-        prepareThumbnailDiskCache()
+        if startBackgroundWork {
+            startMemoryReporting()
+            prepareThumbnailDiskCache()
+        }
     }
 
     // MARK: - Setup
@@ -567,10 +591,11 @@ public class SearchViewModel: ObservableObject {
     }
 
     private func prepareThumbnailDiskCache() {
+        let directory = cachedSearchThumbnailsDirectory
         Task.detached(priority: .utility) {
-            let directory = Self.cachedSearchThumbnailsDirectory
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             Self.trimThumbnailDiskCache(
+                directory: directory,
                 maxBytes: Self.thumbnailDiskCacheMaxBytes,
                 maxAge: Self.thumbnailDiskCacheMaxAge
             )
@@ -636,7 +661,7 @@ public class SearchViewModel: ObservableObject {
             return true
         }
 
-        let url = Self.diskThumbnailURL(for: key)
+        let url = diskThumbnailURL(for: key)
         let data = await Task.detached(priority: .utility) {
             try? Data(contentsOf: url, options: [.mappedIfSafe])
         }.value
@@ -674,15 +699,16 @@ public class SearchViewModel: ObservableObject {
 
     private func persistThumbnailToDisk(_ image: NSImage, for key: String) {
         guard let tiffData = image.tiffRepresentation else { return }
-        let targetURL = Self.diskThumbnailURL(for: key)
+        let targetURL = diskThumbnailURL(for: key)
+        let directory = cachedSearchThumbnailsDirectory
 
         Task.detached(priority: .utility) {
             guard let data = Self.jpegData(fromTIFFData: tiffData) else { return }
-            let directory = Self.cachedSearchThumbnailsDirectory
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             do {
                 try data.write(to: targetURL, options: .atomic)
                 Self.trimThumbnailDiskCache(
+                    directory: directory,
                     maxBytes: Self.thumbnailDiskCacheMaxBytes,
                     maxAge: Self.thumbnailDiskCacheMaxAge
                 )
@@ -692,7 +718,7 @@ public class SearchViewModel: ObservableObject {
         }
     }
 
-    private nonisolated static func diskThumbnailURL(for key: String) -> URL {
+    private nonisolated func diskThumbnailURL(for key: String) -> URL {
         let digest = SHA256.hash(data: Data(key.utf8))
         let fileName = digest.map { String(format: "%02x", $0) }.joined()
         return cachedSearchThumbnailsDirectory.appendingPathComponent("\(fileName).jpg")
@@ -706,8 +732,7 @@ public class SearchViewModel: ObservableObject {
         )
     }
 
-    private nonisolated static func trimThumbnailDiskCache(maxBytes: Int64, maxAge: TimeInterval) {
-        let directory = cachedSearchThumbnailsDirectory
+    private nonisolated static func trimThumbnailDiskCache(directory: URL, maxBytes: Int64, maxAge: TimeInterval) {
         let fileManager = FileManager.default
 
         guard let urls = try? fileManager.contentsOfDirectory(
@@ -914,17 +939,16 @@ public class SearchViewModel: ObservableObject {
     }
 
     public func recordRecentSearchEntry(_ query: String) {
-        let sanitizedQuery = Self.sanitizedRecentSearchQuery(query)
-        guard !sanitizedQuery.isEmpty else { return }
+        guard !Self.sanitizedRecentSearchQuery(query).isEmpty else { return }
 
         let filters = currentRecentSearchFilters()
-        let key = Self.recentSearchKey(for: sanitizedQuery, filters: filters)
+        let key = Self.recentSearchKey(for: query, filters: filters)
         let now = Date().timeIntervalSince1970
 
         var entries = recentSearchEntries
         if let existingIndex = entries.firstIndex(where: { $0.key == key }) {
             var existingEntry = entries.remove(at: existingIndex)
-            existingEntry.query = sanitizedQuery
+            existingEntry.query = query
             existingEntry.usageCount += 1
             existingEntry.lastUsedAt = now
             existingEntry.filters = filters
@@ -932,7 +956,7 @@ public class SearchViewModel: ObservableObject {
         } else {
             let newEntry = RecentSearchEntry(
                 key: key,
-                query: sanitizedQuery,
+                query: query,
                 usageCount: 1,
                 lastUsedAt: now,
                 filters: filters
@@ -996,13 +1020,13 @@ public class SearchViewModel: ObservableObject {
     }
 
     private func loadRecentSearchEntries() {
-        guard let data = UserDefaults.standard.data(forKey: Self.recentSearchEntriesKey) else { return }
+        guard let data = defaults.data(forKey: Self.recentSearchEntriesKey) else { return }
         do {
             let entries = try JSONDecoder().decode([RecentSearchEntry].self, from: data)
             recentSearchEntries = entries
         } catch {
             recentSearchEntries = []
-            UserDefaults.standard.removeObject(forKey: Self.recentSearchEntriesKey)
+            defaults.removeObject(forKey: Self.recentSearchEntriesKey)
             Log.warning("[SearchViewModel] Failed to decode recent search entries: \(error)", category: .ui)
         }
     }
@@ -1010,7 +1034,7 @@ public class SearchViewModel: ObservableObject {
     private func saveRecentSearchEntries() {
         do {
             let encoded = try JSONEncoder().encode(recentSearchEntries)
-            UserDefaults.standard.set(encoded, forKey: Self.recentSearchEntriesKey)
+            defaults.set(encoded, forKey: Self.recentSearchEntriesKey)
         } catch {
             Log.warning("[SearchViewModel] Failed to save recent search entries: \(error)", category: .ui)
         }
@@ -1141,13 +1165,7 @@ public class SearchViewModel: ObservableObject {
         let query = searchQuery
         if !query.isEmpty {
             recordRecentSearchEntry(query)
-            DashboardViewModel.recordSearch(coordinator: coordinator, query: query)
-
-            // Track filtered search if any filters are active
-            if hasActiveFilters {
-                let filtersJson = buildFiltersJson()
-                DashboardViewModel.recordFilteredSearch(coordinator: coordinator, query: query, filters: filtersJson)
-            }
+            submissionMetrics(query, hasActiveFilters ? buildFiltersJson() : nil)
         }
 
         currentSearchTask = Task {
@@ -1158,8 +1176,8 @@ public class SearchViewModel: ObservableObject {
     /// Re-run the current query immediately without recording a new "submitted search" analytics event.
     /// Useful for corrective actions in no-results diagnostics.
     public func rerunSearchImmediately(trigger: String = "manual-rerun") {
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return }
+        let query = searchQuery
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard hasSubmittedSearch else { return }
 
         currentSearchTask?.cancel()
@@ -1291,7 +1309,7 @@ public class SearchViewModel: ObservableObject {
 
             let searchQuery = buildSearchQuery(query)
 
-            let searchResults = try await coordinator.search(query: searchQuery)
+            let searchResults = try await searchDispatch(searchQuery)
 
             // Check for cancellation after the search completes
             try Task.checkCancellation()
@@ -1334,9 +1352,6 @@ public class SearchViewModel: ObservableObject {
         } else {
             queryWithExclusions = "\(text) \(exclusionFragment)"
         }
-
-        // Truncate query to max words to prevent performance issues with very long queries
-        let truncatedText = truncateToMaxWords(queryWithExclusions)
 
         // Convert Set to Array for the filter, nil if no apps selected (means all apps)
         // Use appBundleIDs for include mode, excludedAppBundleIDs for exclude mode
@@ -1389,7 +1404,7 @@ public class SearchViewModel: ObservableObject {
         )
 
         return SearchQuery(
-            text: truncatedText,
+            text: queryWithExclusions,
             filters: filters,
             limit: defaultResultLimit,
             offset: offset,
@@ -1397,16 +1412,6 @@ public class SearchViewModel: ObservableObject {
             mode: searchMode,
             sortOrder: sortOrder
         )
-    }
-
-    /// Truncate query text to maximum allowed words
-    private func truncateToMaxWords(_ text: String) -> String {
-        let words = text.split(separator: " ", omittingEmptySubsequences: true)
-        guard words.count > maxSearchWords else { return text }
-
-        let truncated = words.prefix(maxSearchWords).joined(separator: " ")
-        Log.warning("[SearchViewModel] Query truncated from \(words.count) to \(maxSearchWords) words", category: .ui)
-        return truncated
     }
 
     private func exclusionQueryFragment() -> String {
@@ -1575,8 +1580,8 @@ public class SearchViewModel: ObservableObject {
             // Check for cancellation before starting
             try Task.checkCancellation()
 
-            let query = buildSearchQuery(searchQuery, offset: 0, cursor: nextPageCursor)
-            let moreResults = try await coordinator.search(query: query)
+            let query = buildSearchQuery(committedSearchQuery, offset: 0, cursor: nextPageCursor)
+            let moreResults = try await searchDispatch(query)
 
             // Check for cancellation after the search completes
             try Task.checkCancellation()
@@ -1681,6 +1686,8 @@ public class SearchViewModel: ObservableObject {
         defer { isLoadingApps = false }
 
         let startTime = CFAbsoluteTimeGetCurrent()
+        let cachePath = cachedOtherAppsPath
+        let cacheSavedAt = defaults.double(forKey: Self.otherAppsCacheSavedAtKey)
         let snapshot = await Task.detached(priority: .utility) {
             let installedStart = CFAbsoluteTimeGetCurrent()
             let installed = Self.deduplicatedAppsByBundleID(AppNameResolver.shared.getInstalledApps())
@@ -1689,7 +1696,8 @@ public class SearchViewModel: ObservableObject {
             let installedPhaseMs = Int((CFAbsoluteTimeGetCurrent() - installedStart) * 1000)
 
             let cacheStart = CFAbsoluteTimeGetCurrent()
-            let cacheResult = Self.loadOtherAppsFromCache(installedBundleIDs: installedBundleIDs)
+            let cacheResult = Self.loadOtherAppsFromCache(installedBundleIDs: installedBundleIDs,
+                cachePath: cachePath, savedAt: cacheSavedAt)
             let cachePhaseMs = Int((CFAbsoluteTimeGetCurrent() - cacheStart) * 1000)
 
             return AvailableAppsLoadSnapshot(
@@ -1731,19 +1739,19 @@ public class SearchViewModel: ObservableObject {
 
     /// Load other apps from disk cache
     /// Returns (apps, isStale) - apps may be empty if no cache exists
-    nonisolated private static func loadOtherAppsFromCache(installedBundleIDs: Set<String>) -> (apps: [AppInfo], isStale: Bool) {
+    nonisolated private static func loadOtherAppsFromCache(installedBundleIDs: Set<String>,
+                                                         cachePath: URL, savedAt: TimeInterval) -> (apps: [AppInfo], isStale: Bool) {
         // Check if cache exists and is not expired
-        let savedAt = UserDefaults.standard.double(forKey: Self.otherAppsCacheSavedAtKey)
         let now = Date().timeIntervalSince1970
         let isStale = savedAt == 0 || (now - savedAt) > Self.otherAppsCacheExpirationSeconds
 
         // Try to load from disk
-        guard FileManager.default.fileExists(atPath: Self.cachedOtherAppsPath.path) else {
+        guard FileManager.default.fileExists(atPath: cachePath.path) else {
             return ([], true)
         }
 
         do {
-            let data = try Data(contentsOf: Self.cachedOtherAppsPath)
+            let data = try Data(contentsOf: cachePath)
             let allCachedApps = try JSONDecoder().decode([CachedAppInfo].self, from: data)
 
             // Filter out apps that are now installed, and resolve names fresh via AppNameResolver
@@ -1798,8 +1806,8 @@ public class SearchViewModel: ObservableObject {
             let cachedApps = Self.deduplicatedAppsByBundleID(apps)
                 .map { CachedAppInfo(bundleID: $0.bundleID, name: $0.name) }
             let data = try JSONEncoder().encode(cachedApps)
-            try data.write(to: Self.cachedOtherAppsPath, options: .atomic)
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.otherAppsCacheSavedAtKey)
+            try data.write(to: cachedOtherAppsPath, options: .atomic)
+            defaults.set(Date().timeIntervalSince1970, forKey: Self.otherAppsCacheSavedAtKey)
         } catch {
             Log.error("[SearchViewModel] Failed to save other apps cache: \(error)", category: .ui)
         }
@@ -2091,77 +2099,78 @@ public class SearchViewModel: ObservableObject {
         }
 
         // Save metadata to UserDefaults
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.cachedSearchSavedAtKey)
-        UserDefaults.standard.set(committedSearchQuery, forKey: Self.cachedSearchQueryKey)
-        UserDefaults.standard.set(Double(savedScrollPosition), forKey: Self.cachedScrollPositionKey)
-        UserDefaults.standard.set(Self.searchCacheVersion, forKey: Self.searchCacheVersionKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.cachedSearchSavedAtKey)
+        defaults.set(committedSearchQuery, forKey: Self.cachedSearchQueryKey)
+        defaults.set(Double(savedScrollPosition), forKey: Self.cachedScrollPositionKey)
+        defaults.set(Self.searchCacheVersion, forKey: Self.searchCacheVersionKey)
 
         // Save filters - convert Set to Array for storage
         if let apps = selectedAppFilters, !apps.isEmpty {
-            UserDefaults.standard.set(Array(apps), forKey: Self.cachedAppFilterKey)
+            defaults.set(Array(apps), forKey: Self.cachedAppFilterKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedAppFilterKey)
+            defaults.removeObject(forKey: Self.cachedAppFilterKey)
         }
         let cachedDateRanges = effectiveDateRanges
         if let startDate = cachedDateRanges.first?.start {
-            UserDefaults.standard.set(startDate.timeIntervalSince1970, forKey: Self.cachedStartDateKey)
+            defaults.set(startDate.timeIntervalSince1970, forKey: Self.cachedStartDateKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedStartDateKey)
+            defaults.removeObject(forKey: Self.cachedStartDateKey)
         }
         if let endDate = cachedDateRanges.first?.end {
-            UserDefaults.standard.set(endDate.timeIntervalSince1970, forKey: Self.cachedEndDateKey)
+            defaults.set(endDate.timeIntervalSince1970, forKey: Self.cachedEndDateKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedEndDateKey)
+            defaults.removeObject(forKey: Self.cachedEndDateKey)
         }
         if let encodedDateRanges = try? JSONEncoder().encode(cachedDateRanges), !cachedDateRanges.isEmpty {
-            UserDefaults.standard.set(encodedDateRanges, forKey: Self.cachedDateRangesKey)
+            defaults.set(encodedDateRanges, forKey: Self.cachedDateRangesKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedDateRangesKey)
+            defaults.removeObject(forKey: Self.cachedDateRangesKey)
         }
         if !windowNameTerms.isEmpty || !windowNameExcludedTerms.isEmpty {
-            UserDefaults.standard.set(windowNameTerms, forKey: Self.cachedWindowNameTermsKey)
-            UserDefaults.standard.set(windowNameExcludedTerms, forKey: Self.cachedWindowNameExcludeTermsKey)
-            UserDefaults.standard.set(windowNameFilterMode.rawValue, forKey: Self.cachedWindowNameModeKey)
-            UserDefaults.standard.set(windowNameTerms.first ?? windowNameExcludedTerms.first, forKey: Self.cachedWindowNameFilterKey)
+            defaults.set(windowNameTerms, forKey: Self.cachedWindowNameTermsKey)
+            defaults.set(windowNameExcludedTerms, forKey: Self.cachedWindowNameExcludeTermsKey)
+            defaults.set(windowNameFilterMode.rawValue, forKey: Self.cachedWindowNameModeKey)
+            defaults.set(windowNameTerms.first ?? windowNameExcludedTerms.first, forKey: Self.cachedWindowNameFilterKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameTermsKey)
-            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameExcludeTermsKey)
-            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameModeKey)
-            UserDefaults.standard.removeObject(forKey: Self.cachedWindowNameFilterKey)
+            defaults.removeObject(forKey: Self.cachedWindowNameTermsKey)
+            defaults.removeObject(forKey: Self.cachedWindowNameExcludeTermsKey)
+            defaults.removeObject(forKey: Self.cachedWindowNameModeKey)
+            defaults.removeObject(forKey: Self.cachedWindowNameFilterKey)
         }
         if !browserUrlTerms.isEmpty || !browserUrlExcludedTerms.isEmpty {
-            UserDefaults.standard.set(browserUrlTerms, forKey: Self.cachedBrowserUrlTermsKey)
-            UserDefaults.standard.set(browserUrlExcludedTerms, forKey: Self.cachedBrowserUrlExcludeTermsKey)
-            UserDefaults.standard.set(browserUrlFilterMode.rawValue, forKey: Self.cachedBrowserUrlModeKey)
-            UserDefaults.standard.set(browserUrlTerms.first ?? browserUrlExcludedTerms.first, forKey: Self.cachedBrowserUrlFilterKey)
+            defaults.set(browserUrlTerms, forKey: Self.cachedBrowserUrlTermsKey)
+            defaults.set(browserUrlExcludedTerms, forKey: Self.cachedBrowserUrlExcludeTermsKey)
+            defaults.set(browserUrlFilterMode.rawValue, forKey: Self.cachedBrowserUrlModeKey)
+            defaults.set(browserUrlTerms.first ?? browserUrlExcludedTerms.first, forKey: Self.cachedBrowserUrlFilterKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlTermsKey)
-            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlExcludeTermsKey)
-            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlModeKey)
-            UserDefaults.standard.removeObject(forKey: Self.cachedBrowserUrlFilterKey)
+            defaults.removeObject(forKey: Self.cachedBrowserUrlTermsKey)
+            defaults.removeObject(forKey: Self.cachedBrowserUrlExcludeTermsKey)
+            defaults.removeObject(forKey: Self.cachedBrowserUrlModeKey)
+            defaults.removeObject(forKey: Self.cachedBrowserUrlFilterKey)
         }
         if !excludedSearchTerms.isEmpty {
-            UserDefaults.standard.set(excludedSearchTerms, forKey: Self.cachedExcludedSearchTermsKey)
+            defaults.set(excludedSearchTerms, forKey: Self.cachedExcludedSearchTermsKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedExcludedSearchTermsKey)
+            defaults.removeObject(forKey: Self.cachedExcludedSearchTermsKey)
         }
         if commentFilter != .allFrames {
-            UserDefaults.standard.set(commentFilter.rawValue, forKey: Self.cachedCommentFilterKey)
+            defaults.set(commentFilter.rawValue, forKey: Self.cachedCommentFilterKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: Self.cachedCommentFilterKey)
+            defaults.removeObject(forKey: Self.cachedCommentFilterKey)
         }
-        UserDefaults.standard.set(contentType.rawValue, forKey: Self.cachedContentTypeKey)
-        UserDefaults.standard.set(searchMode.rawValue, forKey: Self.cachedSearchModeKey)
-        UserDefaults.standard.set(sortOrder.rawValue, forKey: Self.cachedSearchSortOrderKey)
+        defaults.set(contentType.rawValue, forKey: Self.cachedContentTypeKey)
+        defaults.set(searchMode.rawValue, forKey: Self.cachedSearchModeKey)
+        defaults.set(sortOrder.rawValue, forKey: Self.cachedSearchSortOrderKey)
 
         // Force UserDefaults to persist immediately (important for quick close/reopen)
-        UserDefaults.standard.synchronize()
+        defaults.synchronize()
 
         // Save results to disk (JSON file) - do this async to not block the main thread
+        let resultsPath = cachedSearchResultsPath
         Task.detached(priority: .utility) { [results] in
             do {
                 let data = try JSONEncoder().encode(results)
-                try data.write(to: Self.cachedSearchResultsPath)
+                try data.write(to: resultsPath)
             } catch {
                 Log.warning("[SearchCache] Failed to save search results: \(error)", category: .ui)
             }
@@ -2175,13 +2184,13 @@ public class SearchViewModel: ObservableObject {
     public func restoreCachedSearchResults() -> Bool {
 
         // Check cache version first - invalidate if version mismatch
-        let cachedVersion = UserDefaults.standard.integer(forKey: Self.searchCacheVersionKey)
+        let cachedVersion = defaults.integer(forKey: Self.searchCacheVersionKey)
         if cachedVersion != Self.searchCacheVersion {
             clearSearchCache()
             return false
         }
 
-        let savedAt = UserDefaults.standard.double(forKey: Self.cachedSearchSavedAtKey)
+        let savedAt = defaults.double(forKey: Self.cachedSearchSavedAtKey)
         guard savedAt > 0 else { return false }
 
         let savedAtDate = Date(timeIntervalSince1970: savedAt)
@@ -2194,46 +2203,46 @@ public class SearchViewModel: ObservableObject {
         }
 
         // Load cached query
-        guard let cachedQuery = UserDefaults.standard.string(forKey: Self.cachedSearchQueryKey),
+        guard let cachedQuery = defaults.string(forKey: Self.cachedSearchQueryKey),
               !cachedQuery.isEmpty else {
             return false
         }
 
         // Load cached scroll position
-        let cachedScrollPosition = UserDefaults.standard.double(forKey: Self.cachedScrollPositionKey)
+        let cachedScrollPosition = defaults.double(forKey: Self.cachedScrollPositionKey)
 
         // Load cached filters - convert Array back to Set
-        let cachedAppFilters: Set<String>? = if let apps = UserDefaults.standard.stringArray(forKey: Self.cachedAppFilterKey), !apps.isEmpty {
+        let cachedAppFilters: Set<String>? = if let apps = defaults.stringArray(forKey: Self.cachedAppFilterKey), !apps.isEmpty {
             Set(apps)
         } else {
             nil
         }
-        let cachedStartDateValue = UserDefaults.standard.double(forKey: Self.cachedStartDateKey)
-        let cachedEndDateValue = UserDefaults.standard.double(forKey: Self.cachedEndDateKey)
+        let cachedStartDateValue = defaults.double(forKey: Self.cachedStartDateKey)
+        let cachedEndDateValue = defaults.double(forKey: Self.cachedEndDateKey)
         let cachedDateRanges: [DateRangeCriterion] = {
-            guard let data = UserDefaults.standard.data(forKey: Self.cachedDateRangesKey),
+            guard let data = defaults.data(forKey: Self.cachedDateRangesKey),
                   let decoded = try? JSONDecoder().decode([DateRangeCriterion].self, from: data) else {
                 return []
             }
             return decoded.filter(\.hasBounds)
         }()
-        let cachedWindowNameTerms = UserDefaults.standard.stringArray(forKey: Self.cachedWindowNameTermsKey) ?? []
-        let cachedWindowNameExcludeTerms = UserDefaults.standard.stringArray(forKey: Self.cachedWindowNameExcludeTermsKey) ?? []
-        let cachedWindowNameModeRaw = UserDefaults.standard.string(forKey: Self.cachedWindowNameModeKey)
-        let cachedLegacyWindowNameFilter = UserDefaults.standard.string(forKey: Self.cachedWindowNameFilterKey)
-        let cachedBrowserUrlTerms = UserDefaults.standard.stringArray(forKey: Self.cachedBrowserUrlTermsKey) ?? []
-        let cachedBrowserUrlExcludeTerms = UserDefaults.standard.stringArray(forKey: Self.cachedBrowserUrlExcludeTermsKey) ?? []
-        let cachedBrowserUrlModeRaw = UserDefaults.standard.string(forKey: Self.cachedBrowserUrlModeKey)
-        let cachedLegacyBrowserUrlFilter = UserDefaults.standard.string(forKey: Self.cachedBrowserUrlFilterKey)
-        let cachedExcludedSearchTerms = UserDefaults.standard.stringArray(forKey: Self.cachedExcludedSearchTermsKey) ?? []
-        let cachedCommentFilterRaw = UserDefaults.standard.string(forKey: Self.cachedCommentFilterKey)
-        let cachedContentTypeRaw = UserDefaults.standard.string(forKey: Self.cachedContentTypeKey)
-        let cachedSearchModeRaw = UserDefaults.standard.string(forKey: Self.cachedSearchModeKey)
-        let cachedSearchSortOrderRaw = UserDefaults.standard.string(forKey: Self.cachedSearchSortOrderKey)
+        let cachedWindowNameTerms = defaults.stringArray(forKey: Self.cachedWindowNameTermsKey) ?? []
+        let cachedWindowNameExcludeTerms = defaults.stringArray(forKey: Self.cachedWindowNameExcludeTermsKey) ?? []
+        let cachedWindowNameModeRaw = defaults.string(forKey: Self.cachedWindowNameModeKey)
+        let cachedLegacyWindowNameFilter = defaults.string(forKey: Self.cachedWindowNameFilterKey)
+        let cachedBrowserUrlTerms = defaults.stringArray(forKey: Self.cachedBrowserUrlTermsKey) ?? []
+        let cachedBrowserUrlExcludeTerms = defaults.stringArray(forKey: Self.cachedBrowserUrlExcludeTermsKey) ?? []
+        let cachedBrowserUrlModeRaw = defaults.string(forKey: Self.cachedBrowserUrlModeKey)
+        let cachedLegacyBrowserUrlFilter = defaults.string(forKey: Self.cachedBrowserUrlFilterKey)
+        let cachedExcludedSearchTerms = defaults.stringArray(forKey: Self.cachedExcludedSearchTermsKey) ?? []
+        let cachedCommentFilterRaw = defaults.string(forKey: Self.cachedCommentFilterKey)
+        let cachedContentTypeRaw = defaults.string(forKey: Self.cachedContentTypeKey)
+        let cachedSearchModeRaw = defaults.string(forKey: Self.cachedSearchModeKey)
+        let cachedSearchSortOrderRaw = defaults.string(forKey: Self.cachedSearchSortOrderKey)
 
         // Load cached results from disk
         do {
-            let data = try Data(contentsOf: Self.cachedSearchResultsPath)
+            let data = try Data(contentsOf: cachedSearchResultsPath)
             let cachedResults = try JSONDecoder().decode(SearchResults.self, from: data)
 
             guard !cachedResults.isEmpty else { return false }
@@ -2346,40 +2355,45 @@ public class SearchViewModel: ObservableObject {
 
     /// Clear the cached search results
     private func clearSearchCache() {
-        Self.clearPersistedSearchCache()
+        Self.clearPersistedSearchCache(defaults: defaults, resultsPath: cachedSearchResultsPath)
     }
 
     /// Static method to clear persisted search cache (can be called without an instance)
     /// Call this when data sources change (e.g., Rewind data toggled)
     public static func clearPersistedSearchCache() {
+        clearPersistedSearchCache(defaults: .standard,
+            resultsPath: defaultCacheDirectory.appendingPathComponent("search_results_cache.json"))
+    }
+
+    private static func clearPersistedSearchCache(defaults: UserDefaults, resultsPath: URL) {
         Log.info("[SearchCache] Clearing persisted search cache (static)", category: .ui)
 
-        UserDefaults.standard.removeObject(forKey: cachedSearchSavedAtKey)
-        UserDefaults.standard.removeObject(forKey: cachedSearchQueryKey)
-        UserDefaults.standard.removeObject(forKey: cachedScrollPositionKey)
-        UserDefaults.standard.removeObject(forKey: searchCacheVersionKey)
+        defaults.removeObject(forKey: cachedSearchSavedAtKey)
+        defaults.removeObject(forKey: cachedSearchQueryKey)
+        defaults.removeObject(forKey: cachedScrollPositionKey)
+        defaults.removeObject(forKey: searchCacheVersionKey)
 
         // Clear cached filters
-        UserDefaults.standard.removeObject(forKey: cachedAppFilterKey)
-        UserDefaults.standard.removeObject(forKey: cachedStartDateKey)
-        UserDefaults.standard.removeObject(forKey: cachedEndDateKey)
-        UserDefaults.standard.removeObject(forKey: cachedDateRangesKey)
-        UserDefaults.standard.removeObject(forKey: cachedWindowNameTermsKey)
-        UserDefaults.standard.removeObject(forKey: cachedWindowNameExcludeTermsKey)
-        UserDefaults.standard.removeObject(forKey: cachedWindowNameModeKey)
-        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlTermsKey)
-        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlExcludeTermsKey)
-        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlModeKey)
-        UserDefaults.standard.removeObject(forKey: cachedWindowNameFilterKey)
-        UserDefaults.standard.removeObject(forKey: cachedBrowserUrlFilterKey)
-        UserDefaults.standard.removeObject(forKey: cachedExcludedSearchTermsKey)
-        UserDefaults.standard.removeObject(forKey: cachedCommentFilterKey)
-        UserDefaults.standard.removeObject(forKey: cachedContentTypeKey)
-        UserDefaults.standard.removeObject(forKey: cachedSearchModeKey)
-        UserDefaults.standard.removeObject(forKey: cachedSearchSortOrderKey)
+        defaults.removeObject(forKey: cachedAppFilterKey)
+        defaults.removeObject(forKey: cachedStartDateKey)
+        defaults.removeObject(forKey: cachedEndDateKey)
+        defaults.removeObject(forKey: cachedDateRangesKey)
+        defaults.removeObject(forKey: cachedWindowNameTermsKey)
+        defaults.removeObject(forKey: cachedWindowNameExcludeTermsKey)
+        defaults.removeObject(forKey: cachedWindowNameModeKey)
+        defaults.removeObject(forKey: cachedBrowserUrlTermsKey)
+        defaults.removeObject(forKey: cachedBrowserUrlExcludeTermsKey)
+        defaults.removeObject(forKey: cachedBrowserUrlModeKey)
+        defaults.removeObject(forKey: cachedWindowNameFilterKey)
+        defaults.removeObject(forKey: cachedBrowserUrlFilterKey)
+        defaults.removeObject(forKey: cachedExcludedSearchTermsKey)
+        defaults.removeObject(forKey: cachedCommentFilterKey)
+        defaults.removeObject(forKey: cachedContentTypeKey)
+        defaults.removeObject(forKey: cachedSearchModeKey)
+        defaults.removeObject(forKey: cachedSearchSortOrderKey)
 
         // Remove cached results file
-        try? FileManager.default.removeItem(at: cachedSearchResultsPath)
+        try? FileManager.default.removeItem(at: resultsPath)
     }
 
     /// Clear all search results and caches (called when data source changes)

@@ -618,26 +618,35 @@ final class SearchOverlayEscapeDecisionTests: XCTestCase {
 
 @MainActor
 final class SearchRecentEntriesRemovalTests: XCTestCase {
-    private let recentEntriesDefaultsKey = "search.recentEntries.v1"
-    private var originalRecentEntriesData: Data?
+    private var defaultsName: String!
+    private var defaults: UserDefaults!
+    private var cacheDirectory: URL!
+    private var coordinator: AppCoordinator!
 
-    override func setUp() {
-        super.setUp()
-        originalRecentEntriesData = UserDefaults.standard.data(forKey: recentEntriesDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: recentEntriesDefaultsKey)
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        defaultsName = "SearchRecentEntriesRemovalTests.\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        cacheDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(defaultsName)
+        coordinator = AppCoordinator(services: ServiceContainer(inMemory: true))
     }
 
     override func tearDown() {
-        if let originalRecentEntriesData {
-            UserDefaults.standard.set(originalRecentEntriesData, forKey: recentEntriesDefaultsKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: recentEntriesDefaultsKey)
-        }
+        defaults.removePersistentDomain(forName: defaultsName)
+        try? FileManager.default.removeItem(at: cacheDirectory)
         super.tearDown()
     }
 
+    private func makeModel() -> SearchViewModel {
+        SearchViewModel(coordinator: coordinator, defaults: defaults, cacheDirectory: cacheDirectory,
+            startBackgroundWork: false, searchDispatch: { _ in
+                XCTFail("Recent-entry removal must not dispatch a search")
+                throw CancellationError()
+            }, submissionMetrics: { _, _ in XCTFail("Recent-entry removal must not submit metrics") })
+    }
+
     func testRemoveRecentSearchEntryRemovesMatchingEntryAndPersists() {
-        let viewModel = SearchViewModel(coordinator: AppCoordinator())
+        let viewModel = makeModel()
         viewModel.recordRecentSearchEntry("alpha query")
         viewModel.recordRecentSearchEntry("beta query")
 
@@ -650,12 +659,12 @@ final class SearchRecentEntriesRemovalTests: XCTestCase {
 
         XCTAssertFalse(viewModel.recentSearchEntries.contains(where: { $0.key == removableEntry.key }))
 
-        let reloadedViewModel = SearchViewModel(coordinator: AppCoordinator())
+        let reloadedViewModel = makeModel()
         XCTAssertFalse(reloadedViewModel.recentSearchEntries.contains(where: { $0.key == removableEntry.key }))
     }
 
     func testRemoveRecentSearchEntryWithUnknownKeyIsNoOp() {
-        let viewModel = SearchViewModel(coordinator: AppCoordinator())
+        let viewModel = makeModel()
         viewModel.recordRecentSearchEntry("single query")
         let beforeRemoval = viewModel.recentSearchEntries
 

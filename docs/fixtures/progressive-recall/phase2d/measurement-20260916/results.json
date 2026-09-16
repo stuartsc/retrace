@@ -1,0 +1,1426 @@
+{
+  "complete": true,
+  "datasetSHA256": "93b521bf9f5fc9bcd621b9e91a485c8fcc0681c3057a9f5237effad91e41b694",
+  "elapsedSeconds": 73.50216545793228,
+  "exportSHA256": "ff7fbb8f304d62d73c9415cffc6835995acef2f3e3676eb10d678b1b2a9e379f",
+  "indexBytes": {
+    "minilm-chunks.json": 4285,
+    "minilm-vectors.npy": 12416
+  },
+  "kind": "authored-corpus-ranking-results",
+  "latencyMs": {
+    "embedding": {
+      "Q01": [
+        13.840958010405302,
+        10.424999985843897,
+        11.710374965332448,
+        11.25162502285093
+      ],
+      "Q02": [
+        11.663916055113077,
+        20.20366699434817,
+        18.68558395653963,
+        13.058291980996728
+      ],
+      "Q03": [
+        29.995457967743278,
+        20.913749933242798,
+        15.477709006518126,
+        16.758040990680456
+      ],
+      "Q04": [
+        21.864457987248898,
+        16.44312497228384,
+        16.898749978281558,
+        13.831957941874862
+      ],
+      "Q05": [
+        12.766915955580771,
+        15.590874943882227,
+        12.580874958075583,
+        13.017875025980175
+      ],
+      "Q06": [
+        13.732291059568524,
+        13.492291909642518,
+        14.364833943545818,
+        20.182915963232517
+      ],
+      "Q07": [
+        12.961082975380123,
+        18.905292032286525,
+        19.694333081133664,
+        34.866291913203895
+      ],
+      "Q08": [
+        27.929415926337242,
+        22.598124924115837,
+        27.81750005669892,
+        18.223582999780774
+      ],
+      "Q09": [
+        15.059167053550482,
+        12.771667097695172,
+        10.682582971639931,
+        10.044499998912215
+      ],
+      "Q10": [
+        14.993833028711379,
+        19.368291017599404,
+        17.66845805104822,
+        17.816417035646737
+      ],
+      "Q11": [
+        18.979124957695603,
+        14.601832954213023,
+        16.541083925403655,
+        21.066791960038245
+      ],
+      "Q12": [
+        21.04445791337639,
+        19.945416948758066,
+        14.170209062285721,
+        15.28166700154543
+      ]
+    },
+    "lexicalAuthoredKeywords": {
+      "Q01": [
+        3.1544166849926114,
+        3.228083369322121,
+        2.39912502001971,
+        2.9681666055694222
+      ],
+      "Q02": [
+        2.7367916190996766,
+        4.290416603907943,
+        3.317750059068203,
+        4.168958286754787
+      ],
+      "Q03": [
+        1.3996666530147195,
+        1.2592499842867255,
+        1.3535416219383478,
+        1.3292916119098663
+      ],
+      "Q04": [
+        4.561666632071137,
+        2.6288332883268595,
+        3.3262083306908607,
+        2.417083247564733
+      ],
+      "Q05": [
+        4.929749993607402,
+        2.1236666943877935,
+        2.231791615486145,
+        2.0309583051130176
+      ],
+      "Q06": [
+        3.8162500131875277,
+        7.028208230622113,
+        5.563541664741933,
+        2.5487500242888927
+      ],
+      "Q07": [
+        3.0929166823625565,
+        9.524958324618638,
+        5.740958382375538,
+        2.571166609413922
+      ],
+      "Q08": [
+        1.710666692815721,
+        3.8355833385139704,
+        2.195833367295563,
+        2.257166663184762
+      ],
+      "Q09": [
+        4.173083347268403,
+        2.0274582784622908,
+        2.4624166544526815,
+        1.81704165879637
+      ],
+      "Q10": [
+        2.053624950349331,
+        3.002000041306019,
+        4.712916677817702,
+        3.0666666571050882
+      ],
+      "Q11": [
+        3.521958366036415,
+        3.3889999613165855,
+        3.3288750564679503,
+        2.1620000479742885
+      ],
+      "Q12": [
+        2.856541657820344,
+        4.1687083430588245,
+        5.408749915659428,
+        2.234666724689305
+      ]
+    },
+    "lexicalFullQuestion": {
+      "Q01": [
+        4.436624934896827,
+        4.545000032521784,
+        4.965166677720845,
+        3.0284583335742354
+      ],
+      "Q02": [
+        2.745875041000545,
+        2.6174166705459356,
+        2.4911249056458473,
+        2.7140832971781492
+      ],
+      "Q03": [
+        2.0795416785404086,
+        1.5770833706483245,
+        3.485666587948799,
+        1.802583341486752
+      ],
+      "Q04": [
+        2.202166593633592,
+        3.7689167074859142,
+        3.640416660346091,
+        3.4164165845140815
+      ],
+      "Q05": [
+        2.9352917335927486,
+        3.2043333631008863,
+        3.232916700653732,
+        2.1815833169966936
+      ],
+      "Q06": [
+        4.046583431772888,
+        6.472541717812419,
+        5.375958397053182,
+        5.402083392255008
+      ],
+      "Q07": [
+        1.8123333575204015,
+        2.369166584685445,
+        6.112041766755283,
+        7.07983341999352
+      ],
+      "Q08": [
+        2.152999979443848,
+        3.0786667484790087,
+        3.04020824842155,
+        1.8302915850654244
+      ],
+      "Q09": [
+        2.0245834020897746,
+        2.628458314575255,
+        2.4181667249649763,
+        4.02024993672967
+      ],
+      "Q10": [
+        2.152041648514569,
+        3.422875073738396,
+        2.3434999166056514,
+        4.22624999191612
+      ],
+      "Q11": [
+        6.390166701748967,
+        3.3721666550263762,
+        6.008666707202792,
+        4.297583247534931
+      ],
+      "Q12": [
+        6.631875061430037,
+        4.4409167021512985,
+        5.446000024676323,
+        4.966625012457371
+      ]
+    },
+    "rerankedPool": {
+      "Q01": [
+        1349.7914579929784,
+        1332.6954999938607,
+        1280.7824580231681,
+        1611.3705000607297
+      ],
+      "Q02": [
+        732.0560419466347,
+        581.143792020157,
+        573.8131669349968,
+        553.6718750372529
+      ],
+      "Q03": [
+        242.49324994161725,
+        293.8778749667108,
+        327.26062508299947,
+        370.1373749645427
+      ],
+      "Q04": [
+        1349.8903330182657,
+        1218.7811669427902,
+        1388.5776250390336,
+        1720.3778340481222
+      ],
+      "Q05": [
+        1270.4623750178143,
+        1494.012749986723,
+        1580.9750839835033,
+        1252.3186670150608
+      ],
+      "Q06": [
+        589.2360830912367,
+        606.9854580564424,
+        786.482333089225,
+        842.455375008285
+      ],
+      "Q07": [
+        548.4166250098497,
+        645.3820000169799,
+        507.5217910343781,
+        546.0170829901472
+      ],
+      "Q08": [
+        1219.3185420474038,
+        1123.5399169381708,
+        1379.7746659256518,
+        1368.5802920954302
+      ],
+      "Q09": [
+        1226.4448329806328,
+        1023.3247500145808,
+        1180.5474170250818,
+        1416.2366249365732
+      ],
+      "Q10": [
+        1924.1303750313818,
+        1519.1480830544606,
+        1580.7168750325218,
+        2030.713792075403
+      ],
+      "Q11": [
+        964.4905829336494,
+        1360.383459017612,
+        727.2024580743164,
+        716.8905000435188
+      ],
+      "Q12": [
+        530.1957910414785,
+        447.9948329972103,
+        465.4794579837471,
+        801.8191660521552
+      ]
+    }
+  },
+  "metrics": {
+    "embedding": {
+      "mean": {
+        "recallAt1": 1.0,
+        "recallAt3": 1.0,
+        "recallAt5": 1.0,
+        "reciprocalRank": 1.0
+      },
+      "perQuestion": [
+        {
+          "questionID": "Q01",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q02",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q03",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q04",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q05",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q06",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q07",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q08",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q09",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q10",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q11",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q12",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        }
+      ]
+    },
+    "fusion": {
+      "mean": {
+        "recallAt1": 1.0,
+        "recallAt3": 1.0,
+        "recallAt5": 1.0,
+        "reciprocalRank": 1.0
+      },
+      "perQuestion": [
+        {
+          "questionID": "Q01",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q02",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q03",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q04",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q05",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q06",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q07",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q08",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q09",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q10",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q11",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q12",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        }
+      ]
+    },
+    "lexicalAuthoredKeywords": {
+      "mean": {
+        "recallAt1": 0.9166666666666666,
+        "recallAt3": 1.0,
+        "recallAt5": 1.0,
+        "reciprocalRank": 0.9583333333333334
+      },
+      "perQuestion": [
+        {
+          "questionID": "Q01",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q02",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q03",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q04",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q05",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q06",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q07",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q08",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q09",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q10",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q11",
+          "recallAt1": 0.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 0.5
+        },
+        {
+          "questionID": "Q12",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        }
+      ]
+    },
+    "lexicalFullQuestion": {
+      "mean": {
+        "recallAt1": 0.3333333333333333,
+        "recallAt3": 0.3333333333333333,
+        "recallAt5": 0.3333333333333333,
+        "reciprocalRank": 0.3333333333333333
+      },
+      "perQuestion": [
+        {
+          "questionID": "Q01",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q02",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q03",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q04",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q05",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q06",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q07",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q08",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q09",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q10",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q11",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        },
+        {
+          "questionID": "Q12",
+          "recallAt1": 0.0,
+          "recallAt3": 0.0,
+          "recallAt5": 0.0,
+          "reciprocalRank": 0
+        }
+      ]
+    },
+    "rerankedPool": {
+      "mean": {
+        "recallAt1": 0.9166666666666666,
+        "recallAt3": 1.0,
+        "recallAt5": 1.0,
+        "reciprocalRank": 0.9583333333333334
+      },
+      "perQuestion": [
+        {
+          "questionID": "Q01",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q02",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q03",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q04",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q05",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q06",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q07",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q08",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q09",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q10",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        },
+        {
+          "questionID": "Q11",
+          "recallAt1": 0.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 0.5
+        },
+        {
+          "questionID": "Q12",
+          "recallAt1": 1.0,
+          "recallAt3": 1.0,
+          "recallAt5": 1.0,
+          "reciprocalRank": 1.0
+        }
+      ]
+    }
+  },
+  "miniLMIndexMs": 123.49962501320988,
+  "miniLMLoadMs": 3366.766541963443,
+  "modelArtifactsUnchanged": true,
+  "modelPins": {
+    "backend": "cpu",
+    "interopThreads": 1,
+    "localFilesOnly": true,
+    "models": {
+      "BAAI/bge-reranker-v2-m3": {
+        "artifacts": {
+          "README.md": {
+            "bytes": 17229,
+            "sha256": "c887aa6dd2598f908bf0582ca7068cc816585c7a1b6a07df305b631ede0cb174"
+          },
+          "config.json": {
+            "bytes": 795,
+            "sha256": "13dcd6c31d9fec9d1d8e158702072f62d7fa7d312a64b9fe057bec9a08cfe41a"
+          },
+          "model.safetensors": {
+            "bytes": 2271071852,
+            "sha256": "d9e3e081faff1eefb84019509b2f5558fd74c1a05a2c7db22f74174fcedb5286"
+          },
+          "sentencepiece.bpe.model": {
+            "bytes": 5069051,
+            "sha256": "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865"
+          },
+          "special_tokens_map.json": {
+            "bytes": 964,
+            "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"
+          },
+          "tokenizer.json": {
+            "bytes": 17098273,
+            "sha256": "69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15"
+          },
+          "tokenizer_config.json": {
+            "bytes": 1173,
+            "sha256": "7e4c1cc848840aeccdd763458c18dd525eb0f795c992e00ebe9c28554e7db2d4"
+          }
+        },
+        "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+      },
+      "sentence-transformers/all-MiniLM-L6-v2": {
+        "artifacts": {
+          "1_Pooling/config.json": {
+            "bytes": 190,
+            "sha256": "4be450dde3b0273bb9787637cfbd28fe04a7ba6ab9d36ac48e92b11e350ffc23"
+          },
+          "README.md": {
+            "bytes": 10502,
+            "sha256": "dcd602d2fd35c203a247304a06fec6654a12f7941b739f9221a064fe8dc3b7f0"
+          },
+          "config.json": {
+            "bytes": 612,
+            "sha256": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41"
+          },
+          "config_sentence_transformers.json": {
+            "bytes": 116,
+            "sha256": "061ca9d39661d6c6d6de5ba27f79a1cd5770ea247f8d46412a68a498dc5ac9f3"
+          },
+          "model.safetensors": {
+            "bytes": 90868376,
+            "sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"
+          },
+          "modules.json": {
+            "bytes": 349,
+            "sha256": "84e40c8e006c9b1d6c122e02cba9b02458120b5fb0c87b746c41e0207cf642cf"
+          },
+          "sentence_bert_config.json": {
+            "bytes": 53,
+            "sha256": "fc1993fde0a95c24ec6c022539d41cf6e2f7c9721e5415d6fb6897472a9cd4b7"
+          },
+          "special_tokens_map.json": {
+            "bytes": 112,
+            "sha256": "303df45a03609e4ead04bc3dc1536d0ab19b5358db685b6f3da123d05ec200e3"
+          },
+          "tokenizer.json": {
+            "bytes": 466247,
+            "sha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+          },
+          "tokenizer_config.json": {
+            "bytes": 350,
+            "sha256": "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b"
+          },
+          "vocab.txt": {
+            "bytes": 231508,
+            "sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+          }
+        },
+        "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+      }
+    },
+    "precision": "float32",
+    "python": "3.11.4",
+    "runtime": {
+      "huggingface-hub": "0.36.0",
+      "numpy": "2.4.1",
+      "safetensors": "0.6.2",
+      "tokenizers": "0.22.1",
+      "torch": "2.9.1",
+      "transformers": "4.57.1"
+    },
+    "safetensorsOnly": true,
+    "schemaVersion": 1,
+    "threads": 2,
+    "trustRemoteCode": false
+  },
+  "peakRSSBytes": 3206840320,
+  "pinsSHA256": "a7f01306a6a698c565b93dcda6de8018cf5219aa240e7655d463281458983803",
+  "rankingConfiguration": {
+    "batchSize": 4,
+    "exactCoverageSlots": 5,
+    "miniLMContentTokens": 224,
+    "miniLMOverlapTokens": 32,
+    "miniLMTotalTokens": 256,
+    "reciprocalRankConstant": 60,
+    "rerankerPairTokens": 512,
+    "warmRepetitions": 3
+  },
+  "rankings": {
+    "embedding": {
+      "Q01": [
+        "cedar-draft",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-archived",
+        "cedar-meeting",
+        "maple-sent",
+        "cedar-invoice",
+        "juniper-maintenance"
+      ],
+      "Q02": [
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-meeting"
+      ],
+      "Q03": [
+        "juniper-maintenance"
+      ],
+      "Q04": [
+        "juniper-maintenance",
+        "cedar-draft",
+        "cedar-sent",
+        "cedar-approved",
+        "maple-sent",
+        "cedar-archived",
+        "cedar-meeting",
+        "cedar-invoice"
+      ],
+      "Q05": [
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-archived",
+        "cedar-meeting",
+        "cedar-invoice",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q06": [
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-meeting"
+      ],
+      "Q07": [
+        "maple-sent",
+        "cedar-approved"
+      ],
+      "Q08": [
+        "cedar-invoice",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-archived",
+        "cedar-meeting",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q09": [
+        "cedar-archived",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "Q10": [
+        "cedar-meeting",
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-sent",
+        "maple-sent",
+        "cedar-invoice",
+        "juniper-maintenance"
+      ],
+      "Q11": [
+        "cedar-draft",
+        "cedar-archived",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q12": [
+        "cedar-approved",
+        "cedar-meeting"
+      ]
+    },
+    "fusion": {
+      "Q01": [
+        "cedar-draft",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-archived",
+        "cedar-meeting",
+        "maple-sent",
+        "cedar-invoice",
+        "juniper-maintenance"
+      ],
+      "Q02": [
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-meeting"
+      ],
+      "Q03": [
+        "juniper-maintenance"
+      ],
+      "Q04": [
+        "juniper-maintenance",
+        "cedar-draft",
+        "cedar-sent",
+        "cedar-approved",
+        "maple-sent",
+        "cedar-archived",
+        "cedar-meeting",
+        "cedar-invoice"
+      ],
+      "Q05": [
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-archived",
+        "cedar-meeting",
+        "cedar-invoice",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q06": [
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-meeting"
+      ],
+      "Q07": [
+        "maple-sent",
+        "cedar-approved"
+      ],
+      "Q08": [
+        "cedar-invoice",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-archived",
+        "cedar-meeting",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q09": [
+        "cedar-archived",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "Q10": [
+        "cedar-meeting",
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-sent",
+        "maple-sent",
+        "cedar-invoice",
+        "juniper-maintenance"
+      ],
+      "Q11": [
+        "cedar-draft",
+        "cedar-archived",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q12": [
+        "cedar-approved",
+        "cedar-meeting"
+      ]
+    },
+    "lexicalAuthoredKeywords": {
+      "Q01": [
+        "cedar-draft"
+      ],
+      "Q02": [
+        "cedar-sent"
+      ],
+      "Q03": [
+        "juniper-maintenance"
+      ],
+      "Q04": [
+        "juniper-maintenance"
+      ],
+      "Q05": [
+        "cedar-approved"
+      ],
+      "Q06": [
+        "cedar-sent"
+      ],
+      "Q07": [
+        "maple-sent"
+      ],
+      "Q08": [
+        "cedar-invoice"
+      ],
+      "Q09": [
+        "cedar-archived"
+      ],
+      "Q10": [
+        "cedar-meeting"
+      ],
+      "Q11": [
+        "cedar-archived",
+        "cedar-draft"
+      ],
+      "Q12": [
+        "cedar-approved"
+      ]
+    },
+    "lexicalFullQuestion": {
+      "Q01": [],
+      "Q02": [
+        "cedar-sent"
+      ],
+      "Q03": [
+        "juniper-maintenance"
+      ],
+      "Q04": [],
+      "Q05": [],
+      "Q06": [],
+      "Q07": [
+        "maple-sent"
+      ],
+      "Q08": [],
+      "Q09": [
+        "cedar-archived"
+      ],
+      "Q10": [],
+      "Q11": [],
+      "Q12": []
+    },
+    "rerankedPool": {
+      "Q01": [
+        "cedar-draft",
+        "cedar-sent",
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-meeting",
+        "maple-sent",
+        "cedar-invoice",
+        "juniper-maintenance"
+      ],
+      "Q02": [
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-meeting"
+      ],
+      "Q03": [
+        "juniper-maintenance"
+      ],
+      "Q04": [
+        "juniper-maintenance",
+        "maple-sent",
+        "cedar-meeting",
+        "cedar-draft",
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-invoice",
+        "cedar-archived"
+      ],
+      "Q05": [
+        "cedar-approved",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-archived",
+        "cedar-meeting",
+        "maple-sent",
+        "cedar-invoice",
+        "juniper-maintenance"
+      ],
+      "Q06": [
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-meeting"
+      ],
+      "Q07": [
+        "maple-sent",
+        "cedar-approved"
+      ],
+      "Q08": [
+        "cedar-invoice",
+        "cedar-sent",
+        "cedar-approved",
+        "maple-sent",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-meeting",
+        "juniper-maintenance"
+      ],
+      "Q09": [
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-sent",
+        "cedar-approved",
+        "cedar-invoice",
+        "cedar-meeting",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q10": [
+        "cedar-meeting",
+        "cedar-archived",
+        "cedar-sent",
+        "cedar-draft",
+        "cedar-approved",
+        "cedar-invoice",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q11": [
+        "cedar-archived",
+        "cedar-draft",
+        "maple-sent",
+        "juniper-maintenance"
+      ],
+      "Q12": [
+        "cedar-approved",
+        "cedar-meeting"
+      ]
+    }
+  },
+  "rerankerLoadMs": 1539.7532500792295,
+  "runtime": {
+    "platform": "macOS-26.1-arm64-arm-64bit",
+    "processor": "arm64",
+    "torchCPUConfiguration": "PyTorch built with:\n  - GCC 4.2\n  - C++ Version: 201703\n  - clang 15.0.0\n  - OpenMP 201811\n  - LAPACK is enabled (usually provided by MKL)\n  - NNPACK is enabled\n  - CPU capability usage: DEFAULT\n  - Build settings: BLAS_INFO=accelerate, BUILD_TYPE=Release, COMMIT_SHA=5811a8d7da873dd699ff6687092c225caffcf1bb, CXX_COMPILER=/usr/bin/c++, CXX_FLAGS= -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DLIBKINETO_NOCUPTI -DLIBKINETO_NOROCTRACER -DLIBKINETO_NOXPUPTI=ON -DUSE_PYTORCH_QNNPACK -DAT_BUILD_ARM_VEC256_WITH_SLEEF -DUSE_XNNPACK -DUSE_PYTORCH_METAL_EXPORT -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -DUSE_COREML_DELEGATE -O2 -fPIC -DC10_NODEPRECATED -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=braced-scalar-init -Werror=range-loop-construct -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-unknown-pragmas -Wno-unused-parameter -Wno-strict-overflow -Wno-strict-aliasing -Wvla-extension -Wsuggest-override -Wnewline-eof -Winconsistent-missing-override -Winconsistent-missing-destructor-override -Wno-pass-failed -Wno-error=old-style-cast -Wconstant-conversion -Qunused-arguments -faligned-new -fno-math-errno -fno-trapping-math -Werror=format -DUSE_MPS -Wno-missing-braces, LAPACK_INFO=accelerate, TORCH_VERSION=2.9.1, USE_CUDA=OFF, USE_CUDNN=OFF, USE_CUSPARSELT=OFF, USE_EIGEN_FOR_BLAS=ON, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_GLOO=ON, USE_MKL=OFF, USE_MKLDNN=OFF, USE_MPI=OFF, USE_NCCL=OFF, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, USE_XCCL=OFF, USE_XPU=OFF, \n",
+    "torchGitRevision": "5811a8d7da873dd699ff6687092c225caffcf1bb"
+  },
+  "safetyChecks": {
+    "deletedRefRefused": true,
+    "excludedAppRefused": true,
+    "sameNumericCrossSourceRefused": true,
+    "wrongStoreRefused": true
+  },
+  "schemaVersion": 1,
+  "scope": "Offline authored OCR snapshot; no production index/readiness or image reopening.",
+  "scores": {
+    "embedding": {
+      "Q01": {
+        "cedar-approved": 0.6581263542175293,
+        "cedar-archived": 0.5685439109802246,
+        "cedar-draft": 0.6657676696777344,
+        "cedar-invoice": 0.3932206630706787,
+        "cedar-meeting": 0.5138291120529175,
+        "cedar-sent": 0.5933125615119934,
+        "juniper-maintenance": 0.09555569291114807,
+        "maple-sent": 0.39544224739074707
+      },
+      "Q02": {
+        "cedar-draft": 0.641370952129364,
+        "cedar-meeting": 0.5102114677429199,
+        "cedar-sent": 0.7078632116317749
+      },
+      "Q03": {
+        "juniper-maintenance": 0.32394737005233765
+      },
+      "Q04": {
+        "cedar-approved": 0.33756116032600403,
+        "cedar-archived": 0.29861539602279663,
+        "cedar-draft": 0.37296584248542786,
+        "cedar-invoice": 0.2386157512664795,
+        "cedar-meeting": 0.2618976831436157,
+        "cedar-sent": 0.3559802770614624,
+        "juniper-maintenance": 0.5947980880737305,
+        "maple-sent": 0.30115121603012085
+      },
+      "Q05": {
+        "cedar-approved": 0.6505343914031982,
+        "cedar-archived": 0.5999083518981934,
+        "cedar-draft": 0.6120702028274536,
+        "cedar-invoice": 0.3828434944152832,
+        "cedar-meeting": 0.5080978870391846,
+        "cedar-sent": 0.6285451054573059,
+        "juniper-maintenance": 0.07823381572961807,
+        "maple-sent": 0.3628678023815155
+      },
+      "Q06": {
+        "cedar-draft": 0.7430469989776611,
+        "cedar-meeting": 0.5899299383163452,
+        "cedar-sent": 0.7752660512924194
+      },
+      "Q07": {
+        "cedar-approved": 0.5667780637741089,
+        "maple-sent": 0.8309940099716187
+      },
+      "Q08": {
+        "cedar-approved": 0.556018590927124,
+        "cedar-archived": 0.4302483797073364,
+        "cedar-draft": 0.44815972447395325,
+        "cedar-invoice": 0.7108010053634644,
+        "cedar-meeting": 0.3976799249649048,
+        "cedar-sent": 0.5067780017852783,
+        "juniper-maintenance": 0.22477439045906067,
+        "maple-sent": 0.32039177417755127
+      },
+      "Q09": {
+        "cedar-approved": 0.4765266180038452,
+        "cedar-archived": 0.641756534576416,
+        "cedar-draft": 0.4577683210372925,
+        "cedar-invoice": 0.4401412308216095,
+        "cedar-meeting": 0.35897138714790344,
+        "cedar-sent": 0.47051432728767395,
+        "juniper-maintenance": 0.2140129655599594,
+        "maple-sent": 0.1771351546049118
+      },
+      "Q10": {
+        "cedar-approved": 0.6863846778869629,
+        "cedar-archived": 0.6595403552055359,
+        "cedar-draft": 0.6491578221321106,
+        "cedar-invoice": 0.3536446690559387,
+        "cedar-meeting": 0.6977120637893677,
+        "cedar-sent": 0.6400835514068604,
+        "juniper-maintenance": 0.09324420243501663,
+        "maple-sent": 0.41588735580444336
+      },
+      "Q11": {
+        "cedar-archived": 0.5426214933395386,
+        "cedar-draft": 0.6062904596328735,
+        "juniper-maintenance": 0.17341268062591553,
+        "maple-sent": 0.4269654452800751
+      },
+      "Q12": {
+        "cedar-approved": 0.7595143914222717,
+        "cedar-meeting": 0.6040722131729126
+      }
+    },
+    "rerankedPool": {
+      "Q01": {
+        "cedar-approved": 0.3561612665653229,
+        "cedar-archived": 0.135111004114151,
+        "cedar-draft": 1.2253742218017578,
+        "cedar-invoice": -5.554917812347412,
+        "cedar-meeting": -1.941535234451294,
+        "cedar-sent": 0.8446603417396545,
+        "juniper-maintenance": -11.039997100830078,
+        "maple-sent": -5.457704067230225
+      },
+      "Q02": {
+        "cedar-draft": 1.9297289848327637,
+        "cedar-meeting": 0.24143338203430176,
+        "cedar-sent": 3.4687323570251465
+      },
+      "Q03": {
+        "juniper-maintenance": -0.46534299850463867
+      },
+      "Q04": {
+        "cedar-approved": -11.0374174118042,
+        "cedar-archived": -11.041784286499023,
+        "cedar-draft": -11.037386894226074,
+        "cedar-invoice": -11.040369987487793,
+        "cedar-meeting": -11.036584854125977,
+        "cedar-sent": -11.039710998535156,
+        "juniper-maintenance": -4.455533504486084,
+        "maple-sent": -11.03441047668457
+      },
+      "Q05": {
+        "cedar-approved": -0.21828922629356384,
+        "cedar-archived": -1.8614996671676636,
+        "cedar-draft": -1.6508691310882568,
+        "cedar-invoice": -7.059758186340332,
+        "cedar-meeting": -3.2280521392822266,
+        "cedar-sent": -1.2001557350158691,
+        "juniper-maintenance": -11.020332336425781,
+        "maple-sent": -4.559207916259766
+      },
+      "Q06": {
+        "cedar-draft": 2.3490307331085205,
+        "cedar-meeting": 1.4028005599975586,
+        "cedar-sent": 3.5457539558410645
+      },
+      "Q07": {
+        "cedar-approved": 2.1900153160095215,
+        "maple-sent": 3.1663382053375244
+      },
+      "Q08": {
+        "cedar-approved": -2.112469434738159,
+        "cedar-archived": -5.270866394042969,
+        "cedar-draft": -5.474720478057861,
+        "cedar-invoice": 3.5419397354125977,
+        "cedar-meeting": -7.264764308929443,
+        "cedar-sent": -1.6264729499816895,
+        "juniper-maintenance": -11.02973747253418,
+        "maple-sent": -3.9274938106536865
+      },
+      "Q09": {
+        "cedar-approved": -6.3086090087890625,
+        "cedar-archived": 1.3702635765075684,
+        "cedar-draft": -4.726641654968262,
+        "cedar-invoice": -7.0785746574401855,
+        "cedar-meeting": -7.866228103637695,
+        "cedar-sent": -6.195067405700684,
+        "juniper-maintenance": -11.021220207214355,
+        "maple-sent": -10.91708755493164
+      },
+      "Q10": {
+        "cedar-approved": -5.0062432289123535,
+        "cedar-archived": -3.2064263820648193,
+        "cedar-draft": -3.6457576751708984,
+        "cedar-invoice": -8.633598327636719,
+        "cedar-meeting": 3.7267231941223145,
+        "cedar-sent": -3.373586416244507,
+        "juniper-maintenance": -11.035545349121094,
+        "maple-sent": -9.745272636413574
+      },
+      "Q11": {
+        "cedar-archived": -2.9227051734924316,
+        "cedar-draft": -3.6467273235321045,
+        "juniper-maintenance": -11.032249450683594,
+        "maple-sent": -6.125992774963379
+      },
+      "Q12": {
+        "cedar-approved": 0.29420214891433716,
+        "cedar-meeting": -4.171752452850342
+      }
+    }
+  },
+  "scriptSHA256": "3c31efd30ba000248cf278951b752f5d6b0695c10083aada512b15ea6b15f057",
+  "workerEntryToFirstEmbeddingResultMs": 19333.008041023277
+}

@@ -1,0 +1,333 @@
+{
+  "kind": "authored non-private rendered screen benchmark",
+  "limits": {
+    "imageReopeningTested": false,
+    "questions": 12,
+    "realUserAcceptance": false,
+    "screens": 8
+  },
+  "questions": [
+    {
+      "constraints": {
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-draft"
+      ],
+      "id": "Q01",
+      "keywordQuery": "Cedar proposal DRAFT",
+      "question": "What was the amount on the Cedar proposal while it was still a draft?",
+      "tags": [
+        "amount",
+        "paraphrase"
+      ]
+    },
+    {
+      "constraints": {
+        "requiredPhrases": [
+          "NOT GRANTED"
+        ],
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-sent"
+      ],
+      "id": "Q02",
+      "keywordQuery": "Cedar proposal 47000 SENT \"NOT GRANTED\"",
+      "question": "Cedar 47000 SENT \"NOT GRANTED\"",
+      "tags": [
+        "amount",
+        "negation",
+        "keyword"
+      ]
+    },
+    {
+      "constraints": {
+        "requiredPhrases": [
+          "OPS-314"
+        ],
+        "source": "native"
+      },
+      "expectedIDs": [
+        "juniper-maintenance"
+      ],
+      "id": "Q03",
+      "keywordQuery": "\"OPS-314\"",
+      "question": "\"OPS-314\"",
+      "tags": [
+        "identifier",
+        "keyword"
+      ]
+    },
+    {
+      "constraints": {
+        "source": "native"
+      },
+      "expectedIDs": [
+        "juniper-maintenance"
+      ],
+      "id": "Q04",
+      "keywordQuery": "Juniper service maintenance",
+      "question": "When will the Juniper service be unavailable for planned work?",
+      "tags": [
+        "paraphrase"
+      ]
+    },
+    {
+      "constraints": {
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-approved"
+      ],
+      "id": "Q05",
+      "keywordQuery": "Cedar proposal \"Approval GRANTED\"",
+      "question": "Find the Cedar proposal where permission had actually been granted.",
+      "tags": [
+        "negation",
+        "paraphrase"
+      ]
+    },
+    {
+      "constraints": {
+        "requiredPhrases": [
+          "NOT GRANTED"
+        ],
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-sent"
+      ],
+      "id": "Q06",
+      "keywordQuery": "Cedar proposal 47000 SENT \"NOT GRANTED\"",
+      "question": "I need the recorded Cedar proposal showing amount 47000 and a completed dispatch status, with approval \"NOT GRANTED\".",
+      "tags": [
+        "longQuestion",
+        "amount",
+        "negation"
+      ]
+    },
+    {
+      "constraints": {
+        "requiredPhrases": [
+          "Approval GRANTED"
+        ],
+        "source": "native"
+      },
+      "expectedIDs": [
+        "maple-sent"
+      ],
+      "id": "Q07",
+      "keywordQuery": "Maple 47000 \"Approval GRANTED\"",
+      "question": "Maple 47000 \"Approval GRANTED\"",
+      "tags": [
+        "amount",
+        "negation",
+        "keyword"
+      ]
+    },
+    {
+      "constraints": {
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-invoice"
+      ],
+      "id": "Q08",
+      "keywordQuery": "Cedar invoice 47000",
+      "question": "Has the Cedar invoice for 47000 been paid?",
+      "tags": [
+        "amount",
+        "negation",
+        "paraphrase"
+      ]
+    },
+    {
+      "constraints": {
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-archived"
+      ],
+      "id": "Q09",
+      "keywordQuery": "Cedar ARCHIVED WITHDRAWN",
+      "question": "Cedar ARCHIVED WITHDRAWN",
+      "tags": [
+        "negation",
+        "keyword"
+      ]
+    },
+    {
+      "constraints": {
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-meeting"
+      ],
+      "id": "Q10",
+      "keywordQuery": "Cedar ceiling deferred",
+      "question": "What ceiling was discussed when the Cedar proposal review was postponed?",
+      "tags": [
+        "amount",
+        "paraphrase"
+      ]
+    },
+    {
+      "constraints": {
+        "endDate": 1700000001,
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-draft"
+      ],
+      "id": "Q11",
+      "keywordQuery": "Cedar proposal 42000",
+      "question": "Show the earlier Cedar proposal for 42000, captured before the sent version.",
+      "tags": [
+        "amount",
+        "temporal"
+      ]
+    },
+    {
+      "constraints": {
+        "appBundleIDs": [
+          "com.fixture.review"
+        ],
+        "source": "native"
+      },
+      "expectedIDs": [
+        "cedar-approved"
+      ],
+      "id": "Q12",
+      "keywordQuery": "Cedar proposal 47000",
+      "question": "Show the Cedar proposal for 47000 with approval granted in the authored review app only.",
+      "tags": [
+        "amount",
+        "appRestriction"
+      ]
+    }
+  ],
+  "ranking": {
+    "batchSize": 4,
+    "exactCoverageSlots": 5,
+    "miniLMContentTokens": 224,
+    "miniLMOverlapTokens": 32,
+    "miniLMTotalTokens": 256,
+    "reciprocalRankConstant": 60,
+    "rerankerPairTokens": 512,
+    "warmRepetitions": 3
+  },
+  "review": {
+    "date": "2026-09-16",
+    "method": "Independent reviewer viewed only the six new JPEGs before seeing renderer, questions or benchmark code. The two original Cedar JPEGs retain their 2026-09-11 review.",
+    "result": "All five lines on each new 1280x800 JPEG are legible and unclipped."
+  },
+  "schemaVersion": 1,
+  "screens": [
+    {
+      "appBundleID": "com.fixture.word",
+      "capturedAt": 1700000000,
+      "file": "../1700000000.jpeg",
+      "id": "cedar-draft",
+      "imageSHA256": "a9c9cacc160df46bd6be5d08876bb9276f55ac9fc89ce369d75fc3506bb719ab",
+      "requiredOCR": [
+        "Amount 42000",
+        "Status DRAFT",
+        "Approval NOT GRANTED"
+      ],
+      "title": "Cedar proposal"
+    },
+    {
+      "appBundleID": "com.fixture.word",
+      "capturedAt": 1700000002,
+      "file": "../1700000002.jpeg",
+      "id": "cedar-sent",
+      "imageSHA256": "cd039ee16091c486c0629f8b977e7693087a3c143fda4edff49153eaaa9c7bcb",
+      "requiredOCR": [
+        "Amount 47000",
+        "Status SENT",
+        "Approval NOT GRANTED"
+      ],
+      "title": "Cedar proposal"
+    },
+    {
+      "appBundleID": "com.fixture.word",
+      "capturedAt": 1699999980,
+      "file": "03-maple-sent.jpeg",
+      "id": "maple-sent",
+      "imageSHA256": "ed8cf2008b44f1bdabbe2fe8c3e470f3a8f9f66fa6a932d484abf2c51b2c0fb8",
+      "requiredOCR": [
+        "Amount 47000",
+        "Status SENT",
+        "Approval GRANTED"
+      ],
+      "title": "Maple proposal"
+    },
+    {
+      "appBundleID": "com.fixture.review",
+      "capturedAt": 1700000010,
+      "file": "04-cedar-approved.jpeg",
+      "id": "cedar-approved",
+      "imageSHA256": "54497fe2eefd97bb3d3d32076ea62ef412ec18dbdeb357bd3e134b1a64a25072",
+      "requiredOCR": [
+        "Amount 47000",
+        "Status APPROVED",
+        "Approval GRANTED"
+      ],
+      "title": "Cedar proposal"
+    },
+    {
+      "appBundleID": "com.fixture.finance",
+      "capturedAt": 1700000020,
+      "file": "05-cedar-invoice.jpeg",
+      "id": "cedar-invoice",
+      "imageSHA256": "8a43c34d466e9dc8aff86229f947aa9607e732152f4506822a6e9efe02726cd6",
+      "requiredOCR": [
+        "Amount 47000",
+        "Status UNPAID",
+        "Payment NOT RECEIVED"
+      ],
+      "title": "Cedar invoice"
+    },
+    {
+      "appBundleID": "com.fixture.word",
+      "capturedAt": 1699999970,
+      "file": "06-cedar-archived.jpeg",
+      "id": "cedar-archived",
+      "imageSHA256": "b6eae6269ee9ba00560d38b6dbfdca6f3436dea22898b712a52d2e523275be8a",
+      "requiredOCR": [
+        "Amount 42000",
+        "Status ARCHIVED",
+        "Approval WITHDRAWN"
+      ],
+      "title": "Cedar proposal"
+    },
+    {
+      "appBundleID": "com.fixture.terminal",
+      "capturedAt": 1699999990,
+      "file": "07-juniper-maintenance.jpeg",
+      "id": "juniper-maintenance",
+      "imageSHA256": "8221c574020960cfe06bb913d43ec98f2bfa73ee5fa245942653e5b5d0fa9cc6",
+      "requiredOCR": [
+        "Ticket OPS-314",
+        "Service offline",
+        "Restart required",
+        "Maintenance Saturday"
+      ],
+      "title": "Juniper maintenance"
+    },
+    {
+      "appBundleID": "com.fixture.review",
+      "capturedAt": 1700000030,
+      "file": "08-cedar-meeting.jpeg",
+      "id": "cedar-meeting",
+      "imageSHA256": "67d32b74661e14c08f00a45593c79a00ad85e17fe622b59fe395457132411649",
+      "requiredOCR": [
+        "Budget ceiling 50000",
+        "Proposal review deferred",
+        "Approval NOT GRANTED"
+      ],
+      "title": "Cedar meeting"
+    }
+  ]
+}

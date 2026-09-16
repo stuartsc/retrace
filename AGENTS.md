@@ -14,7 +14,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B local trial; 2C feed/bootstrap implemented and uninstalled; hybrid retrieval and acceptance tracked separately)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B local trial; 2C feed/bootstrap and 2D question/benchmark checkpoint uninstalled; production hybrid retrieval and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
@@ -58,13 +58,14 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── progressive-recall-plan.md # Phase 2A/2B local trial, 2C feed/bootstrap uninstalled, hybrid retrieval next
+│   ├── progressive-recall-plan.md # Phase 2A/2B local trial; 2C feed and 2D question/benchmark checkpoint uninstalled
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
-│   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle and same-title Word RTF fixtures
+│   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle, Word RTFs and phase2d authored ranking corpus
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
 ├── scripts/                     # Build/release/validation scripts
 │   ├── release.sh               # End-to-end release automation
 │   ├── create-release.sh        # Release build + packaging helper
+│   ├── recall_benchmark/        # Offline authored-corpus evaluator, pins, tests and reproduction guide
 │   ├── check_no_nanoseconds_sleep.sh # Guardrail for Task.sleep(nanoseconds:)
 │   ├── validate_sleep_wake_stability.sh # Sleep/wake soak validation workflow
 │   └── validate_darkwake_watchdog.sh # Automated darkwake watchdog regression validation
@@ -218,6 +219,8 @@ retrace/
 ### Progressive recall implementation and validation
 
 `App/Tests/ScreenEvidenceExpansionTests.swift`, `ScreenEvidenceFeedIntegrationTests.swift`, `ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover bounded exact text, local-only feed bookkeeping/disclosure denial, constrained/source-aware search, exact navigation, source failure propagation, legacy projection compatibility and cancelled device startup. `DiagnosticFileLoggingTests.swift` exercises the real file backend in private temporary directories, including disabled creation/append/read/rotation and debug process-launch admission. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
+
+`App/Tests/ProgressiveRecallBenchmarkTests.swift` binds eight reviewed JPEGs and twelve fixed questions to actual Vision/SQLite exact references. It uses private in-memory storage, refuses media lookup and can exclusively export an authored snapshot beneath `/tmp`. Run with `RETRACE_TEST_DISABLE_FILE_LOGGING=1`. `scripts/recall_benchmark/{benchmark.py,test_benchmark.py,model-pins.json,README.md}` evaluate that snapshot with pinned offline CPU models; they are developer tools, never a production index/worker or an agent disclosure grant. The dataset, reviewed images, `vision-export.json` and retained `measurement-20260916/` artifacts live in `docs/fixtures/progressive-recall/phase2d/`. The raw v1 run is immutable; a documented Q11 oracle ambiguity leaves eleven questions for interpretation. Root owns benchmark/Shared coordination; UI owns complete-question dispatch and its isolated native-input regressions.
 
 Capture context is independently opt-in (`activityContextEnabled`, default false), exposed in Capture settings, and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a hit by bare numeric ID. Screenshots/OCR and timeline selection use exact evidence without project assignment or visit grouping. Existing correction records remain for compatibility; the assignment workflow is outside the active scope. Implementation and automated evidence do not establish installed Mac acceptance; see the validation ledger.
 
@@ -375,7 +378,7 @@ frame (1) ──< (1) doc_segment >── (1) searchRanking_content
 | Database            | SQLite + FTS5           | Full-text search built-in              |
 | Encryption          | CryptoKit (AES-256-GCM) | Optional on-device encryption          |
 | Audio Transcription | whisper.cpp             | Local transcription pipeline           |
-| Vector Search       | llama.cpp               | Planned (prepared but not active)      |
+| Vector Search       | Runtime not selected    | Inactive; pinned MiniLM/PyTorch benchmark is developer-only |
 
 ---
 
@@ -507,7 +510,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-15_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-16_
 
 
 <claude-mem-context>

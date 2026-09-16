@@ -1,0 +1,178 @@
+[
+  {
+    "id": "cedar-draft",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000001
+      },
+      "observationID": "9181E4EF-32CF-470B-A3EE-73F46DCB6036",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 12,
+        "start": 0,
+        "end": 79,
+        "text": "Cedar proposal Amount 42000 Status DRAFT Approval NOT GRANTED Meeting tomorrow\n"
+      }
+    ]
+  },
+  {
+    "id": "cedar-sent",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000002
+      },
+      "observationID": "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 12,
+        "start": 0,
+        "end": 78,
+        "text": "Cedar proposal Amount 47000 Status SENT Approval NOT GRANTED Meeting tomorrow\n"
+      }
+    ]
+  },
+  {
+    "id": "maple-sent",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000003
+      },
+      "observationID": "D9B91080-FA88-443C-9A03-2CC07B1AE856",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 11,
+        "start": 0,
+        "end": 74,
+        "text": "Maple proposal Amount 47000 Status SENT Approval GRANTED Meeting tomorrow\n"
+      }
+    ]
+  },
+  {
+    "id": "cedar-approved",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000004
+      },
+      "observationID": "E038F673-C82C-404F-B969-06EC6EC78686",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 11,
+        "start": 0,
+        "end": 76,
+        "text": "Cedar proposal Amount 47000 Status APPROVED Approval GRANTED Meeting Friday\n"
+      }
+    ]
+  },
+  {
+    "id": "cedar-invoice",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000005
+      },
+      "observationID": "F867AD7B-2F11-4589-9ECF-1F3D9B75D23C",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 15,
+        "start": 0,
+        "end": 77,
+        "text": "Cedar invoice Amount 47000 Status UNPAID Payment NOT RECEIVED Due next month\n"
+      }
+    ]
+  },
+  {
+    "id": "cedar-archived",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000006
+      },
+      "observationID": "B1086D8D-9E7D-4A0A-A00F-2264C9AD5D18",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 11,
+        "start": 0,
+        "end": 81,
+        "text": "Cedar proposal Amount 42000 Status ARCHIVED Approval WITHDRAWN Meeting cancelled\n"
+      }
+    ]
+  },
+  {
+    "id": "juniper-maintenance",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000007
+      },
+      "observationID": "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 13,
+        "start": 0,
+        "end": 89,
+        "text": "Juniper maintenance Ticket OPS-314 Service offline Restart required Maintenance Saturday\n"
+      }
+    ]
+  },
+  {
+    "id": "cedar-meeting",
+    "ref": {
+      "blockIDs": [],
+      "extractionRevision": 1,
+      "frameID": {
+        "value": 50000008
+      },
+      "observationID": "4807904F-121E-448A-9977-76F1D68EF527",
+      "source": "native",
+      "storeID": "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+    },
+    "chunks": [
+      {
+        "tokenStart": 0,
+        "tokenEnd": 16,
+        "start": 0,
+        "end": 96,
+        "text": "Cedar meeting Budget ceiling 50000 Proposal review deferred Approval NOT GRANTED Meeting Friday\n"
+      }
+    ]
+  }
+]

@@ -1,0 +1,1200 @@
+{
+  "datasetSHA256" : "93b521bf9f5fc9bcd621b9e91a485c8fcc0681c3057a9f5237effad91e41b694",
+  "kind" : "retrace-authored-recall-benchmark",
+  "ocrConfiguration" : "Vision via ProcessingManager; accurate; en-US; minimumConfidence=0.3; accessibilityEnabled=false; preferBackgroundProcessing=true",
+  "questions" : [
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "cedar-sent",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          3.1544166849926114,
+          3.228083369322121,
+          2.39912502001971,
+          2.9681666055694222
+        ],
+        "orderedIDs" : [
+          "cedar-draft"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000001
+            },
+            "observationID" : "9181E4EF-32CF-470B-A3EE-73F46DCB6036",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-draft"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000001
+          },
+          "observationID" : "9181E4EF-32CF-470B-A3EE-73F46DCB6036",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          4.436624934896827,
+          4.545000032521784,
+          4.965166677720845,
+          3.0284583335742354
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q01",
+      "keywordQuery" : "Cedar proposal DRAFT",
+      "question" : "What was the amount on the Cedar proposal while it was still a draft?"
+    },
+    {
+      "allowedIDs" : [
+        "cedar-draft",
+        "cedar-meeting",
+        "cedar-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          2.7367916190996766,
+          4.290416603907943,
+          3.317750059068203,
+          4.168958286754787
+        ],
+        "orderedIDs" : [
+          "cedar-sent"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000002
+            },
+            "observationID" : "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "requiredPhrases" : [
+          "NOT GRANTED"
+        ],
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-sent"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000002
+          },
+          "observationID" : "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.745875041000545,
+          2.6174166705459356,
+          2.4911249056458473,
+          2.7140832971781492
+        ],
+        "orderedIDs" : [
+          "cedar-sent"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000002
+            },
+            "observationID" : "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "id" : "Q02",
+      "keywordQuery" : "Cedar proposal 47000 SENT \"NOT GRANTED\"",
+      "question" : "Cedar 47000 SENT \"NOT GRANTED\""
+    },
+    {
+      "allowedIDs" : [
+        "juniper-maintenance"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          1.3996666530147195,
+          1.2592499842867255,
+          1.3535416219383478,
+          1.3292916119098663
+        ],
+        "orderedIDs" : [
+          "juniper-maintenance"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000007
+            },
+            "observationID" : "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "requiredPhrases" : [
+          "OPS-314"
+        ],
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "juniper-maintenance"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000007
+          },
+          "observationID" : "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.0795416785404086,
+          1.5770833706483245,
+          3.485666587948799,
+          1.802583341486752
+        ],
+        "orderedIDs" : [
+          "juniper-maintenance"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000007
+            },
+            "observationID" : "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "id" : "Q03",
+      "keywordQuery" : "\"OPS-314\"",
+      "question" : "\"OPS-314\""
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "cedar-sent",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          4.561666632071137,
+          2.6288332883268595,
+          3.3262083306908607,
+          2.417083247564733
+        ],
+        "orderedIDs" : [
+          "juniper-maintenance"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000007
+            },
+            "observationID" : "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "juniper-maintenance"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000007
+          },
+          "observationID" : "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.202166593633592,
+          3.7689167074859142,
+          3.640416660346091,
+          3.4164165845140815
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q04",
+      "keywordQuery" : "Juniper service maintenance",
+      "question" : "When will the Juniper service be unavailable for planned work?"
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "cedar-sent",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          4.929749993607402,
+          2.1236666943877935,
+          2.231791615486145,
+          2.0309583051130176
+        ],
+        "orderedIDs" : [
+          "cedar-approved"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000004
+            },
+            "observationID" : "E038F673-C82C-404F-B969-06EC6EC78686",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-approved"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000004
+          },
+          "observationID" : "E038F673-C82C-404F-B969-06EC6EC78686",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.9352917335927486,
+          3.2043333631008863,
+          3.232916700653732,
+          2.1815833169966936
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q05",
+      "keywordQuery" : "Cedar proposal \"Approval GRANTED\"",
+      "question" : "Find the Cedar proposal where permission had actually been granted."
+    },
+    {
+      "allowedIDs" : [
+        "cedar-draft",
+        "cedar-meeting",
+        "cedar-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          3.8162500131875277,
+          7.028208230622113,
+          5.563541664741933,
+          2.5487500242888927
+        ],
+        "orderedIDs" : [
+          "cedar-sent"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000002
+            },
+            "observationID" : "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "requiredPhrases" : [
+          "NOT GRANTED"
+        ],
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-sent"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000002
+          },
+          "observationID" : "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          4.046583431772888,
+          6.472541717812419,
+          5.375958397053182,
+          5.402083392255008
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q06",
+      "keywordQuery" : "Cedar proposal 47000 SENT \"NOT GRANTED\"",
+      "question" : "I need the recorded Cedar proposal showing amount 47000 and a completed dispatch status, with approval \"NOT GRANTED\"."
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          3.0929166823625565,
+          9.524958324618638,
+          5.740958382375538,
+          2.571166609413922
+        ],
+        "orderedIDs" : [
+          "maple-sent"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000003
+            },
+            "observationID" : "D9B91080-FA88-443C-9A03-2CC07B1AE856",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "requiredPhrases" : [
+          "Approval GRANTED"
+        ],
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "maple-sent"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000003
+          },
+          "observationID" : "D9B91080-FA88-443C-9A03-2CC07B1AE856",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          1.8123333575204015,
+          2.369166584685445,
+          6.112041766755283,
+          7.07983341999352
+        ],
+        "orderedIDs" : [
+          "maple-sent"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000003
+            },
+            "observationID" : "D9B91080-FA88-443C-9A03-2CC07B1AE856",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "id" : "Q07",
+      "keywordQuery" : "Maple 47000 \"Approval GRANTED\"",
+      "question" : "Maple 47000 \"Approval GRANTED\""
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "cedar-sent",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          1.710666692815721,
+          3.8355833385139704,
+          2.195833367295563,
+          2.257166663184762
+        ],
+        "orderedIDs" : [
+          "cedar-invoice"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000005
+            },
+            "observationID" : "F867AD7B-2F11-4589-9ECF-1F3D9B75D23C",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-invoice"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000005
+          },
+          "observationID" : "F867AD7B-2F11-4589-9ECF-1F3D9B75D23C",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.152999979443848,
+          3.0786667484790087,
+          3.04020824842155,
+          1.8302915850654244
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q08",
+      "keywordQuery" : "Cedar invoice 47000",
+      "question" : "Has the Cedar invoice for 47000 been paid?"
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "cedar-sent",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          4.173083347268403,
+          2.0274582784622908,
+          2.4624166544526815,
+          1.81704165879637
+        ],
+        "orderedIDs" : [
+          "cedar-archived"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000006
+            },
+            "observationID" : "B1086D8D-9E7D-4A0A-A00F-2264C9AD5D18",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-archived"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000006
+          },
+          "observationID" : "B1086D8D-9E7D-4A0A-A00F-2264C9AD5D18",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.0245834020897746,
+          2.628458314575255,
+          2.4181667249649763,
+          4.02024993672967
+        ],
+        "orderedIDs" : [
+          "cedar-archived"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000006
+            },
+            "observationID" : "B1086D8D-9E7D-4A0A-A00F-2264C9AD5D18",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "id" : "Q09",
+      "keywordQuery" : "Cedar ARCHIVED WITHDRAWN",
+      "question" : "Cedar ARCHIVED WITHDRAWN"
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-archived",
+        "cedar-draft",
+        "cedar-invoice",
+        "cedar-meeting",
+        "cedar-sent",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          2.053624950349331,
+          3.002000041306019,
+          4.712916677817702,
+          3.0666666571050882
+        ],
+        "orderedIDs" : [
+          "cedar-meeting"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000008
+            },
+            "observationID" : "4807904F-121E-448A-9977-76F1D68EF527",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-meeting"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000008
+          },
+          "observationID" : "4807904F-121E-448A-9977-76F1D68EF527",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          2.152041648514569,
+          3.422875073738396,
+          2.3434999166056514,
+          4.22624999191612
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q10",
+      "keywordQuery" : "Cedar ceiling deferred",
+      "question" : "What ceiling was discussed when the Cedar proposal review was postponed?"
+    },
+    {
+      "allowedIDs" : [
+        "cedar-archived",
+        "cedar-draft",
+        "juniper-maintenance",
+        "maple-sent"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          3.521958366036415,
+          3.3889999613165855,
+          3.3288750564679503,
+          2.1620000479742885
+        ],
+        "orderedIDs" : [
+          "cedar-archived",
+          "cedar-draft"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000006
+            },
+            "observationID" : "B1086D8D-9E7D-4A0A-A00F-2264C9AD5D18",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          },
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000001
+            },
+            "observationID" : "9181E4EF-32CF-470B-A3EE-73F46DCB6036",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "endDate" : 1700000001,
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-draft"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000001
+          },
+          "observationID" : "9181E4EF-32CF-470B-A3EE-73F46DCB6036",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          6.390166701748967,
+          3.3721666550263762,
+          6.008666707202792,
+          4.297583247534931
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q11",
+      "keywordQuery" : "Cedar proposal 42000",
+      "question" : "Show the earlier Cedar proposal for 42000, captured before the sent version."
+    },
+    {
+      "allowedIDs" : [
+        "cedar-approved",
+        "cedar-meeting"
+      ],
+      "authoredKeywords" : {
+        "elapsedMs" : [
+          2.856541657820344,
+          4.1687083430588245,
+          5.408749915659428,
+          2.234666724689305
+        ],
+        "orderedIDs" : [
+          "cedar-approved"
+        ],
+        "orderedRefs" : [
+          {
+            "blockIDs" : [
+
+            ],
+            "extractionRevision" : 1,
+            "frameID" : {
+              "value" : 50000004
+            },
+            "observationID" : "E038F673-C82C-404F-B969-06EC6EC78686",
+            "source" : "native",
+            "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+          }
+        ]
+      },
+      "constraints" : {
+        "appBundleIDs" : [
+          "com.fixture.review"
+        ],
+        "source" : "native"
+      },
+      "expectedIDs" : [
+        "cedar-approved"
+      ],
+      "expectedRefs" : [
+        {
+          "blockIDs" : [
+
+          ],
+          "extractionRevision" : 1,
+          "frameID" : {
+            "value" : 50000004
+          },
+          "observationID" : "E038F673-C82C-404F-B969-06EC6EC78686",
+          "source" : "native",
+          "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+        }
+      ],
+      "fullQuestion" : {
+        "elapsedMs" : [
+          6.631875061430037,
+          4.4409167021512985,
+          5.446000024676323,
+          4.966625012457371
+        ],
+        "orderedIDs" : [
+
+        ],
+        "orderedRefs" : [
+
+        ]
+      },
+      "id" : "Q12",
+      "keywordQuery" : "Cedar proposal 47000",
+      "question" : "Show the Cedar proposal for 47000 with approval granted in the authored review app only."
+    }
+  ],
+  "safetyChecks" : {
+    "deletedRefRefused" : true,
+    "excludedAppRefused" : true,
+    "sameNumericCrossSourceRefused" : true,
+    "wrongStoreRefused" : true
+  },
+  "safetyScope" : "Cross-source refusal uses the native numeric frame ID attributed to an unavailable Rewind source; no imported or installed library is opened",
+  "schemaVersion" : 1,
+  "screens" : [
+    {
+      "appBundleID" : "com.fixture.word",
+      "capturedAt" : 1700000000,
+      "chromeText" : "",
+      "id" : "cedar-draft",
+      "imageSHA256" : "a9c9cacc160df46bd6be5d08876bb9276f55ac9fc89ce369d75fc3506bb719ab",
+      "mainText" : "Cedar proposal Amount 42000 Status DRAFT Approval NOT GRANTED Meeting tomorrow",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000001
+        },
+        "observationID" : "9181E4EF-32CF-470B-A3EE-73F46DCB6036",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "25cd7871edbc72b031e82820bd6e175e50f49758bcd8bf6314f544e0c0e140b0",
+      "title" : "Cedar proposal"
+    },
+    {
+      "appBundleID" : "com.fixture.word",
+      "capturedAt" : 1700000002,
+      "chromeText" : "",
+      "id" : "cedar-sent",
+      "imageSHA256" : "cd039ee16091c486c0629f8b977e7693087a3c143fda4edff49153eaaa9c7bcb",
+      "mainText" : "Cedar proposal Amount 47000 Status SENT Approval NOT GRANTED Meeting tomorrow",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000002
+        },
+        "observationID" : "A2DFA7EF-A14B-4839-A495-746DF17D5403",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "cebe7e171425a5d3741a5a445d9f4e78a082a184c51e4a6d42354752fd38299c",
+      "title" : "Cedar proposal"
+    },
+    {
+      "appBundleID" : "com.fixture.word",
+      "capturedAt" : 1699999980,
+      "chromeText" : "",
+      "id" : "maple-sent",
+      "imageSHA256" : "ed8cf2008b44f1bdabbe2fe8c3e470f3a8f9f66fa6a932d484abf2c51b2c0fb8",
+      "mainText" : "Maple proposal Amount 47000 Status SENT Approval GRANTED Meeting tomorrow",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000003
+        },
+        "observationID" : "D9B91080-FA88-443C-9A03-2CC07B1AE856",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "3c6d869a0d9aa9fd47c37492fd77c73a91bdd830c0fdc82639818333f53c24fb",
+      "title" : "Maple proposal"
+    },
+    {
+      "appBundleID" : "com.fixture.review",
+      "capturedAt" : 1700000010,
+      "chromeText" : "",
+      "id" : "cedar-approved",
+      "imageSHA256" : "54497fe2eefd97bb3d3d32076ea62ef412ec18dbdeb357bd3e134b1a64a25072",
+      "mainText" : "Cedar proposal Amount 47000 Status APPROVED Approval GRANTED Meeting Friday",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000004
+        },
+        "observationID" : "E038F673-C82C-404F-B969-06EC6EC78686",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "a807ce6851b91a86a3b8dfc1c223e06bd68fecb1eaf99ac1380a0b7f660acede",
+      "title" : "Cedar proposal"
+    },
+    {
+      "appBundleID" : "com.fixture.finance",
+      "capturedAt" : 1700000020,
+      "chromeText" : "",
+      "id" : "cedar-invoice",
+      "imageSHA256" : "8a43c34d466e9dc8aff86229f947aa9607e732152f4506822a6e9efe02726cd6",
+      "mainText" : "Cedar invoice Amount 47000 Status UNPAID Payment NOT RECEIVED Due next month",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000005
+        },
+        "observationID" : "F867AD7B-2F11-4589-9ECF-1F3D9B75D23C",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "9185c86c129e50c9a27b65928b3b99b9698ab173b8b5fba40475fa07c3d74fe5",
+      "title" : "Cedar invoice"
+    },
+    {
+      "appBundleID" : "com.fixture.word",
+      "capturedAt" : 1699999970,
+      "chromeText" : "",
+      "id" : "cedar-archived",
+      "imageSHA256" : "b6eae6269ee9ba00560d38b6dbfdca6f3436dea22898b712a52d2e523275be8a",
+      "mainText" : "Cedar proposal Amount 42000 Status ARCHIVED Approval WITHDRAWN Meeting cancelled",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000006
+        },
+        "observationID" : "B1086D8D-9E7D-4A0A-A00F-2264C9AD5D18",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "a49da25084bd791a2ef8a798707d2ffac9f2db48b99d6eee531616e9af903c32",
+      "title" : "Cedar proposal"
+    },
+    {
+      "appBundleID" : "com.fixture.terminal",
+      "capturedAt" : 1699999990,
+      "chromeText" : "",
+      "id" : "juniper-maintenance",
+      "imageSHA256" : "8221c574020960cfe06bb913d43ec98f2bfa73ee5fa245942653e5b5d0fa9cc6",
+      "mainText" : "Juniper maintenance Ticket OPS-314 Service offline Restart required Maintenance Saturday",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000007
+        },
+        "observationID" : "2F4C0794-D988-4563-A8E1-FFF42BD130C8",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "18c09f92e378e3fda2f21cb5b6ec49b659e7d59cb699170cf3e68c46b1c9767b",
+      "title" : "Juniper maintenance"
+    },
+    {
+      "appBundleID" : "com.fixture.review",
+      "capturedAt" : 1700000030,
+      "chromeText" : "",
+      "id" : "cedar-meeting",
+      "imageSHA256" : "67d32b74661e14c08f00a45593c79a00ad85e17fe622b59fe395457132411649",
+      "mainText" : "Cedar meeting Budget ceiling 50000 Proposal review deferred Approval NOT GRANTED Meeting Friday",
+      "provenance" : {
+        "origin" : "ocr"
+      },
+      "ref" : {
+        "blockIDs" : [
+
+        ],
+        "extractionRevision" : 1,
+        "frameID" : {
+          "value" : 50000008
+        },
+        "observationID" : "4807904F-121E-448A-9977-76F1D68EF527",
+        "source" : "native",
+        "storeID" : "5D54FBDE-0D38-42C6-A260-A90406F05A49"
+      },
+      "textSHA256" : "29183ae2f20b5b467642e5c755bd02a24c11a4b32fafcc770370d620b47cf870",
+      "title" : "Cedar meeting"
+    }
+  ],
+  "sqliteReadState" : {
+    "autocommit" : true,
+    "statements" : [
+      {
+        "busy" : false,
+        "category" : "ftsShadowTable",
+        "readOnly" : true,
+        "sql" : "SELECT sz FROM 'main'.'searchRanking_docsize' WHERE id=?"
+      },
+      {
+        "busy" : false,
+        "category" : "ftsShadowTable",
+        "readOnly" : true,
+        "sql" : "SELECT pgno FROM 'main'.'searchRanking_idx' WHERE segid=? AND term<=? ORDER BY term DESC LIMIT 1"
+      },
+      {
+        "busy" : false,
+        "category" : "ftsShadowTable",
+        "readOnly" : false,
+        "sql" : "INSERT INTO 'main'.'searchRanking_idx'(segid,term,pgno) VALUES(?,?,?)"
+      },
+      {
+        "busy" : false,
+        "category" : "ftsShadowTable",
+        "readOnly" : false,
+        "sql" : "REPLACE INTO 'main'.'searchRanking_data'(id, block) VALUES(?,?)"
+      },
+      {
+        "busy" : false,
+        "category" : "ftsShadowTable",
+        "readOnly" : false,
+        "sql" : "REPLACE INTO 'main'.'searchRanking_docsize' VALUES(?,?)"
+      },
+      {
+        "busy" : false,
+        "category" : "ftsShadowTable",
+        "readOnly" : false,
+        "sql" : "INSERT INTO 'main'.'searchRanking_content' VALUES(?1,?2,?3,?4)"
+      },
+      {
+        "busy" : false,
+        "category" : "pragma",
+        "readOnly" : true,
+        "sql" : "PRAGMA 'main'.data_version"
+      },
+      {
+        "busy" : false,
+        "category" : "pragma",
+        "readOnly" : true,
+        "sql" : "PRAGMA 'main'.data_version"
+      }
+    ],
+    "transactionState" : 0
+  },
+  "timingScope" : "First execution of each query, then three warm repetitions on one initialized private SQLite database; not cold process or cold filesystem"
+}

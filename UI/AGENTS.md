@@ -62,6 +62,7 @@ UI/
     ├── EvidenceTextViewModelTests.swift  # Real SQLite bounded pages, privacy changes and stale completion
     ├── TimelineEvidenceSelectionTests.swift # Exact search/frame selection, late work and timeline pinning
     ├── SearchEvidenceThumbnailTests.swift # Real SQLite source/privacy/deletion checks before thumbnail exposure
+    ├── SearchQueryPreservationTests.swift # Native input/replay, real SQLite dispatch/metrics, exclusions and continuation regressions
     ├── AppResourceBundleTests.swift      # Real app/resource bundle layout and lazy fallback checks
     ├── TestLogger.swift                  # UI behavior + deeplink parsing tests
     ├── HotkeyHoldReleasePolicyTests.swift # Hold-hotkey modifier release regression tests
@@ -185,7 +186,7 @@ V22 canonical writers reject changing a retained native capture timestamp. The d
 ```
 
 **Features**:
-- **Real-time search**: Results update as you type (debounced 300ms)
+- **Submission**: Enter submits the question; typing alone does not search. Filter changes after a submission re-run with a 300ms debounce.
 - **Filters**:
   - App filter (multiselect dropdown)
   - Date range picker
@@ -202,6 +203,12 @@ V22 canonical writers reject changing a retained native capture timestamp. The d
   - `Enter`: Open selected result
   - `Esc`: Close search
   - `Cmd+↑/↓`: Jump to first/last result
+
+Phase 2D query preservation retains the complete original question, including quoted content, Unicode and whitespace, through input, recent-entry persistence/replay, corrective reruns and result continuation. Explicit exclusion chips and app/date/metadata restrictions keep their existing meaning; chip normalization must not normalize the editable question. Recent-entry deduplication keeps its normalized key while storing the original submitted text. A continuation belongs to the committed question, even when an unsubmitted draft changes; changed explicit filters still invalidate its cursor. The former 15-word cap silently discarded suffix conditions and exclusions and has been removed. Runtime validation is tracked separately in the progressive-recall ledger.
+
+`SearchViewModel` has one internal initializer for owned defaults/cache locations and search/metric delivery. The public initializer keeps production defaults and background maintenance. Tests use private defaults/cache files, dormant in-memory services and real SQLite dispatch; do not construct a default coordinator or access the user's recent-search cache. Native field tests call the actual delegate without creating or activating a window and use a private pasteboard.
+
+Search submissions retain the existing `searches` and `filtered_search_query` metrics. Filtered-search metadata is serialized off main as a JSON object with the complete query and filter object; malformed or non-object filters are refused with a content-free diagnostic. The returned discardable task permits deterministic completion checks against an isolated metrics database.
 
 **Deeplinks**:
 

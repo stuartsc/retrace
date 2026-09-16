@@ -1,10 +1,18 @@
 # Updates and changelog
 
-Last updated: 2026-09-15.
+Last updated: 2026-09-16.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-09-16 — Complete search questions and an authored retrieval benchmark
+
+- Search preserves the full question, including quoted suffixes and exclusion chips formerly lost after fifteen words. Recent-search replay and corrective reruns retain original whitespace; pagination continues the submitted question while an unsubmitted draft is being edited. Explicit app/date/metadata restrictions and cursor validation remain in force.
+- Filtered-search metrics now encode quoted, multiline and Unicode questions as valid JSON, with serialization off main and explicit refusal of malformed filter objects. The existing submitted/filtered metric types and action points are retained.
+- Added an eight-screen independently reviewed authored corpus, twelve frozen questions and a real JPEG→Vision→SQLite→primary-search export. One ambiguous temporal oracle is explicitly excluded from interpretation while retaining the raw run. On the other eleven questions, MiniLM/fusion recovered all expected first results, compared with four for full-question lexical search; BGE showed no added accuracy at much higher cost. This developer experiment adds no production model worker or semantic-index readiness. Validation, measurement limits and remaining gates are in [the Phase 2D ledger](docs/progressive-recall-validation.md#full-questions-and-authored-retrieval-comparison--2026-09-16).
+- The complete Swift suite passes **1,004 tests with five intentional skips and zero failures**. All eleven Python tokenizer/file/process/export-integrity regressions and optimized compilation pass; independent source and benchmark-result reviews are clear.
+- This is an uninstalled change. The previously recorded **2609.15.1** local trial remains a separate checkpoint.
 
 ### 2026-09-15 — Durable native evidence feed and resumable bootstrap
 

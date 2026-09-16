@@ -685,10 +685,16 @@ public class DashboardViewModel: ObservableObject {
     /// - Parameters:
     ///   - coordinator: The app coordinator
     ///   - query: The search query text
-    ///   - filters: JSON string of applied filters
-    public static func recordFilteredSearch(coordinator: AppCoordinator, query: String, filters: String) {
-        Task {
-            let json = "{\"query\":\"\(query)\",\"filters\":\(filters)}"
+    ///   - filters: JSON object string of applied filters; invalid objects are refused
+    @discardableResult
+    public static func recordFilteredSearch(coordinator: AppCoordinator, query: String, filters: String) -> Task<Void, Never> {
+        Task.detached(priority: .utility) {
+            guard let filterObject = try? JSONSerialization.jsonObject(with: Data(filters.utf8)) as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: ["query": query, "filters": filterObject]) else {
+                Log.warning("[SearchMetrics] Filtered search metric omitted: invalid filter object", category: .ui)
+                return
+            }
+            let json = String(decoding: data, as: UTF8.self)
             try? await coordinator.recordMetricEvent(metricType: .filteredSearchQuery, metadata: json)
         }
     }

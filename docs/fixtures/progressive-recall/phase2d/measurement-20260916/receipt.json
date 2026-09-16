@@ -1,0 +1,36 @@
+{
+  "artifacts": {
+    "minilm-chunks.json": "bcca963511897a234d06cbb546680586ae7f375dc9dd16ca85035671c71fb2c8",
+    "minilm-vectors.npy": "80946279f9fc53104c8b94c02b7e665dfad84778338cdfa99455f2939f56ce3b",
+    "results.json": "e16e0ecaaffba858719615b6748160ca69b96dded03877fd117787ee05cb5d28",
+    "worker.log": "be09c7e0dac764901f7b9217f140042d12532ec448df857f37132de09b6efc6e"
+  },
+  "command": [
+    "/usr/bin/nice",
+    "-n",
+    "10",
+    "/Users/stuartbond/.pyenv/versions/3.11.4/bin/python3",
+    "/Users/stuartbond/backintime/scripts/recall_benchmark/benchmark.py",
+    "worker",
+    "--export",
+    "/tmp/retrace-phase2d-20260916-zmot_5q1/authored-export.json",
+    "--export-sha256",
+    "ff7fbb8f304d62d73c9415cffc6835995acef2f3e3676eb10d678b1b2a9e379f",
+    "--cache",
+    "/Users/stuartbond/.cache/huggingface/hub",
+    "--output",
+    "/tmp/retrace-phase2d-20260916-zmot_5q1/model-comparison"
+  ],
+  "deadlineSeconds": 600.0,
+  "elapsedSeconds": 75.26019599998835,
+  "exitCode": 0,
+  "expectedExportSHA256": "ff7fbb8f304d62d73c9415cffc6835995acef2f3e3676eb10d678b1b2a9e379f",
+  "inputsBefore": {
+    "/Users/stuartbond/backintime/docs/fixtures/progressive-recall/phase2d/dataset.json": "93b521bf9f5fc9bcd621b9e91a485c8fcc0681c3057a9f5237effad91e41b694",
+    "/Users/stuartbond/backintime/scripts/recall_benchmark/benchmark.py": "3c31efd30ba000248cf278951b752f5d6b0695c10083aada512b15ea6b15f057",
+    "/Users/stuartbond/backintime/scripts/recall_benchmark/model-pins.json": "a7f01306a6a698c565b93dcda6de8018cf5219aa240e7655d463281458983803",
+    "/tmp/retrace-phase2d-20260916-zmot_5q1/authored-export.json": "ff7fbb8f304d62d73c9415cffc6835995acef2f3e3676eb10d678b1b2a9e379f"
+  },
+  "inputsUnchanged": true,
+  "rssLimitBytes": 12884901888
+}
