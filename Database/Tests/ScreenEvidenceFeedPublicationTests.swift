@@ -355,7 +355,17 @@ final class ScreenEvidenceFeedPublicationTests: XCTestCase {
         sqlite3_trace_v2(fixture.db, UInt32(SQLITE_TRACE_PROFILE), FeedPublicationTrace.callback,
             Unmanaged.passUnretained(trace).toOpaque())
         defer { sqlite3_trace_v2(fixture.db, 0, nil, nil) }
-        try await MigrationRunner(db: fixture.db).runMigrations()
+        // Keep this historical upgrade fixture pinned to V22 even after later
+        // migrations are registered. Its VM budget measures this migration only.
+        try PipelineSQL.execute(fixture.db, "BEGIN IMMEDIATE")
+        do {
+            try await V22_ScreenEvidenceFeed().migrate(db: fixture.db)
+            try PipelineSQL.execute(fixture.db, "INSERT INTO schema_migrations(version,applied_at) VALUES(22,0)")
+            try PipelineSQL.execute(fixture.db, "COMMIT")
+        } catch {
+            try? PipelineSQL.execute(fixture.db, "ROLLBACK")
+            throw error
+        }
         sqlite3_trace_v2(fixture.db, 0, nil, nil)
         XCTAssertEqual(try rawScalar(fixture.db, "SELECT MAX(version) FROM schema_migrations"), 22)
         XCTAssertEqual(try rawPayload(fixture.db), bytes)
@@ -365,6 +375,8 @@ final class ScreenEvidenceFeedPublicationTests: XCTestCase {
         XCTAssertEqual(try rawScalar(fixture.db, "SELECT COUNT(*) FROM screen_observation"), 1)
         XCTAssertLessThan(trace.steps, 30_000, "Migration must not scale with retained frame/extraction rows")
         let feedID = try rawString(fixture.db, "SELECT feedID FROM screen_evidence_feed_state")
+        try await MigrationRunner(db: fixture.db).runMigrations()
+        XCTAssertEqual(try rawScalar(fixture.db, "SELECT MAX(version) FROM schema_migrations"), 23)
         try await MigrationRunner(db: fixture.db).runMigrations()
         XCTAssertEqual(try rawString(fixture.db, "SELECT feedID FROM screen_evidence_feed_state"), feedID)
     }
@@ -383,7 +395,7 @@ final class ScreenEvidenceFeedPublicationTests: XCTestCase {
         var enabled: Int32 = 0
         XCTAssertEqual(retrace_test_enable_defensive(reader, &enabled), SQLITE_OK)
         XCTAssertEqual(enabled, 1)
-        XCTAssertEqual(try rawScalar(reader, "SELECT MAX(version) FROM schema_migrations"), 22)
+        XCTAssertEqual(try rawScalar(reader, "SELECT MAX(version) FROM schema_migrations"), 23)
         try PipelineSQL.execute(writer, "BEGIN IMMEDIATE")
         _ = try ScreenEvidenceSQL.commitLegacyText(writer, frameID: frame.id, mainText: "V21 writer new revision", chromeText: nil)
         XCTAssertEqual(try rawScalar(reader, "SELECT COUNT(*) FROM screen_evidence_feed"), 0)

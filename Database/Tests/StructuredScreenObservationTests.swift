@@ -121,17 +121,36 @@ final class StructuredScreenObservationTests: XCTestCase {
         XCTAssertEqual(Array(try XCTUnwrap(content).mainText.utf8), Array(nfd.utf8))
     }
 
-    func testOldPayloadHighlightFlagIsRevalidatedWithoutRewritingItsBytes() async throws {
+    func testAuthoredPreV23PayloadHighlightFlagIsRevalidatedWithoutRewritingItsBytes() async throws {
         let nfc = "Caf\u{e9}", nfd = "Cafe\u{301}"
         let original = try await commit(extraction([nfc]))
-        // Reproduce the old writer's canonical-equality proof in this disposable SQLite fixture.
+        // Author the old writer's canonical-equality proof in this disposable
+        // SQLite fixture; this is deliberately not a supported V23 mutation.
         let legacy = ScreenEvidenceSnapshot(ref: original.ref, frame: original.frame, width: 1280, height: 800,
             text: extraction([nfc], fullText: nfd), legacyContext: false, highlightsVerified: true)
         let raw = try RecallSQL.encode(legacy)
-        let connection = await database.getConnection()
-        try PipelineSQL.execute(XCTUnwrap(connection),
-            "UPDATE screen_extraction SET payload=? WHERE observationID=? AND revision=?",
-            [.text(raw), .text(original.ref.observationID.uuidString), .integer(original.ref.extractionRevision)])
+        let handle = await database.getConnection()
+        let connection = try XCTUnwrap(handle)
+        let update = "UPDATE screen_extraction SET payload=? WHERE observationID=? AND revision=?"
+        let values: [PipelineSQL.Value] = [.text(raw), .text(original.ref.observationID.uuidString),
+                                          .integer(original.ref.extractionRevision)]
+        XCTAssertThrowsError(try PipelineSQL.execute(connection, update, values))
+        // Bundled SQLCipher omits shared-cache support, so a raw V22 memory
+        // keeper cannot be handed to DatabaseManager for these public-reader
+        // assertions. Temporarily remove only this guard within the private
+        // fixture transaction and restore its exact DDL before any reads. A
+        // rollback also restores the guard if fixture construction fails.
+        let guardSQL = try XCTUnwrap(PipelineSQL.query(connection,
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='screen_evidence_native_extraction_immutable'",
+            map: { RecallSQL.string($0, 0) }).first)
+        try PipelineSQL.transaction(connection) {
+            try PipelineSQL.execute(connection, "DROP TRIGGER screen_evidence_native_extraction_immutable")
+            try PipelineSQL.execute(connection, update, values)
+            try PipelineSQL.execute(connection, guardSQL)
+        }
+        XCTAssertThrowsError(try PipelineSQL.execute(connection, update,
+            [.text(try RecallSQL.encode(original)), .text(original.ref.observationID.uuidString),
+             .integer(original.ref.extractionRevision)]))
         let exact = try await database.screenEvidence(original.ref)
         let current = try await database.currentScreenEvidence(frameID: frame.id, storeID: original.ref.storeID)
         XCTAssertEqual(exact?.highlightsVerified, false)

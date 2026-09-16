@@ -2,6 +2,17 @@ import Foundation
 
 enum RecordingLifecycleError: Error, Equatable { case shuttingDown }
 
+/// An owned attempt retains both errors for every caller that joined it.
+struct RecordingStartupFailure: Error {
+    let startup: any Error
+    let rollback: any Error
+}
+
+struct RecordingShutdownFailure: Error {
+    let request: any Error
+    let cleanup: any Error
+}
+
 /// Serializes device startup and teardown without blocking a thread. A replacement
 /// start cannot acquire devices until cancelled startup has finished its rollback.
 actor RecordingLifecycle {
@@ -24,7 +35,7 @@ actor RecordingLifecycle {
     }
 
     func start(operation: @escaping @Sendable () async throws -> Void,
-               rollback: @escaping @Sendable () async -> Void) async throws {
+               rollback: @escaping @Sendable () async throws -> Void) async throws {
         guard !shutdownRequested else { throw RecordingLifecycleError.shuttingDown }
         while let stopping = stopTask {
             try await stopping.value
@@ -46,9 +57,18 @@ actor RecordingLifecycle {
                 try await operation()
                 try Task.checkCancellation()
             } catch {
-                await rollback()
+                let startupError = error
+                do {
+                    try await rollback()
+                } catch {
+                    // A failed rollback cannot transfer resource ownership to a
+                    // replacement start. Explicit stop may still retry cleanup.
+                    shutdownRequested = true
+                    failedStart(id)
+                    throw RecordingStartupFailure(startup: startupError, rollback: error)
+                }
                 failedStart(id)
-                throw error
+                throw startupError
             }
         }
         startID = id; startTask = task
@@ -62,28 +82,40 @@ actor RecordingLifecycle {
         guard !shutdownRequested else { throw RecordingLifecycleError.shuttingDown }
     }
 
-    func stop(onRequest: @escaping @Sendable () async -> Void,
+    func stop(onRequest: @escaping @Sendable () async throws -> Void,
               operation: @escaping @Sendable () async throws -> Void) async throws {
         if let stopping = stopTask {
             // Every stop request owns its content/privacy fence even when device
             // teardown is already owned by an earlier (possibly unexpected) stop.
-            await onRequest()
-            return try await stopping.value
+            var requestError: (any Error)?
+            do { try await Task { try await onRequest() }.value }
+            catch { requestError = error }
+            do { try await stopping.value }
+            catch {
+                if let requestError { throw RecordingShutdownFailure(request: requestError, cleanup: error) }
+                throw error
+            }
+            if let requestError { throw requestError }
+            return
         }
         let starting = startTask
         let startingID = startID
         starting?.cancel()
         let id = UUID()
         let task = Task {
-            await onRequest()
+            var requestError: (any Error)?
+            do { try await onRequest() }
+            catch { requestError = error }
             if let starting { _ = try? await starting.value }
             do {
                 try await operation()
-                finishedStop(id, startingID: startingID)
             } catch {
                 finishedStop(id, startingID: startingID)
+                if let requestError { throw RecordingShutdownFailure(request: requestError, cleanup: error) }
                 throw error
             }
+            finishedStop(id, startingID: startingID)
+            if let requestError { throw requestError }
         }
         stopID = id; stopTask = task
         try await task.value

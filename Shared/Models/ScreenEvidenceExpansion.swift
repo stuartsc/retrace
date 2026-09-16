@@ -11,7 +11,7 @@ public struct ScreenEvidenceExpansionCursor: Codable, Equatable, Sendable {
     fileprivate let utf8Offset: Int
 }
 
-public struct ScreenEvidenceExpansionRequest: Sendable {
+public struct ScreenEvidenceExpansionRequest: Codable, Equatable, Sendable {
     public let reference: ScreenEvidenceRef
     public let blockLimit: Int
     public let maximumUTF8Bytes: Int

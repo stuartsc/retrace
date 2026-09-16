@@ -3,6 +3,85 @@ import XCTest
 @testable import App
 
 final class RecordingLifecycleTests: XCTestCase {
+    func testFailedShutdownFenceAndCleanupStillJoinForOwnerAndCancelledDuplicate() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("FailedShutdown-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let absent = root.appendingPathComponent("absent.txt")
+        let receipt = root.appendingPathComponent("joined.txt")
+        let lifecycle = RecordingLifecycle()
+        try await lifecycle.start(operation: {}, rollback: {})
+        let cleanupEntered = expectation(description: "cleanup still entered after fence failure")
+        let duplicateEntered = expectation(description: "duplicate joins owned shutdown")
+        let finish = AsyncStream<Void>.makeStream()
+        defer { finish.continuation.finish() }
+        let owner = Task {
+            try await lifecycle.stop(onRequest: {
+                _ = try Data(contentsOf: absent)
+            }, operation: {
+                cleanupEntered.fulfill()
+                await Task.detached { for await _ in finish.stream { break } }.value
+                try Data("joined".utf8).write(to: receipt)
+                try FileManager.default.removeItem(at: absent)
+            })
+        }
+        await fulfillment(of: [cleanupEntered], timeout: 3)
+        let duplicate = Task {
+            try await lifecycle.stop(onRequest: {
+                duplicateEntered.fulfill()
+                _ = try Data(contentsOf: absent)
+            }, operation: { XCTFail("The duplicate cannot take cleanup ownership") })
+        }
+        await fulfillment(of: [duplicateEntered], timeout: 3)
+        duplicate.cancel()
+        finish.continuation.yield(())
+        finish.continuation.finish()
+        do { try await owner.value; XCTFail("Both errors must propagate") }
+        catch let failure as RecordingShutdownFailure {
+            XCTAssertEqual((failure.request as NSError).domain, NSCocoaErrorDomain)
+            XCTAssertEqual((failure.cleanup as NSError).domain, NSCocoaErrorDomain)
+        } catch { XCTFail("Both errors were not retained: \(error)") }
+        do { try await duplicate.value; XCTFail("A failed request cannot report successful shutdown") }
+        catch let failure as RecordingShutdownFailure {
+            XCTAssertEqual((failure.request as NSError).domain, NSCocoaErrorDomain)
+            XCTAssertTrue(failure.cleanup is RecordingShutdownFailure, "Preserve the joined owner's two failures too")
+        } catch { XCTFail("Duplicate lost request or shared cleanup error: \(error)") }
+        XCTAssertEqual(try String(contentsOf: receipt, encoding: .utf8), "joined")
+    }
+
+    func testFailedRollbackRetainsBothErrorsAndPreventsAnotherOwner() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("FailedStartup-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let retained = root.appendingPathComponent("owned.txt")
+        let absent = root.appendingPathComponent("absent.txt")
+        try Data("owned resource".utf8).write(to: retained)
+        let lifecycle = RecordingLifecycle()
+        do {
+            try await lifecycle.start(operation: {
+                _ = try Data(contentsOf: absent)
+            }, rollback: {
+                try FileManager.default.removeItem(at: absent)
+            })
+            XCTFail("The real filesystem failure must reach the owner")
+        } catch let failure as RecordingStartupFailure {
+            XCTAssertEqual((failure.startup as NSError).domain, NSCocoaErrorDomain)
+            XCTAssertEqual((failure.rollback as NSError).domain, NSCocoaErrorDomain)
+        } catch {
+            XCTFail("Both startup and cleanup failures must survive: \(error)")
+        }
+        do {
+            try await lifecycle.start(operation: {
+                XCTFail("Incomplete cleanup cannot admit a replacement owner")
+            }, rollback: {})
+            XCTFail("A failed rollback must keep startup closed")
+        } catch RecordingLifecycleError.shuttingDown {}
+        try await lifecycle.stop(onRequest: {}, operation: {
+            try FileManager.default.removeItem(at: retained)
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retained.path))
+    }
+
     func testOwnerCancellationWithoutStopJoinsLateDeviceAndRollback() async throws {
         let lifecycle = RecordingLifecycle()
         let device = RecordingTestDevice()

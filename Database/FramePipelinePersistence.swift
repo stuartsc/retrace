@@ -147,7 +147,7 @@ extension DatabaseManager {
 /// Synchronous helpers called only while DatabaseManager owns its connection.
 /// No suspension is permitted inside a transaction.
 enum PipelineSQL {
-    enum Value { case integer(Int64), real(Double), text(String) }
+    enum Value { case integer(Int64), real(Double), text(String), blob(Data) }
 
     static func failure(_ message: String) -> DatabaseError {
         .queryFailed(query: "frame pipeline transaction", underlying: message)
@@ -201,6 +201,16 @@ enum PipelineSQL {
             case .integer(let number): result = sqlite3_bind_int64(pointer, index, number)
             case .real(let number): result = sqlite3_bind_double(pointer, index, number)
             case .text(let text): result = sqlite3_bind_text(pointer, index, text, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            case .blob(let data):
+                guard data.count <= Int(Int32.max) else { throw failure("Bound blob exceeds SQLite size limit") }
+                if data.isEmpty {
+                    result = sqlite3_bind_zeroblob(pointer, index, 0)
+                } else {
+                    result = data.withUnsafeBytes {
+                        sqlite3_bind_blob(pointer, index, $0.baseAddress, Int32(data.count),
+                                          unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                    }
+                }
             }
             guard result == SQLITE_OK else { throw failure("Could not bind frame pipeline query") }
         }

@@ -19,13 +19,51 @@ struct CaptureFrameStreamSession: Sendable {
     let task: Task<Void, Never>
 }
 
+/// The native source boundary used by the manager's actual lifecycle. Tests own
+/// the source stream without starting a WindowServer capture or a screen timer.
+protocol CaptureFrameSource: Actor {
+    func startCapture(config: CaptureConfig,
+                      frameContinuation: AsyncStream<CapturedFrame>.Continuation,
+                      displayID: CGDirectDisplayID?) async throws
+    func stopCapture() async throws
+    func updateConfig(_ config: CaptureConfig) async throws
+    func captureImmediateAndResetTimer() async
+}
+
+extension CGWindowListCapture: CaptureFrameSource {}
+
+/// Only native permission, display lookup and observer startup are replaceable;
+/// configuration, task ownership and forwarding remain in CaptureManager.
+struct CaptureLifecycleEnvironment: Sendable {
+    let hasPermission: @Sendable () async -> Bool
+    let activeDisplayID: @Sendable () async -> UInt32
+    let startDisplayMonitoring: @Sendable (UInt32) async -> Void
+    let stopDisplayMonitoring: @Sendable () async -> Void
+
+    static func live(display: DisplayMonitor, monitor: DisplaySwitchMonitor) -> Self {
+        Self(hasPermission: { await PermissionChecker.hasScreenRecordingPermission() },
+             activeDisplayID: { await display.getActiveDisplayID() },
+             startDisplayMonitoring: { await monitor.startMonitoring(initialDisplayID: $0) },
+             stopDisplayMonitoring: { await monitor.stopMonitoring() })
+    }
+}
+
+/// Preserve the initiating failure and every failed cleanup acknowledgement.
+/// A caller must not mistake a failed durable revoke for successful cancellation.
+struct CaptureLifecycleCleanupFailure: Error {
+    let operationError: any Error
+    let cleanupErrors: [any Error]
+}
+
 /// Main coordinator for screen capture
 /// Implements CaptureProtocol from Shared/Protocols
 public actor CaptureManager: CaptureProtocol {
 
     // MARK: - Properties
 
-    private let cgWindowListCapture: CGWindowListCapture
+    private let cgWindowListCapture: any CaptureFrameSource
+    private let lifecycleEnvironment: CaptureLifecycleEnvironment
+    private let configurationAdmission: (any CaptureConfigurationAdmissionProtocol)?
     private let displayMonitor: DisplayMonitor
     private let displaySwitchMonitor: DisplaySwitchMonitor
     private let deduplicator: FrameDeduplicator
@@ -41,6 +79,16 @@ public actor CaptureManager: CaptureProtocol {
     private var _frameStream: AsyncStream<CapturedFrame>?
     private var frameProcessingSession: CaptureFrameStreamSession?
     private var lifecycleOperation: (id: UUID, task: Task<Void, Error>)?
+    private var configurationAdmissionClosed = false
+    #if DEBUG
+    private var lifecycleEnqueuedCheckpoint: (@Sendable () -> Void)?
+
+    /// Observes actual queue entry, allowing tests to order concurrent public calls
+    /// without timing sleeps or invoking native device APIs.
+    func setLifecycleEnqueuedCheckpoint(_ checkpoint: (@Sendable () -> Void)?) {
+        lifecycleEnqueuedCheckpoint = checkpoint
+    }
+    #endif
 
     // Statistics
     private var stats = CaptureStatistics(
@@ -72,20 +120,32 @@ public actor CaptureManager: CaptureProtocol {
 
     // MARK: - Initialization
 
-    public init(config: CaptureConfig = .default) {
+    public init(config: CaptureConfig = .default,
+                configurationAdmission: (any CaptureConfigurationAdmissionProtocol)? = nil) {
+        let display = DisplayMonitor()
+        let monitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
         self.currentConfig = config
         self.cgWindowListCapture = CGWindowListCapture()
-        self.displayMonitor = DisplayMonitor()
-        self.displaySwitchMonitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
+        self.displayMonitor = display
+        self.displaySwitchMonitor = monitor
+        self.lifecycleEnvironment = .live(display: display, monitor: monitor)
+        self.configurationAdmission = configurationAdmission
         self.deduplicator = FrameDeduplicator()
         self.appInfoProvider = AppInfoProvider()
     }
 
-    init(config: CaptureConfig = .default, metadataProvider: any FrontmostMetadataProviding) {
+    init(config: CaptureConfig = .default, metadataProvider: any FrontmostMetadataProviding,
+         configurationAdmission: (any CaptureConfigurationAdmissionProtocol)? = nil,
+         source: any CaptureFrameSource = CGWindowListCapture(),
+         lifecycleEnvironment: CaptureLifecycleEnvironment? = nil) {
+        let display = DisplayMonitor()
+        let monitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
         self.currentConfig = config
-        self.cgWindowListCapture = CGWindowListCapture()
-        self.displayMonitor = DisplayMonitor()
-        self.displaySwitchMonitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
+        self.cgWindowListCapture = source
+        self.displayMonitor = display
+        self.displaySwitchMonitor = monitor
+        self.lifecycleEnvironment = lifecycleEnvironment ?? .live(display: display, monitor: monitor)
+        self.configurationAdmission = configurationAdmission
         self.deduplicator = FrameDeduplicator()
         self.appInfoProvider = metadataProvider
     }
@@ -93,7 +153,7 @@ public actor CaptureManager: CaptureProtocol {
     // MARK: - CaptureProtocol - Lifecycle
 
     public func hasPermission() async -> Bool {
-        await PermissionChecker.hasScreenRecordingPermission()
+        await lifecycleEnvironment.hasPermission()
     }
 
     public func requestPermission() async -> Bool {
@@ -101,30 +161,150 @@ public actor CaptureManager: CaptureProtocol {
     }
 
     public func startCapture(config: CaptureConfig) async throws {
-        try await runLifecycleOperation { try await self.startCaptureSession(config: config) }
+        try await runLifecycleOperation {
+            try await self.applyConfiguration(config, operation: .start)
+        }
+    }
+
+    /// Establish historical-evidence authority after the owning database opens.
+    /// This entry never starts native capture hardware.
+    public func initializeConfigurationAdmission() async throws {
+        try await runLifecycleOperation {
+            try await self.applyCurrentConfiguration(operation: .initialize)
+        }
+    }
+
+    /// End the owning application's authority independently of recording pause.
+    public func shutdownConfigurationAdmission() async throws {
+        try await runLifecycleOperation(cancelWithCaller: false) {
+            try await self.endConfigurationAdmission()
+        }
+    }
+
+    public func startUsingCurrentConfiguration() async throws {
+        try await runLifecycleOperation {
+            try await self.applyCurrentConfiguration(operation: .start)
+        }
     }
 
     /// Actor isolation alone does not serialize operations across permission/source awaits.
-    func runLifecycleOperation(_ operation: @escaping @Sendable () async throws -> Void) async throws {
+    func runLifecycleOperation(cancelWithCaller: Bool = true,
+                               _ operation: @escaping @Sendable () async throws -> Void) async throws {
         let previous = lifecycleOperation?.task
         let id = UUID()
         let task = Task {
             // A failed earlier operation must not prevent a later stop or retry.
             _ = try? await previous?.value
+            // Cancellation before admission owns no policy transition or device.
+            if cancelWithCaller { try Task.checkCancellation() }
             try await operation()
         }
         lifecycleOperation = (id, task)
+        #if DEBUG
+        lifecycleEnqueuedCheckpoint?()
+        #endif
         defer {
             if lifecycleOperation?.id == id { lifecycleOperation = nil }
         }
-        try await task.value
+        if cancelWithCaller {
+            // Unstructured tasks do not otherwise receive caller cancellation.
+            // The operation owns post-await checks and its rollback; checking
+            // again here could report failure after a successful activation.
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        } else {
+            try await task.value
+        }
+    }
+
+    private enum ConfigurationOperation { case initialize, start, update }
+
+    private func applyCurrentConfiguration(operation: ConfigurationOperation) async throws {
+        // Select only after this caller owns the lifecycle slot. A snapshot made
+        // before queue admission could overwrite an earlier settings operation.
+        try await applyConfiguration(currentConfig, operation: operation)
+    }
+
+    private func applyConfiguration(_ config: CaptureConfig, operation: ConfigurationOperation) async throws {
+        if operation != .initialize, configurationAdmission != nil, configurationAdmissionClosed {
+            throw ScreenEvidenceAdmissionError.inactive
+        }
+        // Preserve the existing duplicate-start no-op: it neither applies the
+        // supplied configuration nor advertises a policy it did not apply.
+        if operation == .start, _isCapturing { return }
+
+        var transition: ScreenEvidencePolicyTransition?
+        do {
+            if let admission = configurationAdmission {
+                if operation == .initialize {
+                    transition = try await admission.beginSession(config: config)
+                } else {
+                    transition = try await admission.prepareConfiguration(config)
+                }
+            }
+            try Task.checkCancellation()
+
+            switch operation {
+            case .initialize:
+                // The constructor's dormant configuration becomes owned only
+                // after the writer has durably invalidated its previous epoch.
+                currentConfig = config
+            case .start:
+                // Permission and every native source await are inside the
+                // inactive interval, including a denied or late failed start.
+                try await startCaptureSession(config: config)
+            case .update:
+                currentConfig = config
+                if _isCapturing { try await cgWindowListCapture.updateConfig(config) }
+            }
+
+            try Task.checkCancellation()
+            if let transition, let admission = configurationAdmission {
+                try await admission.activate(transition)
+            }
+            // The activation acknowledgement may arrive after its real commit
+            // and after cancellation. The catch below still owns that exact token.
+            try Task.checkCancellation()
+            if operation == .initialize { configurationAdmissionClosed = false }
+        } catch {
+            let operationError = error
+            var cleanupErrors: [any Error] = []
+            if let transition, let admission = configurationAdmission {
+                do {
+                    // Cleanup has an uncancelled task of its own, but this slot
+                    // joins it before a later configuration can become active.
+                    try await Task { try await admission.revoke(transition) }.value
+                } catch {
+                    // The store closes its local capability before a revoke
+                    // write; propagate a failed durable cleanup rather than success.
+                    cleanupErrors.append(error)
+                }
+            }
+            if operation == .start {
+                do { try await Task { try await self.stopCaptureSession() }.value }
+                catch { cleanupErrors.append(error) }
+            }
+            if !cleanupErrors.isEmpty {
+                throw CaptureLifecycleCleanupFailure(operationError: operationError, cleanupErrors: cleanupErrors)
+            }
+            throw operationError
+        }
+    }
+
+    private func endConfigurationAdmission() async throws {
+        configurationAdmissionClosed = true
+        try await configurationAdmission?.endSession()
     }
 
     private func startCaptureSession(config: CaptureConfig) async throws {
         guard !_isCapturing else { return }
 
-        // Check permission first
-        guard await hasPermission() else {
+        let permitted = await hasPermission()
+        try Task.checkCancellation()
+        guard permitted else {
             throw CaptureError.permissionDenied
         }
 
@@ -135,42 +315,35 @@ public actor CaptureManager: CaptureProtocol {
         }
 
         // Get the active display (the one containing the focused window)
-        let activeDisplayID = await displayMonitor.getActiveDisplayID()
+        let activeDisplayID = await lifecycleEnvironment.activeDisplayID()
+        try Task.checkCancellation()
         currentCaptureDisplayID = activeDisplayID
 
-        do {
-            // Start CGWindowList capture on the active display.
-            try await cgWindowListCapture.startCapture(
-                config: config,
-                frameContinuation: session.input,
-                displayID: activeDisplayID
-            )
+        // The configuration bracket owns rollback, including native acquisition
+        // that completes late or throws after acquiring its input stream.
+        try await cgWindowListCapture.startCapture(
+            config: config,
+            frameContinuation: session.input,
+            displayID: activeDisplayID
+        )
+        try Task.checkCancellation()
 
-            _isCapturing = true
-            stats = CaptureStatistics(
-                totalFramesCaptured: 0,
-                framesDeduped: 0,
-                averageFrameSizeBytes: 0,
-                captureStartTime: Date(),
-                lastFrameTime: nil
-            )
+        _isCapturing = true
+        stats = CaptureStatistics(
+            totalFramesCaptured: 0,
+            framesDeduped: 0,
+            averageFrameSizeBytes: 0,
+            captureStartTime: Date(),
+            lastFrameTime: nil
+        )
 
-            let initialDisplayID = await displayMonitor.getActiveDisplayID()
-            await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
-        } catch {
-            // A failed source start must not leave a raw stream and its worker alive.
-            _isCapturing = false
-            session.task.cancel()
-            session.input.finish()
-            try? await cgWindowListCapture.stopCapture()
-            await stopFrameProcessing()
-            currentCaptureDisplayID = nil
-            throw error
-        }
+        let initialDisplayID = await lifecycleEnvironment.activeDisplayID()
+        try Task.checkCancellation()
+        await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
     }
 
     public func stopCapture() async throws {
-        try await runLifecycleOperation { try await self.stopCaptureSession() }
+        try await runLifecycleOperation(cancelWithCaller: false) { try await self.stopCaptureSession() }
     }
 
     private func stopCaptureSession() async throws {
@@ -186,7 +359,7 @@ public actor CaptureManager: CaptureProtocol {
         deferredDisplaySyncTask?.cancel()
         deferredDisplaySyncTask = nil
 
-        await displaySwitchMonitor.stopMonitoring()
+        await lifecycleEnvironment.stopDisplayMonitoring()
         var sourceError: Error?
         do {
             try await cgWindowListCapture.stopCapture()
@@ -224,10 +397,8 @@ public actor CaptureManager: CaptureProtocol {
     // MARK: - CaptureProtocol - Configuration
 
     public func updateConfig(_ config: CaptureConfig) async throws {
-        self.currentConfig = config
-
-        if _isCapturing {
-            try await cgWindowListCapture.updateConfig(config)
+        try await runLifecycleOperation {
+            try await self.applyConfiguration(config, operation: .update)
         }
     }
 
@@ -271,7 +442,7 @@ public actor CaptureManager: CaptureProtocol {
             await self?.handleWindowChangeCoalesced()
         }
 
-        await displaySwitchMonitor.startMonitoring(initialDisplayID: initialDisplayID)
+        await lifecycleEnvironment.startDisplayMonitoring(initialDisplayID)
     }
 
     /// Coalesce duplicate window-change events while a capture refresh is in flight.

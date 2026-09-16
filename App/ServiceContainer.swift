@@ -45,6 +45,28 @@ public actor ServiceContainer {
     private let searchConfig: SearchConfig
 
     private var isInitialized = false
+    private let initializationLifecycle = RecordingLifecycle()
+
+    #if DEBUG
+    // Owned test initialization opens only its private SQLite writer. The hook
+    // replaces unrelated native/audio/storage setup, not policy ownership.
+    private var initializationRequestForTesting: (@Sendable () -> Void)?
+    private var initializationRemainderForTesting: (@Sendable () async throws -> Void)?
+    private var shutdownRequestForTesting: (@Sendable () -> Void)?
+    private var beforeDatabaseCloseForTesting: (@Sendable () async throws -> Void)?
+
+    func setInitializationBoundaryForTesting(request: (@Sendable () -> Void)? = nil,
+        shutdownRequest: (@Sendable () -> Void)? = nil,
+        remainder: @escaping @Sendable () async throws -> Void) {
+        initializationRequestForTesting = request
+        shutdownRequestForTesting = shutdownRequest
+        initializationRemainderForTesting = remainder
+    }
+
+    func setBeforeDatabaseCloseForTesting(_ receipt: @escaping @Sendable () async throws -> Void) {
+        beforeDatabaseCloseForTesting = receipt
+    }
+    #endif
 
     // MARK: - Initialization
 
@@ -71,7 +93,8 @@ public actor ServiceContainer {
         // Use the correct storage root (respects custom path setting)
         let storageRootURL = URL(fileURLWithPath: NSString(string: storageConfig.storageRootPath).expandingTildeInPath, isDirectory: true)
         self.storage = StorageManager(storageRoot: storageRootURL)
-        self.capture = CaptureManager(config: captureConfig)
+        self.capture = CaptureManager(config: captureConfig,
+            configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database))
         self.audioCapture = AudioCaptureManager(config: audioCaptureConfig)
         self.processing = ProcessingManager(config: processingConfig)
 
@@ -145,11 +168,14 @@ public actor ServiceContainer {
 
     /// Convenience initializer for in-memory/testing
     public init(inMemory: Bool) {
-        // Use shared in-memory database so DatabaseManager and FTSManager use the same DB
+        // This unique URI keeps tests off disk. Tests needing the same writer
+        // inject its connection; bundled SQLCipher may omit shared-cache support.
         let sharedMemoryPath = "file:memdb_test_\(UUID().uuidString)?mode=memory&cache=shared"
+        let testStorageRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retrace-services-\(UUID().uuidString)", isDirectory: true)
         self.databasePath = sharedMemoryPath
-        self.storageConfig = .default
-        self.captureConfig = .default
+        self.storageConfig = StorageConfig(storageRootPath: testStorageRoot.path)
+        self.captureConfig = CaptureConfig()
         self.audioCaptureConfig = .default
         self.processingConfig = .default
         self.audioProcessingConfig = .default
@@ -157,18 +183,16 @@ public actor ServiceContainer {
 
         self.database = DatabaseManager(databasePath: sharedMemoryPath)
         self.ftsEngine = FTSManager(databasePath: sharedMemoryPath)
-        // Use the correct storage root (respects custom path setting)
-        let storageRootURL = URL(fileURLWithPath: AppPaths.expandedStorageRoot, isDirectory: true)
-        self.storage = StorageManager(storageRoot: storageRootURL)
-        self.capture = CaptureManager()
+        self.storage = StorageManager(storageRoot: testStorageRoot)
+        self.capture = CaptureManager(config: captureConfig,
+            configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database))
         self.audioCapture = AudioCaptureManager()
         self.processing = ProcessingManager()
 
         // Use mock transcription service in test mode to avoid loading heavy Whisper model
         let transcriptionService: any TranscriptionProtocol = MockTranscriptionService()
         self.transcriptionService = transcriptionService
-        let storageRoot = URL(fileURLWithPath: "/tmp/retrace_test", isDirectory: true)
-        let audioWriter = AudioSegmentWriter(storageRoot: storageRoot)
+        let audioWriter = AudioSegmentWriter(storageRoot: testStorageRoot)
         self.audioProcessing = AudioProcessingManager(
             transcriptionService: transcriptionService,
             transcriptionQueries: nil,  // Set during initialization
@@ -189,7 +213,7 @@ public actor ServiceContainer {
         )
 
         // Model and onboarding managers
-        self.modelManager = ModelManager()
+        self.modelManager = ModelManager(modelsDirectory: testStorageRoot.appendingPathComponent("models"))
         self.onboardingManager = OnboardingManager()
 
         // Retention manager for data cleanup
@@ -206,6 +230,22 @@ public actor ServiceContainer {
 
     /// Initialize all services in the correct order
     public func initialize() async throws {
+        #if DEBUG
+        initializationRequestForTesting?()
+        #endif
+        // Every caller crosses the terminal fence, including an already-open
+        // container. Duplicate requests join the same owning startup task.
+        try await initializationLifecycle.start(operation: { [self] in
+            try await initializeServices()
+        }, rollback: { [self] in
+            // A cancelled startup still owns cleanup. Its rollback must not
+            // inherit cancellation at a late native/database boundary.
+            try await Task { try await self.shutdownServices() }.value
+        })
+    }
+
+    private func initializeServices() async throws {
+        try Task.checkCancellation()
         guard !isInitialized else {
             Log.warning("ServiceContainer already initialized", category: .app)
             return
@@ -215,14 +255,31 @@ public actor ServiceContainer {
 
         // 1. Initialize database first (creates schema)
         try await database.initialize()
+        try Task.checkCancellation()
         Log.info("✓ Database initialized", category: .app)
+
+        // Historical evidence has an owning policy even while recording is
+        // paused. Install it before any remaining service can claim derived work.
+        try await capture.initializeConfigurationAdmission()
+        try Task.checkCancellation()
+
+        #if DEBUG
+        if let initializationRemainderForTesting {
+            try await initializationRemainderForTesting()
+            try Task.checkCancellation()
+            isInitialized = true
+            return
+        }
+        #endif
 
         // 2. Initialize FTS engine (shares same database)
         try await ftsEngine.initialize()
+        try Task.checkCancellation()
         Log.info("✓ FTS engine initialized", category: .app)
 
         // 3. Initialize storage (creates directories, loads encryption key)
         try await storage.initialize(config: storageConfig)
+        try Task.checkCancellation()
         Log.info("✓ Storage initialized", category: .app)
 
         // DIAGNOSTIC: Log critical paths for troubleshooting database/storage mismatches
@@ -252,6 +309,7 @@ public actor ServiceContainer {
 
         // 4. Initialize processing (sets config)
         try await processing.initialize(config: processingConfig)
+        try Task.checkCancellation()
         Log.info("✓ Processing initialized", category: .app)
 
         // 5. Initialize audio processing (loads whisper.cpp model and connects to database)
@@ -285,9 +343,11 @@ public actor ServiceContainer {
         } catch {
             Log.warning("Audio processing initialization failed (will record without transcription): \(error)", category: .app)
         }
+        try Task.checkCancellation()
 
         // 6. Initialize search manager
         try await search.initialize(config: searchConfig)
+        try Task.checkCancellation()
         Log.info("✓ Search initialized", category: .app)
 
         // 7. Initialize processing queue (workers started after full initialization)
@@ -332,10 +392,12 @@ public actor ServiceContainer {
         // Initialize the adapter
         try await adapter.initialize()
         self.dataAdapter = adapter
+        try Task.checkCancellation()
         Log.info("✓ DataAdapter initialized", category: .app)
 
         // 10. Start retention manager (runs periodic cleanup based on user settings)
         await retentionManager.start()
+        try Task.checkCancellation()
         Log.info("✓ Retention manager started", category: .app)
 
         // Capture is initialized when startCapture() is called
@@ -578,24 +640,37 @@ public actor ServiceContainer {
 
     /// Shutdown all services gracefully
     public func shutdown() async throws {
-        guard isInitialized else { return }
+        await initializationLifecycle.beginShutdown()
+        #if DEBUG
+        shutdownRequestForTesting?()
+        #endif
+        try await initializationLifecycle.stop(onRequest: { [capture] in
+            // Establish the policy fence before joining a late initialization.
+            // Teardown below retries this close and finishes other resources even
+            // if this first attempt fails; both errors remain in the task result.
+            try await capture.shutdownConfigurationAdmission()
+        }, operation: { [self] in
+            try await shutdownServices()
+        })
+    }
 
+    private func shutdownServices() async throws {
+        isInitialized = false
+        var failures: [any Error] = []
         Log.info("Shutting down all services...", category: .app)
 
-        // Stop capture if running
-        if await capture.isCapturing {
-            try await capture.stopCapture()
-            Log.info("✓ Capture stopped", category: .app)
-        }
+        // Partial startup and paused recording still have an owning policy.
+        do { try await capture.shutdownConfigurationAdmission() }
+        catch { failures.append(error) }
 
-        // Stop audio capture if running
-        if await audioCapture.isCapturing {
-            try await audioCapture.stopCapture()
-            Log.info("✓ Audio capture stopped", category: .app)
-        }
+        do { try await capture.stopCapture() }
+        catch { failures.append(error) }
+        do { try await audioCapture.stopCapture() }
+        catch { failures.append(error) }
 
         // Stop processing queue workers
         await processingQueue?.stopWorkers()
+        processingQueue = nil
         Log.info("✓ Processing queue workers stopped", category: .app)
 
         // Wait for processing queue to drain (legacy OCR queue)
@@ -609,18 +684,26 @@ public actor ServiceContainer {
         await retentionManager.stop()
         Log.info("✓ Retention manager stopped", category: .app)
 
-        // Shutdown DataAdapter (disconnects all sources)
+        // Release the container's adapter after shutting down its state.
         await dataAdapter?.shutdown()
+        dataAdapter = nil
         Log.info("✓ DataAdapter shutdown", category: .app)
 
         // Close database connections
-        try await ftsEngine.close()
-        Log.info("✓ FTS engine closed", category: .app)
+        do { try await ftsEngine.close() }
+        catch { failures.append(error) }
+        #if DEBUG
+        if let receipt = beforeDatabaseCloseForTesting {
+            beforeDatabaseCloseForTesting = nil
+            do { try await receipt() }
+            catch { failures.append(error) }
+        }
+        #endif
+        do { try await database.close() }
+        catch { failures.append(error) }
 
-        try await database.close()
-        Log.info("✓ Database closed", category: .app)
-
-        isInitialized = false
+        if failures.count == 1 { throw failures[0] }
+        if !failures.isEmpty { throw ServiceCleanupFailure(failures: failures) }
         Log.info("All services shutdown successfully", category: .app)
     }
 
@@ -766,6 +849,10 @@ extension SearchConfig {
 
 
 // MARK: - Errors
+
+private struct ServiceCleanupFailure: Error {
+    let failures: [any Error]
+}
 
 enum ServiceError: Error {
     case databaseNotReady

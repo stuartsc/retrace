@@ -23,6 +23,7 @@ Database/
 │   ├── V20_OCRBackfillState.swift
 │   ├── V21_ProgressiveRecall.swift
 │   ├── V22_ScreenEvidenceFeed.swift
+│   ├── V23_ScreenEvidenceAdmission.swift
 │   ├── V1_InitialSchema.swift
 │   ├── V2_UnfinalisedVideoTracking.swift
 │   ├── V3_TagSystem.swift
@@ -71,6 +72,7 @@ Database/
 │   ├── ScreenEvidencePersistenceTests.swift
 │   ├── ScreenEvidenceFeedPublicationTests.swift
 │   ├── ScreenEvidenceFeedConsumerTests.swift
+│   ├── ScreenEvidenceAdmissionTests.swift
 │   ├── SearchRevisionCompatibilityTests.swift
 │   └── TestLogger.swift
 ├── DatabaseConfig.swift
@@ -87,6 +89,7 @@ Database/
 ├── ScreenEvidencePersistence.swift
 ├── ScreenEvidenceFeedPublication.swift
 ├── ScreenEvidenceFeedConsumerPersistence.swift
+├── ScreenEvidenceAdmissionPersistence.swift
 └── Schema.swift
 ```
 
@@ -113,8 +116,17 @@ Database/
 - V22 publishes native materialized observation revisions/tombstones and media/redaction state in existing writer transactions through ordinary-table triggers, including retained V21 writer paths.
 - Stable feed/store identity and a retained floor fence durable leased cursors; bootstrap scans only materialized native keys through a fixed maximum, then replays intervening events.
 - The database chooses and applies each bounded page, atomically recording event identities, separate lexical/vector work and checkpoint progress. Clients cannot acknowledge arbitrary sequences.
-- Work contains only references/state and is blocked, invalidated or deleted; never ready. No OCR copies, worker loop, model, permission grant or index-readiness acceptance is introduced. Future acceptance requires a durable capture-policy/source fence; current configuration reads are not that fence.
+- Work contains only references/state and is blocked, invalidated or deleted; never ready. V23 adds a durable policy/source admission fence and quarantined result receipts, while index publication and readiness remain deferred.
 - Rebootstrap changes the lease generation so old work is inaccessible immediately; compaction and expiry cleanup remain bounded. A compacted gap requires explicit rebootstrap.
+
+### 5. `ScreenEvidenceAdmissionStoreProtocol` (Phase 2D gate 2)
+- V23 adds an initially inactive feed/store-bound policy singleton and bounded derivation receipts without scanning retained evidence. Admission additionally requires the current DatabaseManager incarnation's local capability; persisted active state alone never authorizes a new writer.
+- Begin/prepare create a fresh policy epoch. Activation requires the exact prepared token. Matching revoke/end closes local authority before SQL and stays closed on COMMIT failure; stale cleanup cannot close a newer owner or epoch. Admission requires a fully initialized writer and is fenced throughout asynchronous close/checkpoint retries. Duplicate close is refused before acquiring the fence; the owning close clears capability on every exit. Repeated end/revoke after close is harmless.
+- Claim/stage/read use synchronous writer transactions to recheck exact native ref/preferred revision, V22 source sequence, leased consumer/channel work, retained and current metadata permissions, and a constant-size metadata epoch. Segment app/title/URL or frame-segment changes fence A→B→A; routine captures and initial dimension establishment do not increment that epoch. Native retained payload/preference guards preserve append-only extraction and tombstone deletion.
+- Claims bind a writer-computed SHA256 manifest of the exact bounded Unicode expansion, retained payloads, block scope, ranges and provenance. They deliver no model input. One live attempt is allowed per consumer/observation/channel, with both wall and same-incarnation monotonic execution deadlines capped at 30 seconds. Platform clocks are sampled after the writer lock and again after canonical validation, before publication and after the bounded write; reads/retries recheck current consumer/retention expiry before returning. This is a logical admission check, not a physical fsync deadline guarantee.
+- At most 256 attempt/receipt rows, 256 KiB per opaque artifact and 16 MiB total artifact bytes are retained. Policy/claim/receipt JSON is capped at 64 KiB. Completed identical retries may outlive execution deadlines, but receipt retention is at most 24 hours and every read still checks policy, source and consumer fences. Explicit cleanup removes at most 100 stale rows; native deletion erases associated artifact bytes in the same transaction.
+- `ScreenEvidenceAdmissionTests.swift` exercises private SQLCipher files, real retained Vision input, policy/source/metadata ABA, forged handles, Unicode bounds, cancellation, deadline and COMMIT failures, capacity, defensive reopen, actor close/reinitialize and independent WAL checkpoint release. The initial 31 cases passed; two independent review regressions then reproduced stale clocks across real writer contention/canonical reads and admission during an actual checkpoint retry. After both fixes, all 33 admission tests passed in the integrated 82-test selection on 2026-09-17; full-suite validation remains separate. The DEBUG-only private-memory checkpoint switch exercises retry reentrancy without on-disk encryption preferences; it does not measure disk checkpoint timing.
+- Quarantined bytes remain `stagedUnpublished`. They do not establish semantic correctness, resource/model scheduling permission or production index readiness; V22 channel states remain unready. Supported older native data writers are fenced by persistent ordinary-table triggers, but concurrent older processes cannot supply capture-policy ownership.
 
 ## Progressive recall persistence
 

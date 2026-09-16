@@ -2,7 +2,7 @@
 
 This document describes what Retrace records and how external agents or scripts can read the captured data.
 
-Schema and release status are separate. On **2026-09-15**, **0.7.6 (2609.15.1)** was installed and launched for an unreleased local trial; its native database was verified at **V21**. The prior app is retained for rollback with that library. The V22 feed is implemented and tested, but has not been installed. See the [validation ledger](progressive-recall-validation.md) for installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
+Schema and release status are separate. On **2026-09-15**, **0.7.6 (2609.15.1)** was installed and launched for an unreleased local trial; its native database was verified at **V21**. The prior app is retained for rollback with that library. The V22 feed and V23 native admission are development changes and have not been installed. See the [validation ledger](progressive-recall-validation.md) for verification, installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
 
 ## What the app records
 
@@ -118,7 +118,15 @@ The separate screen feed covers already-materialized native observations. It doe
 
 Use `ScreenEvidenceFeedStoreProtocol` through the local-only service for maintenance. Begin/resume a leased consumer, then advance bounded pages chosen by the canonical writer. Bootstrap records a boundary and maximum materialized frame ID, scans current state in short keyset pages, then replays intervening events. The transaction records applied-event identities and separate lexical/vector work before advancing the checkpoint; there is no arbitrary acknowledgement API. Expired or gapped consumers require a new bootstrap generation. Compaction retains the history needed by unexpired cursors. The initial contract allows 32 registered consumer IDs; reuse an existing ID after expiry. Page limits are 1–200 records, compaction limits 1–1,000 events, and leases last at most seven days.
 
-Work contains only identity/state and is blocked, invalidated or deleted; it is never ready. A consumed event or retained extraction is not a ready lexical/vector index, a disclosure grant or a verified media file. No automatic consumer, model or result-acceptance API is enabled. Future result acceptance needs a durable policy/source fence in the same writer transaction; a prior configuration read is insufficient. Continue using exact resolution for currently permitted evidence access. Do not mutate feed, cursor, work or applied-event tables through direct SQL.
+Work contains only identity/state and is blocked, invalidated or deleted; it is never ready. A consumed event or retained extraction is not a ready lexical/vector index, a disclosure grant or a verified media file. No automatic consumer or model is enabled. V23 adds a separate unpublished-artifact boundary below; typed index publication remains future work. Continue using exact resolution for currently permitted evidence access. Do not mutate feed, cursor, work or applied-event tables through direct SQL.
+
+### V23 native admission (implemented, uninstalled)
+
+`ScreenEvidenceAdmissionStoreProtocol` requires a fresh live owning session and an active policy epoch. A persisted active row is insufficient to recreate authority. Capture owns the serialized configuration boundary, with App installing its policy bridge after database initialization. Policy changes close admission before configuration application; old claims cannot revive when settings return to earlier values. Ordinary recording pause retains historical policy authority; service shutdown ends it.
+
+The local-only `ProgressiveRecallService` endpoints claim exact native input pages and stage bounded opaque bytes. `screen_evidence_admission_state` holds constant-size policy and metadata fences; `screen_evidence_derivation` holds authoritative claims and their optional artifact/checksum/receipt together. Source/consumer/policy checks are repeated transactionally. A staged receipt is neither semantic validation nor index readiness. Imported derived work and agent access are denied. Do not read these BLOBs as an alternative to the checked service API or mutate admission/source tables directly.
+
+Limits are 256 attempt/receipt rows, 256 KiB per artifact, 16 MiB aggregate artifact bytes and 100 rows per cleanup call. Execution lasts at most 30 seconds under wall and monotonic checks; retained completed results may outlive execution for at most 24 hours only while their consumer and all current fences hold. Source deletion also deletes its staged bytes. V23 guards retained native payloads and tracks app/title/URL/relinking changes, including changes back to earlier values. Concurrent older binaries owning configuration and arbitrary database-file replacement need a separate compatibility design; old source-writer shapes alone do not grant policy authority.
 
 ---
 

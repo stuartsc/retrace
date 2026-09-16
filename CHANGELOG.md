@@ -1,10 +1,17 @@
 # Updates and changelog
 
-Last updated: 2026-09-16.
+Last updated: 2026-09-17.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-09-17 — Native admission for bounded, unpublished evidence artifacts
+
+- Native derived work now has an owning policy session, an exact input-page fingerprint and a separate, short execution lease. Configuration changes deactivate the old policy before applying the new settings. Returning to earlier settings cannot revive earlier claims or receipts.
+- The additive V23 migration protects retained source identity and stores bounded opaque artifacts with their checksums and receipts in one transaction. Every claim, result and read checks current source, privacy and consumer state. Staging leaves both search channels unready; no model worker or semantic search is enabled by this change.
+- Service startup joins concurrent callers; shutdown joins partial startup and cleans up even when recording has not started. Failed rollback and shutdown retain their errors. Local-only actions record content-free metrics.
+- The complete Swift suite passes **1,067 tests with five intentional skips and zero failures**, including all 63 added regressions. Optimized compilation passes after repairing an incomplete copied dependency in the private build cache; source and dependency pins stayed unchanged. Independent source review is clear. Validation is tracked in [the admission ledger](docs/progressive-recall-validation.md#native-writer-admission-and-unpublished-artifacts--2026-09-17). This change is uninstalled; **2609.15.1** remains the last recorded local trial.
 
 ### 2026-09-16 — Complete search questions and an authored retrieval benchmark
 

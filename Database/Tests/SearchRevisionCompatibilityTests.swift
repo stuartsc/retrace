@@ -27,7 +27,7 @@ final class SearchRevisionCompatibilityTests: XCTestCase {
 
         let reader = try defensiveReader()
         defer { sqlite3_close_v2(reader) }
-        XCTAssertEqual(try scalar(reader, "SELECT MAX(version) FROM schema_migrations"), 22)
+        XCTAssertEqual(try scalar(reader, "SELECT MAX(version) FROM schema_migrations"), 23)
         XCTAssertEqual(try scalar(reader, "SELECT COUNT(*) FROM searchRanking WHERE searchRanking MATCH '42000'"), 1)
         XCTAssertEqual(try scalar(reader, "SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='searchRanking_content'"), 0)
     }

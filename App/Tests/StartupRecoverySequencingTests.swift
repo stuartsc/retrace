@@ -142,6 +142,12 @@ final class StartupRecoverySequencingTests: XCTestCase {
 
     func testShutdownCancelsRecoveryWithoutStartingWorkers() async throws {
         let fresh = try await insertPendingFrame(priority: 10, offset: 0)
+        let database = try XCTUnwrap(database)
+        let finalReceipt = StartupFrameStatusReceipt()
+        await services.setBeforeDatabaseCloseForTesting {
+            let statuses = try await database.getFrameProcessingStatuses(frameIDs: [fresh])
+            await finalReceipt.record(statuses)
+        }
         let entered = expectation(description: "Recovery entered")
         await coordinator.startFrameProcessingAfterRecovery {
             entered.fulfill()
@@ -150,7 +156,10 @@ final class StartupRecoverySequencingTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 2)
         try await coordinator.shutdown()
         let statistics = await queue.getStatistics()
-        let statuses = try await database.getFrameProcessingStatuses(frameIDs: [fresh])
+        let recorded = await finalReceipt.statuses
+        let statuses = try XCTUnwrap(recorded, "Capture the real SQLite state after worker join, before writer closure")
+        let ready = await database.isReady()
+        XCTAssertFalse(ready, "Even a partially initialized container must close its writer")
         XCTAssertEqual(statistics.workerCount, 0)
         XCTAssertEqual(statuses[fresh], 0)
     }
@@ -285,6 +294,11 @@ final class StartupRecoverySequencingTests: XCTestCase {
         try await database.enqueueFrameForProcessing(frameID: frame, priority: priority)
         return frame
     }
+}
+
+private actor StartupFrameStatusReceipt {
+    private(set) var statuses: [Int64: Int]?
+    func record(_ statuses: [Int64: Int]) { self.statuses = statuses }
 }
 
 final class OrphanVideoFinalizationTests: XCTestCase {

@@ -14,7 +14,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B local trial; 2C feed/bootstrap and 2D question/benchmark checkpoint uninstalled; production hybrid retrieval and acceptance tracked separately)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B local trial; 2C feed/bootstrap and 2D question/benchmark/native-admission checkpoints uninstalled; index/worker integration and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
@@ -81,6 +81,7 @@ retrace/
 │   │   ├── StructuredScreenObservation.swift # Immutable OCR blocks, channels, ranges and unknown ownership
 │   │   ├── ScreenEvidenceExpansion.swift # Bounded exact text fragments and opaque revision-bound continuation
 │   │   ├── ScreenEvidenceFeed.swift # Native feed identity, leased bootstrap and blocked lexical/vector work
+│   │   ├── ScreenEvidenceAdmission.swift # Native writer/policy fences, bounded attempts and unpublished artifact receipts
 │   │   ├── Text.swift           # ExtractedText, OCRTextRegion
 │   │   ├── TextRegion.swift     # OCR text region types
 │   │   ├── Search.swift         # SearchQuery, SearchResult
@@ -98,6 +99,7 @@ retrace/
 │       ├── ActivityStoreProtocol.swift # Canonical activity/feed/correction writer interface
 │       ├── EvidenceStoreProtocol.swift # Immutable screen snapshot/store registry interface
 │       ├── ScreenEvidenceFeedStoreProtocol.swift # Atomic bounded native feed consumption; no result acceptance
+│       ├── ScreenEvidenceAdmissionStoreProtocol.swift # Native admission transactions and Capture configuration bracket
 │       ├── StorageProtocol.swift
 │       ├── CaptureProtocol.swift
 │       ├── ProcessingProtocol.swift
@@ -115,6 +117,7 @@ retrace/
 │   ├── ActivityScreenLinkPersistence.swift # Proven capture-to-activity associations
 │   ├── ScreenEvidencePersistence.swift # Immutable screen/extraction snapshots and receipts
 │   ├── ScreenEvidenceFeedPublication.swift # V22 reference/state feed publication and status
+│   ├── ScreenEvidenceAdmissionPersistence.swift # Native writer/policy admission and bounded unpublished artifacts
 │   ├── ScreenEvidenceFeedConsumerPersistence.swift # Leased keyset bootstrap, atomic work/checkpoints and bounded compaction
 │   ├── LegacyOCRBackfillPersistence.swift # Bounded, resumable OCR node-text maintenance
 │   ├── RetentionPersistence.swift # Bounded frame cleanup and guarded video deletion
@@ -177,6 +180,7 @@ retrace/
 ├── App/                         # Main application coordinator
 │   ├── AppCoordinator.swift     # Central coordinator (orchestrates all modules)
 │   ├── RecordingLifecycle.swift # Coalesced startup and cancellation/teardown ownership
+│   ├── ScreenEvidenceAdmissionCoordinator.swift # App-owned native policy/configuration bridge and categorical metrics
 │   ├── ProgressiveRecallService.swift # Local exact evidence access, bounded text expansion and current privacy checks
 │   ├── ActivityTimelineProjection.swift # Legacy episode projection retained for compatibility; no assignment UI
 │   ├── DataAdapter.swift        # Data layer adapter (DB queries, transformations)
@@ -221,6 +225,8 @@ retrace/
 `App/Tests/ScreenEvidenceExpansionTests.swift`, `ScreenEvidenceFeedIntegrationTests.swift`, `ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover bounded exact text, local-only feed bookkeeping/disclosure denial, constrained/source-aware search, exact navigation, source failure propagation, legacy projection compatibility and cancelled device startup. `DiagnosticFileLoggingTests.swift` exercises the real file backend in private temporary directories, including disabled creation/append/read/rotation and debug process-launch admission. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
 
 `App/Tests/ProgressiveRecallBenchmarkTests.swift` binds eight reviewed JPEGs and twelve fixed questions to actual Vision/SQLite exact references. It uses private in-memory storage, refuses media lookup and can exclusively export an authored snapshot beneath `/tmp`. Run with `RETRACE_TEST_DISABLE_FILE_LOGGING=1`. `scripts/recall_benchmark/{benchmark.py,test_benchmark.py,model-pins.json,README.md}` evaluate that snapshot with pinned offline CPU models; they are developer tools, never a production index/worker or an agent disclosure grant. The dataset, reviewed images, `vision-export.json` and retained `measurement-20260916/` artifacts live in `docs/fixtures/progressive-recall/phase2d/`. The raw v1 run is immutable; a documented Q11 oracle ambiguity leaves eleven questions for interpretation. Root owns benchmark/Shared coordination; UI owns complete-question dispatch and its isolated native-input regressions.
+
+`App/Tests/ScreenEvidenceAdmissionIntegrationTests.swift` exercises the native policy bridge, local-only unpublished-artifact endpoints, cancellation/metric-delayed reads and coalesced owning-service initialization/cleanup against private SQLite. Its debug initialization boundary skips unrelated native/audio/storage setup; it never substitutes the policy owner or database. Capture and Database own their lifecycle/mutation/rollback regressions. The admission contract grants no model scheduling, agent disclosure or index readiness.
 
 Capture context is independently opt-in (`activityContextEnabled`, default false), exposed in Capture settings, and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a hit by bare numeric ID. Screenshots/OCR and timeline selection use exact evidence without project assignment or visit grouping. Existing correction records remain for compatibility; the assignment workflow is outside the active scope. Implementation and automated evidence do not establish installed Mac acceptance; see the validation ledger.
 
@@ -510,7 +516,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-16_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-17_
 
 
 <claude-mem-context>

@@ -110,7 +110,8 @@ actor MigrationRunner {
             V19_ProcessingQueueFrameIndex(),
             V20_OCRBackfillState(),
             V21_ProgressiveRecall(),
-            V22_ScreenEvidenceFeed()
+            V22_ScreenEvidenceFeed(),
+            V23_ScreenEvidenceAdmission()
         ]
     }
 

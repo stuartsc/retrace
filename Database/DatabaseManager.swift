@@ -15,6 +15,17 @@ public actor DatabaseManager: DatabaseProtocol {
     private let databasePath: String
     private var isInitialized = false
     private var consecutivePriorityClaims = 0
+    var screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
+    private(set) var screenEvidenceAdmissionClosing = false
+    #if DEBUG
+    private var forceCloseCheckpointForTesting = false
+
+    /// Exercises the real checkpoint/retry close path with a private memory DB,
+    /// without invoking on-disk initialization or the user's encryption policy.
+    func setCloseCheckpointForTesting(_ enabled: Bool) {
+        forceCloseCheckpointForTesting = enabled
+    }
+    #endif
 
     /// Public accessor for the database connection (needed for query classes)
     public func getConnection() -> OpaquePointer? {
@@ -103,11 +114,28 @@ public actor DatabaseManager: DatabaseProtocol {
     }
 
     public func close() async throws {
+        // Only this owning close may release the fence or its captured handle.
+        // A reentrant close must not install a defer that clears another close.
+        guard !screenEvidenceAdmissionClosing else {
+            throw DatabaseError.connectionFailed(underlying: "Database close already in progress")
+        }
+        screenEvidenceAdmissionClosing = true
+        // Reopening this same actor must mint a fresh capable owner. Close local
+        // admission before checkpoint/close can suspend or fail.
+        screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
+        defer {
+            screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
+            screenEvidenceAdmissionClosing = false
+        }
         guard let db = db else { return }
 
         // Checkpoint WAL before closing (if not in-memory)
         let isInMemory = databasePath == ":memory:" || databasePath.contains("mode=memory")
-        if !isInMemory {
+        var shouldCheckpoint = !isInMemory
+        #if DEBUG
+        shouldCheckpoint = shouldCheckpoint || forceCloseCheckpointForTesting
+        #endif
+        if shouldCheckpoint {
             try await checkpoint()
         }
 

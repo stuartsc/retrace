@@ -888,7 +888,7 @@ public actor AppCoordinator {
         }
 
         // Start screen capture
-        try await services.capture.startCapture(config: await services.capture.getConfig())
+        try await services.capture.startUsingCurrentConfiguration()
         try Task.checkCancellation()
 
         // Start permission monitoring to detect if user revokes permissions while recording

@@ -29,6 +29,10 @@ public enum ProgressiveRecallAction: String, Sendable {
     case captureSettingChanged, correctionConfirmed, correctionRevoked, activityDeleted
     case evidenceFeedStatusRequested, evidenceBootstrapRequested, evidenceFeedAdvanced
     case evidenceConsumerStatusRequested, evidenceFeedCompacted
+    case evidencePolicySessionBegan, evidencePolicyPrepared, evidencePolicyActivated
+    case evidencePolicyRevoked, evidencePolicySessionEnded
+    case evidenceDerivationClaimed, evidenceDerivationCancelled, evidenceArtifactStaged
+    case evidenceArtifactRead, evidenceArtifactsCompacted
 }
 
 /// Local presentation service. A broker is not an implicit grant to disclose captured evidence.
@@ -42,9 +46,14 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     // Deterministic actor-reentrancy test boundary after real SQLite reads.
     // The unset hook adds no suspension point, and is absent from optimized builds.
     private var expansionFinalReadCheckpoint: (@Sendable () async -> Void)?
+    private var metricCheckpoint: (@Sendable (ProgressiveRecallAction) async -> Void)?
 
     func setExpansionFinalReadCheckpoint(_ checkpoint: (@Sendable () async -> Void)?) {
         expansionFinalReadCheckpoint = checkpoint
+    }
+
+    func setMetricCheckpointForTesting(_ checkpoint: (@Sendable (ProgressiveRecallAction) async -> Void)?) {
+        metricCheckpoint = checkpoint
     }
     #endif
 
@@ -91,8 +100,65 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
         }
     }
 
+    public func claimScreenEvidenceDerivation(_ request: ScreenEvidenceDerivationRequest,
+                                              for audience: EvidenceAudience) async throws -> ScreenEvidenceDerivationClaim {
+        try await performFeedAction(.evidenceDerivationClaimed, for: audience) { [database] in
+            try await database.claimScreenEvidenceDerivation(request)
+        }
+    }
+
+    public func cancelScreenEvidenceDerivation(_ claim: ScreenEvidenceDerivationClaim,
+                                               for audience: EvidenceAudience) async throws {
+        try await performFeedAction(.evidenceDerivationCancelled, for: audience, ignoresCancellation: true) { [database] in
+            try await database.cancelScreenEvidenceDerivation(claim)
+        }
+    }
+
+    public func stageScreenEvidenceArtifact(claim: ScreenEvidenceDerivationClaim, data: Data,
+                                            for audience: EvidenceAudience) async throws -> ScreenEvidenceArtifactReceipt {
+        try await performFeedAction(.evidenceArtifactStaged, for: audience) { [database] in
+            try await database.stageScreenEvidenceArtifact(claim: claim, data: data)
+        }
+    }
+
+    public func readScreenEvidenceArtifact(_ receipt: ScreenEvidenceArtifactReceipt,
+                                           for audience: EvidenceAudience) async throws -> ScreenEvidenceStagedArtifact {
+        guard case .localUser = audience else { throw EvidenceUnavailableReason.notPermitted }
+        let started = ProcessInfo.processInfo.systemUptime
+        defer {
+            Log.recordLatency("recall.evidenceArtifactRead",
+                valueMs: (ProcessInfo.processInfo.systemUptime - started) * 1_000, category: .app)
+        }
+        do {
+            try Task.checkCancellation()
+            await track(.evidenceArtifactRead, outcome: "pending", count: 0)
+            try Task.checkCancellation()
+            // No metric or other awaited work may delay checked bytes after this
+            // authoritative read. Policy/source/lease checks happen in its SQL transaction.
+            let artifact = try await database.readScreenEvidenceArtifact(receipt)
+            try Task.checkCancellation()
+            Task { [database] in
+                await Self.recordMetric(database: database, action: .evidenceArtifactRead,
+                                        outcome: "success", count: 1)
+            }
+            return artifact
+        } catch {
+            await track(.evidenceArtifactRead, outcome: error is CancellationError ? "cancelled" : "failed", count: 0)
+            throw error
+        }
+    }
+
+    public func compactScreenEvidenceArtifacts(limit: Int = 100,
+                                               for audience: EvidenceAudience) async throws -> ScreenEvidenceArtifactCompaction {
+        try await performFeedAction(.evidenceArtifactsCompacted, for: audience,
+            count: { $0.removedClaims }) { [database] in
+            try await database.compactScreenEvidenceArtifacts(limit: limit)
+        }
+    }
+
     private func performFeedAction<Result: Sendable>(
         _ action: ProgressiveRecallAction, for audience: EvidenceAudience,
+        ignoresCancellation: Bool = false,
         count: @Sendable (Result) -> Int = { _ in 1 },
         operation: @Sendable () async throws -> Result
     ) async throws -> Result {
@@ -105,7 +171,9 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
                 valueMs: (ProcessInfo.processInfo.systemUptime - started) * 1_000, category: .app)
         }
         do {
-            try Task.checkCancellation()
+            // Exact-claim cleanup must reach the writer even when its owner has
+            // been cancelled. All acquisition/maintenance actions remain cancellable.
+            if !ignoresCancellation { try Task.checkCancellation() }
             let result = try await operation()
             let examined = max(0, count(result))
             await track(action, outcome: examined == 0 ? "no_results" : "success", count: examined)
@@ -407,20 +475,18 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     }
 
     private static func permits(_ metadata: FrameMetadata, config: CaptureConfig) -> Bool {
-        guard metadata.redactionReason == nil,
-              metadata.appBundleID.map({ !config.excludedAppBundleIDs.contains($0) }) ?? true else { return false }
-        let title = metadata.windowName ?? ""
-        guard !config.redactWindowTitlePatterns.contains(where: { !$0.isEmpty && title.localizedCaseInsensitiveContains($0) }) else { return false }
-        if config.excludePrivateWindows {
-            let patterns = ["incognito", "inprivate", "private browsing", "(private)"] + config.customPrivateWindowPatterns
-            if patterns.contains(where: { !$0.isEmpty && title.localizedCaseInsensitiveContains($0) }) { return false }
-        }
-        // A retained scrubbed URL cannot prove that an old credential/query never matched a new rule.
-        if !config.redactBrowserURLPatterns.isEmpty { return false }
-        return true
+        ScreenEvidenceAccessPolicy(config: config).permits(metadata)
     }
 
     public func track(_ action: ProgressiveRecallAction, outcome: String = "success", count: Int = 1) async {
+        #if DEBUG
+        if let metricCheckpoint { await metricCheckpoint(action) }
+        #endif
+        await Self.recordMetric(database: database, action: action, outcome: outcome, count: count)
+    }
+
+    private nonisolated static func recordMetric(database: DatabaseManager, action: ProgressiveRecallAction,
+                                                 outcome: String, count: Int) async {
         let safeOutcomes: Set<String> = ["success", "failed", "no_results", "pending", "conflict", "cancelled"]
         let metadata: [String: Any] = ["action": action.rawValue, "outcome": safeOutcomes.contains(outcome) ? outcome : "failed", "count": max(0, count)]
         if let data = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]),
