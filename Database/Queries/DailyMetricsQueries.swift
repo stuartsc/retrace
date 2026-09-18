@@ -57,6 +57,7 @@ public enum DailyMetricsQueries {
         case allCommentsOpened = "all_comments_opened"
         case playbackToggled = "playback_toggled"
         case playbackSpeedChanged = "playback_speed_changed"
+        case audioTranscriptPlayback = "audio_transcript_playback" // JSON {outcome,source}; categorical, no content or paths
 
         // Recording/pause/system-monitor/settings metrics
         case recordingStartedFromMenu = "recording_started_from_menu"

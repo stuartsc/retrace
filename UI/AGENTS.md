@@ -30,6 +30,7 @@ UI/
 │   │   ├── MigrationPanel.swift         # Import UI
 │   │   └── SupportLink.swift            # Twitter/support
 │   ├── Audio/
+│   │   ├── TranscriptAudioPlayback.swift # Cancellable native playback and bounded recording ranges
 │   │   ├── TranscriptContentView.swift  # Continuous transcript display
 │   │   └── TranscriptWindowController.swift # Transcript window lifecycle
 │   └── Settings/
@@ -71,10 +72,15 @@ UI/
     ├── FuseIntelViewModelTests.swift      # FuseIntel wire-contract and context-ranking tests
     ├── ProcessCPUMonitorPolicyTests.swift # System monitor launch-sampling policy tests
     ├── TimelineBackgroundRefreshPolicyTests.swift # Hidden timeline background-work opt-in policy tests
+    ├── TranscriptAudioPlaybackTests.swift # Real AAC/SQLite, muted native seeking, completion and cancellation
     └── TranscriptCursorPolicyTests.swift # Audio transcript cursor stack regression tests
 ```
 
 ## Feature Requirements
+
+### Transcript audio playback
+
+Root coordinates the UI playback owner, App's configured audio-storage directory accessor and Database's `audio_transcript_playback` metric. No Shared contract or recording format changes are needed. Each playable row owns its original audio range; ambient rows with recordings stay separate. File checks and media loading run off main. Resolve both canonical batch and retained legacy sentence paths using the writer's filename start time; a missing sentence can fall back to its retained batch. Do not create duplicate clips. One panel-owned player seeks to the row start, stops at its end and is cancelled on selection replacement or either close route. Late loads, item callbacks and refreshes cannot revive a closed selection. Metrics contain only categorical outcome/source fields. Finder remains an explicit separate button.
 
 ### Application termination
 

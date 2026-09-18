@@ -466,6 +466,11 @@ public actor AppCoordinator {
         return AudioTranscriptionQueries(db: db)
     }
 
+    /// The same configured directory used by the audio writer, including custom storage locations.
+    public func getAudioStorageDirectory() async -> URL {
+        await services.storage.getStorageDirectory()
+    }
+
     // MARK: - Dictation
 
     @discardableResult

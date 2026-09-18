@@ -7,7 +7,8 @@ import Shared
 struct TranscriptContentView: View {
     let transcriptions: [AudioTranscription]
     let timestamp: Date
-    let storageRoot: URL?
+    @ObservedObject var playback: TranscriptAudioPlayback
+    let onReveal: (TranscriptAudioRequest) -> Void
     let onClose: () -> Void
 
     /// Strip whisper.cpp control tokens for display (handles legacy DB records)
@@ -53,6 +54,7 @@ struct TranscriptContentView: View {
                         .foregroundColor(.white.opacity(0.5))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close audio transcript")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -78,7 +80,8 @@ struct TranscriptContentView: View {
                         ForEach(presentationRows) { row in
                             TranscriptionRow(
                                 row: row,
-                                storageRoot: storageRoot
+                                playback: playback,
+                                onReveal: onReveal
                             )
                         }
                     }
@@ -177,7 +180,9 @@ enum TranscriptPresentationPolicy {
         for transcription in sorted {
             if let caption = ambientCaption(for: transcription),
                let last = rows.last,
-               last.captionSignature == caption.signature {
+               last.captionSignature == caption.signature,
+               !TranscriptAudioRequest(transcription: transcription).hasAudioPath,
+               !TranscriptAudioRequest(transcription: last.transcription).hasAudioPath {
                 rows[rows.count - 1] = last.merged(
                     with: transcription,
                     captionLabel: caption.label
@@ -279,7 +284,8 @@ enum TranscriptCursorPolicy {
 
 private struct TranscriptionRow: View {
     let row: TranscriptPresentationRow
-    let storageRoot: URL?
+    @ObservedObject var playback: TranscriptAudioPlayback
+    let onReveal: (TranscriptAudioRequest) -> Void
     @State private var isHovering = false
     @State private var didPushCursor = false
 
@@ -305,10 +311,15 @@ private struct TranscriptionRow: View {
         return "\(seconds / 60)m \(seconds % 60)s"
     }
 
-    private var hasAudioFile: Bool {
-        guard let path = transcription.audioPath, let root = storageRoot else { return false }
-        let fullPath = root.appendingPathComponent(path).path
-        return FileManager.default.fileExists(atPath: fullPath)
+    private var request: TranscriptAudioRequest { TranscriptAudioRequest(transcription: transcription) }
+    private var isSelected: Bool { playback.state.request == request }
+    private var isPlaying: Bool { isSelected && playback.state.phase == .playing }
+    private var isLoading: Bool { isSelected && playback.state.phase == .loading }
+    private var playLabel: String {
+        if isLoading { return "Cancel audio loading" }
+        if isPlaying { return "Pause audio" }
+        if isSelected && playback.state.phase == .paused { return "Resume audio" }
+        return request.hasAudioPath ? "Play audio" : "Audio file unavailable"
     }
 
     var body: some View {
@@ -323,73 +334,84 @@ private struct TranscriptionRow: View {
             sourceBadge
                 .frame(width: 36)
 
-            // Content: transcript text or raw audio indicator
-            if row.displayText.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.35))
-                    Text("Audio recorded (\(formattedDuration))")
+            VStack(alignment: .leading, spacing: 3) {
+                // Content: transcript text or raw audio indicator
+                if row.displayText.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.35))
+                        Text("Audio recorded (\(formattedDuration))")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.4))
+                            .italic()
+                    }
+                } else {
+                    Text(row.displayText)
                         .font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.4))
-                        .italic()
+                        .foregroundColor(row.isCollapsedAmbientCaption ? .white.opacity(0.58) : .white.opacity(0.85))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                Text(row.displayText)
-                    .font(.system(size: 13))
-                    .foregroundColor(row.isCollapsedAmbientCaption ? .white.opacity(0.58) : .white.opacity(0.85))
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
+                if isSelected, let message = playback.state.message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
             }
 
             Spacer()
 
-            // Reveal in Finder button for entries with audio files
-            if hasAudioFile {
-                Button(action: revealInFinder) {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 13))
-                        .foregroundColor(isHovering ? .blue : .white.opacity(0.4))
+            HStack(spacing: 4) {
+                Button { playback.toggle(request) } label: {
+                    Group {
+                        if isLoading {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 12))
+                        }
+                    }
+                    .frame(width: 24, height: 22)
                 }
                 .buttonStyle(.plain)
-                .help("Reveal audio file in Finder")
+                .foregroundColor(isSelected ? .blue : .white.opacity(0.65))
+                .disabled(!request.hasAudioPath)
+                .help(playLabel)
+                .accessibilityLabel("\(playLabel) at \(Self.timeFormatter.string(from: transcription.startTime))")
+
+                if request.hasAudioPath {
+                    Button { onReveal(request) } label: {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(isHovering ? .blue : .white.opacity(0.4))
+                            .frame(width: 20, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reveal audio file in Finder")
+                    .accessibilityLabel("Reveal audio file in Finder")
+                }
             }
+            .onHover { applyCursorAction(hovering: $0) }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isHovering ? Color.white.opacity(0.05) : Color.clear)
+                .fill(isPlaying ? Color.blue.opacity(0.1) : (isHovering ? Color.white.opacity(0.05) : Color.clear))
         )
-        .onTapGesture {
-            if hasAudioFile {
-                Log.info("[TranscriptRow] reveal requested id=\(transcription.id) source=\(transcription.source.rawValue) audioPath=\(transcription.audioPath ?? "nil")", category: .ui)
-                revealInFinder()
-            }
-        }
         .onHover { hovering in
             isHovering = hovering
-            applyCursorAction(hovering: hovering)
         }
         .onDisappear {
             releaseCursorIfNeeded()
         }
     }
 
-    private func revealInFinder() {
-        guard let path = transcription.audioPath, let root = storageRoot else {
-            Log.warning("[TranscriptRow] reveal skipped id=\(transcription.id) missing audio path/root", category: .ui)
-            return
-        }
-        let fileURL = root.appendingPathComponent(path)
-        Log.info("[TranscriptRow] revealing audio id=\(transcription.id) path=\(path)", category: .ui)
-        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-    }
-
     private func applyCursorAction(hovering: Bool) {
         guard let action = TranscriptCursorPolicy.action(
             hovering: hovering,
-            hasAudioFile: hasAudioFile,
+            hasAudioFile: request.hasAudioPath,
             cursorIsPushed: didPushCursor
         ) else {
             return

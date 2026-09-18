@@ -200,7 +200,7 @@ retrace/
     ├── ViewModels/              # View models (Dashboard, Search, Timeline, Feedback)
     ├── Views/
     │   ├── Dashboard/           # App usage analytics and dictation history views
-    │   ├── Audio/               # Transcript window views
+    │   ├── Audio/               # Transcript panel and cancellable per-entry audio playback
     │   ├── FullscreenTimeline/  # Timeline scrubbing & playback (10 views)
     │   ├── Timeline/            # Shared exact evidence image/context and bounded text views
     │   ├── Search/              # Search UI (SearchView, ResultRow, FrameViewer)
@@ -516,7 +516,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-17_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-18_
 
 
 <claude-mem-context>

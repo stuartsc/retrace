@@ -1,10 +1,17 @@
 # Updates and changelog
 
-Last updated: 2026-09-17.
+Last updated: 2026-09-18.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-09-18 — Play audio from timeline transcripts
+
+- Each recorded transcript entry has a compact play/pause button. Playback seeks to the matching section of its saved recording, stops at the entry's end, and supports pause, resume and replay. Selecting another entry or closing the panel stops the previous audio.
+- Playback uses the configured storage directory and supports canonical batch recordings plus retained legacy sentence clips. Missing or unreadable audio shows a brief inline message. Finder access remains a separate button; rendering no longer checks files on the main thread.
+- Playable ambient entries retain individual controls. Cancelled loads, replaced selections and stale window refreshes cannot start or restore old playback. New local usage metrics contain only outcome and source categories.
+- The full suite passes **1,078 tests with five intentional skips and zero failures**; all twenty focused transcript checks and optimized compilation pass. Tests use authored AAC files, private SQLite, muted native playback and offscreen panel lifecycle checks. Independent review is clear; [validation and limits](docs/progressive-recall-validation.md#timeline-transcript-audio-playback--2026-09-18) are recorded. This source change is not installed or released.
 
 ### 2026-09-17 — Native admission for bounded, unpublished evidence artifacts
 
