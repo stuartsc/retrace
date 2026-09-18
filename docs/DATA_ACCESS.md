@@ -2,7 +2,7 @@
 
 This document describes what Retrace records and how external agents or scripts can read the captured data.
 
-Schema and release status are separate. On **2026-09-15**, **0.7.6 (2609.15.1)** was installed and launched for an unreleased local trial; its native database was verified at **V21**. The prior app is retained for rollback with that library. The V22 feed and V23 native admission are development changes and have not been installed. See the [validation ledger](progressive-recall-validation.md) for verification, installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
+Schema and release status are separate. On **2026-09-18**, **0.7.6 (2609.18.1)** was installed and launched hidden for an unreleased local trial; read-only inspection verified its native database upgraded from **V21 to V23**, preserved its store identity and resumed capture. The previous app and a verified database copy from before the upgrade are retained for rollback. V22 feed and V23 admission are installed, but no automatic consumer, model worker or semantic index is enabled. See the [local-trial record](progressive-recall-validation.md#local-trial-2609181--2026-09-18) for verification and acceptance limits. Inspect the selected database's schema before using a query; imported sources can have older schemas.
 
 ## What the app records
 
@@ -16,7 +16,7 @@ Schema and release status are separate. On **2026-09-15**, **0.7.6 (2609.15.1)**
 ### 2. Microphone audio (continuous)
 - **Source**: `AVCaptureSession` (mic is shared — other apps can use it simultaneously)
 - **Raw batches**: 30-second chunks as `batch_*.m4a` files
-- **Sentence clips**: per-sentence cuts as `sentence_*.m4a` files (variable length)
+- **Transcript playback**: sentence timings in SQLite point into canonical batch recordings; retained legacy `sentence_*.m4a` clips remain supported
 - **Storage path**: `~/Library/Application Support/Retrace/audio/YYYY/MM/DD/`
 - **Transcription**: whisper.cpp with 3-pass refinement pipeline (pass 1 = small/greedy, pass 2 = turbo/beam, pass 3 = contextual with neighboring batch text as `initial_prompt`)
 
@@ -112,7 +112,7 @@ V21 adds activity events, correction/feed receipts, source/store identities and 
 
 The durable `recall_search_revision` fence tracks search-affecting transactions. Ordinary-table triggers are persisted. FTS-content triggers are **TEMP triggers**, installed separately on the supported native `DatabaseManager` and `FTSManager` writer connections; they are not persisted on FTS shadow tables, preserving defensive-reader compatibility. Arbitrary external native SQL writers do not receive those hooks and are outside the revision-fence contract. Do not use direct writes to maintain or repair this schema.
 
-### V22 native screen feed (implemented, uninstalled)
+### V22 native screen feed (installed local trial)
 
 The separate screen feed covers already-materialized native observations. It does not enumerate all legacy frames or monitor external imported stores. `screen_evidence_feed` contains source-qualified reference/state events; `screen_evidence_feed_state` retains the stable feed identity, durable head and compaction floor. `screen_evidence_source_state` preserves the current revision, ordered availability/redaction facts and absorbing tombstones. These tables do not copy OCR, URLs or titles.
 
@@ -120,7 +120,7 @@ Use `ScreenEvidenceFeedStoreProtocol` through the local-only service for mainten
 
 Work contains only identity/state and is blocked, invalidated or deleted; it is never ready. A consumed event or retained extraction is not a ready lexical/vector index, a disclosure grant or a verified media file. No automatic consumer or model is enabled. V23 adds a separate unpublished-artifact boundary below; typed index publication remains future work. Continue using exact resolution for currently permitted evidence access. Do not mutate feed, cursor, work or applied-event tables through direct SQL.
 
-### V23 native admission (implemented, uninstalled)
+### V23 native admission (installed local trial)
 
 `ScreenEvidenceAdmissionStoreProtocol` requires a fresh live owning session and an active policy epoch. A persisted active row is insufficient to recreate authority. Capture owns the serialized configuration boundary, with App installing its policy bridge after database initialization. Policy changes close admission before configuration application; old claims cannot revive when settings return to earlier values. Ordinary recording pause retains historical policy authority; service shutdown ends it.
 

@@ -14,7 +14,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
-- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B local trial; 2C feed/bootstrap and 2D question/benchmark/native-admission checkpoints uninstalled; index/worker integration and acceptance tracked separately)
+- **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B, 2C feed/bootstrap and 2D question/native-admission checkpoints installed in local trial 2609.18.1; index/worker integration and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
@@ -58,7 +58,7 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── progressive-recall-plan.md # Phase 2A/2B local trial; 2C feed and 2D question/benchmark checkpoint uninstalled
+│   ├── progressive-recall-plan.md # Phase 2 checkpoints in local trial 2609.18.1; index/worker integration pending
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
 │   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle, Word RTFs and phase2d authored ranking corpus
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap

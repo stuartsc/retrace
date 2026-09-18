@@ -6,12 +6,18 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### Local trial 2609.18.1 — 2026-09-18
+
+- Installed the reviewed transcript playback build from source `83dc626c` and launched Retrace hidden at **23:29:22 Brisbane**. The canonical app remained in the background with no on-screen windows; all **19 captures from its first minute** and the latest twenty captures completed processing at the final read.
+- Read-only inspection confirmed the live native database upgraded from **V21 to V23**, preserving store identity and capture/privacy settings. No automatic consumer, model worker or semantic index is enabled. The previous **2609.15.1** app and verified pre-upgrade database clones are retained for rollback.
+- All **1,078 tests**, with five intentional skips and zero failures, and optimized compilation passed before packaging. This is an unreleased local trial; audible playback and installed timeline/keyboard acceptance remain open. See the [installation evidence and limits](docs/progressive-recall-validation.md#local-trial-2609181--2026-09-18).
+
 ### 2026-09-18 — Play audio from timeline transcripts
 
 - Each recorded transcript entry has a compact play/pause button. Playback seeks to the matching section of its saved recording, stops at the entry's end, and supports pause, resume and replay. Selecting another entry or closing the panel stops the previous audio.
 - Playback uses the configured storage directory and supports canonical batch recordings plus retained legacy sentence clips. Missing or unreadable audio shows a brief inline message. Finder access remains a separate button; rendering no longer checks files on the main thread.
 - Playable ambient entries retain individual controls. Cancelled loads, replaced selections and stale window refreshes cannot start or restore old playback. New local usage metrics contain only outcome and source categories.
-- The full suite passes **1,078 tests with five intentional skips and zero failures**; all twenty focused transcript checks and optimized compilation pass. Tests use authored AAC files, private SQLite, muted native playback and offscreen panel lifecycle checks. Independent review is clear; [validation and limits](docs/progressive-recall-validation.md#timeline-transcript-audio-playback--2026-09-18) are recorded. This source change is not installed or released.
+- The full suite passes **1,078 tests with five intentional skips and zero failures**; all twenty focused transcript checks and optimized compilation pass. Tests use authored AAC files, private SQLite, muted native playback and offscreen panel lifecycle checks. Independent review is clear; [validation and limits](docs/progressive-recall-validation.md#timeline-transcript-audio-playback--2026-09-18) are recorded. Installation is recorded in the local trial above; this is not released.
 
 ### 2026-09-17 — Native admission for bounded, unpublished evidence artifacts
 
