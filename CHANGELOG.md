@@ -1,10 +1,15 @@
 # Updates and changelog
 
-Last updated: 2026-09-18.
+Last updated: 2026-09-20.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-09-20 — Capture/text quality audit and delivery priority
+
+- Audited the installed source paths and bounded native metadata after reported character errors. Recent recordings are 4K, but full-frame OCR is reduced to 1.75 MP. Original pixels can be removed after video finalization before OCR completes; the historical fallback also introduces a JPEG conversion. A small authored native probe reproduced incorrect letters and amounts at the reduced size, while native crops recovered more exact text; confidence alone did not identify the errors.
+- Prioritized original-pixel retention, native-resolution OCR comparisons, capture-time direct app text and independent archival compression measurements ahead of semantic worker integration. [Findings, limits and delivery order](docs/capture-text-quality-plan.md) are recorded. This is an audit and plan update; production code, settings and the installed build remain unchanged.
 
 ### Local trial 2609.18.1 — 2026-09-18
 

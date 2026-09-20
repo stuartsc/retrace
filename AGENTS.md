@@ -16,6 +16,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
 - **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B, 2C feed/bootstrap and 2D question/native-admission checkpoints installed in local trial 2609.18.1; index/worker integration and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
+- **Capture/Text Quality Priority**: [docs/capture-text-quality-plan.md](docs/capture-text-quality-plan.md) (September 20 audit; native text, OCR source fidelity and compression comparisons precede index/worker integration)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
 ---
@@ -58,6 +59,7 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
+│   ├── capture-text-quality-plan.md # Native text/OCR fidelity audit and compression delivery order
 │   ├── progressive-recall-plan.md # Phase 2 checkpoints in local trial 2609.18.1; index/worker integration pending
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
 │   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle, Word RTFs and phase2d authored ranking corpus

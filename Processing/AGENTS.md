@@ -2,7 +2,7 @@
 
 You are responsible for the **Processing** module of Retrace. Your job is to implement text extraction from captured frames using Vision framework OCR and the Accessibility API, plus local audio transcription/refinement.
 
-**Status**: ✅ Vision OCR and Accessibility API fully implemented. Audio transcription is implemented with whisper.cpp integration, buffering, sentence segmentation, recall-first quality policy, enhancement retry, backfill, and contextual refinement.
+**Status**: Vision OCR processes recorded frames. A separate live Accessibility helper exists but is not integrated into capture-time text evidence; see the [capture/text quality audit](../docs/capture-text-quality-plan.md). Audio transcription is implemented with whisper.cpp integration, buffering, sentence segmentation, recall-first quality policy, enhancement retry, backfill, and contextual refinement.
 
 ## Your Directory
 
@@ -82,7 +82,7 @@ Processing/
 
 - `ProcessingManager` routes saved/captured-frame extraction through a private `RetainedFrameTextExtractor` actor whose only input is retained pixels, saved metadata and OCR configuration. It cannot query live Accessibility; the separately named live-AX APIs remain explicit. Flattened OCR and chrome text are derived from the same ordered regions used for geometry and offsets.
 - Complete retained extractions are ordered through cancellation-aware task chaining. Actor reentrancy must not mix previous pixels with a concurrently updated OCR cache or saturate cooperative threads with parallel synchronous Vision waits. Parallel-worker regression fixtures change separate amounts and decisions on real rasterised screens.
-- `VisionOCR` uses Apple's Vision framework, an accurate full-frame cache and bounded native-pixel region crops. Expand changed crops to cover complete cached text regions before invalidation. Preserve coordinate transforms and the actual row stride for each frame.
+- `VisionOCR` uses Apple's Vision framework, an accurate full-frame cache and bounded region crops. Full frames and sufficiently large crops are currently downscaled to a 1.75 MP accurate-mode budget; small crops retain native pixels. Expand changed crops to cover complete cached text regions before invalidation. Preserve coordinate transforms and the actual row stride for each frame. The September 20 quality plan evaluates replacement of this scaling policy; it is not implemented yet.
 - Full-frame and incremental OCR both disable language correction to preserve identifiers. The incremental crop pixel fraction is a work-area estimate, not a measured energy saving.
 - `FrameProcessingQueue` is the existing cross-module integration boundary. Database claims are atomic. Automatic priorities 1–10 are current only for captures made within 60 seconds; older automatic work joins priority 0, negative and NULL-priority work in historical enqueue order. One historical claim follows three current automatic claims when available. Manual priorities above 10 take precedence without consuming or resetting that fairness counter. Displayed positions use the same schedule and count distinct pending frames. The wake signal prevents idle polling latency without losing enqueues during registration.
 - Publish OCR text, highlight nodes and completed status through `DatabaseManager.commitFrameOCR` in one transaction. Return deferred/cancelled claims through `releaseFrameProcessingClaim`. Never split those writes into separate awaits.
