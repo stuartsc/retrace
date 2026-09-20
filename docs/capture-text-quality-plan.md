@@ -2,7 +2,9 @@
 
 Recorded **2026-09-20** on `feature/push-to-dictate`, source `cab177fd44c9e99d4a9aa41e4bab7bc8148b00a5`. Stuart requested better character accuracy, a screen → app/window → text account using native sources where possible, and higher-quality capture followed by efficient archival compression. This document records findings and the next implementation priority. **No production code, recording settings or installed app were changed by this audit.**
 
-## What is verified
+**Implementation update:** the [native OCR/archive-pixel checkpoint below](#native-ocr-and-archive-pixel-implementation--september-20) follows the audit. It addresses avoidable losses and reproducible comparisons first; original retention requires a separate durable lifecycle change and remains the next priority. This source checkpoint is uninstalled.
+
+## Pre-change audit findings
 
 - The installed bundle remains **0.7.6 (2609.18.1)**, with source marker `83dc626c`. The host is **macOS 26.1 (25B78)**. A native API probe reports `VNRecognizeTextRequest` default revision **3**, with supported revisions **1, 2, 3**. App configuration already selects `.accurate`, English and a minimum confidence of 0.5. This is not a fast-mode configuration mistake.
 - The latest twelve video metadata rows all report **3840×2160**. `VisionOCR` reduces a complete image of that size to **1763×992** under its accurate-mode 1.75-megapixel budget, retaining about 21% of the input pixel count. Small incremental crops can retain their original detail; large crops can be reduced again. This makes resolution depend on which extraction path runs. See `Processing/OCR/VisionOCR.swift`.
@@ -53,3 +55,70 @@ This quality work precedes the remaining semantic index/worker integration in th
 6. **Select and trial the measured result.** Require exact critical tokens and reduced character/omission error on the reviewed corpus, no incorrect app/window attribution, bounded spool storage and no more than the existing 10% foreground p95 regression allowance. Publish coverage and content-free source/quality metrics. Test source release and cancellation using real SQLite, filesystem, native capture/AX helpers and codecs. Keep the macOS 13 fallback and existing archive reader until newer paths pass; do not recompress or reprocess the entire live library as part of initial evaluation.
 
 The intended outcome is full-detail source capture, directly exposed text wherever reliable, OCR over the remaining sharp pixels, and a compact readable archive. **No particular compression ratio, accuracy gain or production rollout is promised before those comparisons.**
+
+## Native OCR and archive-pixel implementation — September 20
+
+The first source checkpoint addresses avoidable OCR losses and supplies repeatable native comparisons. It does not install a new app, retain originals beyond the existing WAL lifetime, collect new Accessibility content, or change recording/codec settings. The current installed trial remains **2609.18.1**. Root coordinates the narrow Shared protocol addition; Processing owns extraction/queue changes and Storage owns the decoded-pixel implementation.
+
+### Implemented behavior
+
+- Accurate saved-frame OCR keeps native pixels. Images above 1.75 MP combine native whole-image discovery with overlapping native crops, since the whole-image detector alone missed small text in the authored fixtures. Fast mode retains its existing scaling. Incremental extraction still expands changed areas across complete cached lines and retains original-frame geometry.
+- Crop work is bounded: 128 inspected cells, twelve grid requests and 12 MP of grid input, plus at most four seam reads of at most 1.75 MP each. Including initial discovery, the ceiling is seventeen Vision requests per large image. Exact solid-colour crops skip Vision. Native-only discovery is retained when observation/merge budgets are exceeded; the added local reconciliation is bounded to 512 observations. These are work limits, not proof that latency targets pass.
+- Crops check both ends of already detected lines and reject literal prefix/suffix shortening. Whole-display boxes can have several pixels of extra padding, so unchanged/longer text permits a bounded estimated-glyph allowance (at most 12 px); shorter compact text requires 2 px endpoint coverage. This catches a missing final digit even when an earlier glyph also changes. It is conservative: an improved but shorter reread can leave the original in place if its geometry cannot establish coverage. Split words are ordered left to right within a line. Request boundaries, row stride, image allocation and cancellation are checked. Saved OCR still disables language correction to avoid silently rewriting identifiers; the separate live screenshot helper is unchanged.
+- Finalized-video processing calls `StorageProtocol.readFrameForProcessing`, validates native source/video identity, frame range, path containment and exact media dimensions/time, and rasterizes decoded pixels directly to BGRA. The former HEVC→JPEG→BGRA step is removed from OCR. Presentation JPEG APIs remain available. Exact raw WAL is still preferred while readable.
+- `daily_metrics` adds `ocr_source_processing` with only `source` (`wal_bgra` or `archive_bgra`) and `outcome` (`started`, `completed`, `failed`, `cancelled`). Completion follows atomic OCR/text/search publication. The metric begins after source acquisition; it excludes decode failures and source deferrals, so is not a complete attempt denominator. Metadata contains no screen text, identifiers, app names or paths. Existing OCR/capture-to-search latency metrics remain in place.
+
+### Authored comparisons and limits
+
+`Processing/Tests/ScreenTextQualityBenchmarkTests.swift` renders four sparse 3840×2160 screens offscreen with CoreText: 12 px Menlo, 14 px dark Menlo, 16 px Helvetica and 14 px coloured Menlo. Six fixed authored lines exercise identifiers, amounts, prose, URLs and code. A test-only copy of the `d1b367f` full-frame OCR algorithm freezes the pre-change comparison. Three repetitions record wall time and process CPU time; normalized-whitespace text is scored by character edit distance. Process CPU excludes work in native services/GPU and is not energy use. A separate macOS 26 `RecognizeDocumentsRequest` pass compares document recognition without replacing production Vision.
+
+Each screen also undergoes a byte-exact LZFSE round trip and real HEVC encode/decode at quality 0.7 and 0.9. The codec samples contain eight identical frames, so they test codec behavior and OCR after decoding, not realistic storage per captured minute. Larger quality values did not consistently improve recognition in preliminary runs. Sparse blank backgrounds compress extremely well; their LZFSE sizes cannot support a general screen-compression claim.
+
+The [final authored export](fixtures/screen-text-quality/2026-09-20-authored-comparison.json), SHA-256 `806d71a8d5a844dc85051bd87061cce86397f4574b032fe9c90279c09080ba26`, was produced by the passing final 21-test focused run on macOS 26.1. Its source/input hashes and validation receipts are recorded alongside it. Character edits include omissions: the scaled baseline returned no text for these sparse displays, accounting for all 948 missing characters. Native crops retained the tested identifiers/amounts; the two remaining edits were a missing space around `invoice_id =` and an extra `l` in `const`. This is a failure-reproduction result, not a general 948-to-2 accuracy estimate.
+
+| Authored 4K scene | Scaled baseline edits | Native crop edits | Document-request edits | HEVC 0.7 + native edits | HEVC 0.9 + native edits |
+|---|---:|---:|---:|---:|---:|
+| 12 px Menlo | 237 | 1 | 237 | 1 | 2 |
+| Dark 14 px Menlo | 237 | 0 | 237 | 0 | 0 |
+| 16 px Helvetica | 237 | 0 | 237 | 0 | 0 |
+| Coloured 14 px Menlo | 237 | 1 | 237 | 0 | 0 |
+
+The document request did not improve these sparse whole-screen fixtures; document/window crops and tables remain unmeasured. HEVC quality 0.9 used more bytes and introduced two date-character errors in the small-monospace scene, whereas 0.7 left one spacing error. This does not establish a universal codec ranking or justify changing the installed quality preference.
+
+Focused debug-run native OCR wall time was **867–1,489 ms** (median **1,295 ms**) across twelve full-scene OCR runs, versus **156–872 ms** (median **247 ms**) for the scaled baseline. Native process CPU was **392–560 ms** (median **485 ms**), versus **75–490 ms** (median **97 ms**). The Mac remained in shared use and execution ran at reduced priority. Earlier development runs varied more widely, including native OCR over five seconds; these figures are neither controlled throughput nor foreground p95. The <500 ms OCR target is not met by this sample.
+
+The [repeat inside the clean complete suite](fixtures/screen-text-quality/2026-09-20-clean-build-comparison.json), SHA-256 `0961c988f4f331b5edfe6c8571b5fb4a286e664cc538b3b58847b079c7d7b4ca`, again measured **948 baseline edits and two native edits**, with identical text outputs and codec byte counts. Its native wall times were **432–751 ms** (median **484 ms**), versus **58–111 ms** (median **82 ms**) for the baseline; native process CPU was **201–335 ms** (median **243 ms**), versus **42–70 ms** (median **52 ms**). This run followed other tests with warmer services and different shared-machine load. Both raw reports are retained; the timing difference cannot be attributed to cleaning build products. Five of twelve native runs exceeded 500 ms, so this does not establish a consistent <500 ms result.
+
+All four LZFSE restorations matched the original 33,177,600 bytes exactly; compressed sizes were **44,543–51,759 bytes**, compression **193–488 ms**, decompression **9–27 ms**. Eight-frame HEVC samples used **22,563–26,724 bytes** at 0.7 and **30,739–40,960 bytes** at 0.9. These unusually sparse, repeated screens are not a monthly-storage estimate. Archive format/settings remain unchanged.
+
+The comparison is opt-in and uses no private screenshots, desktop controls or live database. To reproduce with a new output path:
+
+```sh
+RETRACE_TEST_DISABLE_FILE_LOGGING=1 \
+RETRACE_OCR_QUALITY_EXPORT=/tmp/retrace-authored-quality-new.json \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+swift test --jobs 4 --filter ScreenTextQualityBenchmarkTests
+```
+
+This is a small development corpus selected to reproduce observed failure mechanisms. It is not an independent representative acceptance corpus. Dense windows, tables, ambiguous glyphs, multiple displays, app/window ownership, backlog/restart source retention, sustained CPU/memory/energy and foreground p95 still require separate measurements. Native crop OCR took longer than the old scaled pass in preliminary runs; the <500 ms OCR target and 10% foreground p95 allowance have **not** passed. Installation remains separate from passing source tests.
+
+### Validation receipts and generated-build failure
+
+The [validation record](fixtures/screen-text-quality/2026-09-20-validation.json) retains source hashes, before/after input-manifest checks, log digests and the RED/GREEN sequence. Regressions reproduced small-text loss, JPEG pixel changes, omitted lines, seam/reading-order failures, missing source metrics, a dropped trailing `NOT`, and a dropped final digit alongside a changed earlier glyph. The final focused OCR/comparison selection passed **21 tests, zero failures**; the preceding **46-test** selection covered real archive pixels, path/identity checks, SQLite publication, source metrics, historical isolation and media-failure preservation. Focused counts overlap the complete suite.
+
+The first complete-suite attempt and a targeted reproduction crashed at the cancelled-recovery test's async call, without reaching OCR. Retained binary disassembly identified an incrementally reused caller loading queue method slot `+0x378`, which now held a synchronous helper, as an async descriptor; the actual recovery descriptor was at `+0x380`. That mismatch reproduces the exact crash address. Recompiling only the unchanged caller corrected its slot and passed the cancellation test. Failing/rebuilt artifact hashes and receipts are retained; no product workaround or weakened test was added. Final acceptance requires clean whole-package debug products and a separately cleaned optimized build, because a source manifest alone cannot detect incompatible generated objects.
+
+After `swift package clean`, rebuilding all debug products took **199.18 seconds** and the complete suite passed **1,089 tests, five intentional skips, zero failures** in **377.336 seconds**, including the opt-in authored comparison and real Whisper regression. All **473** source/configuration/fixture inputs and the Whisper model hash matched before and after the run. The separately cleaned optimized `Retrace` build also passed in **332.74 seconds**, with the same 473 inputs unchanged; its executable SHA-256 is `f4ef70032d71091f553969cab04e2218136046826a305bf9edee04863f6d3a18`. This verifies source tests and compilation; installed behavior and performance acceptance remain open.
+
+### Original retention: required next contract
+
+Retaining a WAL directory after encoder finalization is insufficient. The next implementation must cover these connected states before changing disposal:
+
+1. Persist original-source identity separately from current archive identity/index. Recovery can remap database frames to a new archive; queued OCR must still locate the original record by its durable capture/frame identity.
+2. Distinguish encoded output from verified database publication and durable text extraction. `processingStatus = 2` also represents exclusion/skip paths, so it alone cannot authorize original release. Persist extraction/release receipts and reconcile a lost completion callback at startup.
+3. Use a retained-original namespace that older recovery code will not consume and delete as an ordinary active journal. Startup recovery must return before OCR workers start; it cannot wait for those workers to finish.
+4. Make explicit deletion and retention authoritative across individual-frame and cascade paths, including records not yet mapped to a frame. A shared WAL cannot physically erase one frame without compaction or separate per-frame files. A deleted source must not be resurrected by recovery.
+5. Lease active readers and fence storage-root/session changes. Release requires a verified archive mapping, durable extraction or explicit deletion disposition, and no active reader.
+6. Bound disk **and** producer memory. Current capture streams can buffer without limit; waiting only in the App writer would move pressure into RAM. Storage-pressure admission must not follow the generic file-write failure path, which cancels the writer and removes its journal.
+
+LZFSE is a candidate for temporary lossless originals, subject to representative CPU/I/O and pressure measurements. It is not yet the archive format. Direct visible Accessibility text and display/window inventory remain the following delivery slice, with capture-time ownership, visible-range and sensitive-field guards from the plan above.

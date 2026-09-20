@@ -1,0 +1,247 @@
+{
+  "authoredOnly" : true,
+  "baselineSource" : "d1b367f",
+  "legacyCharacterEdits" : 948,
+  "nativeCharacterEdits" : 2,
+  "os" : "Version 26.1 (Build 25B78)",
+  "samples" : [
+    {
+      "expected" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468",
+      "fixture" : "small-monospace",
+      "height" : 2160,
+      "hevc-0.7" : {
+        "bytesForEightIdenticalFrames" : 22563,
+        "characterEdits" : 1,
+        "decodeMs" : 216.86587499999999,
+        "encodeMs" : 427.654583,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id= 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "hevc-0.9" : {
+        "bytesForEightIdenticalFrames" : 30739,
+        "characterEdits" : 2,
+        "decodeMs" : 156.75045900000001,
+        "encodeMs" : 335.76774999999998,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2826-89-20 for account 17002468"
+      },
+      "lzfse" : {
+        "compressedBytes" : 44543,
+        "compressMs" : 294.93883299999999,
+        "decompressMs" : 9.2721250000000008,
+        "rawBytes" : 33177600
+      },
+      "native-documents" : {
+        "characterEdits" : 237,
+        "milliseconds" : 438.20233300000001,
+        "text" : ""
+      },
+      "native-refined" : {
+        "characterEdits" : 1,
+        "milliseconds" : [
+          1334.3506669999999,
+          1333.289417,
+          1355.0325
+        ],
+        "processCPUMilliseconds" : [
+          502.98799999999994,
+          477.5150000000001,
+          448.05600000000004
+        ],
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id= 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "previous-scaled" : {
+        "characterEdits" : 237,
+        "milliseconds" : [
+          871.95749999999998,
+          218.42304100000001,
+          368.15412500000002
+        ],
+        "processCPUMilliseconds" : [
+          489.89499999999998,
+          112.57099999999991,
+          118.37
+        ],
+        "text" : ""
+      },
+      "width" : 3840
+    },
+    {
+      "expected" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468",
+      "fixture" : "dark-editor",
+      "height" : 2160,
+      "hevc-0.7" : {
+        "bytesForEightIdenticalFrames" : 23897,
+        "characterEdits" : 0,
+        "decodeMs" : 107.637792,
+        "encodeMs" : 185.60291599999999,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "hevc-0.9" : {
+        "bytesForEightIdenticalFrames" : 33760,
+        "characterEdits" : 0,
+        "decodeMs" : 109.443,
+        "encodeMs" : 190.88425000000001,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "lzfse" : {
+        "compressedBytes" : 48431,
+        "compressMs" : 193.38283300000001,
+        "decompressMs" : 11.628292,
+        "rawBytes" : 33177600
+      },
+      "native-documents" : {
+        "characterEdits" : 237,
+        "milliseconds" : 199.418542,
+        "text" : ""
+      },
+      "native-refined" : {
+        "characterEdits" : 0,
+        "milliseconds" : [
+          1489.1360420000001,
+          1353.8976250000001,
+          1105.414291
+        ],
+        "processCPUMilliseconds" : [
+          559.91300000000047,
+          518.0619999999999,
+          461.66100000000006
+        ],
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "previous-scaled" : {
+        "characterEdits" : 237,
+        "milliseconds" : [
+          156.98191700000001,
+          198.19020800000001,
+          156.31329099999999
+        ],
+        "processCPUMilliseconds" : [
+          89.394000000000233,
+          86.993999999999687,
+          82.881000000000313
+        ],
+        "text" : ""
+      },
+      "width" : 3840
+    },
+    {
+      "expected" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468",
+      "fixture" : "proportional-document",
+      "height" : 2160,
+      "hevc-0.7" : {
+        "bytesForEightIdenticalFrames" : 25233,
+        "characterEdits" : 0,
+        "decodeMs" : 131.35654199999999,
+        "encodeMs" : 252.587333,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "hevc-0.9" : {
+        "bytesForEightIdenticalFrames" : 35348,
+        "characterEdits" : 0,
+        "decodeMs" : 122.490666,
+        "encodeMs" : 196.610917,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "lzfse" : {
+        "compressedBytes" : 51759,
+        "compressMs" : 487.60337500000003,
+        "decompressMs" : 18.559125000000002,
+        "rawBytes" : 33177600
+      },
+      "native-documents" : {
+        "characterEdits" : 237,
+        "milliseconds" : 868.96654100000001,
+        "text" : "一一一一一一"
+      },
+      "native-refined" : {
+        "characterEdits" : 0,
+        "milliseconds" : [
+          866.60591699999998,
+          1271.978292,
+          1238.255416
+        ],
+        "processCPUMilliseconds" : [
+          391.82899999999972,
+          399.52999999999884,
+          405.5059999999994
+        ],
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "previous-scaled" : {
+        "characterEdits" : 237,
+        "milliseconds" : [
+          355.19574999999998,
+          316.51795800000002,
+          250.184166
+        ],
+        "processCPUMilliseconds" : [
+          122.12200000000121,
+          105.37099999999919,
+          104.88199999999961
+        ],
+        "text" : ""
+      },
+      "width" : 3840
+    },
+    {
+      "expected" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468",
+      "fixture" : "coloured-code",
+      "height" : 2160,
+      "hevc-0.7" : {
+        "bytesForEightIdenticalFrames" : 26724,
+        "characterEdits" : 0,
+        "decodeMs" : 163.739417,
+        "encodeMs" : 311.05812500000002,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "hevc-0.9" : {
+        "bytesForEightIdenticalFrames" : 40960,
+        "characterEdits" : 0,
+        "decodeMs" : 137.656916,
+        "encodeMs" : 214.41008299999999,
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 const invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "lzfse" : {
+        "compressedBytes" : 49209,
+        "compressMs" : 376.55316699999997,
+        "decompressMs" : 27.201958999999999,
+        "rawBytes" : 33177600
+      },
+      "native-documents" : {
+        "characterEdits" : 237,
+        "milliseconds" : 506.24537500000002,
+        "text" : ""
+      },
+      "native-refined" : {
+        "characterEdits" : 1,
+        "milliseconds" : [
+          1087.9437499999999,
+          1257.0029999999999,
+          1318.165334
+        ],
+        "processCPUMilliseconds" : [
+          492.30299999999988,
+          538.07200000000012,
+          513.23899999999958
+        ],
+        "text" : "Reference ZX842619 amount 9876.54 Invoice ABC12345 total 4200.00 payable Friday Cedar proposal amount 47000.00 https:\/\/example.test\/invoices\/ZX842619 constl invoice_id = 842619; total = 9876.54; Approved on 2026-09-20 for account 17002468"
+      },
+      "previous-scaled" : {
+        "characterEdits" : 237,
+        "milliseconds" : [
+          307.42166700000001,
+          244.66591700000001,
+          236.41858400000001
+        ],
+        "processCPUMilliseconds" : [
+          80.817000000000917,
+          76.914000000000669,
+          75.153000000000247
+        ],
+        "text" : ""
+      },
+      "width" : 3840
+    }
+  ],
+  "schema" : 1,
+  "scope" : "Four sparse authored 4K scenes; three OCR repetitions. Eight identical frames per codec sample. Not foreground latency, representative compression ratios or installed acceptance."
+}

@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import XCTest
 import SQLCipher
 import Shared
@@ -31,6 +32,65 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         await queue?.stopWorkers()
         try await database?.close()
         if let root { try? FileManager.default.removeItem(at: root) }
+    }
+
+    func testFinalizedVideoDeliversExactDecodedPixelsWithoutJPEGRecompression() async throws {
+        let writer = try await storage.createSegmentWriter()
+        let path = await writer.relativePath
+        try await writer.appendFrame(rawFrame(value: 20))
+        var pixels = Data(count: 64 * 64 * 4)
+        pixels.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
+            for y in 0..<64 {
+                for x in 0..<64 {
+                    let offset = (y * 64 + x) * 4
+                    bytes[offset] = UInt8((x * 13 + y * 3) % 256)
+                    bytes[offset + 1] = UInt8((x * 7 + y * 17) % 256)
+                    bytes[offset + 2] = (x + y) % 3 == 0 ? 255 : 0
+                    bytes[offset + 3] = 255
+                }
+            }
+        }
+        try await writer.appendFrame(CapturedFrame(imageData: pixels, width: 64, height: 64, bytesPerRow: 256))
+        let video = try await writer.finalize()
+        let videoID = try await database.insertVideoSegment(video)
+        try await database.markVideoFinalized(id: videoID, frameCount: 2, fileSize: video.fileSizeBytes)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let segmentID = try await database.insertSegment(bundleID: "com.test.saved-context", startDate: timestamp,
+            endDate: timestamp, windowName: "Saved window", browserUrl: nil, type: 0)
+        let frameID = try await database.insertFrame(FrameReference(id: FrameID(value: 0), timestamp: timestamp,
+            segmentID: AppSegmentID(value: segmentID), videoID: VideoSegmentID(value: videoID), frameIndexInSegment: 1,
+            metadata: FrameMetadata(appBundleID: "com.test.saved-context", windowName: "Saved window")))
+        try await database.markFrameReadable(frameID: frameID)
+
+        // Independent reference pixels from the exact HEVC sample, before any
+        // presentation JPEG encoding. Coloured thin edges make that loss visible.
+        let image = try await ExactFrameReader.readFrame(videoURL: root.appendingPathComponent(path),
+            frameIndex: 1, frameRate: 30, expectedWidth: 64, expectedHeight: 64)
+        var decoded = Data(count: 64 * 64 * 4)
+        try decoded.withUnsafeMutableBytes { bytes in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 64, height: 64,
+                bitsPerComponent: 8, bytesPerRow: 256, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+        }
+        try await queue.enqueue(frameID: frameID)
+        await queue.startWorkers()
+        let status = try await waitForTerminalStatus(frameID)
+        await queue.stopWorkers()
+        let delivered = await processor.frames
+        XCTAssertEqual(status, 2)
+        let actual = try XCTUnwrap(delivered.first)
+        XCTAssertEqual(delivered.count, 1)
+        XCTAssertEqual(actual.imageData, decoded, "OCR must receive the decoded sample without another lossy codec")
+        XCTAssertNotEqual(decoded, pixels, "The fixture distinguishes source pixels from HEVC's own loss")
+        XCTAssertEqual(actual.timestamp, timestamp)
+        XCTAssertEqual(actual.metadata.appBundleID, "com.test.saved-context")
+        XCTAssertEqual(actual.metadata.windowName, "Saved window")
+        let metrics = try await database.sourceReadinessMetricPayloads()
+        XCTAssertEqual(metrics.compactMap { $0["source"] }, ["archive_bgra", "archive_bgra"])
+        XCTAssertEqual(metrics.compactMap { $0["outcome"] }, ["started", "completed"])
+        XCTAssertTrue(metrics.allSatisfy { Set($0.keys) == ["source", "outcome"] },
+                      "Quality telemetry must contain no screen text, identities or paths")
     }
 
     func testExactWALFrameOverridesFinalizedMetadataAndEmptyEncodedVideo() async throws {
@@ -189,6 +249,22 @@ private actor FrameSourceRecordingProcessor: ProcessingProtocol {
 }
 
 private extension DatabaseManager {
+    func sourceReadinessMetricPayloads() throws -> [[String: String]] {
+        let db = try XCTUnwrap(getConnection())
+        let sql = "SELECT metadata FROM daily_metrics WHERE metricType='ocr_source_processing' ORDER BY id"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryFailed(query: sql, underlying: String(cString: sqlite3_errmsg(db)))
+        }
+        var result: [[String: String]] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let text = try XCTUnwrap(sqlite3_column_text(statement, 0))
+            result.append(try JSONDecoder().decode([String: String].self, from: Data(String(cString: text).utf8)))
+        }
+        return result
+    }
+
     func sourceReadinessQueueState(frameID: Int64) throws -> (status: Int, priority: Int?, retryCount: Int?, queueID: Int64?) {
         let db = try XCTUnwrap(getConnection())
         let sql = "SELECT f.processingStatus, q.priority, q.retryCount, q.id FROM frame f LEFT JOIN processing_queue q ON q.frameId=f.id WHERE f.id=?"

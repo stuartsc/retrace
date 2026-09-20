@@ -7,6 +7,35 @@ import Shared
 
 /// Real HEVC inputs exercise the same decoder used for retained screen evidence.
 final class ExactFrameReaderTests: XCTestCase {
+    func testProcessingPixelReaderRejectsWrongIdentityAndEscapingArchivePaths() async throws {
+        let url = try await makeVideo()
+        let originalBytes = try Data(contentsOf: url)
+        let root = url.deletingLastPathComponent()
+        let storage = StorageManager(storageRoot: root)
+        func video(id: Int64 = 17, path: String) -> VideoSegment {
+            VideoSegment(id: VideoSegmentID(value: id), startTime: Date(), endTime: Date(),
+                frameCount: 3, fileSizeBytes: Int64(originalBytes.count), relativePath: path, width: 64, height: 64)
+        }
+        let frame = FrameReference(id: FrameID(value: 4), timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            segmentID: AppSegmentID(value: 2), videoID: VideoSegmentID(value: 17), frameIndexInSegment: 1, metadata: .empty)
+        let decoded = try await storage.readFrameForProcessing(frame: frame, video: video(path: url.lastPathComponent))
+        XCTAssertEqual(decoded.imageData.count, 64 * 64 * 4)
+        XCTAssertEqual(decoded.timestamp, frame.timestamp)
+        await assertError(.integrityFailure) {
+            _ = try await storage.readFrameForProcessing(frame: frame, video: video(id: 18, path: url.lastPathComponent))
+        }
+        await assertError(.integrityFailure) {
+            _ = try await storage.readFrameForProcessing(frame: frame, video: video(path: "../\(url.lastPathComponent)"))
+        }
+        let otherRoot = try temporaryRoot()
+        try FileManager.default.createSymbolicLink(at: otherRoot.appendingPathComponent("escape.mp4"), withDestinationURL: url)
+        let otherStorage = StorageManager(storageRoot: otherRoot)
+        await assertError(.integrityFailure) {
+            _ = try await otherStorage.readFrameForProcessing(frame: frame, video: video(path: "escape.mp4"))
+        }
+        XCTAssertEqual(try Data(contentsOf: url), originalBytes)
+    }
+
     func testExactSamplesReturnTheirDistinctPixelsIncludingExtensionlessRecordings() async throws {
         let video = try await makeVideo()
         let extensionless = video.deletingLastPathComponent().appendingPathComponent("1726000000000")

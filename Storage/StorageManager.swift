@@ -123,6 +123,25 @@ public actor StorageManager: StorageProtocol {
         return walManager
     }
 
+    /// OCR reads a fresh, exact decoded sample and preserves its saved context.
+    /// This is deliberately separate from the JPEG returned to presentation code.
+    public func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame {
+        try Task.checkCancellation()
+        guard frame.videoID == video.id, frame.source == .native, video.source == .native,
+              frame.frameIndexInSegment >= 0, frame.frameIndexInSegment < video.frameCount,
+              !video.relativePath.isEmpty, !video.relativePath.hasPrefix("/"),
+              !video.relativePath.split(separator: "/").contains("..") else {
+            throw ExactFrameReadError.integrityFailure
+        }
+        let root = storageRootURL.resolvingSymlinksInPath().standardizedFileURL
+        let url = root.appendingPathComponent(video.relativePath).resolvingSymlinksInPath().standardizedFileURL
+        guard url.path.hasPrefix(root.path + "/") else { throw ExactFrameReadError.integrityFailure }
+        let image = try await ExactFrameReader.readFrame(videoURL: url, frameIndex: frame.frameIndexInSegment,
+            frameRate: 30, expectedWidth: video.width, expectedHeight: video.height)
+        try Task.checkCancellation()
+        return try FrameConverter.createCapturedFrame(from: image, timestamp: frame.timestamp, metadata: frame.metadata)
+    }
+
     /// Clear all WAL sessions (used when changing database location)
     /// WARNING: This deletes unrecovered frame data!
     public func clearWALSessions() async throws {

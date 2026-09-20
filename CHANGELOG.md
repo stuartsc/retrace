@@ -6,6 +6,14 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-09-20 — Native-resolution OCR and direct archive pixels
+
+- Accurate saved-frame OCR now keeps native pixels and uses bounded overlapping crops to recover small text missed by whole-screen detection. Crops preserve complete lines and short trailing tokens; split words retain reading order and highlights use original pixel coordinates.
+- Historical OCR receives exact decoded archive pixels without a second lossy JPEG conversion. Raw WAL remains the preferred source while available. New content-free metrics distinguish WAL/archive processing and its outcome.
+- Added real CoreText/Vision regressions, HEVC→SQLite→worker pixel checks, and an opt-in authored comparison of native OCR, document recognition, LZFSE and HEVC quality settings. Accuracy, timing and comparison limits are recorded in the [implementation and validation notes](docs/capture-text-quality-plan.md#native-ocr-and-archive-pixel-implementation--september-20).
+- A clean complete suite passes **1,089 tests with five intentional skips and zero failures**; a separately cleaned optimized build passes. The source/input hashes stayed unchanged through validation, and independent source/evidence review is clear. An incompatible generated async caller from an earlier incremental build was diagnosed and removed by clean rebuilding, with no product workaround or weakened test.
+- This source checkpoint is not installed. The existing **2609.18.1** trial and capture preferences remain unchanged. Original retention through durable OCR, direct visible app text and representative performance/compression acceptance remain pending; the OCR latency target is not yet met.
+
 ### 2026-09-20 — Capture/text quality audit and delivery priority
 
 - Audited the installed source paths and bounded native metadata after reported character errors. Recent recordings are 4K, but full-frame OCR is reduced to 1.75 MP. Original pixels can be removed after video finalization before OCR completes; the historical fallback also introduces a JPEG conversion. A small authored native probe reproduced incorrect letters and amounts at the reduced size, while native crops recovered more exact text; confidence alone did not identify the errors.

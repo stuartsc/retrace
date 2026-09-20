@@ -1,0 +1,821 @@
+{
+  "baselineCommit": "d1b367f",
+  "cleanBuildComparison": {
+    "file": "2026-09-20-clean-build-comparison.json",
+    "run": "full-suite-quality-clean",
+    "sha256": "0961c988f4f331b5edfe6c8571b5fb4a286e664cc538b3b58847b079c7d7b4ca"
+  },
+  "comparison": {
+    "file": "2026-09-20-authored-comparison.json",
+    "run": "green-refinement-completeness",
+    "sha256": "806d71a8d5a844dc85051bd87061cce86397f4574b032fe9c90279c09080ba26"
+  },
+  "date": "2026-09-20",
+  "incrementalBuildFailure": {
+    "completedFollowup": "swift package clean before complete debug suite; clean separate release scratch products before optimized build",
+    "failingExecutableSHA256": "29ff3daee8401b76b7a8579a3dab5e04abf106c58ac5086902400016bbe02cd7",
+    "preservedArtifactReceipt": {
+      "artifacts": [
+        {
+          "bytes": 125053088,
+          "path": "RetracePackageTests.xctest/Contents/MacOS/RetracePackageTests",
+          "sha256": "29ff3daee8401b76b7a8579a3dab5e04abf106c58ac5086902400016bbe02cd7"
+        },
+        {
+          "bytes": 940672,
+          "path": "AppTests.build/StartupRecoverySequencingTests.swift.o",
+          "sha256": "da3379eb61819804c1e1e0c4e34d81a8b0f721562e2329bbaa441330a4805da7"
+        },
+        {
+          "bytes": 87072,
+          "path": "AppTests.build/StartupRecoverySequencingTests.swiftdeps",
+          "sha256": "ac8ce562b82af32636c40aaa2394e91cfb8026b44f18b2a9197eb1575b960c76"
+        },
+        {
+          "bytes": 296464,
+          "path": "Modules/AppTests.swiftmodule",
+          "sha256": "29e03aa49152c81a87e04276503114a8a82285b200c386c0c0f5b45fb7e026d5"
+        },
+        {
+          "bytes": 390840,
+          "path": "Modules/Processing.swiftmodule",
+          "sha256": "8f4f5b5fa24a4eabb4213e5c252352c5225ea3ade74e75ba9788b886b11fa976"
+        },
+        {
+          "bytes": 741920,
+          "path": "Processing.build/FrameProcessingQueue.swift.o",
+          "sha256": "71a60a29c13e2d8c19e83584e00ae8ad0b2b6d4c1c5a67b6a8ef79fb355786f4"
+        }
+      ],
+      "capturedUTC": "2026-09-20T06:23:07.035080+00:00",
+      "invalidated": [
+        "AppTests.build/StartupRecoverySequencingTests.swift.o"
+      ],
+      "reason": "Repeatable async recovery test crash after incremental queue changes; preserve failing objects/executable before forced caller recompile"
+    },
+    "proof": "Stale AppTests call interpreted queue metadata slot +0x378 (synchronous mediaUnavailableReason) as an async descriptor; current requeueCrashedFrames descriptor occupies +0x380. Misreading the sync instruction as a relative async entry reproduces exact crash PC 0xbdaee6bc. Recompiling only the unchanged caller made the cancellation test pass.",
+    "rebuiltArtifactReceipt": [
+      {
+        "bytes": 125053088,
+        "path": "RetracePackageTests.xctest/Contents/MacOS/RetracePackageTests",
+        "sha256": "7bfabcd729da927ea906b2fa8904d2088cf7491884a0bc9066980e261f88ef5f"
+      },
+      {
+        "bytes": 940672,
+        "path": "AppTests.build/StartupRecoverySequencingTests.swift.o",
+        "sha256": "f45ebb32b0e96309ccbc6e5b412937867cc5ef5ad28cbe457d85899274fc2983"
+      }
+    ],
+    "rebuiltProof": "Rebuilt caller loads +0x380, resolving to requeueCrashedFrames with a valid 960-byte async context. The unchanged test passed, then all debug modules were rebuilt cleanly before the complete 1089-test pass."
+  },
+  "inputManifestScope": "Swift sources, Package.resolved when tracked/enumerated, entitlements, UI assets, Database test support, Processing test fixtures, progressive-recall fixtures and bundled Whisper inputs; SHA256 of sorted compact JSON path/hash map",
+  "logging": "RETRACE_TEST_DISABLE_FILE_LOGGING=1 at process launch; native process identity preserved",
+  "remainingGates": [
+    "Original retention through durable extraction",
+    "Capture-time visible Accessibility text and window inventory",
+    "Representative dense/multi-display accuracy and archival compression",
+    "OCR/foreground latency, memory, CPU and energy acceptance",
+    "Installation and installed acceptance"
+  ],
+  "runs": [
+    {
+      "buildSummaries": [
+        "Build complete! (10.40s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "DiagnosticFileLoggingTests|VisionOCRIncrementalTests.testInitial4KFrameRetainsSmallIdentifiersAndAmounts|VisionOCRIncrementalTests.test4KCacheRefreshRetainsSmallTextAfterApplicationChange"
+        ]
+      ],
+      "completedUTC": "2026-09-20T04:58:09.453725+00:00",
+      "exitCode": 1,
+      "inputCount": 472,
+      "inputManifestSHA256": "4e2625ee1173c0d2c8f66ea80abd2c7b4a99024f8dd2b1de8e184da7ae93dd18",
+      "inputsUnchanged": true,
+      "label": "red-small-text",
+      "logSHA256": "8ce6cc8d73cf11d704f0dff5a1cc860e01a675a743c94ef136a1679c1f96b0c5",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "e8697e90bb0b0a754dd2e2a83a32441157ccdbaf2c8dc4d5fc9433f10ddd4bc6",
+      "startedUTC": "2026-09-20T04:57:51.078786+00:00",
+      "summaries": [
+        "Executed 4 tests, with 0 failures (0 unexpected) in 0.013 (0.013) seconds",
+        "Executed 2 tests, with 3 failures (0 unexpected) in 1.558 (1.559) seconds",
+        "Executed 6 tests, with 3 failures (0 unexpected) in 1.571 (1.572) seconds",
+        "Executed 6 tests, with 3 failures (0 unexpected) in 1.571 (1.575) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (9.78s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "FrameProcessingSourceReadinessTests.testFinalizedVideoDeliversExactDecodedPixelsWithoutJPEGRecompression"
+        ]
+      ],
+      "completedUTC": "2026-09-20T05:09:12.912176+00:00",
+      "exitCode": 1,
+      "inputCount": 472,
+      "inputManifestSHA256": "88f12f6dc302f2ad68c7d35f3f22ab1dfb0b79a428587f2368331f17be193086",
+      "inputsUnchanged": true,
+      "label": "red-decoded-pixels",
+      "logSHA256": "d0694164e1fed1484c97ae4fab8e39529d4d4052da91e593ab0fc4a78c5b7617",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "e8697e90bb0b0a754dd2e2a83a32441157ccdbaf2c8dc4d5fc9433f10ddd4bc6",
+      "startedUTC": "2026-09-20T05:08:41.638992+00:00",
+      "summaries": [
+        "Executed 1 test, with 1 failure (0 unexpected) in 16.564 (16.564) seconds",
+        "Executed 1 test, with 1 failure (0 unexpected) in 16.564 (16.564) seconds",
+        "Executed 1 test, with 1 failure (0 unexpected) in 16.564 (16.566) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (21.03s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "VisionOCRIncrementalTests.testPartialRefinementCannotDiscardAlreadyDetectedLines"
+        ]
+      ],
+      "completedUTC": "2026-09-20T05:18:35.751461+00:00",
+      "exitCode": 1,
+      "inputCount": 472,
+      "inputManifestSHA256": "caf4980aa32d3be7e7df053cc17e08b858e53657f1b45e9099585d70bfe2b1b3",
+      "inputsUnchanged": true,
+      "label": "red-partial-refinement",
+      "logSHA256": "fa1180821fe809f1e22c39f20b6d0ec431203b880b3f49e67607c32e17b9c580",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "e8697e90bb0b0a754dd2e2a83a32441157ccdbaf2c8dc4d5fc9433f10ddd4bc6",
+      "startedUTC": "2026-09-20T05:18:08.433412+00:00",
+      "summaries": [
+        "Executed 1 test, with 1 failure (0 unexpected) in 1.160 (1.161) seconds",
+        "Executed 1 test, with 1 failure (0 unexpected) in 1.160 (1.161) seconds",
+        "Executed 1 test, with 1 failure (0 unexpected) in 1.160 (1.162) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (11.11s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "VisionOCRIncrementalTests.testNativeDiscoveryKeepsLinesWholeAcrossCropBoundaries|VisionOCRIncrementalTests.testDarkScreenPreservesReadingOrderWhenVisionSplitsALine"
+        ]
+      ],
+      "completedUTC": "2026-09-20T05:29:35.478298+00:00",
+      "exitCode": 1,
+      "inputCount": 473,
+      "inputManifestSHA256": "8a00b05e0f8cb64e7ed0a70939b37cdfae75fdc7ac59adff5b4b940e81dd3c9d",
+      "inputsUnchanged": true,
+      "label": "red-boundaries-order",
+      "logSHA256": "f6ac4211afa3bcfcfaf17660be05a4b679d67fd1be9ef1e4d35d45ca28aa4dcd",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T05:29:13.023513+00:00",
+      "summaries": [
+        "Executed 2 tests, with 2 failures (0 unexpected) in 4.988 (4.989) seconds",
+        "Executed 2 tests, with 2 failures (0 unexpected) in 4.988 (4.989) seconds",
+        "Executed 2 tests, with 2 failures (0 unexpected) in 4.988 (4.990) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (38.89s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "VisionOCRIncrementalTests.testNativeDiscoveryKeepsLinesWholeAcrossCropBoundaries|VisionOCRIncrementalTests.testPartialRefinementCannotDiscardAlreadyDetectedLines|FrameProcessingSourceReadinessTests.testFinalizedVideoDeliversExactDecodedPixelsWithoutJPEGRecompression"
+        ]
+      ],
+      "completedUTC": "2026-09-20T05:37:58.928070+00:00",
+      "exitCode": 1,
+      "inputCount": 473,
+      "inputManifestSHA256": "4c0cedf31298e19ccdd9f54efcef59624616981fbd2ed98a55844ee8c2d85595",
+      "inputsUnchanged": true,
+      "label": "red-source-metrics",
+      "logSHA256": "7ab2b148d97a71a5c72ff3b5ecd0250804ba3e39b20c649e946b097ead5c220b",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T05:36:45.605843+00:00",
+      "summaries": [
+        "Executed 1 test, with 2 failures (0 unexpected) in 19.571 (19.572) seconds",
+        "Executed 2 tests, with 0 failures (0 unexpected) in 3.164 (3.165) seconds",
+        "Executed 3 tests, with 2 failures (0 unexpected) in 22.736 (22.737) seconds",
+        "Executed 3 tests, with 2 failures (0 unexpected) in 22.736 (22.740) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (52.27s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "testPartialRefinementCannotDiscardShortTrailingText"
+        ]
+      ],
+      "completedUTC": "2026-09-20T05:55:06.616029+00:00",
+      "exitCode": 1,
+      "inputCount": 473,
+      "inputManifestSHA256": "0ffebd8bc33c669bb3a4d843e678f11a9e2de787564d3a85f65de391bc2d6fe5",
+      "inputsUnchanged": true,
+      "label": "red-trailing-text",
+      "logSHA256": "eaaead4524dddd8779ec20ad0689a5d27ec9e8dabe6fcc366cd9b0a0abd57725",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T05:53:43.240448+00:00",
+      "summaries": [
+        "Executed 1 test, with 1 failure (0 unexpected) in 5.155 (5.156) seconds",
+        "Executed 1 test, with 1 failure (0 unexpected) in 5.155 (5.156) seconds",
+        "Executed 1 test, with 1 failure (0 unexpected) in 5.155 (5.161) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (50.64s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "testPartialRefinementCannotDropFinalDigitWhenAnotherGlyphDiffers|testDarkScreenPreservesReadingOrderWhenVisionSplitsALine|testInitial4KFrameRetainsSmallIdentifiersAndAmounts|testNativeDiscoveryKeepsLinesWholeAcrossCropBoundaries"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:05:09.993908+00:00",
+      "exitCode": 1,
+      "inputCount": 473,
+      "inputManifestSHA256": "cab732f44fa40d1f3b2918e86a869575a422071d110c8e2d2422d0e718a8cd8b",
+      "inputsUnchanged": true,
+      "label": "red-altered-prefix",
+      "logSHA256": "6836304d537cf70c1ac40b8df3d19da2baf767564270b0abe038d369521e0ef1",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:03:53.383448+00:00",
+      "summaries": [
+        "Executed 4 tests, with 1 failure (0 unexpected) in 10.747 (10.750) seconds",
+        "Executed 4 tests, with 1 failure (0 unexpected) in 10.747 (10.750) seconds",
+        "Executed 4 tests, with 1 failure (0 unexpected) in 10.747 (10.753) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (371.28s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "VisionOCRIncrementalTests|ScreenTextQualityBenchmarkTests|FrameProcessingSourceReadinessTests|HistoricalOCRIsolationTests|OCRRepairEvidencePreservationTests|ExactFrameReaderTests"
+        ]
+      ],
+      "completedUTC": "2026-09-20T05:52:58.811584+00:00",
+      "exitCode": 0,
+      "inputCount": 473,
+      "inputManifestSHA256": "5e7e33b7c2f85133e765256df5d56fc66fccb1de237c9272cfbb6b5c24b06f5c",
+      "inputsUnchanged": true,
+      "label": "green-quality-paths",
+      "logSHA256": "084360a2934f11f9d0567787b618457e936a36ab8b9d91033041fa83a6781a12",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T05:39:47.305981+00:00",
+      "summaries": [
+        "Executed 1 test, with 0 failures (0 unexpected) in 89.922 (89.931) seconds",
+        "Executed 18 tests, with 0 failures (0 unexpected) in 26.595 (26.603) seconds",
+        "Executed 46 tests, with 0 failures (0 unexpected) in 315.887 (315.920) seconds",
+        "Executed 46 tests, with 0 failures (0 unexpected) in 315.887 (315.926) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (39.04s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "VisionOCRIncrementalTests|ScreenTextQualityBenchmarkTests"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:08:02.191165+00:00",
+      "exitCode": 0,
+      "inputCount": 473,
+      "inputManifestSHA256": "161fc4acb6b168486b990cb6a9974c9886d7416eee4411e211bd51ab0bf9c6de",
+      "inputsUnchanged": true,
+      "label": "green-refinement-completeness",
+      "logSHA256": "2144bd8e9b70ef9aafbb910ce5cb8b812303492e7ea09ac00c09d1c5b41733c8",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:06:08.353219+00:00",
+      "summaries": [
+        "Executed 1 test, with 0 failures (0 unexpected) in 34.725 (34.726) seconds",
+        "Executed 20 tests, with 0 failures (0 unexpected) in 21.687 (21.695) seconds",
+        "Executed 21 tests, with 0 failures (0 unexpected) in 56.412 (56.421) seconds",
+        "Executed 21 tests, with 0 failures (0 unexpected) in 56.412 (56.424) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (18.50s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:17:05.798253+00:00",
+      "exitCode": 1,
+      "inputCount": 473,
+      "inputManifestSHA256": "161fc4acb6b168486b990cb6a9974c9886d7416eee4411e211bd51ab0bf9c6de",
+      "inputsUnchanged": true,
+      "label": "full-suite-quality",
+      "logSHA256": "8d6d36231aa11682c55e7355f4a4a70e181f3349e82602bafeff38ec1f1880fb",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "outcome": "SIGSEGV 11; stale generated async caller confirmed, not a passed run",
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:08:50.559616+00:00",
+      "summaries": [
+        "Executed 12 tests, with 0 failures (0 unexpected) in 3.158 (3.161) seconds",
+        "Executed 2 tests, with 0 failures (0 unexpected) in 0.012 (0.013) seconds",
+        "Executed 5 tests, with 0 failures (0 unexpected) in 0.346 (0.347) seconds",
+        "Executed 10 tests, with 0 failures (0 unexpected) in 25.757 (25.762) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (4.07s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "StartupRecoverySequencingTests|SemanticPixelDeduplicationTests"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:19:27.053287+00:00",
+      "exitCode": 1,
+      "inputCount": 473,
+      "inputManifestSHA256": "161fc4acb6b168486b990cb6a9974c9886d7416eee4411e211bd51ab0bf9c6de",
+      "inputsUnchanged": true,
+      "label": "isolate-startup-quality",
+      "logSHA256": "5126b382429571c25f8d6015643828cd9b3419ea155c548b088becee4df552f7",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "outcome": "SIGSEGV 11; stale generated async caller confirmed, not a passed run",
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:19:03.811203+00:00",
+      "summaries": [
+        "Executed 10 tests, with 0 failures (0 unexpected) in 13.250 (13.251) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (10.02s)"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution",
+          "--filter",
+          "testCancelledInterruptedClaimRecoveryPreservesSQLiteClaim"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:23:29.912052+00:00",
+      "exitCode": 0,
+      "inputCount": 473,
+      "inputManifestSHA256": "161fc4acb6b168486b990cb6a9974c9886d7416eee4411e211bd51ab0bf9c6de",
+      "inputsUnchanged": true,
+      "label": "rebuilt-startup-caller",
+      "logSHA256": "5f7d6ac8b3c025bebf3e2724165f543589330d884d373e7c29770361438fbf7b",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:23:14.743978+00:00",
+      "summaries": [
+        "Executed 1 test, with 0 failures (0 unexpected) in 0.051 (0.052) seconds",
+        "Executed 1 test, with 0 failures (0 unexpected) in 0.051 (0.052) seconds",
+        "Executed 1 test, with 0 failures (0 unexpected) in 0.051 (0.053) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build complete! (199.18s)"
+      ],
+      "cleanBuildCommand": [
+        "xcrun",
+        "swift",
+        "package",
+        "clean"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--build-tests",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ],
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "test",
+          "--skip-build",
+          "--jobs",
+          "4",
+          "--enable-code-coverage",
+          "--disable-automatic-resolution"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:36:58.471244+00:00",
+      "exitCode": 0,
+      "inputCount": 473,
+      "inputManifestSHA256": "161fc4acb6b168486b990cb6a9974c9886d7416eee4411e211bd51ab0bf9c6de",
+      "inputsUnchanged": true,
+      "label": "full-suite-quality-clean",
+      "logSHA256": "27cf5415b58750d28eb04dbf2784d4b9128fc519257d81fc85c4263f30dadc12",
+      "modelSHA256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:27:14.271250+00:00",
+      "summaries": [
+        "Executed 3 tests, with 0 failures (0 unexpected) in 20.239 (20.239) seconds",
+        "Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds",
+        "Executed 1089 tests, with 5 tests skipped and 0 failures (0 unexpected) in 377.336 (377.505) seconds",
+        "Executed 1089 tests, with 5 tests skipped and 0 failures (0 unexpected) in 377.336 (377.507) seconds"
+      ]
+    },
+    {
+      "buildSummaries": [
+        "Build of product 'Retrace' complete! (332.74s)"
+      ],
+      "cleanBuildCommand": [
+        "xcrun",
+        "swift",
+        "package",
+        "--scratch-path",
+        "/tmp/retrace-recall-release",
+        "clean"
+      ],
+      "commands": [
+        [
+          "/usr/bin/nice",
+          "-n",
+          "10",
+          "xcrun",
+          "swift",
+          "build",
+          "--scratch-path",
+          "/tmp/retrace-recall-release",
+          "--jobs",
+          "4",
+          "-c",
+          "release",
+          "--product",
+          "Retrace",
+          "-Xswiftc",
+          "-enable-testing",
+          "--disable-automatic-resolution"
+        ]
+      ],
+      "completedUTC": "2026-09-20T06:47:16.371649+00:00",
+      "executableSHA256": "f4ef70032d71091f553969cab04e2218136046826a305bf9edee04863f6d3a18",
+      "exitCode": 0,
+      "inputCount": 473,
+      "inputManifestSHA256": "161fc4acb6b168486b990cb6a9974c9886d7416eee4411e211bd51ab0bf9c6de",
+      "inputsUnchanged": true,
+      "label": "release-quality-clean",
+      "logSHA256": "c5494e4d0c589498b6e060e0f7271e34876d8655a06de6890085f18e676c2a84",
+      "modelSHA256": null,
+      "modelUnchanged": true,
+      "runnerSHA256": "1f0d6e0de60b4319fbebb7e08f6c0fd71159f076dcb97ce5e06d53f5e5885759",
+      "startedUTC": "2026-09-20T06:41:42.975235+00:00",
+      "summaries": []
+    }
+  ],
+  "schemaVersion": 1,
+  "scope": "Authored offscreen inputs, private SQLite/media, native Vision and HEVC; installed app/live library unchanged by this work",
+  "sourceSHA256": {
+    "Database/Queries/DailyMetricsQueries.swift": "df63e0226a9da3726590035fab9ae9b657cf58ff267f40be70fbd40970c01606",
+    "Processing/FrameProcessingQueue.swift": "b395b1d64598f736ebb3b7f5420bea9ecaef270051af5a3a5589d3c7a60b0d29",
+    "Processing/OCR/VisionOCR.swift": "d58b17d0169c054cf31b3a8158d9759f67e8d2e2c72b0c8bfe3ca1cc37e53555",
+    "Processing/Tests/FrameProcessingSourceReadinessTests.swift": "7665c52a8d2ed2d6ce0d27ac2df81280b060771888f8667ac282993ff566a62b",
+    "Processing/Tests/HistoricalOCREvidenceTests.swift": "f157abcdbc41d22162fabf0dc287f37794d0a303c03e76db0cb3a86842e16b4d",
+    "Processing/Tests/ScreenTextQualityBenchmarkTests.swift": "f637b0f7cafa9f353fb229f6b15a31214cc79d29768fc34c9f5e9ae96184c3fe",
+    "Processing/Tests/VisionOCRIncrementalTests.swift": "dcaf56bde34a85e09d920d402504da1a9c30fffeb97d10f58863f1083d18a155",
+    "Shared/Protocols/StorageProtocol.swift": "412d193f845324985c4fa99420980d913adf54493bc5e2c4a4344a2a163f1f55",
+    "Storage/StorageManager.swift": "3383447e7a289d184c0641256c810cd6196b2b9fc7bed4a227713341793d4f62",
+    "Storage/Tests/ExactFrameReaderTests.swift": "621697109cda2133af2d848cc6a6c574478401920121523459f9e1d0f592a09a",
+    "Storage/VideoEncoder/FrameConverter.swift": "8ae83c1d171041b918b80557d316eefe2a9168b33b910a777f7d23613eca881d"
+  },
+  "status": "Clean complete suite passed 1089 tests, 5 intentional skips, 0 failures; clean optimized Retrace build passed. This source checkpoint is not installed.",
+  "toolchain": {
+    "Swift": "6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)",
+    "Xcode": "26.3 (17C529)",
+    "host": "macOS 26.1 (25B78)"
+  }
+}

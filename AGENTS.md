@@ -16,7 +16,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 - **Product Roadmap**: [docs/roadmap.md](docs/roadmap.md)
 - **Progressive Recall Plan**: [docs/progressive-recall-plan.md](docs/progressive-recall-plan.md) (Phase 2A/2B, 2C feed/bootstrap and 2D question/native-admission checkpoints installed in local trial 2609.18.1; index/worker integration and acceptance tracked separately)
 - **Progressive Recall Validation**: [docs/progressive-recall-validation.md](docs/progressive-recall-validation.md) (baseline, fixed questions, implementation and scoped Mac acceptance)
-- **Capture/Text Quality Priority**: [docs/capture-text-quality-plan.md](docs/capture-text-quality-plan.md) (September 20 audit; native text, OCR source fidelity and compression comparisons precede index/worker integration)
+- **Capture/Text Quality Priority**: [docs/capture-text-quality-plan.md](docs/capture-text-quality-plan.md) (native OCR/pixel-path checkpoint; original retention, direct text and compression acceptance precede index/worker integration)
 - **Capture Audit and Validation**: [docs/capture-improvements-validation.md](docs/capture-improvements-validation.md) (implementation, performance measurements and local-trial evidence)
 
 ---
@@ -42,6 +42,8 @@ swift test --filter testSpecificMethod
 rm -rf .build/
 ```
 
+After changing Swift actor/protocol method layouts, use `swift package clean` before final test validation and clean any separate release scratch build. September 20 validation found an incrementally retained test caller using an obsolete async dispatch slot after a private queue-method change. Recompiling unchanged source corrected the linked caller; source hashes alone do not prove generated objects are compatible. Keep failing build/test receipts when diagnosing this condition.
+
 For debug test runs beside an installed app, set `RETRACE_TEST_DISABLE_FILE_LOGGING=1` at process launch to keep diagnostic file reads/writes out of the live log directory. Console and unified logging remain available. Release builds ignore this test switch. An inherited `sandbox-exec` profile can remove native helper bundle metadata even when it only denies log writes; use the process-local switch for native identity tests.
 
 ---
@@ -59,10 +61,11 @@ retrace/
 ├── docs/                        # Product and data-access documentation
 │   ├── DATA_ACCESS.md           # Local database/audio/screen data access notes
 │   ├── capture-improvements-validation.md # Phase-one implementation, benchmark and rollout evidence
-│   ├── capture-text-quality-plan.md # Native text/OCR fidelity audit and compression delivery order
+│   ├── capture-text-quality-plan.md # OCR fidelity implementation, measurement limits and remaining delivery order
 │   ├── progressive-recall-plan.md # Phase 2 checkpoints in local trial 2609.18.1; index/worker integration pending
 │   ├── progressive-recall-validation.md # Baseline, fixtures and acceptance ledger
 │   ├── fixtures/progressive-recall/ # Reviewed Cedar JPEGs/oracle, Word RTFs and phase2d authored ranking corpus
+│   ├── fixtures/screen-text-quality/ # Authored native OCR/codec comparison JSON and validation receipts
 │   └── roadmap.md               # Product thesis, differentiation, and roadmap
 ├── scripts/                     # Build/release/validation scripts
 │   ├── release.sh               # End-to-end release automation
@@ -227,6 +230,8 @@ retrace/
 `App/Tests/ScreenEvidenceExpansionTests.swift`, `ScreenEvidenceFeedIntegrationTests.swift`, `ProgressiveRecallSearchTests.swift`, `EvidenceResolutionTests.swift`, `RecallCoordinatorRoutingTests.swift`, `ActivityTimelineProjectionTests.swift` and `RecordingLifecycleTests.swift` cover bounded exact text, local-only feed bookkeeping/disclosure denial, constrained/source-aware search, exact navigation, source failure propagation, legacy projection compatibility and cancelled device startup. `DiagnosticFileLoggingTests.swift` exercises the real file backend in private temporary directories, including disabled creation/append/read/rotation and debug process-launch admission. Database, Capture, Processing, Storage and UI inventories list their module regressions. `Database/Tests/RenderedRecallFixture.swift` supplies native-rendered JPEGs to real Vision/HEVC/SQLite pipeline tests; the reviewed on-disk copies and oracle are under `docs/fixtures/progressive-recall/`.
 
 `App/Tests/ProgressiveRecallBenchmarkTests.swift` binds eight reviewed JPEGs and twelve fixed questions to actual Vision/SQLite exact references. It uses private in-memory storage, refuses media lookup and can exclusively export an authored snapshot beneath `/tmp`. Run with `RETRACE_TEST_DISABLE_FILE_LOGGING=1`. `scripts/recall_benchmark/{benchmark.py,test_benchmark.py,model-pins.json,README.md}` evaluate that snapshot with pinned offline CPU models; they are developer tools, never a production index/worker or an agent disclosure grant. The dataset, reviewed images, `vision-export.json` and retained `measurement-20260916/` artifacts live in `docs/fixtures/progressive-recall/phase2d/`. The raw v1 run is immutable; a documented Q11 oracle ambiguity leaves eleven questions for interpretation. Root owns benchmark/Shared coordination; UI owns complete-question dispatch and its isolated native-input regressions.
+
+`Processing/Tests/ScreenTextQualityBenchmarkTests.swift` renders authored 4K images and compares the frozen scaled OCR baseline, native crops, macOS 26 document recognition, lossless LZFSE and real HEVC round trips. It requires an explicit `RETRACE_OCR_QUALITY_EXPORT` path; ordinary suites skip that comparison. Real Vision/SQLite/HEVC regressions separately cover complete lines, crop geometry, cache invalidation, exact decoded pixels and source/outcome metrics. Root coordinates the Shared `readFrameForProcessing` contract across Processing/Storage. Original retention and direct capture-time Accessibility text remain pending; source tests do not establish installed accuracy or performance acceptance.
 
 `App/Tests/ScreenEvidenceAdmissionIntegrationTests.swift` exercises the native policy bridge, local-only unpublished-artifact endpoints, cancellation/metric-delayed reads and coalesced owning-service initialization/cleanup against private SQLite. Its debug initialization boundary skips unrelated native/audio/storage setup; it never substitutes the policy owner or database. Capture and Database own their lifecycle/mutation/rollback regressions. The admission contract grants no model scheduling, agent disclosure or index readiness.
 
@@ -518,7 +523,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-18_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-20_
 
 
 <claude-mem-context>

@@ -12,12 +12,12 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
     /// Recognition languages for OCR
     private let recognitionLanguages: [String]
 
-    /// OCR scale settings for adaptive downscaling.
-    /// Frames above the target megapixel budget are downscaled to cap OCR cost.
+    /// Fast-mode scale and native crop work budgets. Accurate OCR never downsizes pixels.
     private static let maxOCRScaleFactor: CGFloat = 1.0
     private static let minOCRScaleFactor: CGFloat = 0.30
     private static let targetMegapixelsAccurate: CGFloat = 1.75
     private static let targetMegapixelsFast: CGFloat = 2.25
+    private static let maxNativeObservations = 512
 
     public init(recognitionLanguages: [String] = ["en-US"]) {
         self.recognitionLanguages = recognitionLanguages
@@ -30,70 +30,214 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         bytesPerRow: Int,
         config: ProcessingConfig
     ) async throws -> [TextRegion] {
-        try autoreleasepool {
-            let textRequest = VNRecognizeTextRequest()
-            textRequest.recognitionLevel = Self.recognitionLevel(for: config)
-            textRequest.recognitionLanguages = recognitionLanguages
-            textRequest.usesLanguageCorrection = false
-            textRequest.preferBackgroundProcessing = config.preferBackgroundProcessing
-
-            guard let cgImage = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
+        try Task.checkCancellation()
+        return try autoreleasepool {
+            guard let image = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
                 throw ProcessingError.imageConversionFailed
             }
-
-            let ocrImage: CGImage
-            let ocrScaleFactor = Self.calculateOCRScaleFactor(
-                width: width,
-                height: height,
-                config: config
-            )
-            if ocrScaleFactor < Self.maxOCRScaleFactor {
-                ocrImage = downscaleImage(cgImage, scale: ocrScaleFactor) ?? cgImage
-            } else {
-                ocrImage = cgImage
+            let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+            var discovered = try recognize(image, in: bounds, config: config)
+            guard config.ocrAccuracyLevel == .accurate,
+                  CGFloat(width) * CGFloat(height) > Self.targetMegapixelsAccurate * 1_000_000 else {
+                return discovered
             }
 
-            let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
-            do {
-                try handler.perform([textRequest])
-            } catch {
-                throw ProcessingError.ocrFailed(underlying: error.localizedDescription)
+            discovered = try discoverInNativeCrops(image, data: imageData, bytesPerRow: bytesPerRow,
+                                                   initial: discovered, config: config)
+
+            try Task.checkCancellation()
+            return Self.readingOrder(discovered)
+        }
+    }
+
+    /// Full-display text detection can miss small text even at native resolution.
+    /// Overlapping crops expose it at a useful detector scale. Complete initial
+    /// lines extend a crop across its grid boundary; seam reads cover previously
+    /// undetected lines. Solid-colour crops need no Vision request.
+    private func discoverInNativeCrops(_ image: CGImage, data: Data, bytesPerRow: Int,
+                                      initial: [TextRegion], config: ProcessingConfig) throws -> [TextRegion] {
+        let frame = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        guard initial.count <= Self.maxNativeObservations else { return initial }
+        var local: [TextRegion] = []
+        var observed: [TextRegion] = []
+        var seams: [CGRect] = []
+        var requests = 0
+        var inspected = 0
+        var processedPixels: CGFloat = 0
+        captureCrops: for y in stride(from: 0, to: image.height, by: 720) {
+            for x in stride(from: 0, to: image.width, by: 1280) {
+                try Task.checkCancellation()
+                guard inspected < 128, requests < 12 else { break captureCrops }
+                inspected += 1
+                let core = CGRect(x: x, y: y, width: 1280, height: 720).intersection(frame)
+                var crop = core.insetBy(dx: -64, dy: -64).intersection(frame)
+                if initial.count <= 128 {
+                    for region in initial where crop.intersects(region.bounds) {
+                        let expanded = crop.union(region.bounds.insetBy(dx: -16, dy: -16).integral.intersection(frame))
+                        if expanded.width * expanded.height <= 2_250_000 { crop = expanded }
+                    }
+                }
+                guard processedPixels + crop.width * crop.height <= 12_000_000,
+                      !Self.isUniform(data, bytesPerRow: bytesPerRow, bounds: crop),
+                      let pixels = image.cropping(to: crop) else { continue }
+                requests += 1
+                processedPixels += crop.width * crop.height
+                let regions = try recognize(pixels, in: crop, config: config)
+                guard observed.count + regions.count <= Self.maxNativeObservations else { return initial }
+                observed += regions
+                for region in regions {
+                    if (crop.minX > 0 && region.bounds.minX < crop.minX + 32)
+                        || (crop.maxX < frame.maxX && region.bounds.maxX > crop.maxX - 32) {
+                        let strip = CGRect(x: 0, y: region.bounds.minY - 16,
+                                           width: frame.width, height: region.bounds.height + 32).integral.intersection(frame)
+                        if let index = seams.firstIndex(where: { $0.intersects(strip) }) {
+                            seams[index] = seams[index].union(strip)
+                        } else if seams.count < 4 { seams.append(strip) }
+                    }
+                    if core.contains(CGPoint(x: region.bounds.midX, y: region.bounds.midY)) { local.append(region) }
+                }
             }
+        }
+        for strip in seams where strip.width * strip.height <= 1_750_000 {
+            try Task.checkCancellation()
+            // Tighten the horizontal crop to all observed fragments on this
+            // line. A full-width mostly blank strip can defeat text detection.
+            let fragments = observed.filter { strip.intersects($0.bounds) }
+            guard !fragments.isEmpty else { continue }
+            let crop = fragments.reduce(CGRect.null) { $0.union($1.bounds) }
+                .insetBy(dx: -32, dy: -16).integral.intersection(frame)
+            guard crop.width * crop.height <= 1_750_000,
+                  let pixels = image.cropping(to: crop) else { continue }
+            let existing = local.filter { crop.intersects($0.bounds) }
+            let refined = try recognize(pixels, in: crop, config: config)
+            guard refined.count <= Self.maxNativeObservations else { continue }
+            let replacement = Self.completeRefinement(refined, replacing: existing)
+            guard local.count - existing.count + replacement.count <= Self.maxNativeObservations else { continue }
+            local.removeAll { crop.intersects($0.bounds) }
+            local += replacement
+        }
+        // A local detector may omit a line that the full display recognized.
+        // Preserve it unless the local observations provide a complete replacement.
+        let retained = try initial.filter { original in
+            try Task.checkCancellation()
+            let candidates = local.filter { $0.bounds.intersects(original.bounds) }
+            return !Self.refinementIsComplete(candidates, replacing: [original])
+        }
+        local = try local.filter { candidate in
+            try Task.checkCancellation()
+            return !retained.contains { $0.bounds.intersects(candidate.bounds) }
+        }
+        return local.count + retained.count <= Self.maxNativeObservations ? local + retained : initial
+    }
 
-            guard let observations = textRequest.results else {
-                return []
+    private static func isUniform(_ data: Data, bytesPerRow: Int, bounds: CGRect) -> Bool {
+        data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return true }
+            let first = base.advanced(by: Int(bounds.minY) * bytesPerRow + Int(bounds.minX) * 4)
+            let rowBytes = Int(bounds.width) * 4
+            for offset in stride(from: 4, to: rowBytes, by: 4) {
+                if memcmp(first, first.advanced(by: offset), 4) != 0 { return false }
             }
-
-            return observations.compactMap { observation -> TextRegion? in
-                guard observation.confidence >= config.minimumConfidence else { return nil }
-                guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                let text = topCandidate.string
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-                // Vision uses bottom-left origin; Retrace stores top-left pixel coordinates.
-                let box = observation.boundingBox
-                let flippedY = 1.0 - box.origin.y - box.height
-                let pixelBox = CGRect(
-                    x: box.origin.x * CGFloat(width),
-                    y: flippedY * CGFloat(height),
-                    width: box.width * CGFloat(width),
-                    height: box.height * CGFloat(height)
-                )
-
-                return TextRegion(
-                    frameID: FrameID(value: 0), // Placeholder - updated by caller.
-                    text: text,
-                    bounds: pixelBox,
-                    confidence: Double(observation.confidence)
-                )
+            for row in 1..<Int(bounds.height) {
+                if memcmp(first, first.advanced(by: row * bytesPerRow), rowBytes) != 0 { return false }
             }
+            return true
+        }
+    }
+
+    static func completeRefinement(_ refined: [TextRegion], replacing original: [TextRegion]) -> [TextRegion] {
+        // A nonempty response is not proof that Vision read every line. Keep
+        // discovery intact unless the new observations cover every original line.
+        refinementIsComplete(refined, replacing: original) ? refined : original
+    }
+
+    private static func refinementIsComplete(_ refined: [TextRegion], replacing original: [TextRegion]) -> Bool {
+        !refined.isEmpty && original.allSatisfy { region in
+            let matches = refined.filter { candidate in
+                let overlap = candidate.bounds.intersection(region.bounds)
+                return !overlap.isNull && overlap.height >= min(candidate.bounds.height, region.bounds.height) * 0.5
+            }
+            let extent = matches.reduce(CGRect.null) { $0.union($1.bounds) }
+            let covered = extent.insetBy(dx: -3, dy: -3).intersection(region.bounds)
+            // Full-display detection can include substantial vertical padding.
+            // A sharper line need not reproduce that padding to cover its text.
+            let matchedHeight = matches.map { $0.bounds.height }.max() ?? 0
+            let originalText = region.text.filter { !$0.isWhitespace }
+            let refinedText = matches.sorted { $0.bounds.minX < $1.bounds.minX }
+                .map(\.text).joined().filter { !$0.isWhitespace }
+            let estimatedGlyphWidth = region.bounds.width / CGFloat(max(1, originalText.count))
+            // Whole-display boxes can pad either end by roughly one glyph.
+            // If text becomes shorter, require tighter coverage: that allowance
+            // must not hide a lost final digit alongside an earlier OCR change.
+            let edgeTolerance: CGFloat = refinedText.count < originalText.count ? 2
+                : max(2, min(12, max(region.bounds.height * 0.1, estimatedGlyphWidth)))
+            // A short missing suffix can fit within detector padding. Never
+            // replace a complete line with just its literal prefix or suffix.
+            if refinedText.count < originalText.count,
+               originalText.hasPrefix(refinedText) || originalText.hasSuffix(refinedText) { return false }
+            return !covered.isNull && covered.width >= region.bounds.width * 0.8
+                && extent.minX <= region.bounds.minX + edgeTolerance
+                && extent.maxX >= region.bounds.maxX - edgeTolerance
+                && covered.height >= min(region.bounds.height, matchedHeight) * 0.5
+                && matches.reduce(0, { $0 + $1.text.count }) >= Int(Double(region.text.count) * 0.8)
+        }
+    }
+
+    private static func readingOrder(_ regions: [TextRegion]) -> [TextRegion] {
+        let topDown = regions.sorted { $0.bounds.minY == $1.bounds.minY
+            ? $0.bounds.minX < $1.bounds.minX : $0.bounds.minY < $1.bounds.minY }
+        var rows: [[TextRegion]] = []
+        for region in topDown {
+            if let anchor = rows.last?.first {
+                let overlap = anchor.bounds.intersection(region.bounds)
+                let shorter = min(anchor.bounds.height, region.bounds.height)
+                if !overlap.isNull && overlap.height >= shorter * 0.5 {
+                    rows[rows.count - 1].append(region)
+                    continue
+                }
+                // Horizontally separated words have no rectangle intersection,
+                // but their vertical spans can still be on exactly the same line.
+                let vertical = min(anchor.bounds.maxY, region.bounds.maxY) - max(anchor.bounds.minY, region.bounds.minY)
+                if vertical >= shorter * 0.5 && abs(anchor.bounds.midY - region.bounds.midY) <= max(3, shorter * 0.5) {
+                    rows[rows.count - 1].append(region)
+                    continue
+                }
+            }
+            rows.append([region])
+        }
+        return rows.flatMap { $0.sorted { $0.bounds.minX < $1.bounds.minX } }
+    }
+
+    /// Read one image, mapping Vision's normalized coordinates into original pixels.
+    private func recognize(_ image: CGImage, in bounds: CGRect, config: ProcessingConfig) throws -> [TextRegion] {
+        try Task.checkCancellation()
+        let scale = Self.calculateOCRScaleFactor(width: image.width, height: image.height, config: config)
+        let input = scale < 1 ? (downscaleImage(image, scale: scale) ?? image) : image
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = Self.recognitionLevel(for: config)
+        request.recognitionLanguages = recognitionLanguages
+        request.usesLanguageCorrection = false
+        request.preferBackgroundProcessing = config.preferBackgroundProcessing
+        do { try VNImageRequestHandler(cgImage: input, options: [:]).perform([request]) }
+        catch { throw ProcessingError.ocrFailed(underlying: error.localizedDescription) }
+        try Task.checkCancellation()
+        return (request.results ?? []).compactMap { observation in
+            guard observation.confidence >= config.minimumConfidence,
+                  let candidate = observation.topCandidates(1).first,
+                  !candidate.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let box = observation.boundingBox
+            return TextRegion(frameID: FrameID(value: 0), text: candidate.string,
+                bounds: CGRect(x: bounds.minX + box.minX * bounds.width,
+                               y: bounds.minY + (1 - box.maxY) * bounds.height,
+                               width: box.width * bounds.width, height: box.height * bounds.height),
+                confidence: Double(observation.confidence))
         }
     }
 
     // MARK: - Live Screenshot OCR
 
     /// Perform OCR directly on a CGImage (for live screenshot use case)
-    /// Uses the same .accurate pipeline as frame processing
+    /// Separate one-shot .accurate request; saved-frame discovery/caching is not used here.
     /// Returns TextRegions with **normalized coordinates** (0.0-1.0) for direct use with OCRNodeWithText
     public func recognizeTextFromCGImage(_ cgImage: CGImage) async throws -> [TextRegion] {
         try autoreleasepool {
@@ -319,12 +463,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         var mergedRegions = unaffectedRegions + newRegions
 
         // Sort by reading order: top-to-bottom, then left-to-right
-        mergedRegions.sort { a, b in
-            if abs(a.bounds.origin.y - b.bounds.origin.y) < 20 {
-                return a.bounds.origin.x < b.bounds.origin.x
-            }
-            return a.bounds.origin.y < b.bounds.origin.y
-        }
+        mergedRegions = Self.readingOrder(mergedRegions)
         let mergeTime = Date().timeIntervalSince(mergeStartTime) * 1000
 
         // Update cache with merged results
@@ -348,7 +487,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
     }
 
     /// Plan disjoint native-resolution crops with bounded request and pixel costs.
-    /// The full-frame discovery pass keeps its existing adaptive pixel budget.
+    /// Accurate full-frame discovery retains the native image when crop work exceeds this budget.
     static func incrementalCropBounds(
         changedTiles: [TileInfo],
         cachedRegions: [TextRegion],
@@ -458,56 +597,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
                 throw ProcessingError.imageConversionFailed
             }
 
-            let ocrScaleFactor = Self.calculateOCRScaleFactor(
-                width: cropImage.width,
-                height: cropImage.height,
-                config: config
-            )
-            let ocrImage = ocrScaleFactor < Self.maxOCRScaleFactor
-                ? (downscaleImage(cropImage, scale: ocrScaleFactor) ?? cropImage)
-                : cropImage
-
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = Self.recognitionLevel(for: config)
-            request.recognitionLanguages = recognitionLanguages
-            // Match the full-frame path: preserve identifiers and source spelling.
-            request.usesLanguageCorrection = false
-            request.preferBackgroundProcessing = config.preferBackgroundProcessing
-
-            let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                throw ProcessingError.ocrFailed(underlying: error.localizedDescription)
-            }
-
-            guard let observations = request.results else {
-                return []
-            }
-
-            return observations.compactMap { observation -> TextRegion? in
-                guard observation.confidence >= config.minimumConfidence else { return nil }
-                guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                let text = topCandidate.string
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-
-                // Vision sees only the cropped image, so its normalized bounds
-                // map once into the integral crop's original top-left pixel bounds.
-                let box = observation.boundingBox
-                let pixelBounds = CGRect(
-                    x: cropBounds.minX + box.minX * cropBounds.width,
-                    y: cropBounds.minY + (1.0 - box.maxY) * cropBounds.height,
-                    width: box.width * cropBounds.width,
-                    height: box.height * cropBounds.height
-                )
-
-                return TextRegion(
-                    frameID: FrameID(value: 0),
-                    text: text,
-                    bounds: pixelBounds,
-                    confidence: Double(observation.confidence)
-                )
-            }
+            return try recognize(cropImage, in: cropBounds, config: config)
         }
     }
 
@@ -521,14 +611,16 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         }
     }
 
-    /// Compute an adaptive OCR scale based on frame size.
-    /// This caps OCR pixel workload on large/ultrawide displays to reduce CPU spikes.
+    /// The fast setting bounds pixel cost; accurate recognition preserves native detail.
     private static func calculateOCRScaleFactor(
         width: Int,
         height: Int,
         config: ProcessingConfig
     ) -> CGFloat {
         guard width > 0, height > 0 else { return maxOCRScaleFactor }
+        // Accurate recognition must see the original letter strokes. Resizing a
+        // 4K display to 1.75 MP removes small glyph details before Vision runs.
+        guard config.ocrAccuracyLevel == .fast else { return maxOCRScaleFactor }
 
         let frameMegapixels = (CGFloat(width) * CGFloat(height)) / 1_000_000.0
         let targetMegapixels: CGFloat = (config.ocrAccuracyLevel == .fast) ? targetMegapixelsFast : targetMegapixelsAccurate
@@ -586,6 +678,10 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
     /// Convert raw pixel data to CGImage for Vision framework
     /// Assumes BGRA format (typical from ScreenCaptureKit)
     func createCGImage(from data: Data, width: Int, height: Int, bytesPerRow: Int) -> CGImage? {
+        let (rowBytes, rowOverflow) = width.multipliedReportingOverflow(by: 4)
+        let (size, sizeOverflow) = bytesPerRow.multipliedReportingOverflow(by: height)
+        guard width > 0, height > 0, !rowOverflow, !sizeOverflow,
+              bytesPerRow >= rowBytes, size <= 256 * 1024 * 1024, data.count >= size else { return nil }
         let colorSpace = CGColorSpaceCreateDeviceRGB()
 
         // BGRA format: premultiplied alpha, little endian

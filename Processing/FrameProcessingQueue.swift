@@ -501,17 +501,16 @@ public actor FrameProcessingQueue {
                 throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
             }
 
-            // Read from finalized video and convert JPEG payload for OCR.
-            let frameData = try await storage.readFrame(
-                segmentID: actualSegmentID,
-                frameIndex: frameRef.frameIndexInSegment
-            )
-
-            guard let convertedFrame = try convertJPEGToCapturedFrame(frameData, frameRef: frameRef) else {
-                Log.error("[Queue-DIAG] Frame \(frameID) image conversion failed!", category: .processing)
-                throw ProcessingError.imageConversionFailed
+            do {
+                capturedFrame = try await storage.readFrameForProcessing(frame: frameRef, video: videoSegment)
+            } catch let error as ExactFrameReadError {
+                switch error {
+                case .cancelled: throw CancellationError()
+                case .recordingMissing: throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
+                case .frameFinalising: throw FrameProcessingFailure.mediaUnavailable(.frameFinalising)
+                case .integrityFailure: throw FrameProcessingFailure.mediaUnavailable(.integrityFailure)
+                }
             }
-            capturedFrame = convertedFrame
         }
 
         // The database already claimed the frame atomically when it was dequeued.
@@ -519,17 +518,24 @@ public actor FrameProcessingQueue {
 
         let tFrame = CFAbsoluteTimeGetCurrent()
 
-        // Run OCR
-        let extractedText = try await processing.extractText(from: capturedFrame)
-        try Task.checkCancellation()
-
-        let tOCR = CFAbsoluteTimeGetCurrent()
-
-        // Search text, highlight regions and completion become visible together.
-        _ = try await databaseManager.commitFrameOCR(
-            frameID: FrameID(value: frameID), text: extractedText,
-            frameWidth: videoSegment.width, frameHeight: videoSegment.height
-        )
+        let pixelSource = walFrame == nil ? "archive_bgra" : "wal_bgra"
+        await recordOCRSourceMetric(source: pixelSource, outcome: "started")
+        let tOCR: CFAbsoluteTime
+        do {
+            let extractedText = try await processing.extractText(from: capturedFrame)
+            try Task.checkCancellation()
+            tOCR = CFAbsoluteTimeGetCurrent()
+            // Search text, highlight regions and completion become visible together.
+            _ = try await databaseManager.commitFrameOCR(
+                frameID: FrameID(value: frameID), text: extractedText,
+                frameWidth: videoSegment.width, frameHeight: videoSegment.height
+            )
+        } catch {
+            await recordOCRSourceMetric(source: pixelSource,
+                                        outcome: error is CancellationError ? "cancelled" : "failed")
+            throw error
+        }
+        await recordOCRSourceMetric(source: pixelSource, outcome: "completed")
 
         let tDone = CFAbsoluteTimeGetCurrent()
         Log.recordLatency("ocr_frame_processing", valueMs: (tDone - t0) * 1000, category: .processing)
@@ -542,49 +548,10 @@ public actor FrameProcessingQueue {
         return .success
     }
 
-    /// Convert JPEG data back to CapturedFrame for OCR
-    private func convertJPEGToCapturedFrame(_ jpegData: Data, frameRef: FrameReference) throws -> CapturedFrame? {
-        autoreleasepool {
-            guard let nsImage = NSImage(data: jpegData),
-                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-                return nil
-            }
-
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerRow = width * 4
-
-            // Create BGRA bitmap context
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-
-            var pixelData = Data(count: bytesPerRow * height)
-
-            pixelData.withUnsafeMutableBytes { ptr in
-                guard let context = CGContext(
-                    data: ptr.baseAddress,
-                    width: width,
-                    height: height,
-                    bitsPerComponent: 8,
-                    bytesPerRow: bytesPerRow,
-                    space: colorSpace,
-                    bitmapInfo: bitmapInfo.rawValue
-                ) else {
-                    return
-                }
-
-                context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-            }
-
-            return CapturedFrame(
-                timestamp: frameRef.timestamp,
-                imageData: pixelData,
-                width: width,
-                height: height,
-                bytesPerRow: bytesPerRow,
-                metadata: frameRef.metadata
-            )
-        }
+    private func recordOCRSourceMetric(source: String, outcome: String) async {
+        guard let data = try? JSONEncoder().encode(["source": source, "outcome": outcome]),
+              let metadata = String(data: data, encoding: .utf8) else { return }
+        try? await databaseManager.recordMetricEvent(metricType: .ocrSourceProcessing, metadata: metadata)
     }
 
     private func parseActualSegmentID(from relativePath: String) throws -> VideoSegmentID {

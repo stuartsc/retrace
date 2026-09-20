@@ -348,6 +348,14 @@ private actor RepairStorage: StorageProtocol {
     let root: URL
     private(set) var failureDescription: String?
     init(storage: StorageManager, mode: Mode, root: URL) { self.storage = storage; self.mode = mode; self.root = root }
+    func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame {
+        // Preserve the intentionally exercised legacy decoder failures and the
+        // real file-removal race while conforming to the new worker contract.
+        let name = URL(fileURLWithPath: video.relativePath).deletingPathExtension().lastPathComponent
+        let pathID = try XCTUnwrap(Int64(name))
+        _ = try await readFrame(segmentID: VideoSegmentID(value: pathID), frameIndex: frame.frameIndexInSegment)
+        return try await storage.readFrameForProcessing(frame: frame, video: video)
+    }
     func readFrame(segmentID: VideoSegmentID, frameIndex: Int) async throws -> Data {
         do {
             if mode == .decodeAll { return try await storage.readFrameDecodeAll(segmentID: segmentID, frameIndex: frameIndex) }

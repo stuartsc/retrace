@@ -44,6 +44,8 @@ Strict encoded-frame reads retry a stale image generator once, then reject a tim
 
 Exact screen evidence uses `ExactFrameReader` and `WALManager.readExactFrame`. Encoded reads create fresh image generators, validate finite sample timestamps and expected dimensions, check source-file stability, and propagate cancellation. WAL evidence requires a conflict-free database frame ID map and a validated record boundary; capture index is never a fallback. Timestamp tolerance is at most the native database's one millisecond precision. The dedicated exact-media tests encode real HEVC samples and write real binary WAL records; these fixtures do not establish installed-app latency.
 
+The root-coordinated `StorageProtocol.readFrameForProcessing` method reads native archived frames into BGRA without an intermediate JPEG. It requires matching video identity, an in-range frame index, exact dimensions/timestamp and a relative path resolving inside the storage root, including symlink validation. `FrameConverter.createCapturedFrame` checks arithmetic/stride allocation and preserves saved timestamp/metadata. Presentation image APIs remain separate. Real HEVC tests cover decoded pixel identity through the queue and mismatched identity, traversal and escaping symlinks. This does not extend raw WAL retention or change the archive codec/quality settings.
+
 ## Recovery invariants
 
 - Normal capture writes `frames.bin` and `metadata.json`; `frame_id_map.bin` records exact database frame ID to byte offset mappings.

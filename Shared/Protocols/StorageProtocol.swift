@@ -24,6 +24,10 @@ public protocol StorageProtocol: Actor {
     /// Frame index is the position in the video (0-based), encoded at fixed 30 FPS
     func readFrame(segmentID: VideoSegmentID, frameIndex: Int) async throws -> Data
 
+    /// Exact native archive pixels for OCR, without presentation JPEG encoding.
+    /// The supplied frame and video must belong to the same saved source.
+    func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame
+
     /// Get the file path for a segment
     func getSegmentPath(id: VideoSegmentID) async throws -> URL
 
@@ -60,6 +64,10 @@ public protocol StorageProtocol: Actor {
 }
 
 public extension StorageProtocol {
+    func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame {
+        throw StorageError.fileReadFailed(path: video.relativePath, underlying: "Native processing pixels are unavailable")
+    }
+
     func createRecoverySegmentWriter() async throws -> SegmentWriter {
         throw StorageError.fileWriteFailed(path: "WAL recovery", underlying: "Recovery writer is not implemented")
     }

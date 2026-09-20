@@ -9,6 +9,141 @@ final class VisionOCRIncrementalTests: XCTestCase {
     private let ocr = VisionOCR()
     private let config = ProcessingConfig(accessibilityEnabled: false, minimumConfidence: 0.1)
 
+    func testSparseProportionalTextIsDiscoveredOn4KFrame() async throws {
+        let lines = ["Reference ZX842619 amount 9876.54",
+            "Invoice ABC12345 total 4200.00 payable Friday", "Cedar proposal amount 47000.00",
+            "https://example.test/invoices/ZX842619", "const invoice_id = 842619; total = 9876.54;",
+            "Approved on 2026-09-20 for account 17002468"]
+        let captured = try frame(width: 3840, height: 2160,
+            lines: lines.enumerated().map { ($0.element, 800, CGFloat(300 + $0.offset * 250), 16) },
+            fontName: "Helvetica")
+        let regions = try await ocr.recognizeText(imageData: captured.imageData, width: captured.width,
+            height: captured.height, bytesPerRow: captured.bytesPerRow,
+            config: ProcessingConfig(accessibilityEnabled: false, minimumConfidence: 0.5))
+        let recognized = regions.map(\.text).joined(separator: " ")
+        for text in lines { XCTAssertTrue(recognized.contains(text), "Legible source text was dropped or changed: \(recognized)") }
+    }
+
+    func testNativeDiscoveryKeepsLinesWholeAcrossCropBoundaries() async throws {
+        let lines = ["Reference ZX842619 amount 9876.54",
+            "Invoice ABC12345 total 4200.00 payable Friday", "Cedar proposal amount 47000.00",
+            "https://example.test/invoices/ZX842619", "const invoice_id = 842619; total = 9876.54;",
+            "Approved on 2026-09-20 for account 17002468"]
+        let captured = try frame(width: 3840, height: 2160,
+            lines: lines.enumerated().map { ($0.element, 1000, CGFloat(300 + $0.offset * 250), 16) },
+            fontName: "Helvetica")
+        let regions = try await ocr.recognizeText(imageData: captured.imageData, width: captured.width,
+            height: captured.height, bytesPerRow: captured.bytesPerRow, config: config)
+        XCTAssertEqual(regions.map(\.text).joined(separator: " "), lines.joined(separator: " "),
+                       "Overlapping discovery must not split or duplicate a source line")
+    }
+
+    func testDarkScreenPreservesReadingOrderWhenVisionSplitsALine() async throws {
+        let lines = ["Reference ZX842619 amount 9876.54",
+            "Invoice ABC12345 total 4200.00 payable Friday", "Cedar proposal amount 47000.00",
+            "https://example.test/invoices/ZX842619", "const invoice_id = 842619; total = 9876.54;",
+            "Approved on 2026-09-20 for account 17002468"]
+        let captured = try frame(width: 3840, height: 2160,
+            lines: lines.enumerated().map { ($0.element, 800, CGFloat(300 + $0.offset * 250), 14) },
+            background: 0.075, foreground: 0.95)
+        let regions = try await ocr.recognizeText(imageData: captured.imageData, width: captured.width,
+            height: captured.height, bytesPerRow: captured.bytesPerRow, config: config)
+        XCTAssertEqual(regions.map(\.text).joined(separator: " "), lines.joined(separator: " "))
+    }
+
+    func testPartialRefinementCannotDiscardAlreadyDetectedLines() async throws {
+        let captured = try frame(lines: [("Invoice total 4200.00", 80, 130, 32),
+                                         ("Reference ZX842619", 80, 170, 32)])
+        let discovered = try await ocr.recognizeText(imageData: captured.imageData,
+            width: captured.width, height: captured.height, bytesPerRow: captured.bytesPerRow, config: config)
+        XCTAssertEqual(discovered.count, 2, "Use real Vision observations of both authored lines")
+        guard discovered.count == 2 else { return }
+        // Inject a dropped observation at the recognizer boundary. This models
+        // a partial Vision response without inventing text or geometry fixtures.
+        let partial = [discovered[0]]
+        let kept = VisionOCR.completeRefinement(partial, replacing: discovered)
+        XCTAssertEqual(kept.map(\.text), discovered.map(\.text))
+        XCTAssertEqual(VisionOCR.completeRefinement(discovered, replacing: discovered).map(\.text), discovered.map(\.text))
+    }
+
+    func testPartialRefinementCannotDiscardShortTrailingText() async throws {
+        for (prefix, suffix) in [("Invoice ABC12345 decision is approved", " NOT"),
+                                 ("Invoice reference ABC12345 amount 9876.", "54")] {
+            let complete = try frame(lines: [(prefix + suffix, 80, 170, 32)])
+            let clipped = try frame(lines: [(prefix, 80, 170, 32)])
+            let original = try await ocr.recognizeText(imageData: complete.imageData,
+                width: complete.width, height: complete.height, bytesPerRow: complete.bytesPerRow, config: config)
+            let partial = try await ocr.recognizeText(imageData: clipped.imageData,
+                width: clipped.width, height: clipped.height, bytesPerRow: clipped.bytesPerRow, config: config)
+            XCTAssertEqual(original.map(\.text), [prefix + suffix], "Vision must read the complete authored fixture")
+            XCTAssertFalse(partial.isEmpty)
+            XCTAssertNotEqual(partial.map(\.text), original.map(\.text))
+            // A real prefix-only raster models a crop omitting the trailing ink.
+            // Its high overlap is not permission to lose a short critical suffix.
+            let kept = VisionOCR.completeRefinement(partial, replacing: original)
+            XCTAssertEqual(kept.map(\.text), original.map(\.text))
+        }
+    }
+
+    func testPartialRefinementCannotDropFinalDigitWhenAnotherGlyphDiffers() async throws {
+        let completeText = "Invoice ABC12345 amount 9876.54"
+        let partialText = "Invoice ABC12346 amount 9876.5"
+        let complete = try frame(width: 480, height: 120, lines: [(completeText, 40, 60, 16)])
+        let clipped = try frame(width: 480, height: 120, lines: [(partialText, 40, 60, 16)])
+        let original = try await ocr.recognizeText(imageData: complete.imageData,
+            width: complete.width, height: complete.height, bytesPerRow: complete.bytesPerRow, config: config)
+        let partial = try await ocr.recognizeText(imageData: clipped.imageData,
+            width: clipped.width, height: clipped.height, bytesPerRow: clipped.bytesPerRow, config: config)
+        XCTAssertEqual(original.map(\.text), [completeText])
+        XCTAssertEqual(partial.map(\.text), [partialText])
+        XCTAssertEqual(VisionOCR.completeRefinement(partial, replacing: original).map(\.text), [completeText],
+                       "A changed earlier glyph must not bypass protection for a dropped final digit")
+    }
+
+    func testInitial4KFrameRetainsSmallIdentifiersAndAmounts() async throws {
+        let identifier = "Reference ZX842619 amount 9876.54"
+        let invoice = "Invoice ABC12345 total 4200.00 payable Friday"
+        let heading = "Cedar proposal amount 47000.00"
+        let captured = try frame(width: 3840, height: 2160, lines: [
+            (identifier, 800, 500, 12), (invoice, 800, 800, 16),
+            (heading, 800, 1400, 32)
+        ])
+        let regions = try await ocr.recognizeText(
+            imageData: captured.imageData, width: captured.width,
+            height: captured.height, bytesPerRow: captured.bytesPerRow, config: config
+        )
+        let text = regions.map(\.text).joined(separator: " ")
+        for expected in [identifier, invoice, heading] {
+            XCTAssertTrue(text.contains(expected), "Initial OCR must retain the authored text: \(text)")
+        }
+        let bounds = try XCTUnwrap(regions.first { $0.text == identifier }?.bounds)
+        try assertHighlight(bounds, coversInkIn: captured,
+                            area: CGRect(x: 780, y: 470, width: 350, height: 50))
+    }
+
+    func test4KCacheRefreshRetainsSmallTextAfterApplicationChange() async throws {
+        let text = "Reference ZX842619 amount 9876.54"
+        let heading = "Unchanged heading"
+        let original = try frame(width: 3840, height: 2160,
+                                 lines: [(heading, 100, 200, 48)])
+        let pixels = try frame(width: 3840, height: 2160,
+                               lines: [(heading, 100, 200, 48), (text, 2430, 1450, 12)])
+        let replacement = CapturedFrame(timestamp: pixels.timestamp, imageData: pixels.imageData,
+            width: pixels.width, height: pixels.height, bytesPerRow: pixels.bytesPerRow,
+            metadata: FrameMetadata(appBundleID: "com.test.other-document"))
+        let cache = FullFrameOCRCache()
+        _ = try await ocr.recognizeTextRegionBased(frame: original, previousFrame: nil,
+                                                  cache: cache, config: config)
+        let result = try await ocr.recognizeTextRegionBased(frame: replacement,
+            previousFrame: original, cache: cache, config: config)
+        XCTAssertTrue(result.regions.contains { $0.text == text },
+                      "A cache reset must not reduce detail: \(result.regions.map(\.text))")
+        let unchanged = try await ocr.recognizeTextRegionBased(frame: replacement,
+            previousFrame: replacement, cache: cache, config: config)
+        XCTAssertEqual(unchanged.regions.map(\.text), result.regions.map(\.text))
+        XCTAssertEqual(unchanged.stats.tilesOCRed, 0)
+    }
+
     func testOneCharacterEditKeepsEntireLineAndFrameCoordinates() async throws {
         let beforeText = "Invoice ABC12345 total 4200.00 payable Friday"
         let afterText = "Invoice ABC12345 total 9200.00 payable Friday"
@@ -90,7 +225,7 @@ final class VisionOCRIncrementalTests: XCTestCase {
         XCTAssertEqual(result.regions.map(\.text).joined(separator: " "), "Reference 9000 Amount 9200", "Expanded crops must replace all intersecting cached text, including the neighbor")
     }
 
-    func testLarge4KChangeKeepsExistingFullFramePixelBudget() async throws {
+    func testLarge4KChangeRefreshesTheWholeFrameAtNativeResolution() async throws {
         let heading = ("Budget remains bounded", CGFloat(80), CGFloat(160), CGFloat(48))
         let before = try frame(width: 3840, height: 2160, lines: [heading])
         let after = try frame(width: 3840, height: 2160, lines: [heading], changedArea: CGRect(x: 0, y: 0, width: 3840, height: 2160))
@@ -181,7 +316,10 @@ final class VisionOCRIncrementalTests: XCTestCase {
         height: Int = 700,
         lines: [(String, CGFloat, CGFloat, CGFloat)],
         changedArea: CGRect? = nil,
-        rowPadding: Int = 0
+        rowPadding: Int = 0,
+        fontName: String = "Menlo",
+        background: CGFloat = 1,
+        foreground: CGFloat = 0
     ) throws -> CapturedFrame {
         let bytesPerRow = width * 4 + rowPadding
         var data = Data(count: bytesPerRow * height)
@@ -192,7 +330,7 @@ final class VisionOCRIncrementalTests: XCTestCase {
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
             ))
-            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.setFillColor(CGColor(gray: background, alpha: 1))
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
             if let area = changedArea {
                 context.setFillColor(CGColor(gray: 0.88, alpha: 1))
@@ -200,8 +338,8 @@ final class VisionOCRIncrementalTests: XCTestCase {
             }
             for (text, x, baselineFromTop, size) in lines {
                 let attributes: [NSAttributedString.Key: Any] = [
-                    NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Menlo" as CFString, size, nil),
-                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1)
+                    NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName(fontName as CFString, size, nil),
+                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: foreground, alpha: 1)
                 ]
                 let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
                 context.textPosition = CGPoint(x: x, y: CGFloat(height) - baselineFromTop)
