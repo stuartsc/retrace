@@ -6,6 +6,8 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 **Status**: Core screen capture (CGWindowListCapture), OCR (Vision), full-text search (FTS5), HEVC encoding, Rewind import, audio transcription, and push-to-dictate are working. Vector search is planned for a future release.
 
+**Installed local repair (2026-09-29):** build **2609.29.1** is the narrow V23-compatible masked-recording display fix from source `7aab20a`. Recording and privacy settings are preserved. The larger source candidate remains uninstalled; see the [repair validation](docs/progressive-recall-validation.md#masked-recording-display-repair--2026-09-29) for scoped UI acceptance, restart gaps and rollback material.
+
 ---
 
 ## Quick Reference

@@ -11,6 +11,7 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 - Fixed local screenshot, thumbnail and retained-text access for recordings whose excluded window regions were already blacked out during capture. A capture masking flag no longer hides the entire saved screen.
 - Masked entries are labelled “Recorded screen”; their details explain that areas were masked when recorded and show the saved reason. The retained pixels, masking and exact frame reference stay intact.
 - This narrow hotfix is based on the installed `83dc626` source (2609.18.1), with no database migration. Current app/window/URL restrictions and separate automatic/agent access checks remain in place. [Verification and delivery status](docs/progressive-recall-validation.md#masked-recording-display-repair--2026-09-29).
+- **Local trial 2609.29.1 installed and checked:** 169 focused regressions and a separate clean optimized build pass. Installed checks show masked recordings and the reported historical frame, preserved V23/settings/identity, and resumed screen/audio recording. The source fix was also forward-ported into the uninstalled workspace, where 201 focused tests pass. This local trial is unreleased; the wider responsiveness/storage candidate remains separate.
 
 ### 2026-09-18 — Play audio from timeline transcripts
 
