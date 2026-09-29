@@ -475,7 +475,7 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     }
 
     private static func permits(_ metadata: FrameMetadata, config: CaptureConfig) -> Bool {
-        ScreenEvidenceAccessPolicy(config: config).permits(metadata)
+        ScreenEvidenceAccessPolicy(config: config).permitsLocalPresentation(metadata)
     }
 
     public func track(_ action: ProgressiveRecallAction, outcome: String = "success", count: Int = 1) async {

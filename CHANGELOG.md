@@ -1,10 +1,16 @@
 # Updates and changelog
 
-Last updated: 2026-09-18.
+Last updated: 2026-09-29.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-09-29 — Open recordings that contain masked areas
+
+- Fixed local screenshot, thumbnail and retained-text access for recordings whose excluded window regions were already blacked out during capture. A capture masking flag no longer hides the entire saved screen.
+- Masked entries are labelled “Recorded screen”; their details explain that areas were masked when recorded and show the saved reason. The retained pixels, masking and exact frame reference stay intact.
+- This narrow hotfix is based on the installed `83dc626` source (2609.18.1), with no database migration. Current app/window/URL restrictions and separate automatic/agent access checks remain in place. [Verification and delivery status](docs/progressive-recall-validation.md#masked-recording-display-repair--2026-09-29).
 
 ### 2026-09-18 — Play audio from timeline transcripts
 

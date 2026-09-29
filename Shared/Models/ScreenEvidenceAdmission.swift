@@ -20,10 +20,18 @@ public struct ScreenEvidenceAccessPolicy: Codable, Equatable, Sendable {
         redactBrowserURLPatterns = config.redactBrowserURLPatterns
     }
 
-    /// Same retained-evidence predicate used by exact local presentation. A
-    /// scrubbed URL cannot establish that a historical raw URL passes a new rule.
+    /// Automatic derivation keeps its separate, conservative masking fence.
     public func permits(_ metadata: FrameMetadata) -> Bool {
-        guard formatVersion == 1, metadata.redactionReason == nil,
+        guard metadata.redactionReason == nil else { return false }
+        return permitsLocalPresentation(metadata)
+    }
+
+    /// A capture-time redaction describes pixels already masked before storage,
+    /// not a ban on opening the remaining recording. Keep its original metadata
+    /// and apply independent current restrictions without removing the mask.
+    /// A scrubbed URL still cannot establish that an old raw URL passes a new rule.
+    public func permitsLocalPresentation(_ metadata: FrameMetadata) -> Bool {
+        guard formatVersion == 1,
               metadata.appBundleID.map({ !excludedAppBundleIDs.contains($0) }) ?? true else { return false }
         let title = metadata.windowName ?? ""
         guard !redactWindowTitlePatterns.contains(where: {

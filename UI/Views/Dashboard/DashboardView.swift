@@ -3441,6 +3441,7 @@ public struct DashboardView: View {
     }
 
     private func liveFrameDisplayAppName(_ frame: FrameReference) -> String {
+        if frame.metadata.redactionReason != nil { return "Recorded screen" }
         if let bundleID = frame.metadata.appBundleID,
            let resolvedName = liveFrameAppNamesByBundleID[bundleID] {
             return resolvedName

@@ -679,3 +679,8 @@ Focus on getting the timeline + search working first before polishing dashboard/
 Project assignment, visit grouping, correction forms and the separate Activity & Evidence window are removed. Old backend Codable/storage contracts remain compatible. Full structured-observation projection belongs on a background service/model path, never in SwiftUI `body`; render only bounded fragments and the selected verified highlight ordinals.
 
 Screenshot lists must retain source + frame + capture time + acquired source-generation proof with each row. Key selection, row identity, caches and async admission consistently. A selected row that disappears is unavailable, not permission to select the first remaining row. Bracket source reads and validate the original token at selection/presentation; source reconfiguration invalidates all older work. Reuse exact-thumbnail admission rather than an unvalidated image cache. A disconnected imported OCR request must never fall back to native data with the same numeric ID.
+
+
+### Capture-masked recorded screens
+
+A non-nil `FrameMetadata.redactionReason` describes pixels masked before storage. The local history viewer must display the retained masked image and its remaining OCR when independently permitted; it is not a whole-frame access denial. `ExactEvidenceView` explains the saved masking reason and the dashboard labels these rows “Recorded screen”. App owns local admission separately from automatic derivation. Exact source/frame/revision, deletion and cancellation checks still apply.

@@ -82,6 +82,11 @@ struct ExactEvidenceView: View {
             if let app = snapshot.frame.metadata.appName ?? snapshot.frame.metadata.appBundleID {
                 Text(app).font(.callout).foregroundStyle(.secondary)
             }
+            if let reason = snapshot.frame.metadata.redactionReason {
+                Label("Some areas were masked when recorded.", systemImage: "rectangle.dashed")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
             if let context = snapshot.frame.metadata.captureContext, !context.uncertainty.isEmpty {
                 Text(context.uncertainty.joined(separator: "; ")).font(.caption).foregroundStyle(.secondary)
             }
