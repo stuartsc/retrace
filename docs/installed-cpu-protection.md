@@ -34,8 +34,9 @@ admission thresholds are not a hard process CPU cap.
 
 ## Validation and delivery ledger
 
-Work is in progress; this document does not establish installation or measured
-performance acceptance. The first behavioral run demonstrated 25 expected
+**Source and signed package are verified; installation is pending a normal
+app quit.** This document does not establish installed performance acceptance.
+The first behavioral run demonstrated 25 expected
 failures across 48 tests (one intentional skip). The initial implementation
 then passed 54 focused tests with two native opt-in skips. Review identified
 shared-connection transaction ownership and exact integer-timestamp preservation
@@ -57,6 +58,44 @@ The temporary priority reduction applied to PID 39830 ended when that app was
 quit at 15:58:49; it was reapplied to relaunched PID 87637. This is temporary
 scheduling preference, not CPU protection acceptance. Global power settings
 were not changed.
+
+### Completed source and package checks — 1 October
+
+- Implemented source: `f1551beee4ee2e64a4e2642aec7c8c99e315b8c9`, branch
+  `fix/installed-cpu-governor` in `/Users/stuartbond/backintime-hotfix-cpu-guard`.
+- A fresh `swift package clean` followed by the full instrumented debug suite
+  passed **1,137 tests, nine intentional skips, zero failures**. A separate
+  run using the installed small Whisper model passed all five native/model
+  tests, with no skips. Native token revocation joined in **0.0595385 seconds**
+  and the same model remained usable. These cases use authored audio.
+- Combined line coverage is **90.7%** across the new governor, sampler,
+  admission, ownership and persistence files; this excludes UI and legacy
+  audio files. Coverage is a source check, not a live performance benchmark.
+- A separate empty release scratch directory produced a clean optimized
+  build in 1,189.91 seconds. Source, native inputs and dependency pins matched
+  their pre-build hashes. Compilation ran with two jobs and reduced priority;
+  macOS refused a later attempt to increase that priority, so it stayed at 15.
+- Signed candidate **0.7.6 (2610.1.1)** has executable SHA-256
+  `fe0fe21736e62842d26b54606fd02413a3b0acf702057cbc0e00ae1364d93c90`.
+  The unbundled build SHA-256 is
+  `fb767eb6388af11f165ef0c40905564a27f7c46c3e2a51ba0ad8786156091411`.
+  All 39 executable sections, header properties and non-signature link-edit
+  bytes match; 15 resource files match their build receipt. Entitlements and
+  designated requirement match the installed app. Six native libraries match
+  their tested section/header/link-edit payloads. Development library search
+  paths are absent; strict deep signature verification passes.
+- The old app reopened at 17:05:44 as PID 76643. Its temporary priority was
+  reduced to 10. A later one-minute observation ranged from 116.6% to 186.1%
+  CPU; compilation/tests were also active, so this is not a matched baseline.
+- The app had not been replaced as of 17:40. macOS UI automation repeatedly
+  timed out in both Retrace and Activity Monitor; a normal manual quit was
+  requested. No forced termination was used. The old app is still recording.
+
+Private receipts include `source-verification.json`, `release-complete.json`,
+`package-verified.json`, `payload-comparison-review.json` and the retained
+`Validation/` logs under the delivery directory above. Live CPU comparison,
+recording advancement, settings/schema checks and installed UI acceptance
+must follow installation; none is inferred from these source/package checks.
 
 ## Scope limits
 

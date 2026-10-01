@@ -12,7 +12,7 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 - Automatic ambient transcription and refinement share one admission governor. They wait for five minutes without input, acceptable measured load and macOS scheduling, use two Whisper threads in Low Power Mode or four otherwise, and cancel interruptible native inference when activity returns.
 - Successfully saved audio waits in durable pending rows. Cancellation, restart and shutdown preserve eligibility; exact pending completion is atomic, and explicit repairs remain owned through their last database write. Dictation remains immediately available.
 - System Monitor distinguishes recording from audio text preparation and offers a cancellable Process now override. Existing screen capture, OCR, codecs, privacy settings and V23 history remain compatible.
-- Source candidate only until separate clean validation, packaging and installed checks are recorded in [the CPU protection ledger](docs/installed-cpu-protection.md).
+- **Verified signed candidate 2610.1.1, not yet installed:** 1,137 clean debug tests pass (nine intentional skips), five explicit native/model tests pass, and the separate clean optimized build passes. Native Whisper cancellation joined in about 60 ms. Installation is waiting for a normal app quit because macOS UI automation timed out. [CPU protection ledger](docs/installed-cpu-protection.md).
 
 ### 2026-09-29 — Open recordings that contain masked areas
 
