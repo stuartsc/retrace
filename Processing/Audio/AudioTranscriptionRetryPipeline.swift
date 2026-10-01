@@ -32,6 +32,7 @@ public enum AudioTranscriptionRetryPipeline {
         initialPrompt: String?,
         profile: AudioTranscriptionProfile = .exhaustiveRepair
     ) async throws -> AudioTranscriptionDecision {
+        try BackgroundProcessingContext.checkCancellation()
         let activity = AudioSpeechActivityPolicy.evaluate(
             audioData,
             sampleRate: sampleRate,
@@ -47,6 +48,7 @@ public enum AudioTranscriptionRetryPipeline {
         let effectiveInitialPrompt = profile == .liveFirstPass ? nil : initialPrompt
 
         for variant in attemptPlan.variants {
+            try BackgroundProcessingContext.checkCancellation()
             let shouldKeepSearching = bestDecision.map {
                 shouldContinueForCompleteness(activity: activity, decision: $0, profile: profile)
             } ?? true
@@ -65,6 +67,7 @@ public enum AudioTranscriptionRetryPipeline {
             )
 
             for languageHint in hints {
+                try BackgroundProcessingContext.checkCancellation()
                 attempts += 1
                 let transcription = try await transcriptionService.transcribeWithTimestamps(
                     candidateAudio,
@@ -72,6 +75,7 @@ public enum AudioTranscriptionRetryPipeline {
                     initialPrompt: effectiveInitialPrompt,
                     languageHint: languageHint.rawValue
                 )
+                try BackgroundProcessingContext.checkCancellation()
                 let assessment = AudioTranscriptQualityPolicy.assess(
                     text: transcription.text,
                     language: transcription.language,

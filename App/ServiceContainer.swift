@@ -21,6 +21,9 @@ public actor ServiceContainer {
     public let audioCapture: AudioCaptureManager
     public let processing: ProcessingManager
     public let audioProcessing: AudioProcessingManager
+    public let resourceUsage: ResourceUsageMonitor
+    public let backgroundProcessing: BackgroundProcessingGovernor
+    let manualAudioWork = ManualAudioWorkOwner()
     public let dictation: DictationManager
     public let search: SearchManager
     public let migration: MigrationManager
@@ -88,6 +91,9 @@ public actor ServiceContainer {
         self.searchConfig = searchConfig
 
         // Initialize all managers
+        let resourceUsage = ResourceUsageMonitor()
+        self.resourceUsage = resourceUsage
+        self.backgroundProcessing = BackgroundProcessingGovernor(resourceUsage: resourceUsage)
         self.database = DatabaseManager(databasePath: databasePath)
         self.ftsEngine = FTSManager(databasePath: databasePath)
         // Use the correct storage root (respects custom path setting)
@@ -119,7 +125,8 @@ public actor ServiceContainer {
 
         if modelExists {
             transcriptionService = WhisperCppTranscriptionService(
-                modelPath: modelPath
+                modelPath: modelPath,
+                modelResidency: .onDemand(idleTimeout: .seconds(45))
             )
         } else {
             Log.warning("Whisper model not found at \(expandedModelPath), using mock transcription service (audio will be recorded but not transcribed)", category: .app)
@@ -136,6 +143,7 @@ public actor ServiceContainer {
             transcriptionService: transcriptionService,
             transcriptionQueries: nil,  // Set during initialization
             audioWriter: audioWriter,
+            governor: backgroundProcessing,
             config: audioProcessingConfig
         )
         self.dictation = DictationManager(transcriptionService: transcriptionService)
@@ -180,6 +188,9 @@ public actor ServiceContainer {
         self.processingConfig = .default
         self.audioProcessingConfig = .default
         self.searchConfig = .default
+
+        self.resourceUsage = ResourceUsageMonitor()
+        self.backgroundProcessing = BackgroundProcessingGovernor(observeSystem: false)
 
         self.database = DatabaseManager(databasePath: sharedMemoryPath)
         self.ftsEngine = FTSManager(databasePath: sharedMemoryPath)
@@ -252,10 +263,16 @@ public actor ServiceContainer {
         }
 
         Log.info("Initializing all services...", category: .app)
+        try await backgroundProcessing.reopenAfterJoinedClose()
+        try await manualAudioWork.reopen()
 
         // 1. Initialize database first (creates schema)
         try await database.initialize()
         try Task.checkCancellation()
+        await resourceUsage.start { [database] minute in
+            do { try await database.recordResourceUsageMinute(minute) }
+            catch { Log.warning("Could not save CPU usage aggregate", category: .app) }
+        }
         Log.info("✓ Database initialized", category: .app)
 
         // Historical evidence has an owning policy even while recording is
@@ -331,7 +348,7 @@ public actor ServiceContainer {
             // Create backfill manager only if real whisper service is available
             if let service = self.transcriptionService, !(service is MockTranscriptionService) {
                 self.audioBackfill = AudioBackfillManager(
-                    transcriptionService: service,
+                    transcriptionService: BackgroundTranscriptionService(service: service, governor: backgroundProcessing),
                     transcriptionQueries: audioTranscriptionQueries,
                     audioWriter: audioWriter,
                     storageRoot: audioStorageRoot
@@ -429,11 +446,12 @@ public actor ServiceContainer {
         let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
         let audioStorageRoot = await storage.getStorageDirectory()
         let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
-        let turboService = WhisperCppTranscriptionService(
+        let turboNativeService = WhisperCppTranscriptionService(
             modelPath: turboPath.path,
             samplingStrategy: .beamSearch(beamSize: 5),
             modelResidency: .onDemand(idleTimeout: .seconds(45))
         )
+        let turboService = BackgroundTranscriptionService(service: turboNativeService, governor: backgroundProcessing)
 
         if audioRefinement == nil {
             let refinement = AudioRefinementManager(
@@ -444,7 +462,7 @@ public actor ServiceContainer {
             )
             let processingRef = self.audioProcessing
             await refinement.setPass1ActiveCheck {
-                await processingRef.isCurrentlyProcessing
+                await processingRef.isTranscribing
             }
             self.audioRefinement = refinement
             Log.info("✓ Audio refinement manager initialized (turbo model loads on demand)", category: .app)
@@ -610,8 +628,8 @@ public actor ServiceContainer {
             return
         }
 
-        let realService = WhisperCppTranscriptionService(modelPath: modelURL.path)
-        try await realService.initialize()
+        let realService = WhisperCppTranscriptionService(modelPath: modelURL.path,
+            modelResidency: .onDemand(idleTimeout: .seconds(45)))
         self.transcriptionService = realService
 
         // Hot-swap the service in the audio processing manager
@@ -629,7 +647,7 @@ public actor ServiceContainer {
             let audioStorageRoot = await storage.getStorageDirectory()
             let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
             self.audioBackfill = AudioBackfillManager(
-                transcriptionService: realService,
+                transcriptionService: BackgroundTranscriptionService(service: realService, governor: backgroundProcessing),
                 transcriptionQueries: audioTranscriptionQueries,
                 audioWriter: audioWriter,
                 storageRoot: audioStorageRoot
@@ -644,7 +662,8 @@ public actor ServiceContainer {
         #if DEBUG
         shutdownRequestForTesting?()
         #endif
-        try await initializationLifecycle.stop(onRequest: { [capture] in
+        try await initializationLifecycle.stop(onRequest: { [capture, backgroundProcessing] in
+            await backgroundProcessing.cancelAutomaticWork()
             // Establish the policy fence before joining a late initialization.
             // Teardown below retries this close and finishes other resources even
             // if this first attempt fails; both errors remain in the task result.
@@ -658,6 +677,7 @@ public actor ServiceContainer {
         isInitialized = false
         var failures: [any Error] = []
         Log.info("Shutting down all services...", category: .app)
+        await backgroundProcessing.cancelAutomaticWork()
 
         // Partial startup and paused recording still have an owning policy.
         do { try await capture.shutdownConfigurationAdmission() }
@@ -668,6 +688,9 @@ public actor ServiceContainer {
         do { try await audioCapture.stopCapture() }
         catch { failures.append(error) }
 
+        await audioProcessing.stopProcessing()
+        await manualAudioWork.close()
+
         // Stop processing queue workers
         await processingQueue?.stopWorkers()
         processingQueue = nil
@@ -677,7 +700,10 @@ public actor ServiceContainer {
         await processing.waitForQueueDrain()
         Log.info("✓ Processing queue drained", category: .app)
 
-        // Audio processing will complete when stream ends
+        await backgroundProcessing.close()
+        await resourceUsage.close()
+
+        // Audio ingestion, native work and metric delivery are joined above.
         Log.info("✓ Audio processing drained", category: .app)
 
         // Stop retention manager

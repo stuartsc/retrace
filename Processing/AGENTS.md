@@ -136,3 +136,13 @@ throw ProcessingError.imageConversionFailed
 ## Validation
 
 Run `swift test --filter 'VisionOCRIncrementalTests|HistoricalOCRIsolationTests|OCRRepairEvidencePreservationTests|FrameProcessingSourceReadinessTests|FrameProcessingWakeSignalTests|NativeSpeechTranscriptionServiceTests'`. Vision tests render actual CoreText images and exercise the real Vision API. Historical isolation tests inject unrelated live AX while recognizing retained pixels. Repair tests use real SQLite and actual empty-video/decode-all out-of-range errors, including media-disappearance and explicit-deletion races. Native audio comparison requires explicit local fixture/model paths; the normal test run skips those cases.
+
+### V23 CPU governor repair (2026-10-01 source candidate)
+
+`AudioProcessingManager` accepts the App-owned `BackgroundProcessingProtocol`. With a governor, completed AAC recordings and legacy pending rows are durable before model admission; deferred PCM/metadata are not accumulated in a live array. One pending row is loaded after admission. Startup recovery refuses the missing-model mock, and replacing it with a real service wakes retained work. Native initialization is deferred to admitted work. Cancellation leaves rows pending, and repeated model/database errors back off for five seconds.
+
+The manager owns and joins ingestion, admission and inference. Stop flushes accepted partial audio using a joined uncancelled write before cancelling inference; a natural governed stream end does not wait for the next idle period. Native Whisper uses an owned abort token and the permit's thread count (two under Low Power Mode, four otherwise). Pending completion validates the original row and atomically inserts sentence rows/deletes its placeholder; deletion or another completion invalidates a stale result. Backfill uses the same completion/outcome transaction. Interrupted pass-2/pass-3 work exits as deferred without permanently retiring its candidate.
+
+This repair preserves the previous immediate in-memory fallback when AAC or raw-row persistence fails and exposes `hasPersistenceFailure`; it does not claim a new bounded disk-failure retention protocol. Existing low-rate OCR is unchanged by this narrow repair.
+
+`AudioProcessingGovernorTests`, `PendingAudioCommitTests` and `WhisperModelResidencyTests` cover private AAC/SQLite admission, restart, cancellation, exact completion, partial-tail shutdown and model recovery. The opt-in native cancellation/reuse case requires `RETRACE_WHISPER_WORD_TEST_MODEL_PATH` and uses only the bundled authored fixture. Source tests and installed CPU acceptance remain separate receipts.

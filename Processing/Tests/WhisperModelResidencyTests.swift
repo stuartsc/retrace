@@ -7,6 +7,60 @@ import Shared
 @testable import Processing
 
 final class WhisperModelResidencyTests: XCTestCase {
+    #if DEBUG
+    func testNativePermitRevocationJoinsInferenceAndModelRemainsUsable() async throws {
+        let modelPath = try Self.requiredEnvironment("RETRACE_WHISPER_WORD_TEST_MODEL_PATH")
+        let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "authored", withExtension: "wav",
+            subdirectory: "WhisperTimedWords"))
+        let fixture = try Self.readAuthoredPCM(at: fixtureURL.path)
+        let service = WhisperCppTranscriptionService(modelPath: modelPath, useGPU: false)
+        try await service.initialize()
+        addTeardownBlock { await service.cleanup() }
+        let entered = expectation(description: "Native cancellation handler installed")
+        await service.setNativeInferenceStartedForTesting { entered.fulfill() }
+        var longerInput = Data()
+        for _ in 0..<3 { longerInput.append(fixture.pcm) }
+        let input = longerInput
+        let permit = BackgroundProcessingPermit(threadCount: 2)
+        let inference = Task.detached(priority: .utility) {
+            try await BackgroundProcessingContext.$permit.withValue(permit) {
+                try await service.transcribeWithTimestamps(input, wordLevel: true, initialPrompt: nil, languageHint: "en")
+            }
+        }
+        await fulfillment(of: [entered], timeout: 30)
+        // This gives whisper_full an opportunity to enter; exact internal phase is not observed.
+        try await Task.sleep(for: .milliseconds(100), clock: .continuous)
+        let start = ContinuousClock.now
+        permit.cancellation.cancel()
+        do {
+            _ = try await inference.value
+            XCTFail("Revoked native inference must not return usable text")
+        } catch is CancellationError {}
+        let elapsed = start.duration(to: .now).components
+        let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+        XCTAssertLessThan(seconds, 5, "Native inference must yield promptly to foreground use")
+        await service.setNativeInferenceStartedForTesting(nil)
+        let result = try await service.transcribeWithTimestamps(fixture.pcm, wordLevel: false,
+            initialPrompt: nil, languageHint: "en")
+        XCTAssertFalse(result.text.isEmpty, "Cancellation must leave the native context reusable")
+        print("WHISPER_NATIVE_CANCELLATION join_seconds=\(seconds) reused_model_nonempty=\(!result.text.isEmpty)")
+    }
+    #endif
+
+    func testCancelledCallerDoesNotLoadOnDemandModel() async {
+        let service = WhisperCppTranscriptionService(modelPath: Self.missingModelPath(),
+            modelResidency: .onDemand(idleTimeout: .seconds(1)))
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await service.transcribe(Data(repeating: 0, count: 32_000))
+                XCTFail("Cancelled work must not enter the native model")
+            } catch is CancellationError {
+            } catch { XCTFail("Expected cancellation before model loading, got \(error)") }
+        }
+        await task.value
+    }
+
     /// Opt-in real inference on the reviewed, authored (never recorded) fixture.
     /// The decoder's full text is the oracle for its independently extracted
     /// timed words, so this regression does not require perfect speech accuracy.

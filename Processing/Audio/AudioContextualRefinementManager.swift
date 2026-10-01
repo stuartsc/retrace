@@ -10,7 +10,7 @@ import CoreGraphics
 /// Owner: PROCESSING agent
 public actor AudioContextualRefinementManager {
 
-    private let transcriptionService: WhisperCppTranscriptionService
+    private let transcriptionService: any TranscriptionProtocol
     private let transcriptionQueries: AudioTranscriptionQueries
     private let audioWriter: AudioSegmentWriter
     private let storageRoot: URL
@@ -35,7 +35,7 @@ public actor AudioContextualRefinementManager {
     }
 
     public init(
-        transcriptionService: WhisperCppTranscriptionService,
+        transcriptionService: any TranscriptionProtocol,
         transcriptionQueries: AudioTranscriptionQueries,
         audioWriter: AudioSegmentWriter,
         storageRoot: URL
@@ -72,7 +72,7 @@ public actor AudioContextualRefinementManager {
         var attemptedBatchPaths = Set<String>()
         var attemptedBatches = 0
 
-        while true {
+        processingLoop: while !Task.isCancelled {
             if let batchLimit, attemptedBatches >= batchLimit { break }
             // Wait for idle conditions
             while runMode == .automatic && !isIdle() {
@@ -109,6 +109,8 @@ public actor AudioContextualRefinementManager {
 
                 let result = await processSingleBatch(batchPath)
                 switch result {
+                case .deferred:
+                    break processingLoop
                 case .refined(let sentenceCount):
                     totalRefined += 1
                     totalSentences += sentenceCount
@@ -160,12 +162,14 @@ public actor AudioContextualRefinementManager {
     // MARK: - Private
 
     private enum BatchResult {
+        case deferred
         case refined(sentenceCount: Int)
         case skipped(reason: String)
         case failed(reason: String)
     }
 
     private func processSingleBatch(_ batchPath: String) async -> BatchResult {
+        do { try BackgroundProcessingContext.checkCancellation() } catch { return .deferred }
         // 1. Get neighboring batch text for context
         let neighbors: (preceding: String?, following: String?)
         do {
@@ -212,6 +216,9 @@ public actor AudioContextualRefinementManager {
                 wordLevel: true,
                 initialPrompt: prompt
             )
+            try BackgroundProcessingContext.checkCancellation()
+        } catch is CancellationError {
+            return .deferred
         } catch {
             Log.error("[ContextualRefinement] Transcription failed for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "transcription_failed")
@@ -289,10 +296,13 @@ public actor AudioContextualRefinementManager {
 
         // 11. Atomically insert pass-3 records and remove pass-2 replacements.
         do {
+            try BackgroundProcessingContext.checkCancellation()
             try await transcriptionQueries.replacePass2RecordsForBatch(
                 batchAudioPath: batchPath,
                 with: transcriptionsBatch
             )
+        } catch is CancellationError {
+            return .deferred
         } catch {
             Log.error("[ContextualRefinement] Failed to replace records for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "replace_failed")
@@ -308,6 +318,7 @@ public actor AudioContextualRefinementManager {
         reason: String
     ) async {
         do {
+            try BackgroundProcessingContext.checkCancellation()
             _ = try await transcriptionQueries.markBatchRefinementAttempted(
                 batchAudioPath: batchPath,
                 transcriptionPass: 2,

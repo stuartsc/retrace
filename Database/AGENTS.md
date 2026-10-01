@@ -6,6 +6,12 @@ You are responsible for the **Database** module of Retrace. Your job is to imple
 
 ## Your Directory
 
+The October 1 V23 CPU repair adds `ResourceUsagePersistence.swift` and
+`Tests/ResourceUsagePersistenceTests.swift`: content-free minute aggregates in
+the existing `daily_metrics` table, bounded to thirty days / 43,200 rows with
+bounded cleanup. It creates no history migration. Pending-audio completion
+regressions are in `Tests/PendingAudioCommitTests.swift`.
+
 ```
 Database/
 ├── Migrations/

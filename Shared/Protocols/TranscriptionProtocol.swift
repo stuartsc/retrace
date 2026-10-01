@@ -7,7 +7,7 @@ public protocol TranscriptionProtocol: Actor {
     func initialize() async throws
 
     /// Cleanup resources
-    func cleanup()
+    func cleanup() async
 
     /// Transcribe audio data
     /// - Parameter audioData: PCM Int16 audio data at 16kHz mono

@@ -3577,7 +3577,7 @@ public struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("\(untranscribedBatchCount) saved audio batch\(untranscribedBatchCount == 1 ? "" : "es")")
                                         .font(.subheadline)
-                                    Text("Recorded before the whisper model was downloaded")
+                                    Text("Saved recordings waiting for text preparation")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
@@ -3608,13 +3608,16 @@ public struct SettingsView: View {
     }
 
     private func runBackfill() async {
-        guard let backfill = await coordinatorWrapper.coordinator.getAudioBackfill() else { return }
         isBackfillRunning = true
         backfillResultMessage = nil
 
-        let result = await backfill.processAllPendingBatches()
+        let result = await coordinatorWrapper.coordinator.transcribePendingAudioNow()
 
         isBackfillRunning = false
+        guard let result else {
+            backfillResultMessage = "Audio processing is unavailable or another repair is already running."
+            return
+        }
         if result.processedCount > 0 || result.silenceCount > 0 {
             backfillResultMessage = "Transcribed \(result.processedCount) batch\(result.processedCount == 1 ? "" : "es"), \(result.totalSentences) sentence\(result.totalSentences == 1 ? "" : "s")"
         }

@@ -25,6 +25,12 @@ public let CURRENT_PIPELINE_VERSION: Int = 9
 public actor AudioTranscriptionQueries {
 
     private let db: OpaquePointer
+    #if DEBUG
+    private var pendingTransactionWillCommitForTesting: (@Sendable () -> Void)?
+    func setPendingTransactionWillCommitForTesting(_ hook: (@Sendable () -> Void)?) {
+        pendingTransactionWillCommitForTesting = hook
+    }
+    #endif
 
     public init(db: OpaquePointer) {
         self.db = db
@@ -46,6 +52,98 @@ public actor AudioTranscriptionQueries {
         audioVariant: String,
         qualityFlags: String?
     )
+
+    /// Replace an exact, still-pending raw row once. No transaction suspension or schema change.
+    public func completePendingRawBatch(
+        _ batch: UntranscribedBatch,
+        with transcriptions: [TranscriptionBatchRecord],
+        cancellation: BackgroundProcessingCancellation? = nil
+    ) throws -> Bool {
+        guard !transcriptions.isEmpty else { return false }
+        guard transcriptions.count <= 1_024, transcriptions.allSatisfy({
+            $0.batchAudioPath == batch.audioPath && $0.audioPath == batch.audioPath &&
+            $0.source == batch.source && $0.transcriptionPass == 1
+        }) else {
+            throw DatabaseError.queryExecutionFailed("Pending audio completion must retain its canonical media/source")
+        }
+        return try mutatePendingRawBatch(batch, cancellation: cancellation) {
+            for item in transcriptions {
+                _ = try insertTranscription(sessionID: item.sessionID, text: item.text,
+                    startTime: item.startTime, endTime: item.endTime, source: item.source,
+                    confidence: item.confidence, words: item.words, audioPath: item.audioPath,
+                    transcriptionPass: item.transcriptionPass, batchAudioPath: item.batchAudioPath,
+                    transcriptStatus: item.transcriptStatus, detectedLanguage: item.detectedLanguage,
+                    audioVariant: item.audioVariant, qualityFlags: item.qualityFlags)
+            }
+            try deleteTranscription(id: batch.id)
+        }
+    }
+
+    /// Classify only the same pending row; deleted/completed audio cannot be resurrected.
+    public func updatePendingRawBatchOutcome(
+        _ batch: UntranscribedBatch, text: String, transcriptStatus: String,
+        detectedLanguage: String?, audioVariant: String, qualityFlags: String?,
+        cancellation: BackgroundProcessingCancellation? = nil
+    ) throws -> Bool {
+        try mutatePendingRawBatch(batch, cancellation: cancellation) {
+            try updateBatchOutcome(id: batch.id, text: text, transcriptStatus: transcriptStatus,
+                detectedLanguage: detectedLanguage, audioVariant: audioVariant, qualityFlags: qualityFlags)
+        }
+    }
+
+    private func mutatePendingRawBatch(_ batch: UntranscribedBatch,
+        cancellation: BackgroundProcessingCancellation?, operation: () throws -> Void) throws -> Bool {
+        func checkCancellation() throws {
+            try Task.checkCancellation()
+            if cancellation?.isCancelled == true { throw CancellationError() }
+        }
+        try checkCancellation()
+        // FULLMUTEX serializes individual SQLite calls. Keep its recursive mutex for
+        // the complete transaction so another actor sharing this pointer cannot write
+        // into a transaction whose cancellation may roll back.
+        guard let mutex = sqlite3_db_mutex(db) else {
+            throw DatabaseError.queryExecutionFailed("Pending audio requires a serialized SQLite connection")
+        }
+        sqlite3_mutex_enter(mutex)
+        defer { sqlite3_mutex_leave(mutex) }
+        try checkCancellation()
+        try executeStatement("BEGIN IMMEDIATE TRANSACTION;")
+        var committed = false
+        defer { if !committed { try? executeStatement("ROLLBACK;") } }
+        guard try pendingRawBatchMatches(batch) else { return false }
+        try operation()
+        #if DEBUG
+        pendingTransactionWillCommitForTesting?()
+        #endif
+        try checkCancellation()
+        try executeStatement("COMMIT;")
+        committed = true
+        return true
+    }
+
+    private func pendingRawBatchMatches(_ batch: UntranscribedBatch) throws -> Bool {
+        let sql = """
+            SELECT 1 FROM audio_captures WHERE id = ? AND audio_path = ? AND source = ?
+            AND start_time = ? AND end_time = ? AND audio_size = ?
+            AND transcript_status IN ('pending', 'needs_repair') LIMIT 1;
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, batch.id)
+        sqlite3_bind_text(statement, 2, batch.audioPath, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 3, batch.source.rawValue, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(statement, 4, batch.startTimeMilliseconds)
+        sqlite3_bind_int64(statement, 5, batch.endTimeMilliseconds)
+        sqlite3_bind_int64(statement, 6, batch.audioSize)
+        let result = sqlite3_step(statement)
+        guard result == SQLITE_ROW || result == SQLITE_DONE else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        return result == SQLITE_ROW
+    }
 
     // MARK: - Insert Transcription
 
@@ -718,7 +816,9 @@ public actor AudioTranscriptionQueries {
                 endTime: endTime,
                 source: AudioSource(rawValue: sourceRaw) ?? .microphone,
                 audioPath: audioPath,
-                audioSize: audioSize
+                audioSize: audioSize,
+                startTimeMilliseconds: sqlite3_column_int64(stmt, 1),
+                endTimeMilliseconds: sqlite3_column_int64(stmt, 2)
             ))
         }
 
@@ -1346,6 +1446,8 @@ public struct UntranscribedBatch: Sendable {
     public let source: AudioSource
     public let audioPath: String
     public let audioSize: Int64
+    public let startTimeMilliseconds: Int64
+    public let endTimeMilliseconds: Int64
 
     public init(
         id: Int64,
@@ -1353,7 +1455,9 @@ public struct UntranscribedBatch: Sendable {
         endTime: Date,
         source: AudioSource,
         audioPath: String,
-        audioSize: Int64
+        audioSize: Int64,
+        startTimeMilliseconds: Int64? = nil,
+        endTimeMilliseconds: Int64? = nil
     ) {
         self.id = id
         self.startTime = startTime
@@ -1361,5 +1465,7 @@ public struct UntranscribedBatch: Sendable {
         self.source = source
         self.audioPath = audioPath
         self.audioSize = audioSize
+        self.startTimeMilliseconds = startTimeMilliseconds ?? Schema.dateToTimestamp(startTime)
+        self.endTimeMilliseconds = endTimeMilliseconds ?? Schema.dateToTimestamp(endTime)
     }
 }

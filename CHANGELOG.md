@@ -1,10 +1,18 @@
 # Updates and changelog
 
-Last updated: 2026-09-29.
+Last updated: 2026-10-01.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-10-01 — CPU monitoring and quiet-time audio preparation
+
+- Added an App-owned CPU sampler with one-core percentages, rolling averages, peak load, sample coverage and bounded minute history independent of the System Monitor window.
+- Automatic ambient transcription and refinement share one admission governor. They wait for five minutes without input, acceptable measured load and macOS scheduling, use two Whisper threads in Low Power Mode or four otherwise, and cancel interruptible native inference when activity returns.
+- Successfully saved audio waits in durable pending rows. Cancellation, restart and shutdown preserve eligibility; exact pending completion is atomic, and explicit repairs remain owned through their last database write. Dictation remains immediately available.
+- System Monitor distinguishes recording from audio text preparation and offers a cancellable Process now override. Existing screen capture, OCR, codecs, privacy settings and V23 history remain compatible.
+- Source candidate only until separate clean validation, packaging and installed checks are recorded in [the CPU protection ledger](docs/installed-cpu-protection.md).
 
 ### 2026-09-29 — Open recordings that contain masked areas
 

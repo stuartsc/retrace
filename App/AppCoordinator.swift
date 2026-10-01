@@ -364,8 +364,29 @@ public actor AppCoordinator {
         services.modelManager
     }
 
-    public func getAudioBackfill() async -> AudioBackfillManager? {
-        await services.audioBackfill
+    public func transcribePendingAudioNow() async -> AudioBackfillManager.BackfillResult? {
+        try? await services.manualAudioWork.run { [services] in
+            guard let backfill = await services.audioBackfill else { return nil }
+            return await backfill.processAllPendingBatches(maxBatches: 25)
+        }
+    }
+
+    public func backgroundProcessingSnapshot() async -> BackgroundProcessingSnapshot {
+        await services.backgroundProcessing.snapshot()
+    }
+
+    public func hasAudioPersistenceFailure() async -> Bool {
+        await services.audioProcessing.hasPersistenceFailure
+    }
+
+    public func resourceUsageSnapshot() async -> ResourceUsageSnapshot {
+        await services.resourceUsage.snapshot()
+    }
+
+    public func setBackgroundProcessNow(_ enabled: Bool) async {
+        await services.backgroundProcessing.setProcessNow(enabled)
+        try? await services.database.recordMetricEvent(metricType: .backgroundProcessing,
+            metadata: enabled ? "{\"action\":\"processNow\"}" : "{\"action\":\"cancelOverride\"}")
     }
 
     /// Status of a refinement run
@@ -387,6 +408,13 @@ public actor AppCoordinator {
     /// Manually trigger a full refinement cycle now (ignores schedule).
     /// Safe to call multiple times — individual managers have isRunning guards.
     public func triggerRefinementNow() async -> RefinementRunStatus {
+        (try? await services.manualAudioWork.run { [self] in
+            await performRefinementNow()
+        }) ?? RefinementRunStatus(backfillProcessed: 0, pass2Refined: 0, pass3Refined: 0,
+                                  totalSentencesAffected: 0)
+    }
+
+    private func performRefinementNow() async -> RefinementRunStatus {
         Log.info("[AppCoordinator] Manual refinement triggered", category: .app)
 
         var backfillProcessed = 0
@@ -429,6 +457,13 @@ public actor AppCoordinator {
     /// Mark historical placeholder batches in a bounded range as pending, then run the full
     /// repair/refinement cycle. This replaces ad-hoc DB resets for old [silence]/[hallucination] rows.
     public func repairAudioHistory(from startDate: Date, to endDate: Date, limit: Int = 500) async -> AudioHistoryRepairStatus {
+        (try? await services.manualAudioWork.run { [self] in
+            await performAudioHistoryRepair(from: startDate, to: endDate, limit: limit)
+        }) ?? AudioHistoryRepairStatus(markedForRepair: 0, backfillProcessed: 0,
+                                       pass2Refined: 0, pass3Refined: 0, totalSentencesAffected: 0)
+    }
+
+    private func performAudioHistoryRepair(from startDate: Date, to endDate: Date, limit: Int) async -> AudioHistoryRepairStatus {
         let metadata = "from=\(Int(startDate.timeIntervalSince1970));to=\(Int(endDate.timeIntervalSince1970));limit=\(limit)"
         try? await recordMetricEvent(metricType: .audioHistoryRepairStarted, metadata: metadata)
 
@@ -447,7 +482,7 @@ public actor AppCoordinator {
             }
         }
 
-        let refinement = await triggerRefinementNow()
+        let refinement = await performRefinementNow()
         let result = AudioHistoryRepairStatus(
             markedForRepair: markedForRepair,
             backfillProcessed: refinement.backfillProcessed,
@@ -945,12 +980,8 @@ public actor AppCoordinator {
                 }
 
                 while !Task.isCancelled {
-                    if let backfill = await services.audioBackfill {
-                        let result = await backfill.processAllPendingBatches(maxBatches: Self.automaticBackfillBatchLimit)
-                        if result.processedCount > 0 || result.silenceCount > 0 {
-                            Log.info("Audio backfill complete: \(result.processedCount) transcribed, \(result.silenceCount) silence, \(result.totalSentences) sentences", category: .app)
-                        }
-                    }
+                    // The governed ambient worker owns durable pending raw batches,
+                    // including restart recovery. Do not launch a second automatic reader.
                     if Task.isCancelled { break }
 
                     // Pass-2 refinement with turbo model.
@@ -1074,7 +1105,9 @@ public actor AppCoordinator {
             audioTask = nil
         }
         if stopPlan.cancelRefinementLoop {
-            refinementLoopTask?.cancel()
+            let refinement = refinementLoopTask
+            refinement?.cancel()
+            await refinement?.value
             refinementLoopTask = nil
         }
 

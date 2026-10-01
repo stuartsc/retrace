@@ -99,7 +99,7 @@ public actor AudioRefinementManager {
         var attemptedBatchPaths = Set<String>()
         var attemptedBatches = 0
 
-        while !Task.isCancelled {
+        processingLoop: while !Task.isCancelled {
             if let batchLimit, attemptedBatches >= batchLimit { break }
             if await yieldToPass1IfNeeded() {
                 continue
@@ -129,6 +129,8 @@ public actor AudioRefinementManager {
 
                 let result = await processSingleBatch(batchPath)
                 switch result {
+                case .deferred:
+                    break processingLoop
                 case .refined(let sentenceCount):
                     totalRefined += 1
                     totalSentences += sentenceCount
@@ -165,12 +167,14 @@ public actor AudioRefinementManager {
     // MARK: - Private
 
     private enum BatchResult {
+        case deferred
         case refined(sentenceCount: Int)
         case silence(reason: String)
         case failed(reason: String)
     }
 
     private func processSingleBatch(_ batchPath: String) async -> BatchResult {
+        do { try BackgroundProcessingContext.checkCancellation() } catch { return .deferred }
         // 1. Resolve batch audio path
         let fileURL = storageRoot.appendingPathComponent(batchPath)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
@@ -203,6 +207,9 @@ public actor AudioRefinementManager {
                 wordLevel: true,
                 initialPrompt: promptText
             )
+            try BackgroundProcessingContext.checkCancellation()
+        } catch is CancellationError {
+            return .deferred
         } catch {
             Log.error("[AudioRefinement] Transcription failed for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "transcription_failed")
@@ -285,10 +292,13 @@ public actor AudioRefinementManager {
 
         // 11. Atomically insert pass-2 records and remove pass-1 replacements.
         do {
+            try BackgroundProcessingContext.checkCancellation()
             try await transcriptionQueries.replacePass1RecordsForBatch(
                 batchAudioPath: batchPath,
                 with: transcriptionsBatch
             )
+        } catch is CancellationError {
+            return .deferred
         } catch {
             Log.error("[AudioRefinement] Failed to replace records for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "replace_failed")
@@ -324,6 +334,7 @@ public actor AudioRefinementManager {
         reason: String
     ) async {
         do {
+            try BackgroundProcessingContext.checkCancellation()
             _ = try await transcriptionQueries.markBatchRefinementAttempted(
                 batchAudioPath: batchPath,
                 transcriptionPass: 1,

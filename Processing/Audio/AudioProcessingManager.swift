@@ -3,11 +3,14 @@ import Shared
 import Database
 import Storage
 
+private enum PendingAudioCompletionError: Error { case staleRow, modelUnavailable }
+
 private struct PersistedAudioBatch: Sendable {
     let batch: AudioBatch
     let rawBatchID: Int64?
     let savedBatchPath: String?
     let savedBatchURL: URL?
+    let pendingRecord: UntranscribedBatch?
 
     var isSpooledToDisk: Bool {
         batch.audioData.isEmpty && savedBatchURL != nil
@@ -27,7 +30,8 @@ private struct PersistedAudioBatch: Sendable {
             ),
             rawBatchID: rawBatchID,
             savedBatchPath: savedBatchPath,
-            savedBatchURL: savedBatchURL
+            savedBatchURL: savedBatchURL,
+            pendingRecord: pendingRecord
         )
     }
 }
@@ -40,15 +44,26 @@ public actor AudioProcessingManager {
     private var transcriptionQueries: AudioTranscriptionQueries?
     private var audioWriter: AudioSegmentWriter?
     private var isProcessing = false
+    private let governor: (any BackgroundProcessingProtocol)?
+    private var ingestionTask: Task<Void, Never>?
+    private var admissionTask: Task<BackgroundProcessingPermit, Error>?
+    private var pendingGeneration: UInt64 = 0
+    public private(set) var isTranscribing = false
+    public private(set) var hasPersistenceFailure = false
+    #if DEBUG
+    private(set) var acceptedAudioSampleCountForTesting = 0
+    #endif
 
     /// Trailing words from the last batch (in the overlap zone) — used to deduplicate
     private var previousBatchTrailingWords: [TranscriptionWord] = []
 
     /// Duration of the last batch — needed to compute absolute timestamps for trailing words
     private var previousBatchDuration: TimeInterval = 0
+    private var previousBatchStart: Date?
+    private var previousBatchSource: AudioSource?
 
     // Batch buffering
-    private let bufferManager: AudioBufferManager
+    private var bufferManager: AudioBufferManager
 
     // Live transcription queue. Ingestion must keep draining capture even when Whisper is slow.
     private var liveTranscriptionQueue: [PersistedAudioBatch] = []
@@ -71,13 +86,22 @@ public actor AudioProcessingManager {
         transcriptionService: any TranscriptionProtocol,
         transcriptionQueries: AudioTranscriptionQueries? = nil,
         audioWriter: AudioSegmentWriter? = nil,
+        governor: (any BackgroundProcessingProtocol)? = nil,
         config: AudioProcessingConfig = .default
     ) {
         self.transcriptionService = transcriptionService
         self.transcriptionQueries = transcriptionQueries
         self.audioWriter = audioWriter
         self.config = config
+        self.governor = governor
         self.bufferManager = AudioBufferManager(maxBufferDuration: config.maxBufferDuration)
+    }
+
+    /// Join accepted capture writes, pending admission and the native inference callback.
+    public func stopProcessing() async {
+        guard let task = ingestionTask else { return }
+        task.cancel()
+        await task.value
     }
 
     // MARK: - Initialization
@@ -93,6 +117,7 @@ public actor AudioProcessingManager {
         if let writer = audioWriter {
             self.audioWriter = writer
         }
+        guard governor == nil else { return }
         do {
             try await transcriptionService.initialize()
         } catch {
@@ -103,6 +128,7 @@ public actor AudioProcessingManager {
     /// Hot-swap the transcription service (e.g., after downloading whisper model)
     public func updateTranscriptionService(_ service: any TranscriptionProtocol) {
         self.transcriptionService = service
+        if isProcessing { startLiveTranscriptionWorkerIfNeeded() }
         Log.info("[AudioProcessingManager] Transcription service updated to \(type(of: service))", category: .processing)
     }
 
@@ -110,37 +136,44 @@ public actor AudioProcessingManager {
 
     /// Start processing audio stream with batch accumulation
     public func startProcessing(audioStream: AsyncStream<CapturedAudio>) async {
-        guard !isProcessing else { return }
+        guard !isProcessing, !Task.isCancelled else { return }
         isProcessing = true
-        var wasCancelled = false
-        defer {
-            isProcessing = false
-        }
+        bufferManager = AudioBufferManager(maxBufferDuration: config.maxBufferDuration)
+        previousBatchTrailingWords.removeAll()
+        previousBatchDuration = 0
+        let task = Task { await self.ingest(audioStream) }
+        ingestionTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
+    }
 
+    private func ingest(_ audioStream: AsyncStream<CapturedAudio>) async {
+        defer { isProcessing = false; ingestionTask = nil }
+        if governor != nil { startLiveTranscriptionWorkerIfNeeded() }
         for await audio in audioStream {
-            if Task.isCancelled {
-                wasCancelled = true
-                break
-            }
-
-            // Accumulate samples into batches
-            if let batch = await bufferManager.addSample(audio) {
-                await acceptBatch(batch)
-            }
+            guard !Task.isCancelled else { break }
+            let batch = await bufferManager.addSample(audio)
+            #if DEBUG
+            acceptedAudioSampleCountForTesting += 1
+            #endif
+            // Once accepted into the buffer, a completed batch belongs to the durable writer,
+            // even when stop arrives during the buffer actor hop.
+            if let batch { await persistAcceptedBatchJoined(batch) }
         }
-
-        if wasCancelled || Task.isCancelled {
-            cancelLiveTranscriptionQueue()
-            return
+        let remaining = await bufferManager.flush()
+        for batch in remaining { await persistAcceptedBatchJoined(batch) }
+        if governor != nil || Task.isCancelled {
+            await cancelLiveTranscriptionQueue()
+        } else {
+            await waitForLiveTranscriptionQueueToDrain()
         }
+    }
 
-        // Stream ended — flush remaining buffers
-        let remainingBatches = await bufferManager.flush()
-        for batch in remainingBatches {
-            await acceptBatch(batch)
-        }
-
-        await waitForLiveTranscriptionQueueToDrain()
+    private func persistAcceptedBatchJoined(_ batch: AudioBatch) async {
+        // Unstructured solely to keep accepted capture writes uncancelled; always joined.
+        let write = Task { await self.acceptBatch(batch) }
+        await write.value
     }
 
     /// Persist a completed raw batch before any model work. This keeps recall lossless
@@ -154,6 +187,7 @@ public actor AudioProcessingManager {
         var rawBatchID: Int64?
         var savedBatchPath: String?
         var savedBatchURL: URL?
+        var pendingRecord: UntranscribedBatch?
         if let writer = audioWriter {
             do {
                 let (batchPath, batchSize) = try await writer.writeFullBatch(
@@ -177,6 +211,11 @@ public actor AudioProcessingManager {
                             audioPath: batchPath,
                             audioSize: batchSize
                         )
+                        if let rawBatchID {
+                            pendingRecord = UntranscribedBatch(id: rawBatchID,
+                                startTime: batch.startTimestamp, endTime: batch.endTimestamp,
+                                source: batch.source, audioPath: batchPath, audioSize: batchSize)
+                        }
                     } catch {
                         Log.error("[AudioProcessingManager] Failed to insert raw batch DB record: \(error)", category: .processing)
                     }
@@ -190,69 +229,139 @@ public actor AudioProcessingManager {
             batch: batch,
             rawBatchID: rawBatchID,
             savedBatchPath: savedBatchPath,
-            savedBatchURL: savedBatchURL
+            savedBatchURL: savedBatchURL,
+            pendingRecord: pendingRecord
         )
     }
 
     private func enqueueLiveTranscription(_ persistedBatch: PersistedAudioBatch) {
-        let canRecoverFromRawBatch = persistedBatch.rawBatchID != nil
-        let shouldSpool = canRecoverFromRawBatch &&
+        pendingGeneration &+= 1
+        if governor != nil, persistedBatch.pendingRecord != nil {
+            // The legacy SQLite pending row is the queue. No deferred PCM or metadata array.
+            startLiveTranscriptionWorkerIfNeeded()
+            return
+        }
+        if governor != nil {
+            // Keep the previous immediate fallback when a raw write fails. It must not
+            // sit behind a five-minute idle gate accumulating captured PCM in memory.
+            hasPersistenceFailure = true
+            admissionTask?.cancel()
+            Log.error("[AudioProcessingManager] Raw audio persistence failed; using immediate legacy fallback", category: .processing)
+        }
+        let shouldSpool = persistedBatch.rawBatchID != nil &&
             config.maxQueuedLiveTranscriptionBatches > 0 &&
             liveTranscriptionQueue.count >= config.maxQueuedLiveTranscriptionBatches
-        let queuedBatch = shouldSpool ? persistedBatch.spooledToDisk() : persistedBatch
-        if shouldSpool {
-            Log.warning("[AudioProcessingManager] Live transcription queue saturated; queued disk-backed batch path=\(persistedBatch.savedBatchPath ?? "unknown")", category: .processing)
-        }
-
-        liveTranscriptionQueue.append(queuedBatch)
+        liveTranscriptionQueue.append(shouldSpool ? persistedBatch.spooledToDisk() : persistedBatch)
         startLiveTranscriptionWorkerIfNeeded()
     }
 
     private func startLiveTranscriptionWorkerIfNeeded() {
         guard liveTranscriptionWorker == nil else { return }
-
-        liveTranscriptionWorker = Task {
-            await self.processLiveTranscriptionQueue()
-        }
+        if governor != nil, liveTranscriptionQueue.isEmpty,
+           transcriptionService is MockTranscriptionService { return }
+        liveTranscriptionWorker = Task(priority: .utility) { await self.processLiveTranscriptionQueue() }
     }
 
     private func processLiveTranscriptionQueue() async {
+        defer { liveTranscriptionWorker = nil }
         while !Task.isCancelled {
-            guard !liveTranscriptionQueue.isEmpty else {
-                liveTranscriptionWorker = nil
-                return
+            if !liveTranscriptionQueue.isEmpty {
+                let persisted = liveTranscriptionQueue.removeFirst()
+                do { try await processPersistedBatch(persisted) }
+                catch is CancellationError { break }
+                catch { Log.error("[AudioProcessingManager] Immediate batch transcription failed: \(error)", category: .processing) }
+                continue
             }
-
-            let persistedBatch = liveTranscriptionQueue.removeFirst()
-            await processPersistedBatch(persistedBatch)
+            guard let governor, let queries = transcriptionQueries, let writer = audioWriter,
+                  !(transcriptionService is MockTranscriptionService) else { return }
+            let generation = pendingGeneration
+            let request = Task { try await governor.acquire(.ambientSpeech) }
+            admissionTask = request
+            let permit: BackgroundProcessingPermit
+            do {
+                permit = try await withTaskCancellationHandler {
+                    try await request.value
+                } onCancel: { request.cancel() }
+            } catch {
+                admissionTask = nil
+                if Task.isCancelled { break }
+                if !liveTranscriptionQueue.isEmpty { continue }
+                try? await Task.sleep(for: .seconds(5), clock: .continuous)
+                continue
+            }
+            admissionTask = nil
+            if Task.isCancelled || !liveTranscriptionQueue.isEmpty {
+                await governor.release(permit)
+                continue
+            }
+            var retryDelay: Duration?
+            var wasEmpty = false
+            do {
+                wasEmpty = try await withTaskCancellationHandler {
+                    try await BackgroundProcessingContext.$permit.withValue(permit) {
+                        try BackgroundProcessingContext.checkCancellation()
+                        guard let row = try await queries.getUntranscribedBatches(limit: 1).first else {
+                            return true
+                        }
+                        let pending = PersistedAudioBatch(
+                            batch: AudioBatch(audioData: Data(), source: row.source,
+                                startTimestamp: row.startTime, endTimestamp: row.endTime,
+                                duration: max(0, row.endTime.timeIntervalSince(row.startTime)),
+                                sampleRate: 16_000, channels: 1),
+                            rawBatchID: row.id, savedBatchPath: row.audioPath,
+                            savedBatchURL: writer.storageRoot.appendingPathComponent(row.audioPath),
+                            pendingRecord: row)
+                        try await processPersistedBatch(pending)
+                        return false
+                    }
+                } onCancel: { permit.cancellation.cancel() }
+            } catch is CancellationError {
+                retryDelay = .milliseconds(100)
+            } catch {
+                retryDelay = .seconds(5)
+                Log.error("[AudioProcessingManager] Pending transcription retained for retry: \(error)", category: .processing)
+            }
+            await governor.release(permit)
+            if wasEmpty && generation == pendingGeneration { return }
+            if let retryDelay { try? await Task.sleep(for: retryDelay, clock: .continuous) }
         }
-
-        liveTranscriptionWorker = nil
     }
 
     private func waitForLiveTranscriptionQueueToDrain() async {
         while let worker = liveTranscriptionWorker {
-            await worker.value
+            await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
         }
     }
 
-    private func cancelLiveTranscriptionQueue() {
-        liveTranscriptionWorker?.cancel()
-        liveTranscriptionWorker = nil
+    private func cancelLiveTranscriptionQueue() async {
+        let worker = liveTranscriptionWorker
+        worker?.cancel()
+        admissionTask?.cancel()
+        await worker?.value
         liveTranscriptionQueue.removeAll()
     }
 
     /// Process a single persisted batch of accumulated audio (~30s)
-    private func processPersistedBatch(_ persistedBatch: PersistedAudioBatch) async {
+    private func processPersistedBatch(_ persistedBatch: PersistedAudioBatch) async throws {
+        try BackgroundProcessingContext.checkCancellation()
+        let service = transcriptionService
+        guard governor == nil || !(service is MockTranscriptionService) else {
+            throw PendingAudioCompletionError.modelUnavailable
+        }
+        isTranscribing = true
+        defer { isTranscribing = false }
+        if governor != nil {
+            try await service.initialize()
+            try BackgroundProcessingContext.checkCancellation()
+        }
         let startTime = Date()
         let batch: AudioBatch
         do {
             batch = try loadBatchForTranscription(persistedBatch)
         } catch {
             Log.error("[AudioProcessingManager] Failed to load queued batch audio: \(error)", category: .processing)
-            if let batchID = persistedBatch.rawBatchID, let queries = transcriptionQueries {
-                try? await queries.updateBatchOutcome(
-                    id: batchID,
+            if persistedBatch.pendingRecord != nil {
+                try await updatePendingOutcome(persistedBatch,
                     text: "",
                     transcriptStatus: AudioTranscriptStatus.decodeFailed.rawValue,
                     detectedLanguage: nil,
@@ -262,7 +371,6 @@ public actor AudioProcessingManager {
             }
             return
         }
-        let rawBatchID = persistedBatch.rawBatchID
         let savedBatchPath = persistedBatch.savedBatchPath
 
         do {
@@ -272,17 +380,17 @@ public actor AudioProcessingManager {
                 audioData: batch.audioData,
                 sampleRate: batch.sampleRate,
                 channels: batch.channels,
-                transcriptionService: transcriptionService,
+                transcriptionService: service,
                 wordLevel: config.enableWordLevelTimestamps,
                 initialPrompt: nil,
                 profile: .liveFirstPass
             )
+            try BackgroundProcessingContext.checkCancellation()
             let transcription = decision.transcription
 
             guard decision.shouldStoreText else {
-                if let batchID = rawBatchID, let queries = transcriptionQueries {
-                    try? await queries.updateBatchOutcome(
-                        id: batchID,
+                if persistedBatch.pendingRecord != nil {
+                    try await updatePendingOutcome(persistedBatch,
                         text: "",
                         transcriptStatus: decision.status.rawValue,
                         detectedLanguage: transcription.language,
@@ -304,7 +412,10 @@ public actor AudioProcessingManager {
                 duration: batch.duration
             )
 
-            if !previousBatchTrailingWords.isEmpty && !mergedWords.isEmpty {
+            let consecutiveWindow = previousBatchSource == batch.source && previousBatchStart.map {
+                abs(batch.startTimestamp.timeIntervalSince($0) - (previousBatchDuration - overlapSeconds)) < 0.1
+            } == true
+            if consecutiveWindow && !previousBatchTrailingWords.isEmpty && !mergedWords.isEmpty {
                 // Find words in this batch's overlap zone (first 5 seconds)
                 let overlapEndIdx = mergedWords.firstIndex(where: { $0.start >= overlapSeconds }) ?? mergedWords.count
 
@@ -335,9 +446,8 @@ public actor AudioProcessingManager {
 
             let mergedText = Self.text(from: mergedWords, fallback: transcription.text)
             guard !mergedText.trimmingCharacters(in: .whitespaces).isEmpty else {
-                if let batchID = rawBatchID, let queries = transcriptionQueries {
-                    try? await queries.updateBatchOutcome(
-                        id: batchID,
+                if persistedBatch.pendingRecord != nil {
+                    try await updatePendingOutcome(persistedBatch,
                         text: transcription.text,
                         transcriptStatus: decision.status.rawValue,
                         detectedLanguage: transcription.language,
@@ -356,9 +466,8 @@ public actor AudioProcessingManager {
             )
 
             guard !sentences.isEmpty else {
-                if let batchID = rawBatchID, let queries = transcriptionQueries {
-                    try? await queries.updateBatchOutcome(
-                        id: batchID,
+                if persistedBatch.pendingRecord != nil {
+                    try await updatePendingOutcome(persistedBatch,
                         text: mergedText,
                         transcriptStatus: decision.status.rawValue,
                         detectedLanguage: transcription.language,
@@ -419,9 +528,8 @@ public actor AudioProcessingManager {
             }
 
             guard !transcriptionsBatch.isEmpty else {
-                if let batchID = rawBatchID {
-                    try? await queries.updateBatchOutcome(
-                        id: batchID,
+                if persistedBatch.pendingRecord != nil {
+                    try await updatePendingOutcome(persistedBatch,
                         text: mergedText,
                         transcriptStatus: decision.status.rawValue,
                         detectedLanguage: transcription.language,
@@ -432,16 +540,14 @@ public actor AudioProcessingManager {
                 return
             }
 
-            _ = try await queries.insertTranscriptionsBatch(transcriptionsBatch)
-
-            // Step 5b: Delete the raw batch record now that sentences are inserted
-            // This prevents the backfill manager from re-transcribing the same batch
-            if let batchID = rawBatchID {
-                do {
-                    try await queries.deleteTranscription(id: batchID)
-                } catch {
-                    Log.error("[AudioProcessingManager] Failed to delete raw batch record \(batchID): \(error)", category: .processing)
+            try BackgroundProcessingContext.checkCancellation()
+            if let pending = persistedBatch.pendingRecord {
+                guard try await queries.completePendingRawBatch(pending, with: transcriptionsBatch,
+                    cancellation: BackgroundProcessingContext.permit?.cancellation) else {
+                    throw PendingAudioCompletionError.staleRow
                 }
+            } else {
+                _ = try await queries.insertTranscriptionsBatch(transcriptionsBatch)
             }
 
             // Step 6: Update statistics
@@ -467,6 +573,8 @@ public actor AudioProcessingManager {
             // Keep timing evidence for overlap deduplication. Live decoding deliberately
             // remains context-free; contextual prompts are reserved for repair passes.
             previousBatchDuration = batch.duration
+            previousBatchStart = batch.startTimestamp
+            previousBatchSource = batch.source
             // Keep words from the last 10 seconds for overlap deduplication
             previousBatchTrailingWords = transcription.words.filter {
                 $0.start >= (batch.duration - 10.0)
@@ -475,7 +583,19 @@ public actor AudioProcessingManager {
             Log.info("[AudioProcessingManager] Batch transcribed: \(sentences.count) sentences, \(transcription.words.count) words from \(batch.source.rawValue) status=\(decision.status.rawValue) variant=\(decision.audioVariant.rawValue) language=\(transcription.language ?? "unknown") attempts=\(decision.attempts) (\(String(format: "%.1f", batch.duration))s)", category: .processing)
 
         } catch {
-            Log.error("[AudioProcessingManager] Batch transcription error: \(error)", category: .processing)
+            throw error
+        }
+    }
+
+    private func updatePendingOutcome(_ persisted: PersistedAudioBatch, text: String,
+        transcriptStatus: String, detectedLanguage: String?, audioVariant: String, qualityFlags: String?) async throws {
+        try BackgroundProcessingContext.checkCancellation()
+        guard let pending = persisted.pendingRecord, let queries = transcriptionQueries else { return }
+        guard try await queries.updatePendingRawBatchOutcome(pending, text: text,
+            transcriptStatus: transcriptStatus, detectedLanguage: detectedLanguage,
+            audioVariant: audioVariant, qualityFlags: qualityFlags,
+            cancellation: BackgroundProcessingContext.permit?.cancellation) else {
+            throw PendingAudioCompletionError.staleRow
         }
     }
 

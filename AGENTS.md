@@ -12,6 +12,8 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 ## Quick Reference
 
+- **Installed-version CPU repair candidate**: [docs/installed-cpu-protection.md](docs/installed-cpu-protection.md). The October 1 branch isolates resource monitoring and audio admission against V23; source tests, installation and live CPU acceptance remain separate.
+
 - **Module-Specific Instructions**: Each module has its own `AGENTS.md` file in its directory
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Updates and Release Status**: [CHANGELOG.md](CHANGELOG.md)
@@ -233,6 +235,23 @@ retrace/
 Capture context is independently opt-in (`activityContextEnabled`, default false), exposed in Capture settings, and obeys master recording pause. Source-backed search hits must retain their immutable evidence reference or selection proof; never resolve a hit by bare numeric ID. Screenshots/OCR and timeline selection use exact evidence without project assignment or visit grouping. Existing correction records remain for compatibility; the assignment workflow is outside the active scope. Implementation and automated evidence do not establish installed Mac acceptance; see the validation ledger.
 
 ## Module Ownership & Responsibilities
+
+### October 1 CPU protection ownership
+
+`Shared/Protocols/BackgroundProcessingProtocol.swift` and
+`Shared/Models/BackgroundProcessingContext.swift` define owned native permits,
+thread limits and cancellation. `Shared/Models/ResourceUsage.swift` and
+`Shared/Protocols/ResourceUsageProviding.swift` define cheap cached CPU snapshots.
+App owns `BackgroundProcessingGovernor`, `ResourceProcessingPolicy`,
+`ResourceUsageMonitor`, `BackgroundTranscriptionService` and
+`ManualAudioWorkOwner`. Explicit repair ownership includes the full database
+tail, even after the native permit has returned. Recording, direct dictation
+and existing screen OCR retain their existing route in this narrow branch.
+`InstalledCPUGovernorTests`, `InstalledManualRefinementTests` and
+`ManualAudioWorkOwnerTests` cover lifecycle
+integration; governor/resource tests cover pressure, cancellation, bounded
+delivery, rolling measurement coverage and scheduling. Final validation after
+actor/protocol changes requires clean debug and optimized builds.
 
 | Module         | Directory     | Agent File             | Responsibility                                                     |
 | -------------- | ------------- | ---------------------- | ------------------------------------------------------------------ |

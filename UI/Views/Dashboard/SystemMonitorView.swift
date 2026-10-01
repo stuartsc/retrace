@@ -40,6 +40,8 @@ public struct SystemMonitorView: View {
                     // Main content
                     ScrollView(showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 16) {
+                            backgroundPreparationSection
+                            ResourceUsageCard(usage: viewModel.resourceUsage)
                             // OCR Processing Section
                             ocrProcessingSection
                                 .padding(.bottom, 40)
@@ -85,6 +87,29 @@ public struct SystemMonitorView: View {
     }
 
     // MARK: - Background
+
+    private var backgroundPreparationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(viewModel.isRecordingActive ? "Recording" : "Recording paused").font(.headline)
+            if viewModel.audioPersistenceFailed {
+                Text("An audio batch could not be saved. Check free space and storage access.")
+                    .foregroundStyle(.orange)
+            }
+            Text("Audio text preparation: " + viewModel.backgroundPreparationStatus)
+            Text("Audio is saved while transcription waits. Screen OCR keeps its current settings.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button(viewModel.processingOverride ? "Cancel Process now" : "Process now") {
+                Task { await viewModel.setProcessingOverride(!viewModel.processingOverride) }
+            }.buttonStyle(.bordered)
+                .disabled(!viewModel.isRecordingActive && !viewModel.processingOverride)
+            if !viewModel.isRecordingActive {
+                Text("Resume recording to process pending audio here, or use Transcribe Saved Audio in Settings while paused.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+    }
 
     private var backgroundView: some View {
         ZStack {
@@ -1261,6 +1286,15 @@ class SystemMonitorViewModel: ObservableObject {
     @Published var powerSource: PowerStateMonitor.PowerSource = .unknown
     @Published var ocrProcessingLevel: Int = 3
     @Published var isRecordingActive: Bool = false
+    @Published var backgroundPreparationStatus = "Automatic"
+    @Published var processingOverride = false
+    @Published var audioPersistenceFailed = false
+    @Published var resourceUsage = ResourceUsageSnapshot.unavailable
+
+    func setProcessingOverride(_ enabled: Bool) async {
+        await coordinator.setBackgroundProcessNow(enabled)
+        await updateStats()
+    }
 
     // Chart data
     @Published var processingHistory: [ProcessingDataPoint] = []
@@ -1459,6 +1493,12 @@ class SystemMonitorViewModel: ObservableObject {
     }
 
     private func updateStats() async {
+        let background = await coordinator.backgroundProcessingSnapshot()
+        resourceUsage = await coordinator.resourceUsageSnapshot()
+        audioPersistenceFailed = await coordinator.hasAudioPersistenceFailure()
+        processingOverride = background.processNow
+        backgroundPreparationStatus = background.waitReason?.summary
+            ?? (background.isRunning ? "Preparing text" : "Automatic")
         let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
 
         // Get queue statistics

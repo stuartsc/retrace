@@ -35,6 +35,13 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
     private var isInitialized = false
     private var idleUnloadTask: Task<Void, Never>?
 
+    #if DEBUG
+    private var nativeInferenceStartedForTesting: (@Sendable () -> Void)?
+    func setNativeInferenceStartedForTesting(_ callback: (@Sendable () -> Void)?) {
+        nativeInferenceStartedForTesting = callback
+    }
+    #endif
+
     public init(
         modelPath: String,
         coreMLModelPath: String? = nil,
@@ -53,6 +60,7 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
 
     /// Initialize whisper.cpp with the specified model
     public func initialize() async throws {
+        try BackgroundProcessingContext.checkCancellation()
         cancelScheduledUnload()
         guard !isInitialized else { return }
 
@@ -103,7 +111,7 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         Self.configureRecallFirstDecoding(&params)
         params.suppress_blank = true
         params.suppress_nst = false
-        let result = runWhisper(ctx: ctx, params: &params, samples: samples, initialPrompt: nil, languageHint: nil)
+        let result = try await runWhisper(ctx: ctx, params: &params, samples: samples, initialPrompt: nil, languageHint: nil)
 
         guard result == 0 else {
             throw TranscriptionError.transcriptionFailed
@@ -166,7 +174,7 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         params.suppress_nst = false
 
         // Run transcription — helper keeps prompt/language C strings alive during whisper_full.
-        let result = runWhisper(
+        let result = try await runWhisper(
             ctx: ctx,
             params: &params,
             samples: samples,
@@ -322,6 +330,7 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
     }
 
     private func prepareForTranscription() async throws -> OpaquePointer {
+        try BackgroundProcessingContext.checkCancellation()
         cancelScheduledUnload()
 
         if !isInitialized {
@@ -381,6 +390,41 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
     }
 
     private func runWhisper(
+        ctx: OpaquePointer,
+        params: inout whisper_full_params,
+        samples: [Float],
+        initialPrompt: String?,
+        languageHint: String?
+    ) async throws -> Int32 {
+        try BackgroundProcessingContext.checkCancellation()
+        let cancellation = BackgroundProcessingContext.permit?.cancellation ?? BackgroundProcessingCancellation()
+        params.n_threads = Int32(BackgroundProcessingContext.permit?.threadCount ??
+            (ProcessInfo.processInfo.isLowPowerModeEnabled ? 2 : 4))
+        // The stack retains this token until whisper_full has returned. Neither
+        // callback reaches an actor, the UI thread, or an unowned task pointer.
+        params.abort_callback_user_data = Unmanaged.passUnretained(cancellation).toOpaque()
+        params.abort_callback = { pointer in
+            guard let pointer else { return true }
+            return Unmanaged<BackgroundProcessingCancellation>.fromOpaque(pointer).takeUnretainedValue().isCancelled
+        }
+        params.encoder_begin_callback_user_data = params.abort_callback_user_data
+        params.encoder_begin_callback = { _, _, pointer in
+            guard let pointer else { return false }
+            return !Unmanaged<BackgroundProcessingCancellation>.fromOpaque(pointer).takeUnretainedValue().isCancelled
+        }
+        let result = await withTaskCancellationHandler {
+            #if DEBUG
+            nativeInferenceStartedForTesting?()
+            #endif
+            return runWhisperSynchronously(ctx: ctx, params: &params, samples: samples,
+                initialPrompt: initialPrompt, languageHint: languageHint)
+        } onCancel: { cancellation.cancel() }
+        if cancellation.isCancelled { throw CancellationError() }
+        try BackgroundProcessingContext.checkCancellation()
+        return result
+    }
+
+    private func runWhisperSynchronously(
         ctx: OpaquePointer,
         params: inout whisper_full_params,
         samples: [Float],

@@ -6,6 +6,11 @@ You are the **UI** agent responsible for building the SwiftUI interface for Retr
 
 ## Your Directory
 
+The October 1 V23 CPU repair adds `Components/ResourceUsageCard.swift` and a
+System Monitor audio-preparation status/Process now control. Views read the
+App-owned cached sampler; opening a view must not start another resource loop.
+Current screen OCR settings remain in force in this narrow branch.
+
 ```
 UI/
 ├── Assets.xcassets/

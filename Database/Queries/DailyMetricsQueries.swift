@@ -65,6 +65,8 @@ public enum DailyMetricsQueries {
         case recordingTurnedOff = "recording_turned_off"
         case recordingAutoResumed = "recording_auto_resumed"
         case systemMonitorOpened = "system_monitor_opened"
+        case backgroundProcessing = "background_processing"
+        case resourceUsage = "resource_usage"
         case settingsSearchOpened = "settings_search_opened"
         case redactionRulesUpdated = "redaction_rules_updated"
         case systemMonitorSettingsOpened = "system_monitor_settings_opened"
