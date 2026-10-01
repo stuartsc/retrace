@@ -34,8 +34,9 @@ admission thresholds are not a hard process CPU cap.
 
 ## Validation and delivery ledger
 
-**Source and signed package are verified; installation is pending a normal
-app quit.** This document does not establish installed performance acceptance.
+**Local trial 2610.1.1 is installed and recording as of 1 October, 17:51 AEST.**
+Source/package checks and the scoped installed observations below are complete.
+Matched performance and foreground-latency acceptance remain open.
 The first behavioral run demonstrated 25 expected
 failures across 48 tests (one intentional skip). The initial implementation
 then passed 54 focused tests with two native opt-in skips. Review identified
@@ -89,13 +90,57 @@ were not changed.
   CPU; compilation/tests were also active, so this is not a matched baseline.
 - The app had not been replaced as of 17:40. macOS UI automation repeatedly
   timed out in both Retrace and Activity Monitor; a normal manual quit was
-  requested. No forced termination was used. The old app is still recording.
+  requested. No forced termination was used. The user subsequently confirmed
+  the app was closed; absence of a Retrace process was checked before install.
 
 Private receipts include `source-verification.json`, `release-complete.json`,
 `package-verified.json`, `payload-comparison-review.json` and the retained
-`Validation/` logs under the delivery directory above. Live CPU comparison,
-recording advancement, settings/schema checks and installed UI acceptance
-must follow installation; none is inferred from these source/package checks.
+`Validation/` logs under the delivery directory above. Installed checks below
+are separate from these source/package checks.
+
+### Installed local trial — 1 October, 17:51–17:55 AEST
+
+- The reviewed installer completed at **17:51:19.662**, preserving the old
+  app and a matching APFS clone of the quiescent V23 database and durable
+  sidecars. It did not write the live library. Logical clone size does not
+  measure additional allocated disk space. Exact receipts are `installation-complete.json`
+  and `database-backup.json` in the private delivery directory.
+- `/Applications/Retrace.app` launched at **17:51:36** as PID **47456**, at
+  normal priority (nice 0), with build **2610.1.1** and the verified packaged
+  executable hash above. No new build or source changes intervened.
+- Native UI acceptance showed **Recording**, **Audio text preparation:
+  Waiting for CPU usage to fall**, the **Process now** control and the new
+  CPU card, including one-core units, rolling windows and sample coverage.
+  The override was not activated during the live observation. An initial
+  UI-read timeout did not prevent launch; the subsequent native reads worked.
+- New screen frames and pending audio rows advance. All 17 newly saved AAC
+  files in the first recorded verification were present, nonempty and matched
+  their database byte counts. Three content-free CPU minute records persisted
+  with full sampling coverage and no dropped minutes. The schema remains V23
+  and the native store identity is unchanged. Full preference comparison found
+  only the two expected recording-accounting keys changed; recording, capture,
+  audio, privacy and model settings were preserved.
+- The observed last-to-first screen timestamp interval was **286.244 seconds**
+  (17:46:55.415–17:51:41.659); audio's end-to-next-start gap was **276.575 seconds**
+  (17:47:03.039–17:51:39.614). These include the manual quit, recovery-copy
+  verification and restart. They are disclosed gaps, not continuous capture.
+- The first six ten-second CPU observations were **47.3–102.8%**, mean **75.4%**.
+  A subsequent one-minute observation with Dashboard open was **54.8–78.1%**,
+  mean **69.9%**. The app's first three minute averages were **57.8%, 68.7%
+  and 75.6%**. A one-second startup/UI peak reached **198.4%**. Percentages use
+  one logical core; the first zero-valued `top` sample is excluded.
+- A three-second native sample showed Vision OCR work and no `whisper_full`,
+  CPU Whisper graph or live-transcription-queue stack. This corroborates the
+  waiting UI for that interval only. The old/new CPU observations were not
+  matched workloads: builds/tests ran during the earlier baseline, and the
+  new sample included startup/UI activity. No controlled reduction percentage,
+  20% target compliance, long idle catch-up or foreground p95 claim is made.
+
+Installed evidence is retained in `runtime-acceptance.json`, `cpu-observations.json`,
+`recording-at-install.jsonl`, `recording-after-launch.jsonl`, the before/after
+preference exports, and `Validation/installed-*.{top,sample}.txt`. Recording
+remains on. OCR remains a material observed CPU load; this narrow audio repair
+leaves it at its existing settings.
 
 ## Scope limits
 

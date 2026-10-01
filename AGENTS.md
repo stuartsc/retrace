@@ -6,13 +6,13 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 **Status**: Core screen capture (CGWindowListCapture), OCR (Vision), full-text search (FTS5), HEVC encoding, Rewind import, audio transcription, and push-to-dictate are working. Vector search is planned for a future release.
 
-**Installed local repair (2026-09-29):** build **2609.29.1** is the narrow V23-compatible masked-recording display fix from source `7aab20a`. Recording and privacy settings are preserved. The larger source candidate remains uninstalled; see the [repair validation](docs/progressive-recall-validation.md#masked-recording-display-repair--2026-09-29) for scoped UI acceptance, restart gaps and rollback material.
+**Installed local repair (2026-10-01):** build **2610.1.1** from source `f1551be` adds CPU monitoring and quiet-time audio admission to the V23-compatible masked-recording fix. Installed UI, recording advancement and preserved settings/schema are verified. OCR is unchanged; matched performance and the 20% CPU target remain open. The larger source candidate remains uninstalled. See the [CPU repair ledger](docs/installed-cpu-protection.md) for measurements, disclosed restart gaps and recovery material.
 
 ---
 
 ## Quick Reference
 
-- **Installed-version CPU repair candidate**: [docs/installed-cpu-protection.md](docs/installed-cpu-protection.md). The October 1 branch isolates resource monitoring and audio admission against V23; source tests, installation and live CPU acceptance remain separate.
+- **Installed-version CPU repair**: [docs/installed-cpu-protection.md](docs/installed-cpu-protection.md). The October 1 branch isolates resource monitoring and audio admission against V23; source tests, installed checks and matched performance acceptance remain separate.
 
 - **Module-Specific Instructions**: Each module has its own `AGENTS.md` file in its directory
 - **Human Documentation**: [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md)
