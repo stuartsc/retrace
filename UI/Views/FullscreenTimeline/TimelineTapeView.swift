@@ -875,7 +875,7 @@ struct AudioTranscriptButton: View {
         .onDisappear {
             releaseCursorIfNeeded()
         }
-        .instantTooltip("Audio Transcript", isVisible: $isHovering)
+        .instantTooltip("Audio Recordings", isVisible: $isHovering)
     }
 
     private func applyCursorAction(hovering: Bool) {
@@ -917,35 +917,7 @@ struct AudioTranscriptButton: View {
             vm?.currentTimestamp
         }
 
-        let windowSeconds: TimeInterval = 30 * 60  // ±30 minutes
-        let fromDate = timestamp.addingTimeInterval(-windowSeconds)
-        let toDate = timestamp.addingTimeInterval(windowSeconds)
-
-        guard let queries = await viewModel.coordinator.getAudioTranscriptionQueries() else {
-            Log.warning("[AudioTranscriptButton] Open skipped - audio transcription queries unavailable", category: .ui)
-            return
-        }
-
-        let start = CFAbsoluteTimeGetCurrent()
-        do {
-            Log.debug("[AudioTranscriptButton] Fetch started range=\(Log.timestamp(from: fromDate))...\(Log.timestamp(from: toDate))", category: .ui)
-            let transcriptions = try await queries.getTranscriptions(from: fromDate, to: toDate)
-            let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
-            Log.recordLatency(
-                "transcript.open.query_ms",
-                valueMs: elapsedMs,
-                category: .ui,
-                summaryEvery: 10,
-                warningThresholdMs: 100,
-                criticalThresholdMs: 500
-            )
-            Log.info("[AudioTranscriptButton] Fetch completed count=\(transcriptions.count) elapsed=\(String(format: "%.1f", elapsedMs))ms", category: .ui)
-            await MainActor.run {
-                TranscriptWindowController.shared.show(transcriptions: transcriptions, timestamp: timestamp)
-            }
-        } catch {
-            Log.warning("[AudioTranscriptButton] Failed to fetch transcriptions: \(error)", category: .ui)
-        }
+        await TranscriptWindowController.shared.open(at: timestamp)
     }
 }
 

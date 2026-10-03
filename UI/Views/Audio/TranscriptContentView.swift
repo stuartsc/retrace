@@ -7,6 +7,7 @@ import Shared
 struct TranscriptContentView: View {
     let transcriptions: [AudioTranscription]
     let timestamp: Date
+    let isTruncated: Bool
     @ObservedObject var playback: TranscriptAudioPlayback
     let onReveal: (TranscriptAudioRequest) -> Void
     let onClose: () -> Void
@@ -38,7 +39,7 @@ struct TranscriptContentView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Audio Transcript")
+                    Text("Audio Recordings")
                         .font(.headline)
                         .foregroundColor(.white)
                     Text(Self.headerFormatter.string(from: timestamp))
@@ -54,13 +55,21 @@ struct TranscriptContentView: View {
                         .foregroundColor(.white.opacity(0.5))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close audio transcript")
+                .accessibilityLabel("Close audio recordings")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
             Divider()
                 .background(Color.white.opacity(0.1))
+
+            if isTruncated {
+                Text("Showing the latest \(TranscriptRecordingLoader.maximumRows) audio entries in this one-hour window. Move the timeline to see earlier audio.")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.6))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
 
             // Content
             if transcriptions.isEmpty {
@@ -108,6 +117,14 @@ struct TranscriptPresentationRow: Identifiable {
     let endedAt: Date
 
     var id: Int64 { transcription.id }
+
+    var textPreparationLabel: String? {
+        switch transcription.transcriptStatus.lowercased() {
+        case "pending": return "Text not ready — waiting for background processing"
+        case "needs_repair": return "Text needs another processing pass"
+        default: return nil
+        }
+    }
 
     var displayText: String {
         if repeatedCount > 1, let captionLabel {
@@ -352,6 +369,11 @@ private struct TranscriptionRow: View {
                         .foregroundColor(row.isCollapsedAmbientCaption ? .white.opacity(0.58) : .white.opacity(0.85))
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if let label = row.textPreparationLabel {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
                 }
                 if isSelected, let message = playback.state.message {
                     Text(message)

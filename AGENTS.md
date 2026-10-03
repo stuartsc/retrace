@@ -8,6 +8,8 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 **Installed local repair (2026-10-01):** build **2610.1.1** from source `f1551be` adds CPU monitoring and quiet-time audio admission to the V23-compatible masked-recording fix. Installed UI, recording advancement and preserved settings/schema are verified. OCR is unchanged; matched performance and the 20% CPU target remain open. The larger source candidate remains uninstalled. See the [CPU repair ledger](docs/installed-cpu-protection.md) for measurements, disclosed restart gaps and recovery material.
 
+**Saved-audio display repair (2026-10-03, uninstalled):** pending microphone recordings were being saved but omitted from the Timeline panel and the Live transcript presentation. The narrow UI repair exposes saved audio before text preparation and keeps explicit playback independent of transcription. See the [audio visibility ledger](docs/audio-recording-visibility-repair.md) for source checks and the native signing/installation prerequisite. The installed version remains **2610.1.1**.
+
 ---
 
 ## Quick Reference

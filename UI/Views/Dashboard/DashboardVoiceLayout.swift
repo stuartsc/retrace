@@ -767,7 +767,7 @@ struct DashboardLiveAudioRow: Identifiable, Equatable, Sendable {
     var displayText: String {
         if isPendingSummary {
             let countText = pendingBatchCount == 1 ? "1 audio batch" : "\(pendingBatchCount) audio batches"
-            return "\(countText) captured. Transcription is catching up; raw audio is preserved for repair."
+            return "\(countText) captured. Text preparation is pending; saved audio remains available."
         }
         if isLowConfidenceSummary {
             let countText = pendingBatchCount == 1 ? "1 audio batch" : "\(pendingBatchCount) audio batches"
@@ -787,7 +787,7 @@ struct DashboardLiveAudioRow: Identifiable, Equatable, Sendable {
 
     var statusBadgeText: String {
         if isPendingSummary {
-            return "Catching up"
+            return "Text pending"
         }
         if isLowConfidenceSummary {
             return "Low confidence"
@@ -899,7 +899,7 @@ struct DashboardLiveAudioRow: Identifiable, Equatable, Sendable {
     static func statusText(status: String, qualityFlags: String?) -> String {
         switch status {
         case "pending":
-            return "Audio captured. Transcribing now; raw audio is safely stored."
+            return "Audio saved. Text is not ready; background processing is pending."
         case "probable_silence":
             return "Listening. Audio captured, no speech decoded in this batch."
         case "needs_review":

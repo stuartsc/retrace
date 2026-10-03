@@ -1,10 +1,16 @@
 # Updates and changelog
 
-Last updated: 2026-10-01.
+Last updated: 2026-10-03.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-10-03 — Show saved audio before text preparation
+
+- Saved microphone recordings remain visible and available for explicit playback while transcription waits for quiet-time processing. The Timeline panel labels pending text, bounds its loaded range and refreshes without raising the window or starting background inference.
+- The Live panel repair exposes recent saved recordings separately from completed speech text and dates older transcript blocks clearly. Delayed reads cannot revive a closed panel or replaced selection.
+- The focused debug run passes **94 tests** and the optimized product build passes; independent source review is clear. This is an **uninstalled source repair** against the existing V23 build. Native capture, codecs, CPU admission, preferences and stored history are unchanged. Native test limits and signing/installation status are recorded in the [audio visibility ledger](docs/audio-recording-visibility-repair.md).
 
 ### 2026-10-01 — CPU monitoring and quiet-time audio preparation
 

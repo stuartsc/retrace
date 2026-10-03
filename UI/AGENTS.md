@@ -26,6 +26,7 @@ UI/
 │   │   ├── SpotlightSearchOverlay.swift # Primary search overlay UI
 │   │   └── SearchFilterBar.swift        # Search filters and controls
 │   ├── Dashboard/
+│   │   ├── DashboardSavedRecordings.swift # Visible recent saved audio with explicit playback before transcription
 │   │   ├── DashboardWindowController.swift # Persistent Settings/dashboard destinations and native presentation
 │   │   ├── ScreenshotEvidencePreview.swift # Shared immutable evidence selection and verified screenshot preview
 │   │   ├── DashboardView.swift          # Voice-first dashboard, visual memory, and live intelligence UI
@@ -36,6 +37,7 @@ UI/
 │   │   └── SupportLink.swift            # Twitter/support
 │   ├── Audio/
 │   │   ├── TranscriptAudioPlayback.swift # Cancellable native playback and bounded recording ranges
+│   │   ├── TranscriptRecordingLoader.swift # Bounded pending/activity reads shared by panel open and refresh
 │   │   ├── TranscriptContentView.swift  # Continuous transcript display
 │   │   └── TranscriptWindowController.swift # Transcript window lifecycle
 │   └── Settings/
@@ -60,6 +62,7 @@ UI/
 │   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
 │   └── SettingsViewModel.swift
 └── Tests/
+    ├── DashboardSavedRecordingsTests.swift # Pending Live recordings and owned refresh/playback lifetime
     ├── ApplicationTerminationWorkflowTests.swift # Async Quit/startup ordering, retry and real SQLite commit-before-close regressions
     ├── TimelineSessionMetricsTests.swift # Real SQLite retry, partial failure, hide/reopen, reconfiguration and timeout acknowledgements
     ├── DashboardScreenshotIdentityTests.swift # Real native/imported SQLite collisions through list and selection policy
@@ -78,6 +81,7 @@ UI/
     ├── ProcessCPUMonitorPolicyTests.swift # System monitor launch-sampling policy tests
     ├── TimelineBackgroundRefreshPolicyTests.swift # Hidden timeline background-work opt-in policy tests
     ├── TranscriptAudioPlaybackTests.swift # Real AAC/SQLite, muted native seeking, completion and cancellation
+    ├── TranscriptRecordingVisibilityTests.swift # Saved pending rows, bounded pages, playback and delayed-read ownership
     └── TranscriptCursorPolicyTests.swift # Audio transcript cursor stack regression tests
 ```
 
@@ -86,6 +90,10 @@ UI/
 ### Transcript audio playback
 
 Root coordinates the UI playback owner, App's configured audio-storage directory accessor and Database's `audio_transcript_playback` metric. No Shared contract or recording format changes are needed. Each playable row owns its original audio range; ambient rows with recordings stay separate. File checks and media loading run off main. Resolve both canonical batch and retained legacy sentence paths using the writer's filename start time; a missing sentence can fall back to its retained batch. Do not create duplicate clips. One panel-owned player seeks to the row start, stops at its end and is cancelled on selection replacement or either close route. Late loads, item callbacks and refreshes cannot revive a closed selection. Metrics contain only categorical outcome/source fields. Finder remains an explicit separate button.
+
+Saved recordings must be visible before transcription completes. `TranscriptRecordingLoader` includes pending/activity rows while preserving the query's latest-pass predicate. The Timeline panel bounds a one-hour window to 1,000 rows with an explicit overflow notice, and refreshes visible stationary selections every fifteen seconds. Initial reads have an owned generation and cancellation lifetime; duplicate callers join without taking ownership. Closing or replacing a source rejects late results. Refresh never raises the panel, starts playback or starts transcription. See `docs/audio-recording-visibility-repair.md` for the explicit authored-AAC test fixture and native encoding limitations in the current execution session.
+
+`DashboardSavedRecordingsModel` owns the Live panel's separate small recording page and explicit player. It reads twelve newest audio entries plus one sentinel, retains exact media requests and discloses omissions before filtering missing paths. The eight-second refresh runs only while Live is visible. Source/tab/window invalidation clears rows and stops playback; an old cancelled read remains owned until it finishes, including through rapid reopening. Completed transcript blocks retain their original recording dates. Neither UI path admits background inference.
 
 ### Application termination
 

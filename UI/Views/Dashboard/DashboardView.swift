@@ -69,6 +69,7 @@ public struct DashboardView: View {
     @StateObject private var coordinatorWrapper: AppCoordinatorWrapper
     @StateObject private var fuseIntelViewModel: FuseIntelViewModel
     @StateObject private var screenshotEvidence: EvidenceViewModel
+    @StateObject private var savedRecordings: DashboardSavedRecordingsModel
     @State private var screenshotPresenter = DashboardScreenshotEvidencePresenter()
     @State private var startedEvidenceSelection: ScreenshotEvidenceSelection?
     @ObservedObject var launchOnLoginReminderManager: LaunchOnLoginReminderManager
@@ -172,6 +173,20 @@ public struct DashboardView: View {
         _screenshotEvidence = StateObject(wrappedValue: EvidenceViewModel(client: .live(service: {
             try await coordinator.progressiveRecall()
         })))
+        _savedRecordings = StateObject(wrappedValue: DashboardSavedRecordingsModel(
+            playback: TranscriptAudioPlayback(resolve: { request in
+                let root = await coordinator.getAudioStorageDirectory()
+                return try await TranscriptAudioFileResolver.resolve(request: request, storageRoot: root)
+            }, onEvent: { event in
+                Task { try? await coordinator.recordMetricEvent(metricType: .audioTranscriptPlayback, metadata: event.metadata) }
+            }),
+            load: {
+                guard let queries = await coordinator.getAudioTranscriptionQueries() else {
+                    throw TranscriptRecordingLoadError.unavailable
+                }
+                return try await DashboardSavedRecordingsQuery.load(queries: queries, through: Date())
+            }
+        ))
         self.launchOnLoginReminderManager = launchOnLoginReminderManager
         self._hasLoadedInitialData = hasLoadedInitialData
     }
@@ -415,21 +430,26 @@ public struct DashboardView: View {
             invalidateScreenshotReads(clearRows: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataSourceDidChange)) { _ in
+            savedRecordings.setActive(false)
             invalidateScreenshotReads(clearRows: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidClose)) { _ in
+            savedRecordings.setActive(false)
             viewModel.isWindowVisible = false
             screenshotWindowVisible = false
             invalidateScreenshotReads(clearRows: false)
         }
         .onChange(of: selectedDashboardTab) { _ in
+            savedRecordings.setActive(false)
             invalidateScreenshotReads(clearRows: false)
         }
         .onChange(of: viewModel.isWindowVisible) { isVisible in
+            if !isVisible { savedRecordings.setActive(false) }
             screenshotWindowVisible = isVisible
             if !isVisible { invalidateScreenshotReads(clearRows: false) }
         }
         .onDisappear {
+            savedRecordings.setActive(false)
             screenshotWindowVisible = false
             invalidateScreenshotReads(clearRows: false)
         }
@@ -1743,7 +1763,7 @@ public struct DashboardView: View {
                 }
             }
 
-            Text("Continuous speech blocks update as refinement improves them. Select text or copy a full passage.")
+            Text("Recent audio is available before its text is ready. Prepared transcripts below retain their original recording dates.")
                 .font(.retraceCaption2)
                 .foregroundColor(.retraceSecondary)
 
@@ -1763,6 +1783,12 @@ public struct DashboardView: View {
     private var liveAudioTranscriptHistory: some View {
         let transcriptBlocks = liveAudioTranscriptBlocks
         return List {
+            DashboardSavedRecordingsView(model: savedRecordings,
+                isActive: viewModel.isWindowVisible && selectedDashboardTab == .live,
+                sourceRevision: screenshotReadEpoch)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             if transcriptBlocks.isEmpty {
                 Text(liveAudioStatusRows.isEmpty
                     ? "No continuous transcript yet."
@@ -3157,7 +3183,7 @@ public struct DashboardView: View {
             return "Repair queue"
         }
         if row.isPendingSummary {
-            return "Transcribing"
+            return "Text pending"
         }
         return "Capture notice"
     }
@@ -3193,7 +3219,7 @@ public struct DashboardView: View {
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
-                Text(block.startedAt, style: .time)
+                Text(block.startedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.retraceCaption2Medium)
                     .foregroundColor(.retraceSecondary)
 
