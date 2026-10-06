@@ -104,10 +104,10 @@ native signing, installation and installed acceptance remain separate.
 
 The Codex command session again reported zero valid signing identities and
 failed strict verification of the existing app. The user confirmed that their
-normal Terminal lists a valid identity. The combined **2610.6.1** candidate is
-ready for packaging in that native session while recording continues. It
-includes both the display repair and queue ordering repair. No signature check
-is bypassed; no candidate has yet been signed, installed or launched.
+normal Terminal lists a valid identity and completed packaging there. The
+combined **2610.6.1** candidate includes the display and queue ordering repairs;
+all 39 compiled payload sections match the reviewed executable. No signature
+check was bypassed.
 
 The reviewed private delivery helpers retain the old app and quiescent database
 before installation. The installer verifies the bundle actually moved before
@@ -117,11 +117,41 @@ verification boundary is controlled and does not establish native signing or
 full installation acceptance. Abrupt process termination and initial move
 bookkeeping are outside the caught verification/staging recovery guarantee.
 
-After delivery, verify the installed version, V23/settings, a newly captured
-recording in both Live and Timeline, playback of the selected media, and recent
-text progress after governor admission. Record the quit/restart gap. The wider
-dirty V24–V32 workspace remains untouched and uninstalled; matched CPU/latency,
-longer catch-up throughput and the 20% CPU target remain open.
+## Installed local trial — 6 October, 23:19 AEST
+
+The user's first normal-Terminal install stopped at `writer_present`: an
+independent SSH-origin `sqlite3_rsync` process still held the database/WAL open.
+Retrace had quit correctly. That copy was left intact, the old app was reopened,
+and installation was retried after the copy completed. This first quit/reopen
+left **232.927 seconds** between saved audio ranges.
+
+The retry passed native verification and retained both the old app and a
+quiescent database rollback copy. The installed executable hash is
+`460f9aa4a52be94d1f857f5197f42c5faa1a83c82c618bee9d43a666fedc0c62`,
+build **2610.6.1**, source `50778412480d6ba98651a1904edb617fb59418bf`.
+The installer made no library writes. Post-launch reads confirm V23 and the
+same persisted recording, context and exclusion settings. The command-session
+`defaults` view omitted these native-domain keys; the user's persisted plist
+was checked directly instead. The successful installation's quit/reopen gap
+was **210.012 seconds**, from 23:16:13.447 to 23:19:43.459.
+
+The native app opened the Studio Display microphone at 23:19:43.217. New AACs
+contain nonzero PCM. Fresh pending recordings at 23:22 are visible in Live and
+Timeline. Explicit Play reached the playing/pause state in both surfaces;
+Timeline pause reached Resume, and closing the player ended the check.
+
+A brief explicit Process now check ran the installed AAC decoder and CPU
+Whisper path, completing a fresh 23:26:53 recording as `probable_silence` with
+empty text. The override was cancelled, and the UI returned to waiting for
+lower load. This proves recent native queue progress without inventing text;
+it does not prove new spoken-phrase publication or recognition accuracy. The
+earlier local spoken-test recognition and microphone-routing diagnosis are
+recorded separately in the [microphone ledger](microphone-input-repair.md).
+
+The wider dirty V24–V32 workspace remains untouched and uninstalled. Physical
+input-switch acceptance, matched CPU/latency, longer catch-up throughput and
+the 20% CPU target remain open. `installed-acceptance-20261006.json` preserves
+the bounded checks and these limits beside the native installation receipts.
 
 Content-free diagnostic receipts are retained under
 `~/Library/Application Support/Retrace Candidates/2026-10-06-audio-freshness/`.

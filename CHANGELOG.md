@@ -6,17 +6,23 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-06 — Recent audio transcription queue repair (uninstalled)
+### 2026-10-06 — Follow the selected microphone (uninstalled 2610.6.2 candidate)
 
-- Live diagnosis confirmed new microphone recordings were durable but still pending while admitted transcription processed September audio. The installed app remains **2610.1.1**; the 3 October display repair is also still uninstalled.
+- Live checks found a stale built-in microphone session delivering digital silence after a wake/device change while macOS had the Studio Display microphone selected. Normal pause/resume restored the intended input; locally recognized spoken-test words verify this runtime recovery, with an 8.641-second recording gap disclosed.
+- A narrow source repair observes default-input/device changes, preserves the public audio stream and joins native callback teardown. Unrelated device changes leave a healthy input alone; a later pause prevents queued restarts from reviving recording. It changes neither the system input preference nor microphone permissions.
+- All **38 focused tests** pass after a clean actor/protocol rebuild and again after a local native ownership correction. Source review is clear and the separate clean optimized build passes with all **379 product inputs unchanged**. Candidate **2610.6.2** awaits native signing and installation; the installed build remains **2610.6.1**. Physical switching and sleep/wake acceptance remain separate in the [microphone input ledger](docs/microphone-input-repair.md).
+
+### 2026-10-06 — Recent audio transcription queue repair (local trial 2610.6.1)
+
+- Live diagnosis confirmed new microphone recordings were durable but still pending while admitted transcription processed September audio. Build **2610.6.1** now includes the 3 October saved-audio display repair and recent-first queue ordering.
 - The narrow candidate prefers the newest pending recording from the last 24 hours for up to three admitted attempts, then attempts the oldest pending/repair recording. Cancellation and failure consume a turn so a broken older recording cannot monopolize subsequent admissions. The existing CPU governor, recording persistence and manual backfill remain unchanged.
-- Clean focused debug validation passes **152 tests with one intentional skip**; a final **22-test** selection passes both added timing/shutdown regressions. The separate clean optimized build passes, and independent reviews are clear. The combined display/queue candidate is prepared for native signing as **2610.6.1**, not installed. AAC decoder limitations, delivery and acceptance are tracked in the [freshness repair ledger](docs/audio-transcription-freshness-repair.md).
+- Clean focused debug validation passes **152 tests with one intentional skip**; a final **22-test** selection passes both added timing/shutdown regressions. The separate clean optimized build passes, and independent reviews are clear. Native installation preserves V23 and checked settings. Fresh saved audio is visible and plays in Live and Timeline; a brief native processing check completed a recent quiet AAC as probable silence. Spoken-phrase publication, broader catch-up performance and the separate microphone-switch repair remain distinct. Recovery receipts and restart gaps are tracked in the [freshness repair ledger](docs/audio-transcription-freshness-repair.md).
 
 ### 2026-10-03 — Show saved audio before text preparation
 
 - Saved microphone recordings remain visible and available for explicit playback while transcription waits for quiet-time processing. The Timeline panel labels pending text, bounds its loaded range and refreshes without raising the window or starting background inference.
 - The Live panel repair exposes recent saved recordings separately from completed speech text and dates older transcript blocks clearly. Delayed reads cannot revive a closed panel or replaced selection.
-- The focused debug run passes **94 tests** and the optimized product build passes; independent source review is clear. This is an **uninstalled source repair** against the existing V23 build. Native capture, codecs, CPU admission, preferences and stored history are unchanged. Native test limits and signing/installation status are recorded in the [audio visibility ledger](docs/audio-recording-visibility-repair.md).
+- The focused debug run passes **94 tests** and the optimized product build passes; independent source review is clear. The repair is included in local trial **2610.6.1**, installed 6 October and checked with fresh recordings in both panels. Native capture, codecs, CPU admission, preferences and stored history are unchanged by this display change. Native test limits are recorded in the [audio visibility ledger](docs/audio-recording-visibility-repair.md).
 
 ### 2026-10-01 — CPU monitoring and quiet-time audio preparation
 

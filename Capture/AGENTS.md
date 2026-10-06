@@ -29,11 +29,13 @@ Capture/
 │   ├── ConsentDialogHelper.swift  # Audio recording consent dialog helpers
 │   ├── MeetingDetector.swift      # Meeting-app detection
 │   ├── MicrophoneAudioCapture.swift # Microphone capture
+│   ├── MicrophoneCaptureHardware.swift # Exact default-input UID, queued native session and owned device observation
 │   └── SystemAudioCapture.swift   # System audio capture
 └── Tests/
     ├── AccessibilityInspectorTest.swift
     ├── AudioFormatConverterTests.swift
     ├── AudioStreamBufferingPolicyTests.swift
+    ├── MicrophoneInputRoutingTests.swift # Default input switching, joined stop/restart and real native PCM continuity
     ├── ActivityContextPrivacyTests.swift
     ├── ActivityApplicationIdentityTests.swift # Directly launched nonactivating native apps, process lifetimes and unknown-notification attribution
     ├── ActivityObservationBufferTests.swift # Bounded delivery, privacy and notification-revision admission
@@ -377,6 +379,8 @@ public actor PrivateWindowMonitor {
 - Source shutdown drains the converter with `finish()` before finishing the source stream. The coordinator acquires source streams before scheduling forwarders and awaits both forwarders before finishing the combined stream. Restart and system-audio muting discard pending samples with `reset()` to prevent crossing privacy boundaries.
 - Converter and delegate locks protect background callback/shutdown transitions. Never call this synchronous conversion work from UI rendering or the main thread.
 - `AudioFormatConverterTests` exercises real AVFoundation/CoreMedia buffers for anti-alias filtering, irregular chunk continuity, channel layouts, format changes, and finite drain behavior. Wall-clock timestamp semantics remain unchanged; source-clock mapping is a separate integration change.
+- Microphone routing follows the exact CoreAudio default-input UID while recording. One owned, coalesced event stream receives default-device and AVFoundation connection changes; a serial route worker rechecks the current default. A route change preserves the public audio stream and native session, joins old sample callbacks, drains their converter, then gives the replacement input a fresh converter and timestamp anchor. Missing or failed selected inputs remain unavailable until a later device event; there is no arbitrary input fallback or global preference mutation.
+- Microphone stop revokes the recording generation and sample/event admission before suspension, then joins startup, observation, route changes and native queues before finishing the stream. `MicrophoneInputRoutingTests` exercises this owner with controlled external device/session calls and real CoreMedia/AVAudioConverter samples, including lost/reconnected inputs, failure retry, held native work, stale callbacks and notification bursts. Native observer registration/teardown opens no input device. These checks do not establish installed device switching, sleep/wake or microphone permission acceptance.
 
 ## Capture Manager Pipeline
 

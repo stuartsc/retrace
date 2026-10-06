@@ -139,28 +139,6 @@ final class AudioFormatConverterTests: XCTestCase {
         consumer.cancel()
     }
 
-    func testFailedMicrophoneStartupThrowsAndClosesStreamWithoutRecording() async {
-        let microphone = MicrophoneAudioCapture(config: .default)
-        let source = await microphone.audioStream
-        let finished = expectation(description: "Failed startup stream finishes")
-        let consumer = Task {
-            for await _ in source {}
-            finished.fulfill()
-        }
-        // An actual AVCaptureSession has never been started: exercise completion of a
-        // failed start without requesting permission, opening a device, or recording.
-        do {
-            try await microphone.finishStartingCapture()
-            XCTFail("A session that is not running must not report successful startup")
-        } catch AudioCaptureError.captureSessionFailed {
-            // Expected.
-        } catch {
-            XCTFail("Unexpected startup failure: \(error)")
-        }
-        await fulfillment(of: [finished], timeout: 1)
-        consumer.cancel()
-    }
-
     func testDelegatesResetPendingTimeAndFilterAfterInvalidPCM() async throws {
         let priming = try Self.sampleBuffer(Self.tone(sampleRate: 48_000, frequency: 440, frames: 1))
         let invalid = try Self.sampleBuffer(
