@@ -98,7 +98,8 @@ Independent review approved the final source, including the native ownership
 correction, with no outstanding findings.
 
 Physical input switching, sleep/wake and installed automatic recovery remain
-separate checks; the running **2610.6.1** does not contain this routing change.
+separate checks. The installed source and its bounded startup verification are
+recorded below; source tests alone do not establish those hardware behaviors.
 
 ## Installation status
 
@@ -122,16 +123,57 @@ both Live and Timeline. A brief explicit processing check completed a fresh
 quiet AAC as probable silence and returned to automatic mode after cancellation.
 See the [freshness ledger](audio-transcription-freshness-repair.md) for details.
 
-The automatic-routing source is ready for native delivery as **2610.6.2**.
-The current command session still reports zero signing identities and rejects
-strict verification of the native installed app; the user's normal Terminal
-is the proven signing/delivery path. No signature check is bypassed.
+The automatic-routing source was prepared for native delivery as **2610.6.2**.
+The command session reports zero signing identities and rejects strict
+verification of the native installed app; the user's normal Terminal is the
+proven signing/delivery path. No signature check is bypassed.
 
 The reviewed `deliver.py` helper packages while recording continues, checks the
 pinned executable and post-packaging Mach-O payload, then waits for the user to
 quit normally before invoking the guarded installer. It retains a unique
-payload receipt and the existing app/database rollback checks. Native delivery,
-physical input switching and sleep/wake acceptance remain separate checks.
+payload receipt and the existing app/database rollback checks.
+
+## Installed local trial — 7 October 2026
+
+The user completed normal-Terminal packaging and installation. The payload
+receipt verifies all **39 compiled sections**; native installation completed
+at **07:33:57.638 AEST**. The installed build is **2610.6.2**, source
+`0dbdbe366c788ae270909bccdc06b54bd142e2c4`, with executable SHA-256
+`77a0d96bb6c432af95dd2a0dc960fa6fd322038997558b15255766b3ef594713`.
+The installer retained the previous 2610.6.1 app and verified database rollback
+copy, and reported no library writes. The original V23 schema and checked
+recording/context/exclusion preferences match the installation receipt.
+
+The new process (PID 18866 at verification) logged default-input connection at
+**07:34:34.854**, then a running session following the default input at
+**07:34:35.359**. One startup format-conversion rejection preceded normal
+delivery; the earlier retained screen-WAL recovery failure also remains
+separate from audio. New raw AAC batches advance every ten seconds. Two newly
+saved clips at 07:35:35 and 07:35:45 decode successfully to 240,576 samples each
+with nonzero input. This verifies capture data and decoder operation, not
+spoken-word accuracy or continuous coverage.
+
+The final saved pre-quit audio ends at **07:33:00.821** and the first new audio
+begins at **07:34:35.389**: a **94.568-second recording gap**. The original
+recordings remain in place.
+
+An exact-name `pgrep` initially missed the still-running old process; the agent
+corrected that false closed-app report after checking its full executable path.
+The computer-use service then disconnected during the normal Quit attempt and
+failed to reconnect. The user performed Quit/install/reopen. No forced process
+termination or alternative UI automation was used. Full-path process checks,
+native receipts and actual AAC decoding establish the bounded results above.
+
+Physical input switching and sleep/wake have not yet been exercised on the
+installed build. Computer use remains unavailable, so the fresh Live/Timeline
+UI check from 2610.6.1 is not promoted to a rendered-UI check of 2610.6.2.
+The latest audio is still pending text preparation. Overnight 2610.6.1 text
+outputs visible at 07:18 were generic speech descriptions, which demonstrate
+worker progress but do not establish useful transcription accuracy.
+
+`post-install-audio-20261007.json` and `installation-complete.json` retain the
+scoped checks. This documentation update does not change the installed product
+source commit or its preserved compiled artifacts.
 
 Content-free receipts, source review of the scoped local speech diagnostic and
 its fixed-word results are retained under

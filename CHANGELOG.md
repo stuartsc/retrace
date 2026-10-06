@@ -1,16 +1,16 @@
 # Updates and changelog
 
-Last updated: 2026-10-06.
+Last updated: 2026-10-07.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
 
-### 2026-10-06 — Follow the selected microphone (uninstalled 2610.6.2 candidate)
+### 2026-10-06 — Follow the selected microphone (local trial 2610.6.2 installed 7 October)
 
 - Live checks found a stale built-in microphone session delivering digital silence after a wake/device change while macOS had the Studio Display microphone selected. Normal pause/resume restored the intended input; locally recognized spoken-test words verify this runtime recovery, with an 8.641-second recording gap disclosed.
 - A narrow source repair observes default-input/device changes, preserves the public audio stream and joins native callback teardown. Unrelated device changes leave a healthy input alone; a later pause prevents queued restarts from reviving recording. It changes neither the system input preference nor microphone permissions.
-- All **38 focused tests** pass after a clean actor/protocol rebuild and again after a local native ownership correction. Source review is clear and the separate clean optimized build passes with all **379 product inputs unchanged**. Candidate **2610.6.2** awaits native signing and installation; the installed build remains **2610.6.1**. Physical switching and sleep/wake acceptance remain separate in the [microphone input ledger](docs/microphone-input-repair.md).
+- All **38 focused tests** pass after a clean actor/protocol rebuild and again after a local native ownership correction. Source review is clear and the separate clean optimized build passes with all **379 product inputs unchanged**. Build **2610.6.2**, source `0dbdbe3`, was installed through the user's normal Terminal on 7 October. Native input startup and two new AAC signal checks pass; V23 and checked settings remain unchanged. The normal quit/reopen gap was **94.568 seconds**. Physical switching, sleep/wake, new spoken-phrase accuracy and new-build rendered UI acceptance remain separate in the [microphone input ledger](docs/microphone-input-repair.md).
 
 ### 2026-10-06 — Recent audio transcription queue repair (local trial 2610.6.1)
 
