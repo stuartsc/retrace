@@ -60,6 +60,7 @@ Database/
 │   ├── ActivityScreenLinkTests.swift
 │   ├── AudioRepairPolicyTests.swift
 │   ├── AudioTranscriptionPaginationTests.swift
+│   ├── AutomaticAudioSelectionTests.swift
 │   ├── DatabaseManagerTests.swift
 │   ├── DictationSessionQueriesTests.swift
 │   ├── EdgeCaseTests.swift
@@ -165,6 +166,20 @@ OCR selection has three lanes: manual priorities above 10 always lead; automatic
 Keep claim selection inside its atomic transaction and mutate the fairness counter only after commit. Use the existing priority index for manual/current selection and enqueue-time index for history, with queue-driven frame primary-key lookups; do not add a migration or scan/sort the full frame table. `FramePipelinePersistenceTests` traces actual claim SQL and validates its SQLite plans. Queue-position estimates use the same lanes and fairness budget, count distinct pending frames and exclude claimed/completed rows; new arrivals and age changes can alter the displayed estimate.
 
 ## Active schema and access rules
+
+The October 6 source candidate adds separate automatic audio selectors in
+`AudioTranscriptionQueries`. Recent first-pass selection reads the newest `pending`
+batch in an inclusive rolling 24-hour window, excluding future timestamps and
+`needs_repair`. Oldest-work selection compares one `pending` and one `needs_repair`
+candidate by exact stored integer milliseconds, then row ID. Each query uses the
+existing V17 status/time index and returns at most one row, with no migration or
+global sort. The residual canonical-batch-path filter can still examine multiple
+nonmatching status rows; this is not a hard bound on worst-case SQLite VM work.
+The manual `getUntranscribedBatches` contract and atomic exact-row completion are
+unchanged. `AutomaticAudioSelectionTests` covers real SQLite boundaries, ties,
+clock changes, cancellation, errors, exact completion and a traced 20,000-row
+eligible queue. These tests do not establish installed throughput or native AAC
+decoder acceptance.
 
 - `video` stores encoded container paths; `segment` stores app/window sessions; `frame` links both. IDs are integer database keys, distinct from numeric storage filenames.
 - `node` stores OCR bounds and raw text. `doc_segment` links frame/session IDs to the `searchRanking` FTS5 table. `processing_queue` holds durable OCR work.

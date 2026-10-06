@@ -1,10 +1,16 @@
 # Updates and changelog
 
-Last updated: 2026-10-03.
+Last updated: 2026-10-06.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-10-06 — Recent audio transcription queue repair (uninstalled)
+
+- Live diagnosis confirmed new microphone recordings were durable but still pending while admitted transcription processed September audio. The installed app remains **2610.1.1**; the 3 October display repair is also still uninstalled.
+- The narrow candidate prefers the newest pending recording from the last 24 hours for up to three admitted attempts, then attempts the oldest pending/repair recording. Cancellation and failure consume a turn so a broken older recording cannot monopolize subsequent admissions. The existing CPU governor, recording persistence and manual backfill remain unchanged.
+- Clean focused debug validation passes **152 tests with one intentional skip**; a final **22-test** selection passes both added timing/shutdown regressions. The separate clean optimized build passes, and independent reviews are clear. The combined display/queue candidate is prepared for native signing as **2610.6.1**, not installed. AAC decoder limitations, delivery and acceptance are tracked in the [freshness repair ledger](docs/audio-transcription-freshness-repair.md).
 
 ### 2026-10-03 — Show saved audio before text preparation
 

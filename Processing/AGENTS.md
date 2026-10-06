@@ -45,6 +45,7 @@ Processing/
 │   │   └── VisionOCRTests.swift
 │   ├── AudioEnhancementPolicyTests.swift
 │   ├── AudioProcessingBackpressureTests.swift
+│   ├── AudioProcessingFreshnessTests.swift
 │   ├── AudioRefinementSchedulingPolicyTests.swift
 │   ├── AudioSpeechActivityPolicyTests.swift
 │   ├── AudioStoragePolicyTests.swift
@@ -146,3 +147,27 @@ The manager owns and joins ingestion, admission and inference. Stop flushes acce
 This repair preserves the previous immediate in-memory fallback when AAC or raw-row persistence fails and exposes `hasPersistenceFailure`; it does not claim a new bounded disk-failure retention protocol. Existing low-rate OCR is unchanged by this narrow repair.
 
 `AudioProcessingGovernorTests`, `PendingAudioCommitTests` and `WhisperModelResidencyTests` cover private AAC/SQLite admission, restart, cancellation, exact completion, partial-tail shutdown and model recovery. The opt-in native cancellation/reuse case requires `RETRACE_WHISPER_WORD_TEST_MODEL_PATH` and uses only the bundled authored fixture. Source tests and installed CPU acceptance remain separate receipts.
+
+### October 6 automatic audio freshness repair (source candidate)
+
+The governed first-pass worker gives up to three admitted attempts to the newest
+`pending` recordings captured within the previous 24 hours, then one attempt to
+the oldest retained `pending`/`needs_repair` recording. When no recent pending row
+exists it immediately selects oldest work. Failures and cancelled inference
+consume their selected turn; existing error backoff and the same governor permit
+remain in force. The in-memory fairness budget lasts for the manager lifetime,
+while restart discovers the same durable pending rows and starts with recent work.
+Manual backfill, model/thread admission, codecs, exact transactional completion
+and recording persistence are unchanged.
+
+`AudioProcessingFreshnessTests` uses private SQLite, the pinned bundled authored
+WAV through the production native decoder, and controlled inference/admission
+protocol boundaries. It checks recent/old fairness, ongoing interaction deferral,
+failed/cancelled oldest work, deletion, joined stop and restart without duplicate
+completion. Timed-word regression input also checks complete sentence text,
+canonical media and timestamps across reverse recent windows and an old-lane hop,
+with no first-pass prompt carryover; this does not measure recognition accuracy.
+`RETRACE_AUDIO_FRESHNESS_FIXTURE_AAC` explicitly runs the same cases with the pinned
+authored AAC from the audio-visibility validation. An enabled AAC decode failure
+is a failure, never a skip; native AAC acceptance remains distinct from the WAV
+scheduling regression.

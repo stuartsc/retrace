@@ -48,6 +48,9 @@ public actor AudioProcessingManager {
     private var ingestionTask: Task<Void, Never>?
     private var admissionTask: Task<BackgroundProcessingPermit, Error>?
     private var pendingGeneration: UInt64 = 0
+    /// Attempt budget survives quiet-time revocation for this manager's lifetime. Durable
+    /// rows remain the queue; a new process starts by giving current recordings a turn.
+    private var consecutiveRecentAutomaticAttempts = 0
     public private(set) var isTranscribing = false
     public private(set) var hasPersistenceFailure = false
     #if DEBUG
@@ -300,9 +303,22 @@ public actor AudioProcessingManager {
                 wasEmpty = try await withTaskCancellationHandler {
                     try await BackgroundProcessingContext.$permit.withValue(permit) {
                         try BackgroundProcessingContext.checkCancellation()
-                        guard let row = try await queries.getUntranscribedBatches(limit: 1).first else {
-                            return true
+                        let recent: UntranscribedBatch?
+                        if consecutiveRecentAutomaticAttempts < 3 {
+                            recent = try await queries.getRecentPendingBatch()
+                        } else {
+                            recent = nil
                         }
+                        let row: UntranscribedBatch
+                        if let recent {
+                            row = recent
+                        } else if let oldest = try await queries.getOldestUntranscribedBatch() {
+                            row = oldest
+                        } else { return true }
+                        try BackgroundProcessingContext.checkCancellation()
+                        // Count selected attempts, not successes: a cancelled or broken oldest
+                        // recording must not repeatedly take every subsequent admitted turn.
+                        consecutiveRecentAutomaticAttempts = recent == nil ? 0 : consecutiveRecentAutomaticAttempts + 1
                         let pending = PersistedAudioBatch(
                             batch: AudioBatch(audioData: Data(), source: row.source,
                                 startTimestamp: row.startTime, endTimestamp: row.endTime,

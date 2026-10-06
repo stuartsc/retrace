@@ -779,6 +779,79 @@ public actor AudioTranscriptionQueries {
 
     // MARK: - Backfill Queries
 
+    /// New first-pass recordings get a recent lane without changing manual backfill order.
+    /// The rolling 24-hour window includes both endpoints; future-dated recordings remain
+    /// available to the oldest-work lane rather than leading the recent lane after a clock change.
+    public func getRecentPendingBatch(now: Date = Date()) throws -> UntranscribedBatch? {
+        try Task.checkCancellation()
+        let lowerMilliseconds = now.addingTimeInterval(-24 * 60 * 60).timeIntervalSince1970 * 1_000
+        let upperMilliseconds = now.timeIntervalSince1970 * 1_000
+        guard lowerMilliseconds.isFinite, upperMilliseconds.isFinite,
+              lowerMilliseconds >= Double(Int64.min), upperMilliseconds < Double(Int64.max) else {
+            throw DatabaseError.queryExecutionFailed("Recent audio selection requires a representable clock")
+        }
+        return try selectAutomaticBatch(status: "pending", newestFirst: true,
+            timeRange: (Int64(lowerMilliseconds), Int64(upperMilliseconds)))
+    }
+
+    /// Read one oldest candidate per status using the existing V17 status/time index.
+    /// Comparing the two exact integer identities avoids sorting the complete pending queue.
+    public func getOldestUntranscribedBatch() throws -> UntranscribedBatch? {
+        let pending = try selectAutomaticBatch(status: "pending", newestFirst: false)
+        let repair = try selectAutomaticBatch(status: "needs_repair", newestFirst: false)
+        switch (pending, repair) {
+        case let (pending?, repair?):
+            if pending.startTimeMilliseconds != repair.startTimeMilliseconds {
+                return pending.startTimeMilliseconds < repair.startTimeMilliseconds ? pending : repair
+            }
+            return pending.id < repair.id ? pending : repair
+        case let (pending?, nil): return pending
+        case let (nil, repair?): return repair
+        case (nil, nil): return nil
+        }
+    }
+
+    private func selectAutomaticBatch(status: String, newestFirst: Bool,
+                                     timeRange: (lower: Int64, upper: Int64)? = nil) throws -> UntranscribedBatch? {
+        try Task.checkCancellation()
+        let order = newestFirst ? "DESC" : "ASC"
+        let sql = """
+            SELECT id, start_time, end_time, source, audio_path, audio_size
+            FROM audio_captures INDEXED BY idx_audio_captures_transcript_status
+            WHERE transcript_status = ?
+            \(timeRange == nil ? "" : "AND start_time BETWEEN ? AND ?")
+            AND audio_path IS NOT NULL
+            AND audio_path LIKE '%batch_%'
+            ORDER BY start_time \(order), id \(order)
+            LIMIT 1;
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, status, -1, SQLITE_TRANSIENT)
+        if let timeRange {
+            sqlite3_bind_int64(statement, 2, timeRange.lower)
+            sqlite3_bind_int64(statement, 3, timeRange.upper)
+        }
+        let result = sqlite3_step(statement)
+        try Task.checkCancellation()
+        if result == SQLITE_DONE { return nil }
+        guard result == SQLITE_ROW else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        let start = sqlite3_column_int64(statement, 1)
+        let end = sqlite3_column_int64(statement, 2)
+        return UntranscribedBatch(
+            id: sqlite3_column_int64(statement, 0),
+            startTime: Schema.timestampToDate(start), endTime: Schema.timestampToDate(end),
+            source: AudioSource(rawValue: String(cString: sqlite3_column_text(statement, 3))) ?? .microphone,
+            audioPath: String(cString: sqlite3_column_text(statement, 4)),
+            audioSize: sqlite3_column_int64(statement, 5),
+            startTimeMilliseconds: start, endTimeMilliseconds: end)
+    }
+
     /// Get raw batch records that haven't been transcribed yet
     /// These have text="" and a batch audio file path
     public func getUntranscribedBatches(limit: Int = 50) throws -> [UntranscribedBatch] {
