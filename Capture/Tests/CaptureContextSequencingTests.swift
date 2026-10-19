@@ -4,6 +4,111 @@ import Shared
 @testable import Capture
 
 final class CaptureContextSequencingTests: XCTestCase {
+    func testSlowDiagnosticWriterCoalescesPendingIntervalsWithoutBlockingCapture() async {
+        let started = expectation(description: "Diagnostic writer entered")
+        let drained = expectation(description: "Coalesced diagnostics drained")
+        let releaseWriter = DispatchSemaphore(value: 0)
+        defer { releaseWriter.signal() }
+        let fixture = SamplingDiagnosticFixture()
+        let delivery = CaptureSamplingDiagnosticDelivery { summary in
+            fixture.append(summary)
+            if fixture.values.count == 1 {
+                started.fulfill()
+                _ = releaseWriter.wait(timeout: .now() + 5)
+            } else { drained.fulfill() }
+        }
+        let diagnostics = CaptureSamplingDiagnostics(now: { fixture.time }, emit: { delivery.enqueue($0) })
+        diagnostics.record(.accepted)
+        await fulfillment(of: [started], timeout: 3)
+        for interval in 1...1_000 {
+            fixture.time = Double(interval) * 30
+            diagnostics.record(.displayMismatch)
+        }
+        XCTAssertEqual(fixture.values.count, 1, "Capture can continue while the file sink is held")
+        releaseWriter.signal()
+        await fulfillment(of: [drained], timeout: 3)
+        XCTAssertEqual(fixture.values.count, 2, "Only one coalesced pending summary may be retained")
+        XCTAssertEqual(fixture.values.last?.counts[.displayMismatch], 1_000)
+    }
+
+    func testCancellationDuringMetadataDoesNotStartPixelCapture() async throws {
+        let pixels = try renderedCaptureFixture()
+        let outcomes = CaptureOutcomeFixture()
+        let task = Task {
+            await CaptureSnapshotSequencer.capture(displayID: 42, readContext: {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return CapturedWindowSample(context: captureTestContext(), privacySignature: "inventory")
+            }, capturePixels: {
+                XCTFail("Cancelled metadata work must not start a native pixel read")
+                return pixels
+            }, recordOutcome: { outcomes.append($0) })
+        }
+        let frame = await task.value
+        XCTAssertNil(frame)
+        XCTAssertEqual(outcomes.values, [.cancelled])
+    }
+
+    func testSamplingDiagnosticsAggregateConcurrentAttemptsAtBoundedCadence() {
+        let fixture = SamplingDiagnosticFixture()
+        let diagnostics = CaptureSamplingDiagnostics(now: { fixture.time }, emit: { fixture.append($0) })
+        diagnostics.record(.accepted)
+        DispatchQueue.concurrentPerform(iterations: 10_000) { index in
+            diagnostics.record(index.isMultiple(of: 2) ? .displayMismatch : .inventoryChanged)
+        }
+        XCTAssertEqual(fixture.values.count, 1)
+        fixture.time = 29.99
+        diagnostics.record(.notificationChangedDuringPixels)
+        XCTAssertEqual(fixture.values.count, 1)
+        fixture.time = 30
+        diagnostics.record(.accepted)
+        XCTAssertEqual(fixture.values.count, 2)
+        let summary = fixture.values[1]
+        XCTAssertEqual(summary.counts[.displayMismatch], 5_000)
+        XCTAssertEqual(summary.counts[.inventoryChanged], 5_000)
+        XCTAssertEqual(summary.counts[.notificationChangedDuringPixels], 1)
+        XCTAssertEqual(summary.counts[.accepted], 1)
+        XCTAssertFalse(summary.countsClamped)
+        // A slow/noisy interval cannot produce a line per capture, and the
+        // production formatter has no window/app/URL input to disclose.
+        XCTAssertLessThan(summary.message.utf8.count, 512)
+        XCTAssertFalse(summary.message.contains("Same document label"))
+    }
+
+    func testRejectionDiagnosticsDistinguishDisplayIdentityAndPrivacyWithoutReadingPixels() async throws {
+        let pixels = try renderedCaptureFixture()
+        let samples: [(CapturedWindowSample, CaptureSamplingOutcome)] = [
+            (.init(context: nil), .contextUnavailable),
+            (.init(context: nil, failure: .focusedApplicationChanged), .focusedApplicationChanged),
+            (.init(context: captureTestContext(display: 43), privacySignature: "inventory"), .displayMismatch),
+            (.init(context: captureTestContext(generation: nil), privacySignature: "inventory"), .windowIdentityUnavailable),
+            (.init(context: captureTestContext()), .inventoryUnavailable)
+        ]
+        for (sample, expected) in samples {
+            let outcomes = CaptureOutcomeFixture()
+            let frame = await CaptureSnapshotSequencer.capture(displayID: 42, readContext: { sample }, capturePixels: {
+                XCTFail("Rejected metadata must not admit native pixels")
+                return pixels
+            }, recordOutcome: { outcomes.append($0) })
+            XCTAssertNil(frame)
+            XCTAssertEqual(outcomes.values, [expected])
+        }
+    }
+
+    func testPixelBracketReportsSuccessAndChangedInventoryExactlyOnce() async throws {
+        let pixels = try renderedCaptureFixture()
+        for changed in [false, true] {
+            let source = CaptureSampleFixture(captureTestContext())
+            let outcomes = CaptureOutcomeFixture()
+            let frame = await CaptureSnapshotSequencer.capture(displayID: 42,
+                readContext: { await source.sample() }, capturePixels: {
+                    if changed { await source.changeInventory() }
+                    return pixels
+                }, recordOutcome: { outcomes.append($0) })
+            XCTAssertEqual(outcomes.values, [changed ? .inventoryChanged : .accepted])
+            XCTAssertEqual(frame?.imageData, changed ? nil : pixels.imageData)
+        }
+    }
+
     func testMatchingSamplesBindActualPixelsToCaptureTimeContext() async throws {
         let context = captureTestContext()
         let source = CaptureSampleFixture(context)
@@ -119,6 +224,7 @@ final class CaptureContextSequencingTests: XCTestCase {
         let observations = ActivityObservationBuffer()
         defer { observations.finish() }
         let pixels = try renderedCaptureFixture()
+        let outcomes = CaptureOutcomeFixture()
         let captured = await CaptureSnapshotSequencer.capture(displayID: 42, readContext: {
             let sample = await source.sample()
             ActivityAXNotificationHandler.handle(kAXTitleChangedNotification, app: nil, buffer: observations)
@@ -126,11 +232,36 @@ final class CaptureContextSequencingTests: XCTestCase {
         }, capturePixels: {
             XCTFail("Pixels must not be read after the initial metadata admission was invalidated")
             return pixels
-        })
+        }, recordOutcome: { outcomes.append($0) })
         XCTAssertNil(captured)
+        XCTAssertEqual(outcomes.values, [.notificationChangedBeforePixels])
         let reads = await source.readCount
         XCTAssertEqual(reads, 1)
+        let retry = await CaptureSnapshotSequencer.capture(displayID: 42,
+            readContext: { await source.sample() }, capturePixels: { pixels },
+            recordOutcome: { outcomes.append($0) })
+        XCTAssertEqual(retry?.imageData, pixels.imageData)
+        XCTAssertEqual(outcomes.values, [.notificationChangedBeforePixels, .accepted])
     }
+}
+
+private final class SamplingDiagnosticFixture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var clock: TimeInterval = 0
+    private var summaries: [CaptureSamplingSummary] = []
+    var time: TimeInterval {
+        get { lock.withLock { clock } }
+        set { lock.withLock { clock = newValue } }
+    }
+    var values: [CaptureSamplingSummary] { lock.withLock { summaries } }
+    func append(_ value: CaptureSamplingSummary) { lock.withLock { summaries.append(value) } }
+}
+
+private final class CaptureOutcomeFixture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [CaptureSamplingOutcome] = []
+    var values: [CaptureSamplingOutcome] { lock.withLock { recorded } }
+    func append(_ value: CaptureSamplingOutcome) { lock.withLock { recorded.append(value) } }
 }
 
 private actor CaptureSampleFixture {

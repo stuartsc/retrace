@@ -5,6 +5,23 @@ import AppKit
 import ApplicationServices
 import Shared
 
+/// Replace only native lookups in tests. Production selection shares exactly
+/// the same visible-window and display-area rules as capture attribution.
+struct CaptureDisplayEnvironment: Sendable {
+    let frontmostWindowBounds: @Sendable () async -> CGRect?
+    let displayForBounds: @Sendable (CGRect) -> UInt32?
+    let mainDisplayID: @Sendable () -> UInt32
+    let accessibilityPermission: @Sendable () -> Bool
+
+    static let live = Self(frontmostWindowBounds: {
+        guard let pid = await MainActor.run(body: { NSWorkspace.shared.frontmostApplication?.processIdentifier }),
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return CapturedWindowGeometry.firstWindow(processID: pid, in: windows)?.bounds
+    }, displayForBounds: { CapturedWindowGeometry.displayID(for: $0) },
+        mainDisplayID: { CGMainDisplayID() },
+        accessibilityPermission: { PermissionMonitor.shared.hasAccessibilityPermission() })
+}
+
 /// Monitors and provides information about available displays
 actor DisplayMonitor {
 
@@ -13,6 +30,9 @@ actor DisplayMonitor {
     private var cachedDisplays: [DisplayInfo] = []
     private var lastRefresh: Date?
     private let cacheValidityDuration: TimeInterval = 5.0 // Refresh every 5 seconds
+    private let environment: CaptureDisplayEnvironment
+
+    init(environment: CaptureDisplayEnvironment = .live) { self.environment = environment }
 
     // MARK: - Public Methods
 
@@ -55,7 +75,7 @@ actor DisplayMonitor {
         let displays = try await getAvailableDisplays()
 
         // Get the display containing the frontmost window
-        let activeDisplayID = getActiveDisplayID()
+        let activeDisplayID = await getActiveDisplayID()
 
         // Try to find the active display
         if let activeDisplay = displays.first(where: { $0.id == activeDisplayID }) {
@@ -69,98 +89,22 @@ actor DisplayMonitor {
     /// Get the display ID of the currently active display (contains focused window)
     /// Uses the frontmost window's position to determine which display is active
     /// This is more accurate than mouse position for keyboard-driven workflows
-    func getActiveDisplayID() -> UInt32 {
-        let (displayID, _) = getActiveDisplayIDWithPermissionStatus()
+    func getActiveDisplayID() async -> UInt32 {
+        let (displayID, _) = await getActiveDisplayIDWithPermissionStatus()
         return displayID
     }
 
-    /// Get the display ID of the currently active display and whether AX permission was granted
-    /// Uses safe wrappers to prevent crashes if permissions are revoked
+    /// Get the checked WindowServer display and the independently observed AX permission.
     /// Returns: (displayID, hasAXPermission)
-    func getActiveDisplayIDWithPermissionStatus() -> (UInt32, Bool) {
-        // Use the central permission monitor for consistent checking
-        let hasAXPermission = PermissionMonitor.shared.hasAccessibilityPermission()
-
-        // If we don't have permission, report it but still return main display
-        if !hasAXPermission {
-            return (CGMainDisplayID(), false)
+    func getActiveDisplayIDWithPermissionStatus() async -> (UInt32, Bool) {
+        let hasAXPermission = environment.accessibilityPermission()
+        if let bounds = await environment.frontmostWindowBounds(),
+           let displayID = environment.displayForBounds(bounds) {
+            return (displayID, hasAXPermission)
         }
-
-        // Get the frontmost application
-        guard let app = NSWorkspace.shared.frontmostApplication else {
-            return (CGMainDisplayID(), true) // No app is fine, not a permission issue
-        }
-
-        // Avoid AX frame reads for our own app; use CGWindow fallback.
-        if app.processIdentifier == ProcessInfo.processInfo.processIdentifier {
-            if let windowFrame = getWindowFrameFromWindowList(for: app.processIdentifier) {
-                let displayID = getDisplayContainingPoint(windowFrame.midX, windowFrame.midY)
-                return (displayID, true)
-            }
-            return (CGMainDisplayID(), true)
-        }
-
-        // Use safe wrapper to get window frame
-        if let windowFrame = PermissionMonitor.shared.safeGetWindowFrame(for: app.processIdentifier) {
-            // Find which display contains the center of the window
-            let displayID = getDisplayContainingPoint(windowFrame.midX, windowFrame.midY)
-            return (displayID, true)
-        }
-
-        // Fallback: return main display (permission OK, just couldn't determine active display)
-        return (CGMainDisplayID(), true)
-    }
-
-    /// Find which display contains the given point
-    private func getDisplayContainingPoint(_ x: CGFloat, _ y: CGFloat) -> UInt32 {
-        let point = CGPoint(x: x, y: y)
-
-        var displayCount: UInt32 = 0
-        var displayID: CGDirectDisplayID = 0
-
-        let result = CGGetDisplaysWithPoint(point, 1, &displayID, &displayCount)
-        if result == .success && displayCount > 0 {
-            return displayID
-        }
-
-        return CGMainDisplayID()
-    }
-
-    /// Best-effort window frame lookup without AX APIs.
-    /// Uses front-to-back ordering from CGWindowListCopyWindowInfo.
-    private func getWindowFrameFromWindowList(for pid: pid_t) -> CGRect? {
-        guard let windowList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return nil
-        }
-
-        for windowInfo in windowList {
-            guard let ownerPID = windowInfo[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID == pid else {
-                continue
-            }
-
-            let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
-            if layer != 0 {
-                continue
-            }
-
-            let isOnScreen = windowInfo[kCGWindowIsOnscreen as String] as? Bool ?? false
-            if !isOnScreen {
-                continue
-            }
-
-            guard let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: Any],
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else {
-                continue
-            }
-
-            return bounds
-        }
-
-        return nil
+        // Missing geometry is not proof of a permitted capture. The pixel
+        // sequencer still requires matching complete context on this display.
+        return (environment.mainDisplayID(), hasAXPermission)
     }
 
     /// Get display by ID

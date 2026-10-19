@@ -10,43 +10,78 @@ struct CapturedWindowSample: Sendable {
     let observedAt: Date
     let monotonicTime: TimeInterval
     let privacySignature: String?
+    let failure: CaptureSamplingOutcome?
     init(context: ActivityContext?, observedAt: Date = Date(),
-         monotonicTime: TimeInterval = ProcessInfo.processInfo.systemUptime, privacySignature: String? = nil) {
+         monotonicTime: TimeInterval = ProcessInfo.processInfo.systemUptime, privacySignature: String? = nil,
+         failure: CaptureSamplingOutcome? = nil) {
         self.context = context; self.observedAt = observedAt; self.monotonicTime = monotonicTime
         self.privacySignature = privacySignature
+        self.failure = failure
     }
 }
 
 enum CaptureSnapshotSequencer {
     static func capture(displayID: UInt32,
                         readContext: @Sendable () async -> CapturedWindowSample,
-                        capturePixels: @Sendable () async throws -> CapturedFrame?) async rethrows -> CapturedFrame? {
-        guard displayID > 0, !Task.isCancelled else { return nil }
+                        capturePixels: @Sendable () async throws -> CapturedFrame?,
+                        recordOutcome: @Sendable (CaptureSamplingOutcome) -> Void = { _ in }) async rethrows -> CapturedFrame? {
+        var outcome = CaptureSamplingOutcome.cancelled
+        defer { recordOutcome(outcome) }
+        guard !Task.isCancelled else { return nil }
+        outcome = .invalidDisplay
+        guard displayID > 0 else { return nil }
         // Durable window identity survives title/move noise. Keep a separate
         // notification receipt across metadata AND pixels so A -> B -> A cannot
         // pass merely because the final context and window inventory match.
         let notificationRevision = ObservedWindowGenerations.shared.notificationRevision
         let before = await readContext()
-        guard let sampled = before.context, sampled.windowID.map({ $0 > 0 }) == true,
+        outcome = .cancelled
+        guard !Task.isCancelled else { return nil }
+        outcome = before.failure ?? .contextUnavailable
+        guard let sampled = before.context else { return nil }
+        outcome = .windowIdentityUnavailable
+        guard sampled.windowID.map({ $0 > 0 }) == true,
               sampled.windowGeneration?.isEmpty == false, sampled.processID > 0,
-              !sampled.processGeneration.isEmpty, sampled.displayID == displayID,
-              before.privacySignature != nil,
-              notificationRevision == ObservedWindowGenerations.shared.notificationRevision else { return nil }
+              !sampled.processGeneration.isEmpty else { return nil }
+        outcome = .displayMismatch
+        guard sampled.displayID == displayID else { return nil }
+        outcome = .inventoryUnavailable
+        guard before.privacySignature != nil else { return nil }
+        outcome = .notificationChangedBeforePixels
+        guard notificationRevision == ObservedWindowGenerations.shared.notificationRevision else { return nil }
         let capturedAt = Date()
         let captureMonotonic = ProcessInfo.processInfo.systemUptime
-        guard let pixels = try await capturePixels(), !Task.isCancelled else { return nil }
+        outcome = .pixelsUnavailable
+        let capturedPixels: CapturedFrame?
+        do { capturedPixels = try await capturePixels() }
+        catch {
+            if Task.isCancelled || error is CancellationError { outcome = .cancelled }
+            throw error
+        }
+        outcome = .cancelled
+        guard !Task.isCancelled else { return nil }
+        outcome = .pixelsUnavailable
+        guard let pixels = capturedPixels else { return nil }
+        outcome = .cancelled
         let after = await readContext()
-        guard !Task.isCancelled, sampled == after.context,
-              notificationRevision == ObservedWindowGenerations.shared.notificationRevision,
-              before.privacySignature == after.privacySignature,
-              before.monotonicTime.isFinite, after.monotonicTime.isFinite,
-              after.monotonicTime >= before.monotonicTime,
-              after.monotonicTime - before.monotonicTime <= 2 else { return nil }
+        guard !Task.isCancelled else { return nil }
+        outcome = after.failure ?? .contextChanged
+        guard sampled == after.context else { return nil }
+        outcome = .notificationChangedDuringPixels
+        guard notificationRevision == ObservedWindowGenerations.shared.notificationRevision else { return nil }
+        outcome = .inventoryChanged
+        guard before.privacySignature == after.privacySignature else { return nil }
+        outcome = .invalidClock
+        guard before.monotonicTime.isFinite, after.monotonicTime.isFinite,
+              after.monotonicTime >= before.monotonicTime else { return nil }
+        outcome = .samplingTooSlow
+        guard after.monotonicTime - before.monotonicTime <= 2 else { return nil }
         let context = pixels.metadata.redactionReason == nil ? sampled : nil
         let metadata = FrameMetadata(appBundleID: context?.appBundleID, appName: context?.appName,
             windowName: context?.windowTitle, browserURL: context?.safeURL,
             redactionReason: pixels.metadata.redactionReason, displayID: displayID,
             captureContext: context, captureMonotonicTime: captureMonotonic)
+        outcome = .accepted
         return CapturedFrame(timestamp: capturedAt, imageData: pixels.imageData,
             width: pixels.width, height: pixels.height, bytesPerRow: pixels.bytesPerRow, metadata: metadata)
     }
@@ -68,15 +103,27 @@ struct ActivityContextSource: Sendable {
     )
 
     func sampleCapture(config: CaptureConfig, displayID: UInt32) async -> CapturedWindowSample {
-        guard let initialInventory = visibleWindowSignature(displayID: displayID),
-              let app = await frontmost(), let base = await window(app, true, config) else {
-            return CapturedWindowSample(context: nil)
+        guard let initialInventory = visibleWindowSignature(displayID: displayID) else {
+            return CapturedWindowSample(context: nil, failure: .inventoryUnavailable)
+        }
+        guard let app = await frontmost() else {
+            return CapturedWindowSample(context: nil, failure: .applicationUnavailable)
+        }
+        guard let base = await window(app, true, config) else {
+            return CapturedWindowSample(context: nil, failure: .windowUnavailable)
         }
         let context = await document(base, app) ?? base
-        guard app == (await frontmost()), context.displayID == displayID,
-              let finalInventory = visibleWindowSignature(displayID: displayID),
-              initialInventory == finalInventory else {
-            return CapturedWindowSample(context: nil)
+        guard app == (await frontmost()) else {
+            return CapturedWindowSample(context: nil, failure: .focusedApplicationChanged)
+        }
+        guard context.displayID == displayID else {
+            return CapturedWindowSample(context: nil, failure: .displayMismatch)
+        }
+        guard let finalInventory = visibleWindowSignature(displayID: displayID) else {
+            return CapturedWindowSample(context: nil, failure: .inventoryUnavailable)
+        }
+        guard initialInventory == finalInventory else {
+            return CapturedWindowSample(context: nil, failure: .inventoryChangedDuringMetadata)
         }
         return CapturedWindowSample(context: context, privacySignature: finalInventory)
     }

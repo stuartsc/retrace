@@ -25,6 +25,7 @@ public actor CGWindowListCapture {
     private var configurationGeneration: UInt64 = 0
     private var contextUnavailable = false
     private let contextSource = ActivityContextSource.live
+    private let samplingDiagnostics = CaptureSamplingDiagnostics()
 
     /// Callback when frame is captured
     nonisolated(unsafe) var onFrameCaptured: (@Sendable (CapturedFrame) -> Void)?
@@ -175,9 +176,11 @@ public actor CGWindowListCapture {
 
         let generation = configurationGeneration
         let started = ContinuousClock.now
+        let diagnostics = samplingDiagnostics
         let frame = await CaptureSnapshotSequencer.capture(displayID: displayID,
             readContext: { await self.contextSource.sampleCapture(config: config, displayID: displayID) },
-            capturePixels: { await self.captureFilteredPixels(displayID: displayID, config: config) })
+            capturePixels: { await self.captureFilteredPixels(displayID: displayID, config: config) },
+            recordOutcome: { diagnostics.record($0) })
         guard isActive, generation == configurationGeneration else { return }
         guard let frame else {
             if !contextUnavailable {

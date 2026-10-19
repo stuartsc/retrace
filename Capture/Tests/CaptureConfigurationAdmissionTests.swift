@@ -91,6 +91,30 @@ final class CaptureConfigurationAdmissionTests: XCTestCase {
         XCTAssertNotEqual(restarted.policy.session.writerID, fresh.policy.session.writerID)
     }
 
+    func testStartupMonitorBaselineMatchesTheSourceEvenIfFocusChangesDuringStartup() async throws {
+        _ = try await seedActivePolicy()
+        let display = AdmissionTestChangingDisplay()
+        manager = CaptureManager(config: allowed, metadataProvider: AdmissionTestMetadata(),
+            configurationAdmission: bridge, source: source,
+            lifecycleEnvironment: CaptureLifecycleEnvironment(
+                hasPermission: { true },
+                activeDisplayID: { await display.nextDisplay() },
+                startDisplayMonitoring: { await display.monitorStarted(on: $0) },
+                stopDisplayMonitoring: {}))
+        try await manager.startCapture(config: allowed)
+        let capturedDisplay = await source.lastDisplayID
+        let monitoredDisplay = await display.monitorBaseline
+        XCTAssertEqual(capturedDisplay, 7)
+        XCTAssertEqual(monitoredDisplay, capturedDisplay,
+                       "Monitoring must start from the source actually opened, so its first reconciliation can detect a focus change")
+        let reads = await display.reads
+        XCTAssertEqual(reads, 1, "A second lookup cannot silently replace the display baseline")
+        await source.yield(try pixels())
+        try await manager.stopCapture()
+        let active = await source.isActive
+        XCTAssertFalse(active)
+    }
+
     func testInitializationWaitsForTheExistingLifecycleSlot() async throws {
         let old = try await seedActivePolicy()
         let gate = makeGate()
@@ -548,6 +572,7 @@ private actor AdmissionTestFrameSource: CaptureFrameSource {
     private(set) var isActive = false
     private(set) var startCount = 0
     private(set) var lastConfiguration: CaptureConfig?
+    private(set) var lastDisplayID: UInt32?
 
     func holdNextStart(_ gate: AdmissionTestGate) { startGate = gate }
     func holdNextUpdate(_ gate: AdmissionTestGate) { updateGate = gate }
@@ -563,6 +588,7 @@ private actor AdmissionTestFrameSource: CaptureFrameSource {
         continuation = frameContinuation
         isActive = true
         lastConfiguration = config
+        lastDisplayID = displayID
         await gate?.hold()
         if startFailure { startFailure = false; throw AdmissionTestFailure.nativeSource }
     }
@@ -578,6 +604,16 @@ private actor AdmissionTestFrameSource: CaptureFrameSource {
     }
     func captureImmediateAndResetTimer() { }
     func yield(_ frame: CapturedFrame) { continuation?.yield(frame) }
+}
+
+private actor AdmissionTestChangingDisplay {
+    private(set) var reads = 0
+    private(set) var monitorBaseline: UInt32?
+    func nextDisplay() -> UInt32 {
+        reads += 1
+        return reads == 1 ? 7 : 8
+    }
+    func monitorStarted(on display: UInt32) { monitorBaseline = display }
 }
 
 /// Forward every authority decision to the production database. Holds are after

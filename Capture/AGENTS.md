@@ -22,6 +22,8 @@ Capture/
 ├── Metadata/
 │   ├── AppInfoProvider.swift      # Get active app info via NSWorkspace
 │   ├── CaptureAttribution.swift   # Capture-time sequencing and system context adapter boundary
+│   ├── CapturedWindowGeometry.swift # Shared visible-window selection and deterministic largest display overlap
+│   ├── CaptureSamplingDiagnostics.swift # Fixed rejection counters and bounded asynchronous diagnostic delivery
 │   └── BrowserURLExtractor.swift  # Extract URL from browsers (AX API)
 ├── Audio/
 │   ├── AudioCaptureManager.swift  # Dual-source audio capture coordinator
@@ -47,6 +49,8 @@ Capture/
     ├── CaptureConfigurationAdmissionTests.swift # Real SQLite policy claims/receipts across serialized native-source configuration boundaries
     ├── CaptureMetadataRetentionTests.swift # CoreGraphics/stream regression for delayed metadata attribution
     ├── CaptureContextSequencingTests.swift # Pixel capture bracketed by identity, notification revision and lifecycle admission
+    ├── CaptureDisplaySelectionTests.swift # Native CG geometry decoding, invalid windows and consistent display routing
+    ├── DisplaySwitchMonitorTests.swift # Real Foundation activation events, held registration and stop/restart ownership
     ├── ObservedWindowGenerationTests.swift # Real WindowServer identity and process/session generation invalidation
     ├── DeduplicationTests.swift
     ├── SemanticPixelDeduplicationTests.swift # Reviewed JPEG/native text edits, SIMD/noise/stride regressions and opt-in resolution benchmarks
@@ -74,6 +78,8 @@ Capture/
 
 ### Capture attribution and activity observation
 
+- Capture routing, attribution and AX document revalidation use one checked WindowServer window selector; transparent/degenerate windows cannot choose a different display. Largest visible overlap selects a display with deterministic ties, independently of AX permission. Startup monitoring uses the source actually opened, registers bounded activation hints before reconciliation, and fences callbacks by session. Native AX registrations own their callback context through MainActor source removal; Stop can veto installation that has not yet run. The observation task is not joined from CaptureManager's lifecycle queue because an already-admitted callback may be queued behind it.
+- `CaptureSamplingDiagnostics` records only fixed admission outcomes and bounded counters every 30 seconds. One asynchronous log write and one coalesced pending summary bound delivery even if the file sink stalls. Sampling acceptance precedes outer recording-generation/deduplication/storage admission; these counts are not retained frames, capture coverage or time spent working. Existing exact-context, inventory, notification-revision and elapsed-time checks remain required.
 - Native application snapshots share a MainActor registry of at most 256 observed process lifetimes, matched by `NSRunningApplication.isEqual` and the captured positive PID. LaunchServices launch dates are optional. Terminated handles and changed PIDs are refused; eviction replaces only the least recently used token. Keep this registry independent of ordinary window/focus/lifecycle resets. Diagnostics use fixed current/workspace/AX route and availability codes, with bounded counts for transitions suppressed during the 30-second emission interval. The production diagnostic writer runs on a dedicated utility serial queue; file locks and rotation must stay off MainActor and the cooperative executor.
 - An unavailable focus notification remains a content-free `notified-app-unavailable` gap at its observation time. Explicit reconciliation can sample the current application and records a fresh sample; it must not relabel an unidentified historical notification as a later application.
 - `CGWindowListCapture` brackets the actual pixel read with permitted process, observed window generation, document, and display samples. A bounded, opaque signature of the visible window inventory also guards background-window privacy changes. Unknown or changing context drops that capture; the next scheduled capture can retry. Redacted pixels retain the reason and display only.

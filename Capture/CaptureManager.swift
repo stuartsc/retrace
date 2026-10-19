@@ -337,9 +337,9 @@ public actor CaptureManager: CaptureProtocol {
             lastFrameTime: nil
         )
 
-        let initialDisplayID = await lifecycleEnvironment.activeDisplayID()
-        try Task.checkCancellation()
-        await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
+        // Initialize from the source actually opened. The observer reconciles
+        // current focus after subscription, including changes during startup.
+        await startDisplaySwitchMonitoring(initialDisplayID: activeDisplayID)
     }
 
     public func stopCapture() async throws {
@@ -729,8 +729,7 @@ public actor CaptureManager: CaptureProtocol {
         guard _isCapturing else { return }
         guard !isDisplaySwitchInFlight else { return }
 
-        let (activeDisplayID, hasAXPermission) = await displayMonitor.getActiveDisplayIDWithPermissionStatus()
-        guard hasAXPermission else { return }
+        let (activeDisplayID, _) = await displayMonitor.getActiveDisplayIDWithPermissionStatus()
 
         guard let captureDisplayID = currentCaptureDisplayID else {
             currentCaptureDisplayID = activeDisplayID

@@ -24,11 +24,8 @@ struct AppInfoProvider: FrontmostMetadataProviding {
                                    processGeneration: app.generation, uncertainty: ["Window was not sampled before focus changed"])
         }
         guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
-              let window = windows.first(where: {
-                  ($0[kCGWindowOwnerPID as String] as? Int32) == app.pid &&
-                  ($0[kCGWindowLayer as String] as? Int) == 0 &&
-                  ($0[kCGWindowIsOnscreen as String] as? Bool) == true
-              }) else { return nil }
+              let selected = CapturedWindowGeometry.firstWindow(processID: app.pid, in: windows) else { return nil }
+        let window = windows[selected.index]
         let title = window[kCGWindowName as String] as? String
         let lower = title?.lowercased() ?? ""
         let privatePatterns = ["incognito", "private browsing", "inprivate", "(private)"] + config.customPrivateWindowPatterns
@@ -36,7 +33,7 @@ struct AppInfoProvider: FrontmostMetadataProviding {
         if config.redactWindowTitlePatterns.contains(where: { !$0.isEmpty && lower.contains($0.lowercased()) }) { return nil }
         // Until a URL has been validated, URL-redacted applications have unknown activity coverage.
         if browser && !config.redactBrowserURLPatterns.isEmpty { return nil }
-        let windowID = window[kCGWindowNumber as String] as? UInt32
+        let windowID: UInt32? = selected.windowID
         let visibleWindowIDs = Set(windows.compactMap { item -> UInt32? in
             guard (item[kCGWindowOwnerPID as String] as? Int32) == app.pid,
                   (item[kCGWindowLayer as String] as? Int) == 0 else { return nil }
@@ -46,17 +43,7 @@ struct AppInfoProvider: FrontmostMetadataProviding {
             ObservedWindowGenerations.shared.generation(processID: app.pid, processGeneration: app.generation,
                 windowID: $0, visibleWindowIDs: visibleWindowIDs)
         }
-        let bounds = (window[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
-        var displayID: UInt32?
-        if let bounds {
-            var displays = [CGDirectDisplayID](repeating: 0, count: 16)
-            var count: UInt32 = 0
-            if CGGetDisplaysWithRect(bounds, 16, &displays, &count) == .success {
-                displayID = displays.prefix(Int(count)).max(by: {
-                    CGDisplayBounds($0).intersection(bounds).area < CGDisplayBounds($1).intersection(bounds).area
-                })
-            }
-        }
+        let displayID = CapturedWindowGeometry.displayID(for: selected.bounds)
         let adapter: String
         switch app.bundleID.lowercased() {
         case "com.microsoft.word": adapter = "word-document-v1"
@@ -96,10 +83,9 @@ struct AppInfoProvider: FrontmostMetadataProviding {
         guard AXUIElementCopyAttributeValue(window, kAXDocumentAttribute as CFString, &documentValue) == .success,
               let raw = documentValue as? String, let safe = CapturedURLPolicy.sanitize(raw),
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
-              let top = windows.first(where: {
-                  ($0[kCGWindowOwnerPID as String] as? Int32) == app.pid && ($0[kCGWindowLayer as String] as? Int) == 0
-              }), (top[kCGWindowNumber as String] as? UInt32) == context.windowID,
-              CapturedURLPolicy.sanitizeLabel(top[kCGWindowName as String] as? String) == context.windowTitle else { return nil }
+              let top = CapturedWindowGeometry.firstWindow(processID: app.pid, in: windows),
+              top.windowID == context.windowID,
+              CapturedURLPolicy.sanitizeLabel(windows[top.index][kCGWindowName as String] as? String) == context.windowTitle else { return nil }
         var focusedAfter: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &focusedAfter) == .success,
               let focusedAfter, CFEqual(window, focusedAfter),
