@@ -131,7 +131,7 @@ public actor CGWindowListCapture {
         timer?.invalidate()
 
         // Create new timer
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        timer = CapturePollingTimer.schedule(interval: interval) { [weak self] in
             Task {
                 await self?.captureFrame(displayID: displayID)
             }
@@ -156,7 +156,7 @@ public actor CGWindowListCapture {
         // Reset the timer to restart the interval on main actor
         await MainActor.run {
             timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: config.captureIntervalSeconds, repeats: true) { [weak self] _ in
+            timer = CapturePollingTimer.schedule(interval: config.captureIntervalSeconds) { [weak self] in
                 Task {
                     await self?.captureFrame(displayID: displayID)
                 }

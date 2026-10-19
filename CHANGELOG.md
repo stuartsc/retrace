@@ -6,13 +6,18 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-19 — Timeline images and capture availability repair (source candidate)
+### 2026-10-19 — Periodic capture during menu tracking (source candidate)
+
+- Keep the existing screen-capture timer running in AppKit's common run-loop modes. Both initial scheduling and window-change rescheduling use one helper; capture cadence, privacy checks and timer invalidation remain in their existing owners.
+- A native run-loop regression first reproduced zero periodic ticks during event tracking, then passed after the correction. All **179 Capture tests pass, with two intentional skips and zero failures**. Independent source review is clear. No actor/protocol layout changed; the preceding 1,302-test combined suite remains a separate checkpoint. Optimized build and installed tracking-mode acceptance are pending.
+
+### 2026-10-19 — Timeline images and capture availability local trial 2610.19.5
 
 - Display saved originals in ordinary Timeline while their video is unfinished, then use the exact finalized frame reader. Pending OCR no longer hides captures from filtered history; hidden-segment and privacy checks remain active.
 - Preserve source, capture time and source proof through list queries and status refresh. Search handoffs retain their immutable reference, including when the surrounding history read is cancelled. The canvas no longer chooses a separate video/file-size path over verified pixels.
 - Own and cancel one foreground image read at a time. Reopening a retained window, paging and window trimming resume the correct selected image. Failed live capture restores history; an older initial query cannot overwrite a newly accepted filter.
 - Keep optional AX document enrichment outside screenshot admission. App/window/title attribution and all existing capture/privacy guards remain; document/pane/URL fields are absent rather than borrowed from a later observation. The separate activity observer keeps its source-bound enrichment. This corrects a path that repeatedly discarded captures while slow optional metadata was being read.
-- Real private SQLite, original-frame journals, HEVC decoding and native AppKit hosting cover Timeline recovery. The clean debug suite passed **1,300 tests, nine intentional skips and zero failures** before the minimal capture follow-up; its **70 focused capture/privacy tests** also pass. The final combined debug suite passed **1,302 tests, nine intentional skips and zero failures**, and the separate clean optimized build passed in **321.61 seconds**. Signed build 2610.19.5/source `ce70ece` is verified and ready; normal Quit/install/reopen is pending because native computer control is unavailable. Installed acceptance remains separate in the [recovery ledger](docs/recovery-20261019.md).
+- Real private SQLite, original-frame journals, HEVC decoding and native AppKit hosting cover Timeline recovery. The clean debug suite passed **1,300 tests, nine intentional skips and zero failures** before the minimal capture follow-up; its **70 focused capture/privacy tests** also pass. The final combined debug suite passed **1,302 tests, nine intentional skips and zero failures**, and the separate clean optimized build passed in **321.61 seconds**. Signed build 2610.19.5/source `ce70ece` reopened at 16:29:59 Brisbane. V23 and nine checked preferences are preserved; new audio/screenshots are saved. Audio/screenshot restart gaps were 37.737/47.362 seconds. Rendered Timeline acceptance awaits the user because computer control is unavailable. A further menu-tracking timer pause and sustained capture/performance acceptance are tracked in the [recovery ledger](docs/recovery-20261019.md).
 
 ### 2026-10-19 — Capture display and observer local trial 2610.19.4
 
