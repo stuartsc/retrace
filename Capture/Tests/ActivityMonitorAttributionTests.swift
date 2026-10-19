@@ -75,6 +75,14 @@ final class ActivityMonitorAttributionTests: XCTestCase {
             let proof = await monitor.captureIdentity(for: metadata(at: now, context: context), at: now)
             XCTAssertNil(proof)
         }
+        let original = captureTestContext()
+        let windowOnly = ActivityContext(appBundleID: original.appBundleID, appName: original.appName,
+            processID: original.processID, processGeneration: original.processGeneration,
+            windowID: original.windowID, windowGeneration: original.windowGeneration,
+            windowTitle: original.windowTitle, displayID: original.displayID, adapter: original.adapter,
+            uncertainty: ["Document identity unavailable"])
+        let windowOnlyProof = await monitor.captureIdentity(for: metadata(at: now, context: windowOnly), at: now)
+        XCTAssertNil(windowOnlyProof, "Missing screenshot document identity cannot inherit an enriched activity document")
         let beforeObservation = event.event.observedAt.addingTimeInterval(-1)
         let old = metadata(at: beforeObservation, monotonic: event.event.monotonicTime - 1)
         let oldProof = await monitor.captureIdentity(for: old, at: beforeObservation)

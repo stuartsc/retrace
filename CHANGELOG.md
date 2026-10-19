@@ -6,11 +6,13 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-19 — Timeline original-image repair (source candidate)
+### 2026-10-19 — Timeline images and capture availability repair (source candidate)
 
 - Display saved originals in ordinary Timeline while their video is unfinished, then use the exact finalized frame reader. Pending OCR no longer hides captures from filtered history; hidden-segment and privacy checks remain active.
 - Preserve source, capture time and source proof through list queries and status refresh. Search handoffs retain their immutable reference, including when the surrounding history read is cancelled. The canvas no longer chooses a separate video/file-size path over verified pixels.
-- Own and cancel one foreground image read at a time. Reopening a retained window, paging and window trimming resume the correct selected image. Regression coverage uses real private SQLite, original-frame journals, HEVC decoding and native AppKit hosting. Final clean builds and installed acceptance are pending in the [recovery ledger](docs/recovery-20261019.md).
+- Own and cancel one foreground image read at a time. Reopening a retained window, paging and window trimming resume the correct selected image. Failed live capture restores history; an older initial query cannot overwrite a newly accepted filter.
+- Keep optional AX document enrichment outside screenshot admission. App/window/title attribution and all existing capture/privacy guards remain; document/pane/URL fields are absent rather than borrowed from a later observation. The separate activity observer keeps its source-bound enrichment. This corrects a path that repeatedly discarded captures while slow optional metadata was being read.
+- Real private SQLite, original-frame journals, HEVC decoding and native AppKit hosting cover Timeline recovery. The clean debug suite passed **1,300 tests, nine intentional skips and zero failures** before the minimal capture follow-up; its **70 focused capture/privacy tests** also pass. The final combined debug suite passed **1,302 tests, nine intentional skips and zero failures**. The clean optimized build and installed acceptance are tracked separately in the [recovery ledger](docs/recovery-20261019.md).
 
 ### 2026-10-19 — Capture display and observer local trial 2610.19.4
 
@@ -18,6 +20,7 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 - Initialize display monitoring with the capture source actually opened, subscribe before reconciliation, and revoke delayed callbacks on Stop. Native observer ownership keeps callback context alive through removal and prevents a delayed install from surviving shutdown.
 - Report fixed capture rejection reasons with bounded counters and a coalesced asynchronous log writer. Preserve exact identity, exclusions, inventory and notification checks; cancellation during metadata now stops before reading pixels.
 - All 57 focused tests, a clean debug suite of **1,274 tests, nine intentional skips and zero failures**, and a separate clean optimized build pass. Signed build 2610.19.4/source `8f671b9` reopened at 14:32 Brisbane. V23 and nine checked preferences are unchanged; new audio and screenshots are saved. A transient audio-sync handle interrupted the installer before swap; the verified resume retained the original writer checks. Saved-audio/screenshot gaps were 305.409/319.663 seconds. Sustained capture and performance acceptance remain open in the [recovery ledger](docs/recovery-20261019.md).
+- Subsequent checks found screenshots stopped advancing after 15:15 while audio continued. Forty-seven diagnostic intervals contained 999 rejected capture attempts and zero accepted attempts; the initial successful interval is not sustained acceptance. The following source candidate removes optional document enrichment from the capture bracket without weakening its guards.
 
 ### 2026-10-19 — Speech-priority local trial 2610.19.3
 

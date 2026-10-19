@@ -103,7 +103,14 @@ struct ActivityContextSource: Sendable {
     )
 
     func sampleCapture(config: CaptureConfig, displayID: UInt32) async -> CapturedWindowSample {
-        guard let initialInventory = visibleWindowSignature(displayID: displayID) else {
+        await sampleCapture(config: config, displayID: displayID,
+                            readInventory: { self.visibleWindowSignature(displayID: $0) })
+    }
+
+    /// Only the external inventory read is replaceable; the capture admission checks stay here.
+    func sampleCapture(config: CaptureConfig, displayID: UInt32,
+                       readInventory: @Sendable (UInt32) -> String?) async -> CapturedWindowSample {
+        guard let initialInventory = readInventory(displayID) else {
             return CapturedWindowSample(context: nil, failure: .inventoryUnavailable)
         }
         guard let app = await frontmost() else {
@@ -112,14 +119,17 @@ struct ActivityContextSource: Sendable {
         guard let base = await window(app, true, config) else {
             return CapturedWindowSample(context: nil, failure: .windowUnavailable)
         }
-        let context = await document(base, app) ?? base
+        // Optional AX document reads can outlast a stable capture interval.
+        // ActivityMonitor enriches its own observations; pixels retain this
+        // permitted window context without claiming an unobserved document.
+        let context = base
         guard app == (await frontmost()) else {
             return CapturedWindowSample(context: nil, failure: .focusedApplicationChanged)
         }
         guard context.displayID == displayID else {
             return CapturedWindowSample(context: nil, failure: .displayMismatch)
         }
-        guard let finalInventory = visibleWindowSignature(displayID: displayID) else {
+        guard let finalInventory = readInventory(displayID) else {
             return CapturedWindowSample(context: nil, failure: .inventoryUnavailable)
         }
         guard initialInventory == finalInventory else {
