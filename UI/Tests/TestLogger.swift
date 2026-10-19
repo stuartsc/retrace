@@ -1527,7 +1527,7 @@ final class TimelineProcessingStatusRefreshConcurrencyTests: XCTestCase {
     private func makeFrameWithVideoInfo(id: Int64, processingStatus: Int) -> FrameWithVideoInfo {
         let frame = FrameReference(
             id: FrameID(value: id),
-            timestamp: Date(timeIntervalSince1970: 1_700_000_100 + Double(id)),
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000 + Double(id - 1)),
             segmentID: AppSegmentID(value: id),
             frameIndexInSegment: Int(id),
             metadata: FrameMetadata(

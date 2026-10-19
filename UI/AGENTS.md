@@ -100,6 +100,7 @@ UI/
     ├── EvidenceViewModelTests.swift      # Real SQLite retained text, revision refresh and compatibility evidence
     ├── EvidenceTextViewModelTests.swift  # Real SQLite bounded pages, privacy changes and stale completion
     ├── TimelineEvidenceSelectionTests.swift # Exact search/frame selection, late work and timeline pinning
+    ├── TimelineOriginalFrameTests.swift # Private SQLite/WAL/HEVC image reads, native canvas/reopen, paging/trim and cancellation races
     ├── SearchEvidenceThumbnailTests.swift # Real SQLite source/privacy/deletion checks before thumbnail exposure
     ├── SearchQueryPreservationTests.swift # Native input/replay, real SQLite dispatch/metrics, exclusions and continuation regressions
     ├── AppResourceBundleTests.swift      # Real app/resource bundle layout and lazy fallback checks
@@ -722,6 +723,8 @@ Focus on getting the timeline + search working first before polishing dashboard/
 Project assignment, visit grouping, correction forms and the separate Activity & Evidence window are removed. Old backend Codable/storage contracts remain compatible. Full structured-observation projection belongs on a background service/model path, never in SwiftUI `body`; render only bounded fragments and the selected verified highlight ordinals.
 
 Screenshot lists must retain source + frame + capture time + acquired source-generation proof with each row. Key selection, row identity, caches and async admission consistently. A selected row that disappears is unavailable, not permission to select the first remaining row. Bracket source reads and validate the original token at selection/presentation; source reconfiguration invalidates all older work. Reuse exact-thumbnail admission rather than an unvalidated image cache. A disconnected imported OCR request must never fall back to native data with the same numeric ID.
+
+Ordinary Timeline pixels use the same exact reader as search evidence: retained originals before video finalization, then identity-checked archived frames. OCR/processing status and video file size do not authorize or suppress an otherwise valid original. Keep one owned foreground read plus one latest pending selection, join cancellation before another decoder starts, and reconcile image selection after paging, trimming and retained-window reopen. Exact search handoffs retain the immutable `ScreenEvidenceRef` immediately; a failed or cancelled neighbourhood query cannot remove that reference or reacquire it by bare ID. The historical canvas renders the verified `currentImage`; dormant legacy disk-cache/video paths must not substitute pixels.
 
 
 ### Capture-masked recorded screens

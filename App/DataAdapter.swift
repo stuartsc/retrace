@@ -1674,11 +1674,7 @@ public actor DataAdapter {
             whereClauses.append(commentClause)
         }
 
-        // Always exclude p=4 frames (not yet readable) - only for Retrace, Rewind doesn't have this column
-        if config.source != .rewind {
-            whereClauses.append("f.processingStatus != 4")
-        }
-
+        // Pending media stays visible; the exact reader checks original/archive readiness.
         let whereClause = whereClauses.isEmpty ? "" : "WHERE " + whereClauses.joined(separator: " AND ")
 
         // Rewind database doesn't have processingStatus column
@@ -1875,10 +1871,6 @@ public actor DataAdapter {
             whereClauses.append(commentClause)
         }
 
-        if config.source != .rewind {
-            whereClauses.append("f.processingStatus != 4")
-        }
-
         let whereClause = whereClauses.joined(separator: " AND ")
 
         let processingStatusColumn = config.source == .rewind ? "-1 as processingStatus" : "f.processingStatus"
@@ -2071,11 +2063,6 @@ public actor DataAdapter {
             segmentIDExpression: "f.segmentId"
         ) {
             whereClauses.append(commentClause)
-        }
-
-        // Always exclude p=4 frames (not yet readable) - only for Retrace, Rewind doesn't have this column
-        if config.source != .rewind {
-            whereClauses.append("f.processingStatus != 4")
         }
 
         let whereClause = whereClauses.joined(separator: " AND ")
@@ -2295,11 +2282,6 @@ public actor DataAdapter {
             whereClauses.append(commentClause)
         }
 
-        // Always exclude p=4 frames (not yet readable) - only for Retrace, Rewind doesn't have this column
-        if config.source != .rewind {
-            whereClauses.append("f.processingStatus != 4")
-        }
-
         let whereClause = whereClauses.joined(separator: " AND ")
 
         // Rewind database doesn't have processingStatus column
@@ -2517,11 +2499,6 @@ public actor DataAdapter {
             segmentIDExpression: "f.segmentId"
         ) {
             whereClauses.append(commentClause)
-        }
-
-        // Always exclude p=4 frames (not yet readable) - only for Retrace, Rewind doesn't have this column
-        if config.source != .rewind {
-            whereClauses.append("f.processingStatus != 4")
         }
 
         let whereClause = whereClauses.joined(separator: " AND ")

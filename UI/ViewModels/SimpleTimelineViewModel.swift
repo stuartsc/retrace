@@ -49,17 +49,44 @@ private enum MemoryTracker {
     }
 }
 
+/// An exact search handoff retains its original citation even if surrounding
+/// history cannot load. Ordinary rows retain their query-time source proof.
+struct TimelineImageIdentity: Hashable, Sendable {
+    let capture: ScreenshotEvidenceSelection
+    let reference: ScreenEvidenceRef?
+
+    func matches(_ frame: FrameReference) -> Bool { capture.matches(frame) }
+
+    var previewKey: String {
+        guard let reference else { return capture.previewKey }
+        return "\(capture.previewKey):\(reference.storeID):\(reference.observationID):\(reference.extractionRevision):\(reference.blockIDs)"
+    }
+}
+
 /// A frame paired with its preloaded video info for instant access
-public struct TimelineFrame: Identifiable, Equatable {
+public struct TimelineFrame: Identifiable, Equatable, Sendable {
     public let frame: FrameReference
     public let videoInfo: FrameVideoInfo?
     /// Processing status: 0=pending, 1=processing, 2=completed, 3=failed, 4=not yet readable
     public let processingStatus: Int
+    /// Acquired around the list query, never inferred when opening an old row.
+    public let sourceGeneration: String?
+    public let exactReference: ScreenEvidenceRef?
 
-    public var id: FrameID { frame.id }
+    public init(frame: FrameReference, videoInfo: FrameVideoInfo?, processingStatus: Int,
+                sourceGeneration: String? = nil, exactReference: ScreenEvidenceRef? = nil) {
+        self.frame = frame; self.videoInfo = videoInfo; self.processingStatus = processingStatus
+        self.sourceGeneration = sourceGeneration
+        self.exactReference = exactReference
+    }
+
+    var imageIdentity: TimelineImageIdentity {
+        .init(capture: .init(frame, sourceGeneration: sourceGeneration), reference: exactReference)
+    }
+    public var id: String { imageIdentity.previewKey }
 
     public static func == (lhs: TimelineFrame, rhs: TimelineFrame) -> Bool {
-        lhs.frame.id == rhs.frame.id
+        lhs.imageIdentity == rhs.imageIdentity
     }
 }
 
@@ -263,6 +290,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// All loaded frames with their preloaded video info
     @Published public var frames: [TimelineFrame] = [] {
         didSet {
+            let previousSelection = oldValue.indices.contains(currentIndex) ? oldValue[currentIndex].imageIdentity : nil
             let didChangeIdentity = frames.count != oldValue.count
                 || frames.first?.frame.id != oldValue.first?.frame.id
                 || frames.last?.frame.id != oldValue.last?.frame.id
@@ -285,6 +313,11 @@ public class SimpleTimelineViewModel: ObservableObject {
                 }
             }
 
+            let selectedIdentity = frames.indices.contains(currentIndex) ? frames[currentIndex].imageIdentity : nil
+            if previousSelection != selectedIdentity {
+                cancelForegroundFrameLoad(reason: "selected row replaced")
+                requestCurrentImage()
+            }
             invalidateAppBlockSnapshot(reason: "frames.didSet")
 
             let isPureAppend = didChangeIdentity && Self.isPureAppend(oldFrames: oldValue, newFrames: frames)
@@ -316,21 +349,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
                 // CRITICAL: Clear previous frame state IMMEDIATELY to prevent old frame from showing
                 // This runs synchronously before SwiftUI re-renders
-                currentImage = nil
-
-                // Pre-check if frame will have loading issues (synchronous check)
-                // This prevents showing a fallback frame before the async error is detected
-                if let timelineFrame = currentTimelineFrame {
-                    if timelineFrame.processingStatus == 4 {
-                        // Frame not yet readable
-                        frameNotReady = true
-                        frameLoadError = false
-                    } else {
-                        // Reset states - actual load will set them if needed
-                        frameNotReady = false
-                        frameLoadError = false
-                    }
-                }
+                cancelForegroundFrameLoad(reason: "selection changed")
+                requestCurrentImage()
 
                 // Check for nearby audio transcriptions (debounced)
                 checkNearbyAudio()
@@ -452,10 +472,6 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Whether the mouse is currently hovering over the URL bounding box
     @Published public var isHoveringURL: Bool = false
-
-    /// Flag to force video reload on next updateNSView (clears AVPlayer's stale cache)
-    /// Set this when window becomes visible after background refresh
-    public var forceVideoReload: Bool = false
 
     // MARK: - Text Selection State
 
@@ -1587,6 +1603,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         diskFrameBufferMemoryLogTask?.cancel()
         diskFrameBufferInactivityCleanupTask?.cancel()
         foregroundFrameLoadTask?.cancel()
+        foregroundFrameReadTask?.cancel()
         cacheExpansionTask?.cancel()
         appBlockSnapshotBuildTask?.cancel()
         appBlockSnapshotApplyTask?.cancel()
@@ -1678,7 +1695,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     private var foregroundFrameLoadTask: Task<Void, Never>?
     private var pendingForegroundFrameLoad: TimelineFrame?
     private var isForegroundFrameLoadInFlight = false
-    private var activeForegroundFrameID: FrameID?
+    private var activeForegroundIdentity: TimelineImageIdentity?
+    private var foregroundFrameReadTask: Task<Void, Never>?
+    private var foregroundRequestGeneration: UInt64 = 0
+    private var foregroundImagesActive = true
     private var cacheExpansionTask: Task<Void, Never>?
     private var pendingCacheExpansionQueue: [CacheMoreFrameDescriptor] = []
     private var pendingCacheExpansionReadIndex = 0
@@ -1718,7 +1738,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     private var pendingCurrentIndexAfterFrameReplacement: Int?
     /// Deferred rolling-window trim applied after scrubbing stops to avoid mid-scrub index jumps.
     private var deferredTrimDirection: TrimDirection?
-    private var deferredTrimAnchorFrameID: FrameID?
+    private var deferredTrimAnchorIdentity: TimelineImageIdentity?
     private var deferredTrimAnchorTimestamp: Date?
 
     /// Monotonic ID for loading state transitions in logs.
@@ -1821,6 +1841,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     let coordinator: AppCoordinator
     let evidence: EvidenceViewModel
+    private let evidenceClient: EvidenceClient
     private let backgroundServicesEnabled: Bool
     private var evidenceNavigationGeneration: UInt64 = 0
     private var evidenceSelectionTask: Task<Void, Never>?
@@ -1848,13 +1869,57 @@ public class SimpleTimelineViewModel: ObservableObject {
     var test_refreshFrameDataHooks = RefreshFrameDataTestHooks()
     var test_windowFetchHooks = WindowFetchTestHooks()
     var test_ocrNodesRead: ((FrameID, FrameSource) async throws -> [OCRNodeWithText])?
+    private var test_foregroundImageLoadingEnabled = false
+    var test_exactNeighbourhoodEnabled = false
+
+    /// Exercise the ordinary foreground route against private stores without
+    /// enabling observers, recording, preference writes or unrelated UI workers.
+    func test_loadBoundary(newer: Bool) async {
+        updateWindowBoundaries()
+        if newer { await loadNewerFrames(reason: "authored boundary") }
+        else { await loadOlderFrames(reason: "authored boundary") }
+    }
+
+    func test_trimNewerWindow() { trimWindowIfNeeded(preserveDirection: .newer) }
+
+    func test_readTimelineRows() async throws -> [TimelineFrame] {
+        try await fetchMostRecentFramesWithVideoInfoLogged(limit: 50, filters: .none, reason: "authored originals")
+    }
+
+    func test_readTimelineRows(_ load: @escaping @Sendable () async throws -> [FrameWithVideoInfo]) async throws -> [TimelineFrame] {
+        try await readTimelineRows(load)
+    }
+
+    func test_requestForegroundImage() {
+        test_foregroundImageLoadingEnabled = true
+        loadImageIfNeeded()
+    }
+
+    func test_joinForegroundImages() async { await foregroundFrameLoadTask?.value }
+
+    func test_loadForegroundImage() async {
+        test_requestForegroundImage()
+        await test_joinForegroundImages()
+    }
+
+    func test_stopForegroundImages() async {
+        let foreground = foregroundFrameLoadTask
+        let expansion = cacheExpansionTask
+        cancelForegroundFrameLoad(reason: "isolated test close")
+        cancelCacheExpansion(reason: "isolated test close")
+        await foreground?.value
+        await expansion?.value
+        test_foregroundImageLoadingEnabled = false
+    }
 #endif
 
     // MARK: - Initialization
 
     public init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
-        self.evidence = EvidenceViewModel(client: .live(service: { try await coordinator.progressiveRecall() }))
+        let client = EvidenceClient.live(service: { try await coordinator.progressiveRecall() })
+        self.evidenceClient = client
+        self.evidence = EvidenceViewModel(client: client)
         self.backgroundServicesEnabled = true
         self.diskFrameBufferDirectoryURL = Self.defaultDiskFrameBufferDirectoryURL()
 
@@ -1892,8 +1957,8 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Persist search overlay visibility preference
         setupSearchOverlayPersistence()
-        initializeDiskFrameBuffer()
-        startDiskFrameBufferMemoryReporting()
+        // Legacy disk entries are keyed only by numeric ID and cannot authorize
+        // exact pixels. Keep their reader and prefetch dormant until qualified.
     }
 
 #if DEBUG
@@ -1901,6 +1966,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// create the production disk buffer or start background service work.
     init(coordinator: AppCoordinator, evidenceClient: EvidenceClient, transientDirectory: URL) {
         self.coordinator = coordinator
+        self.evidenceClient = evidenceClient
         self.evidence = EvidenceViewModel(client: evidenceClient)
         self.backgroundServicesEnabled = false
         self.diskFrameBufferDirectoryURL = transientDirectory
@@ -1953,9 +2019,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         var verifiedImage: CGImage?
         if resumeHistory, case .screen(let snapshot, let image) = evidence.resolution,
            frames.indices.contains(currentIndex) {
-            let historical = frames[currentIndex].frame
-            if historical.source == snapshot.frame.source, historical.id == snapshot.frame.id,
-               abs(historical.timestamp.timeIntervalSince(snapshot.frame.timestamp)) < 0.001 {
+            let historical = frames[currentIndex]
+            if historical.exactReference == snapshot.ref, historical.imageIdentity.matches(snapshot.frame) {
                 verifiedImage = image
             }
         }
@@ -2010,33 +2075,36 @@ public class SimpleTimelineViewModel: ObservableObject {
         // A verified target is always present, including beyond the bounded query.
         // Neighbourhood frames provide scrubbing context, never substitute evidence.
         filterCriteria = .none
-        frames = [TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2)]
+        guard case .screen(let screen) = reference else { return }
+        frames = [TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2, exactReference: screen)]
         currentIndex = 0
         updateWindowBoundaries()
+#if DEBUG
+        guard backgroundServicesEnabled || test_exactNeighbourhoodEnabled else { return }
+#else
         guard backgroundServicesEnabled else { return }
+#endif
         let pending = Task { [weak self] in
             guard let self else { return }
             do {
-                guard case .screen(let screen) = reference else { return }
-                let service = try await coordinator.progressiveRecall()
-                let sourceGeneration = try await service.sourceGeneration(source: frame.source)
-                guard let retained = await service.retainedScreen(screen, for: .localUser),
+                let sourceGeneration = try await evidenceClient.sourceGeneration(frame.source)
+                guard let retained = await evidenceClient.retainedScreen(screen), retained.ref == screen,
                       retained.frame.source == frame.source, retained.frame.id == frame.id,
                       abs(retained.frame.timestamp.timeIntervalSince(frame.timestamp)) < 0.001 else { return }
                 guard !Task.isCancelled, token == evidenceNavigationGeneration else { return }
                 let nearby = try await fetchFramesWithVideoInfoLogged(
                     from: frame.timestamp.addingTimeInterval(-300), to: frame.timestamp.addingTimeInterval(300),
                     limit: 1_000, filters: .none, reason: "exactEvidence.neighbourhood")
-                guard try await service.sourceGeneration(source: frame.source) == sourceGeneration else { return }
+                guard try await evidenceClient.sourceGeneration(frame.source) == sourceGeneration else { return }
                 guard !Task.isCancelled, token == evidenceNavigationGeneration,
                       evidence.isPresentingEvidence, evidence.evidenceReference == reference else { return }
                 var context = nearby.filter { $0.frame.source == frame.source && $0.frame.id != frame.id }
-                    .map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
                 let target = nearby.first {
                     $0.frame.source == frame.source && $0.frame.id == frame.id &&
                     abs($0.frame.timestamp.timeIntervalSince(frame.timestamp)) < 0.001
                 }
-                context.append(TimelineFrame(frame: frame, videoInfo: target?.videoInfo, processingStatus: 2))
+                context.append(TimelineFrame(frame: frame, videoInfo: target?.videoInfo, processingStatus: 2,
+                    exactReference: screen))
                 context.sort { $0.frame.timestamp == $1.frame.timestamp
                     ? $0.frame.id.value < $1.frame.id.value : $0.frame.timestamp < $1.frame.timestamp }
                 frames = context
@@ -2294,16 +2362,14 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     private func cancelForegroundFrameLoad(reason: String) {
-        guard hasForegroundFrameLoadActivity else { return }
-        foregroundFrameLoadTask?.cancel()
-        foregroundFrameLoadTask = nil
+        foregroundRequestGeneration &+= 1
+        currentImage = nil; frameNotReady = false; frameLoadError = false
+        foregroundFrameReadTask?.cancel()
         pendingForegroundFrameLoad = nil
-        isForegroundFrameLoadInFlight = false
-        activeForegroundFrameID = nil
-        diskFrameBufferTelemetry.foregroundLoadCancels += 1
-        if Self.isVerboseTimelineLoggingEnabled {
-            Log.debug("[Timeline-DiskBuffer] Cancelled foreground frame load (\(reason))", category: .ui)
-        }
+        activeForegroundIdentity = nil
+        // Keep the loop and native read owned until they join. A reopened view
+        // may replace the one pending request but cannot start a second decoder.
+        if hasForegroundFrameLoadActivity { diskFrameBufferTelemetry.foregroundLoadCancels += 1 }
     }
 
     private func cancelCacheExpansion(reason: String) {
@@ -2348,14 +2414,18 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     public func handleTimelineOpened() {
+        let wasClosed = !foregroundImagesActive
+        foregroundImagesActive = true
         cancelDiskFrameBufferInactivityCleanup()
+        if wasClosed || currentImage == nil { loadImageIfNeeded() }
     }
 
     /// Call this when the timeline view disappears.
     public func handleTimelineClosed() {
         closeExactEvidence(resumeHistory: false)
-        guard backgroundServicesEnabled else { return }
+        foregroundImagesActive = false
         cancelForegroundFrameLoad(reason: "timeline closed")
+        guard backgroundServicesEnabled else { return }
         cancelCacheExpansion(reason: "timeline closed")
         if shouldClearDiskFrameBufferOnTimelineClose() {
             clearDiskFrameBuffer(reason: "timeline close near boundary/live edge")
@@ -2491,13 +2561,23 @@ public class SimpleTimelineViewModel: ObservableObject {
         return "\(prefix)-\(fetchTraceID)"
     }
 
+    /// All ordinary list routes retain the source generation acquired with the rows.
+    /// A later store mounted at the same numeric IDs must not replace these captures.
+    private func readTimelineRows(_ load: @escaping @Sendable () async throws -> [FrameWithVideoInfo]) async throws -> [TimelineFrame] {
+        let rows = try await DashboardScreenshotIdentityPolicy.readRows(
+            sourceGeneration: evidenceClient.sourceGeneration, load: load)
+        try Task.checkCancellation()
+        return rows.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo,
+            processingStatus: $0.processingStatus, sourceGeneration: $0.sourceGeneration) }
+    }
+
     private func fetchFramesWithVideoInfoLogged(
         from startDate: Date,
         to endDate: Date,
         limit: Int,
         filters: FilterCriteria,
         reason: String
-    ) async throws -> [FrameWithVideoInfo] {
+    ) async throws -> [TimelineFrame] {
         let traceID = nextFetchTraceID(prefix: "window")
         let fetchStart = CFAbsoluteTimeGetCurrent()
         Log.info(
@@ -2506,25 +2586,29 @@ public class SimpleTimelineViewModel: ObservableObject {
         )
 
         do {
-            let framesWithVideoInfo: [FrameWithVideoInfo]
+            let framesWithVideoInfo: [TimelineFrame]
 #if DEBUG
             if let override = test_windowFetchHooks.getFramesWithVideoInfo {
-                framesWithVideoInfo = try await override(startDate, endDate, limit, filters, reason)
+                framesWithVideoInfo = try await override(startDate, endDate, limit, filters, reason).map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
             } else {
-                framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(
+                framesWithVideoInfo = try await readTimelineRows { [coordinator] in
+                try await coordinator.getFramesWithVideoInfo(
                     from: startDate,
                     to: endDate,
                     limit: limit,
                     filters: filters
                 )
             }
+            }
 #else
-            framesWithVideoInfo = try await coordinator.getFramesWithVideoInfo(
+            framesWithVideoInfo = try await readTimelineRows { [coordinator] in
+                try await coordinator.getFramesWithVideoInfo(
                 from: startDate,
                 to: endDate,
                 limit: limit,
                 filters: filters
             )
+            }
 #endif
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
             Log.recordLatency(
@@ -2557,7 +2641,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         limit: Int,
         filters: FilterCriteria,
         reason: String
-    ) async throws -> [FrameWithVideoInfo] {
+    ) async throws -> [TimelineFrame] {
         let traceID = nextFetchTraceID(prefix: "before")
         let fetchStart = CFAbsoluteTimeGetCurrent()
         let effectiveDateRanges = filters.effectiveDateRanges
@@ -2569,23 +2653,27 @@ public class SimpleTimelineViewModel: ObservableObject {
         )
 
         do {
-            let framesWithVideoInfo: [FrameWithVideoInfo]
+            let framesWithVideoInfo: [TimelineFrame]
 #if DEBUG
             if let override = test_windowFetchHooks.getFramesWithVideoInfoBefore {
-                framesWithVideoInfo = try await override(timestamp, limit, filters, reason)
+                framesWithVideoInfo = try await override(timestamp, limit, filters, reason).map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
             } else {
-                framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
+                framesWithVideoInfo = try await readTimelineRows { [coordinator] in
+                try await coordinator.getFramesWithVideoInfoBefore(
                     timestamp: timestamp,
                     limit: limit,
                     filters: filters
                 )
             }
+            }
 #else
-            framesWithVideoInfo = try await coordinator.getFramesWithVideoInfoBefore(
+            framesWithVideoInfo = try await readTimelineRows { [coordinator] in
+                try await coordinator.getFramesWithVideoInfoBefore(
                 timestamp: timestamp,
                 limit: limit,
                 filters: filters
             )
+            }
 #endif
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
             Log.recordLatency(
@@ -2617,7 +2705,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         limit: Int,
         filters: FilterCriteria,
         reason: String
-    ) async throws -> [FrameWithVideoInfo] {
+    ) async throws -> [TimelineFrame] {
         let traceID = nextFetchTraceID(prefix: "most-recent")
         let fetchStart = CFAbsoluteTimeGetCurrent()
         Log.info(
@@ -2626,15 +2714,19 @@ public class SimpleTimelineViewModel: ObservableObject {
         )
 
         do {
-            let framesWithVideoInfo: [FrameWithVideoInfo]
+            let framesWithVideoInfo: [TimelineFrame]
 #if DEBUG
             if let override = test_refreshFrameDataHooks.getMostRecentFramesWithVideoInfo {
-                framesWithVideoInfo = try await override(limit, filters)
+                framesWithVideoInfo = try await override(limit, filters).map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
             } else {
-                framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+                framesWithVideoInfo = try await readTimelineRows { [coordinator] in
+                try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            }
             }
 #else
-            framesWithVideoInfo = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            framesWithVideoInfo = try await readTimelineRows { [coordinator] in
+                try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            }
 #endif
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - fetchStart) * 1000
             Log.recordLatency(
@@ -2666,10 +2758,13 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Called when data sources change (e.g., Rewind toggled on/off)
     @MainActor
     public func invalidateCachesAndReload() {
+        cancelForegroundFrameLoad(reason: "source changed")
         if evidence.isPresentingEvidence || evidenceSelectionTask != nil {
             revalidateExactEvidence()
             return
         }
+        evidenceNavigationGeneration &+= 1
+        guard backgroundServicesEnabled else { return }
         Log.info("[DataSourceChange] invalidateCachesAndReload() called", category: .ui)
 
         // Clear disk frame buffer metadata/files
@@ -2752,9 +2847,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             Log.debug("[DataSourceChange] Fetched \(framesWithVideoInfo.count) frames from data adapter", category: .ui)
 
             if !framesWithVideoInfo.isEmpty {
-                let timelineFrames = framesWithVideoInfo.map {
-                    TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus)
-                }
+                let timelineFrames = framesWithVideoInfo
                 let closestIndex = Self.findClosestFrameIndex(in: timelineFrames, to: timestamp)
                 pendingCurrentIndexAfterFrameReplacement = closestIndex
                 frames = timelineFrames
@@ -6126,7 +6219,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Convert to TimelineFrame - video info is already included from the JOIN
             // Reverse so oldest is first (index 0), newest is last
             // This matches the timeline UI which displays left-to-right as past-to-future
-            frames = framesWithVideoInfo.reversed().map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+            frames = Array(framesWithVideoInfo.reversed())
 
             // Initialize window boundary timestamps for infinite scroll
             updateWindowBoundaries()
@@ -6194,11 +6287,40 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
     }
 
+    func loadFilteredFrames(criteria: FilterCriteria, clickStartTime: CFAbsoluteTime? = nil) async {
+        guard !Task.isCancelled, !evidence.isPresentingEvidence else { return }
+        // Supersede older startup, refresh and boundary reads before awaiting.
+        // Their generation checks cannot publish unfiltered rows over this choice.
+        evidenceNavigationGeneration &+= 1
+        let token = evidenceNavigationGeneration
+        cancelBoundaryLoadTasks(reason: "filtered presentation")
+        setLoadingState(false, reason: "filtered presentation superseded earlier load")
+        setLoadingState(true, reason: "filtered presentation")
+        defer {
+            if token == evidenceNavigationGeneration {
+                setLoadingState(false, reason: "filtered presentation finished")
+            }
+        }
+        do {
+            let rows = try await fetchMostRecentFramesWithVideoInfoLogged(limit: 50,
+                filters: criteria, reason: "filteredOpen")
+            guard !Task.isCancelled, token == evidenceNavigationGeneration else { return }
+            // Criteria and their rows publish in one MainActor turn. An older
+            // in-flight load flag must not silently discard the accepted rows.
+            filterCriteria = criteria
+            pendingFilterCriteria = criteria
+            publishLoadedTimelineFrames(rows)
+        } catch {
+            guard !Task.isCancelled, token == evidenceNavigationGeneration else { return }
+            showErrorWithAutoDismiss("Unable to read the selected source library")
+        }
+    }
+
     /// Load pre-fetched frames directly (used when query runs in parallel with show())
     /// - Parameters:
     ///   - framesWithVideoInfo: Pre-fetched frames from parallel query
     ///   - clickStartTime: Start time for end-to-end timing
-    public func loadFramesDirectly(_ framesWithVideoInfo: [FrameWithVideoInfo], clickStartTime: CFAbsoluteTime? = nil) async {
+    public func loadFramesDirectly(_ framesWithVideoInfo: [TimelineFrame], clickStartTime: CFAbsoluteTime? = nil) async {
         guard !evidence.isPresentingEvidence else { return }
         // Guard against concurrent calls - use dedicated flag to avoid race conditions
         guard !isInitialLoadInProgress && !isLoading else {
@@ -6206,10 +6328,17 @@ public class SimpleTimelineViewModel: ObservableObject {
             return
         }
         isInitialLoadInProgress = true
-        defer { isInitialLoadInProgress = false }
+        defer {
+            isInitialLoadInProgress = false
+            setLoadingState(false, reason: "loadFramesDirectly.finished")
+        }
         _ = clickStartTime
 
         setLoadingState(true, reason: "loadFramesDirectly")
+        publishLoadedTimelineFrames(framesWithVideoInfo)
+    }
+
+    private func publishLoadedTimelineFrames(_ framesWithVideoInfo: [TimelineFrame]) {
         clearError()
 
         guard !framesWithVideoInfo.isEmpty else {
@@ -6219,12 +6348,11 @@ public class SimpleTimelineViewModel: ObservableObject {
             } else {
                 showErrorWithAutoDismiss("No frames found in any database")
             }
-            setLoadingState(false, reason: "loadFramesDirectly.noFrames")
             return
         }
 
         // Convert to TimelineFrame - reverse so oldest is first (index 0), newest is last
-        frames = framesWithVideoInfo.reversed().map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+        frames = Array(framesWithVideoInfo.reversed())
 
         // Initialize window boundary timestamps for infinite scroll
         updateWindowBoundaries()
@@ -6234,22 +6362,16 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Start at the most recent frame
         currentIndex = frames.count - 1
 
-        // Record initial position for undo history
-        scheduleStoppedPositionRecording()
-
-        // Check if we need to pre-load more frames (e.g., if loaded window is small)
-        checkAndLoadMoreFrames()
-
-        // Restore cached search results if any
-        searchViewModel.restoreCachedSearchResults()
-
-        // Load tag metadata/map lazily so the tape can render subtle tag indicators.
-        ensureTapeTagIndicatorDataLoadedIfNeeded()
+        if backgroundServicesEnabled {
+            scheduleStoppedPositionRecording()
+            checkAndLoadMoreFrames()
+            searchViewModel.restoreCachedSearchResults()
+            ensureTapeTagIndicatorDataLoadedIfNeeded()
+        }
 
         // Load image if needed for current frame
         loadImageIfNeeded()
 
-        setLoadingState(false, reason: "loadFramesDirectly.success")
     }
 
     /// Refresh frame data when showing the pre-rendered timeline
@@ -6321,7 +6443,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                         }
 
                         // Add new frames to the end (they're newer, so they go at the end)
-                        let newTimelineFrames = newFrames.reversed().map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+                        let newTimelineFrames = Array(newFrames.reversed())
 
                         frames.append(contentsOf: newTimelineFrames)
 
@@ -6375,81 +6497,37 @@ public class SimpleTimelineViewModel: ObservableObject {
     public func refreshProcessingStatuses() async {
         guard !evidence.isPresentingEvidence else { return }
         let evidenceGeneration = evidenceNavigationGeneration
-        // Find all frames that aren't completed (status != 2)
-        let framesToRefresh = Array(frames.enumerated()) // .filter { $0.element.processingStatus != 2 }
-
-        guard !framesToRefresh.isEmpty else {
-            return
-        }
-
-        let frameIDs = framesToRefresh.map { $0.element.frame.id.value }
-
+        // Processing statuses belong to the native writer. Imported IDs can collide.
+        let framesToRefresh = frames.filter { $0.frame.source == .native }
+        guard !framesToRefresh.isEmpty else { return }
         do {
-            let updatedStatuses = try await fetchFrameProcessingStatusesForRefresh(frameIDs: frameIDs)
-            guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
-
-            var updatedCount = 0
+            let updatedStatuses = try await fetchFrameProcessingStatusesForRefresh(
+                frameIDs: framesToRefresh.map { $0.frame.id.value })
+            guard !Task.isCancelled, evidenceGeneration == evidenceNavigationGeneration,
+                  !evidence.isPresentingEvidence else { return }
             var currentFrameUpdated = false
-
-            for (_, snapshotFrame) in framesToRefresh {
-                let frameID = snapshotFrame.frame.id
-                guard let newStatus = updatedStatuses[frameID.value] else {
-                    continue
+            for snapshot in framesToRefresh {
+                guard let status = updatedStatuses[snapshot.frame.id.value],
+                      let index = frames.firstIndex(where: { $0.imageIdentity == snapshot.imageIdentity }),
+                      frames[index].processingStatus != status else { continue }
+                if let proof = snapshot.sourceGeneration {
+                    guard try await evidenceClient.sourceGeneration(.native) == proof else { continue }
                 }
-
-                // Resolve index by ID against the live array (never trust enumerated snapshot indices).
-                guard let liveIndex = frames.firstIndex(where: { $0.frame.id == frameID }) else {
-                    continue
+                guard let updated = try await fetchFrameWithVideoInfoByIDForRefresh(id: snapshot.frame.id),
+                      snapshot.imageIdentity.matches(updated.frame) else { continue }
+                if let proof = snapshot.sourceGeneration {
+                    guard try await evidenceClient.sourceGeneration(.native) == proof else { continue }
                 }
-
-                guard frames[liveIndex].processingStatus != newStatus else {
-                    continue
-                }
-
-                // Re-fetch the full frame with updated videoInfo.
-                if let updatedFrame = try await fetchFrameWithVideoInfoByIDForRefresh(id: frameID) {
-                    guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
-                    // Array may have changed while awaiting; resolve again before writing.
-                    guard let liveIndexAfterAwait = frames.firstIndex(where: { $0.frame.id == frameID }) else {
-                        continue
-                    }
-
-                    frames[liveIndexAfterAwait] = TimelineFrame(
-                        frame: updatedFrame.frame,
-                        videoInfo: updatedFrame.videoInfo,
-                        processingStatus: updatedFrame.processingStatus
-                    )
-                } else {
-                    guard evidenceGeneration == evidenceNavigationGeneration, !evidence.isPresentingEvidence else { return }
-                    // Array may have changed while awaiting; resolve again before writing.
-                    guard let liveIndexAfterAwait = frames.firstIndex(where: { $0.frame.id == frameID }) else {
-                        continue
-                    }
-
-                    // Fallback: update only the status on the latest in-memory frame snapshot.
-                    let existingFrame = frames[liveIndexAfterAwait]
-                    frames[liveIndexAfterAwait] = TimelineFrame(
-                        frame: existingFrame.frame,
-                        videoInfo: existingFrame.videoInfo,
-                        processingStatus: newStatus
-                    )
-                }
-
-                // Check if this is the current frame.
-                if let currentFrame = currentTimelineFrame,
-                   currentFrame.frame.id.value == frameID.value {
-                    currentFrameUpdated = true
-                }
-
-                updatedCount += 1
+                guard !Task.isCancelled, evidenceGeneration == evidenceNavigationGeneration,
+                      !evidence.isPresentingEvidence else { return }
+                guard let liveIndex = frames.firstIndex(where: { $0.imageIdentity == snapshot.imageIdentity }) else { continue }
+                frames[liveIndex] = TimelineFrame(frame: updated.frame, videoInfo: updated.videoInfo,
+                    processingStatus: updated.processingStatus, sourceGeneration: snapshot.sourceGeneration,
+                    exactReference: snapshot.exactReference)
+                if currentTimelineFrame?.imageIdentity == snapshot.imageIdentity { currentFrameUpdated = true }
             }
-
-            if updatedCount > 0 {
-                // If current frame was updated, reload its image
-                if currentFrameUpdated {
-                    loadImageIfNeeded()
-                }
-            }
+            // Exact media mapping may become ready independently of OCR status.
+            if currentFrameUpdated || frameNotReady { loadImageIfNeeded() }
         } catch {
             Log.error("[TIMELINE-REFRESH] Failed to refresh processing statuses: \(error)", category: .ui)
         }
@@ -7140,6 +7218,16 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     // MARK: - Live OCR
 
+    /// A failed live preview returns to the selected recording without moving
+    /// the playhead. The foreground owner still decides whether reads may run.
+    func resumeHistoryAfterLiveCaptureFailure() {
+        isInLiveMode = false
+        liveScreenshot = nil
+        isLiveOCRProcessing = false
+        liveOCRDebounceTask?.cancel(); liveOCRDebounceTask = nil
+        loadImageIfNeeded()
+    }
+
     /// Task for the debounced live OCR - cancelled and re-created on each call
     private var liveOCRDebounceTask: Task<Void, Never>?
 
@@ -7237,9 +7325,14 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Load image for image-based frames (Retrace) if needed
     private func loadImageIfNeeded() {
+#if DEBUG
+        guard !evidence.isPresentingEvidence,
+              backgroundServicesEnabled || test_foregroundImageLoadingEnabled else { return }
+#else
         guard !evidence.isPresentingEvidence, backgroundServicesEnabled else { return }
+#endif
         // Skip during live mode - live screenshot is already displayed and OCR is handled separately
-        guard !isInLiveMode else { return }
+        guard !isInLiveMode, foregroundImagesActive else { return }
         cancelDiskFrameBufferInactivityCleanup()
 
         guard let timelineFrame = currentTimelineFrame else {
@@ -7267,44 +7360,25 @@ public class SimpleTimelineViewModel: ObservableObject {
             clearTextSelection()
         }
 
-        let frame = timelineFrame.frame
+        requestCurrentImage()
+    }
 
-        // Check if frame is not yet readable (processingStatus = 4)
-        // This provides instant feedback instead of waiting for async load to fail
-        if timelineFrame.processingStatus == 4 {
-            if Self.isVerboseTimelineLoggingEnabled {
-                Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) has processingStatus=4 (NOT_YET_READABLE), setting frameNotReady=true", category: .ui)
-            }
-            currentImage = nil
-            frameNotReady = true
-            frameLoadError = false
-            ensureDiskHotWindowCoverage(reason: "frame-not-yet-readable")
-            return
-        }
-
-        // Reset frameNotReady immediately when status != 4
-        // This prevents stale "still encoding" state from persisting when scrolling
-        // from a processingStatus=4 frame to an earlier ready frame
-        if Self.isVerboseTimelineLoggingEnabled {
-            Log.debug("[TIMELINE-LOAD] Frame \(frame.id.value) has processingStatus=\(timelineFrame.processingStatus) (!= 4), setting frameNotReady=false", category: .ui)
-        }
+    /// Selection changes also happen during paging and window trimming. Reconcile
+    /// only pixels here; OCR/URL work remains on the existing debounced path.
+    private func requestCurrentImage() {
+#if DEBUG
+        guard backgroundServicesEnabled || test_foregroundImageLoadingEnabled else { return }
+#else
+        guard backgroundServicesEnabled else { return }
+#endif
+        guard !evidence.isPresentingEvidence, !isInLiveMode, foregroundImagesActive,
+              let timelineFrame = currentTimelineFrame else { return }
+        guard activeForegroundIdentity != timelineFrame.imageIdentity,
+              pendingForegroundFrameLoad?.imageIdentity != timelineFrame.imageIdentity else { return }
         frameNotReady = false
         frameLoadError = false
-
         diskFrameBufferTelemetry.frameRequests += 1
-
-        // Skip duplicate requests for the currently active/pending frame.
-        guard activeForegroundFrameID != frame.id,
-              pendingForegroundFrameLoad?.frame.id != frame.id else {
-            if Self.isVerboseTimelineLoggingEnabled {
-                Log.debug("[TIMELINE-LOAD] Frame \(frame.id.value) foreground load already in-flight/pending; skipping duplicate request", category: .ui)
-            }
-            ensureDiskHotWindowCoverage(reason: "duplicate foreground request")
-            return
-        }
         enqueueForegroundFrameLoad(timelineFrame)
-
-        ensureDiskHotWindowCoverage(reason: "foreground request")
     }
 
     private func enqueueForegroundFrameLoad(_ timelineFrame: TimelineFrame) {
@@ -7312,6 +7386,8 @@ public class SimpleTimelineViewModel: ObservableObject {
             // Coalesce bursty scrub requests into latest-only foreground work.
             diskFrameBufferTelemetry.foregroundLoadCancels += 1
         }
+        foregroundRequestGeneration &+= 1
+        foregroundFrameReadTask?.cancel()
         pendingForegroundFrameLoad = timelineFrame
 
         guard foregroundFrameLoadTask == nil else { return }
@@ -7327,176 +7403,81 @@ public class SimpleTimelineViewModel: ObservableObject {
             guard let nextFrame = pendingForegroundFrameLoad else { break }
             pendingForegroundFrameLoad = nil
             isForegroundFrameLoadInFlight = true
-            activeForegroundFrameID = nextFrame.frame.id
-            await performForegroundFrameLoad(nextFrame)
+            activeForegroundIdentity = nextFrame.imageIdentity
+            let token = foregroundRequestGeneration
+            let read = Task<Void, Never>(priority: .userInitiated) { [weak self] in
+                await self?.performForegroundFrameLoad(nextFrame, generation: token)
+            }
+            foregroundFrameReadTask = read
+            await read.value
+            foregroundFrameReadTask = nil
             isForegroundFrameLoadInFlight = false
-            activeForegroundFrameID = nil
+            activeForegroundIdentity = nil
         }
 
         foregroundFrameLoadTask = nil
     }
 
-    private func performForegroundFrameLoad(_ timelineFrame: TimelineFrame) async {
-        let frame = timelineFrame.frame
-        let frameID = frame.id
-
+    private func performForegroundFrameLoad(_ row: TimelineFrame, generation token: UInt64) async {
+        let began = CFAbsoluteTimeGetCurrent()
+        defer {
+            Log.recordLatency("timeline.frame.present_ms", valueMs: (CFAbsoluteTimeGetCurrent() - began) * 1_000,
+                category: .ui, summaryEvery: 20, warningThresholdMs: 80, criticalThresholdMs: 220)
+        }
         do {
-            let imageData: Data
-            let loadStart = CFAbsoluteTimeGetCurrent()
-            var loadedFromDiskBuffer = false
-
-            let diskReadStart = CFAbsoluteTimeGetCurrent()
-            if let bufferedData = await readFrameDataFromDiskFrameBuffer(frameID: frameID) {
-                imageData = bufferedData
-                loadedFromDiskBuffer = true
-                diskFrameBufferTelemetry.diskHits += 1
-                let diskReadMs = (CFAbsoluteTimeGetCurrent() - diskReadStart) * 1000
-                Log.recordLatency(
-                    "timeline.disk_buffer.read_ms",
-                    valueMs: diskReadMs,
-                    category: .ui,
-                    summaryEvery: 25,
-                    warningThresholdMs: 25,
-                    criticalThresholdMs: 80
-                )
-            } else {
-                diskFrameBufferTelemetry.diskMisses += 1
-                diskFrameBufferTelemetry.storageReads += 1
-                let storageReadStart = CFAbsoluteTimeGetCurrent()
-
-                if let videoInfo = timelineFrame.videoInfo {
-                    imageData = try await coordinator.getFrameImageFromPath(
-                        videoPath: videoInfo.videoPath,
-                        frameIndex: videoInfo.frameIndex
-                    )
-                } else {
-                    imageData = try await coordinator.getFrameImage(
-                        segmentID: frame.videoID,
-                        timestamp: frame.timestamp
-                    )
-                }
-
-                let storageReadMs = (CFAbsoluteTimeGetCurrent() - storageReadStart) * 1000
-                Log.recordLatency(
-                    "timeline.frame.storage_read_ms",
-                    valueMs: storageReadMs,
-                    category: .ui,
-                    summaryEvery: 25,
-                    warningThresholdMs: 45,
-                    criticalThresholdMs: 150
-                )
-                try Task.checkCancellation()
-                await storeFrameDataInDiskFrameBuffer(frameID: frameID, data: imageData)
-            }
-
-            try Task.checkCancellation()
-
-            let decodeStart = CFAbsoluteTimeGetCurrent()
-            guard let image = NSImage(data: imageData) else {
-                diskFrameBufferTelemetry.decodeFailures += 1
-                if loadedFromDiskBuffer {
-                    removeDiskFrameBufferEntries([frameID], reason: "decode failure")
-                }
-                if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
-                    currentImage = nil
-                    frameNotReady = false
-                    frameLoadError = true
-                }
-                return
-            }
-
-            diskFrameBufferTelemetry.decodeSuccesses += 1
-            let decodeMs = (CFAbsoluteTimeGetCurrent() - decodeStart) * 1000
-            Log.recordLatency(
-                "timeline.frame.decode_ms",
-                valueMs: decodeMs,
-                category: .ui,
-                summaryEvery: 25,
-                warningThresholdMs: 28,
-                criticalThresholdMs: 90
-            )
-
-            let totalMs = (CFAbsoluteTimeGetCurrent() - loadStart) * 1000
-            Log.recordLatency(
-                "timeline.frame.present_ms",
-                valueMs: totalMs,
-                category: .ui,
-                summaryEvery: 20,
-                warningThresholdMs: 80,
-                criticalThresholdMs: 220
-            )
-            Log.recordLatency(
-                loadedFromDiskBuffer
-                    ? "timeline.frame.present.disk_ms"
-                    : "timeline.frame.present.storage_ms",
-                valueMs: totalMs,
-                category: .ui,
-                summaryEvery: 20,
-                warningThresholdMs: loadedFromDiskBuffer ? 45 : 100,
-                criticalThresholdMs: loadedFromDiskBuffer ? 120 : 260
-            )
-
-            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
-                currentImage = image
-                frameNotReady = false
-                frameLoadError = false
-                if Self.isVerboseTimelineLoggingEnabled {
-                    Log.debug("[TIMELINE-LOAD] Successfully loaded image for frame \(frame.id.value)", category: .ui)
-                }
-            }
-        } catch is CancellationError {
-            // Replaced by a newer foreground frame request.
-        } catch StorageError.fileReadFailed(_, let underlying) where underlying.contains("still being written") {
-            diskFrameBufferTelemetry.storageReadFailures += 1
-            if Self.isVerboseTimelineLoggingEnabled {
-                Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) video still being written (processingStatus=\(timelineFrame.processingStatus))", category: .app)
-            }
-            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
+            let result = try await exactTimelineImage(row)
+            guard !Task.isCancelled, foregroundImagesActive, token == foregroundRequestGeneration,
+                  !evidence.isPresentingEvidence, currentTimelineFrame?.imageIdentity == row.imageIdentity else { return }
+            switch result {
+            case .screen(_, let image):
+                // Native decoding has already finished on the service/reader actors.
+                currentImage = NSImage(cgImage: image, size: .zero)
+                frameNotReady = false; frameLoadError = false
+            case .unavailable(let reason):
                 currentImage = nil
-                frameLoadError = false
-                if timelineFrame.processingStatus != 2 {
-                    frameNotReady = true
-                }
-            }
-        } catch StorageError.fileReadFailed(_, let underlying) where underlying.contains("out of range") {
-            diskFrameBufferTelemetry.storageReadFailures += 1
-            if Self.isVerboseTimelineLoggingEnabled {
-                Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) not yet in video file (still encoding, processingStatus=\(timelineFrame.processingStatus))", category: .app)
-            }
-            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
-                currentImage = nil
-                if timelineFrame.processingStatus != 2 {
-                    frameNotReady = true
-                    frameLoadError = false
-                } else {
-                    frameNotReady = false
-                    frameLoadError = true
-                }
-            }
-        } catch let error as NSError where error.domain == "AVFoundationErrorDomain" && error.code == -11829 {
-            diskFrameBufferTelemetry.storageReadFailures += 1
-            if Self.isVerboseTimelineLoggingEnabled {
-                Log.info("[TIMELINE-LOAD] Frame \(frame.id.value) video not ready yet (no fragments, processingStatus=\(timelineFrame.processingStatus))", category: .app)
-            }
-            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
-                currentImage = nil
-                if timelineFrame.processingStatus != 2 {
-                    frameNotReady = true
-                    frameLoadError = false
-                } else {
-                    frameNotReady = false
-                    frameLoadError = false
-                }
+                frameNotReady = reason == .frameFinalising
+                frameLoadError = !frameNotReady
+            default: throw EvidenceUnavailableReason.integrityFailure
             }
         } catch {
-            diskFrameBufferTelemetry.storageReadFailures += 1
-            Log.error("[SimpleTimelineViewModel] Failed to load image: \(error)", category: .app)
-            if !evidence.isPresentingEvidence, currentTimelineFrame?.frame.id == frame.id {
-                currentImage = nil
-                frameNotReady = false
-                frameLoadError = true
+            guard !Task.isCancelled, foregroundImagesActive, token == foregroundRequestGeneration,
+                  !evidence.isPresentingEvidence, currentTimelineFrame?.imageIdentity == row.imageIdentity else { return }
+            currentImage = nil
+            frameNotReady = (error as? EvidenceUnavailableReason) == .frameFinalising
+            frameLoadError = !frameNotReady
+        }
+    }
+
+    private func exactTimelineImage(_ row: TimelineFrame) async throws -> EvidenceResolution {
+        try Task.checkCancellation()
+        let generation = try await evidenceClient.sourceGeneration(row.frame.source)
+        let reference: ScreenEvidenceRef
+        if let exactReference = row.exactReference {
+            // Resolve the retained store/observation/revision directly. Looking
+            // up a new citation by numeric frame ID could rebind a replaced store.
+            reference = exactReference
+        } else {
+            guard row.sourceGeneration == generation else { throw EvidenceUnavailableReason.sourceDisconnected }
+            reference = try await evidenceClient.frameReference(row.frame.id, row.frame.source)
+        }
+        guard reference.source == row.frame.source, reference.frameID == row.frame.id else {
+            throw EvidenceUnavailableReason.integrityFailure
+        }
+        try Task.checkCancellation()
+        let result = await evidenceClient.resolve(.screen(reference))
+        try Task.checkCancellation()
+        guard try await evidenceClient.sourceGeneration(row.frame.source) == generation else {
+            throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        try Task.checkCancellation()
+        if case .screen(let snapshot, let image) = result {
+            guard snapshot.ref == reference, row.imageIdentity.matches(snapshot.frame),
+                  snapshot.width > 0, snapshot.height > 0,
+                  image.width == snapshot.width, image.height == snapshot.height else {
+                throw EvidenceUnavailableReason.integrityFailure
             }
         }
+        return result
     }
 
     private func makeCenteredHotWindow(around index: Int) -> ClosedRange<Int> {
@@ -9761,7 +9742,7 @@ public class SimpleTimelineViewModel: ObservableObject {
                 Log.info("[Memory] Cleared disk frame buffer on calendar navigation (\(oldCacheCount) frames removed)", category: .ui)
             }
 
-            frames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+            frames = framesWithVideoInfo
 
             updateWindowBoundaries()
             resetBoundaryStateForReloadWindow()
@@ -9903,7 +9884,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             }
 
             // Convert to TimelineFrame - video info is already included from the JOIN
-            frames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+            frames = framesWithVideoInfo
 
             // Reset infinite scroll state for new window
             updateWindowBoundaries()
@@ -10014,7 +9995,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             }
 
             // Convert to TimelineFrame
-            frames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+            frames = framesWithVideoInfo
 
             // Reset infinite scroll state for new window
             updateWindowBoundaries()
@@ -10949,9 +10930,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             Log.debug("[InfiniteScroll] Got \(framesWithVideoInfoDescending.count) older frames", category: .ui)
 
             // getFramesWithVideoInfoBefore returns DESC (nearest older first). Reverse to ASC before prepending.
-            let newTimelineFrames = framesWithVideoInfoDescending.reversed().map {
-                TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus)
-            }
+            let newTimelineFrames = Array(framesWithVideoInfoDescending.reversed())
 
             // If timeline state changed while the query was in-flight (filter/apply/reload), drop stale results.
             guard let currentOldest = frames.first?.frame.timestamp else {
@@ -11135,10 +11114,10 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             // Convert to TimelineFrame - video info is already included from the JOIN
             // framesWithVideoInfo are returned ASC (oldest first), which is correct for appending
-            let newTimelineFrames = framesWithVideoInfo.map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+            let newTimelineFrames = framesWithVideoInfo
 
-            let existingFrameIDs = Set(frames.map { $0.frame.id })
-            let uniqueTimelineFrames = newTimelineFrames.filter { !existingFrameIDs.contains($0.frame.id) }
+            let existingFrameIDs = Set(frames.map(\.imageIdentity))
+            let uniqueTimelineFrames = newTimelineFrames.filter { !existingFrameIDs.contains($0.imageIdentity) }
             let duplicateCount = newTimelineFrames.count - uniqueTimelineFrames.count
 
             if uniqueTimelineFrames.isEmpty {
@@ -11261,10 +11240,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     private func applyDeferredTrimIfNeeded(trigger: String) {
         guard let deferredDirection = deferredTrimDirection else { return }
 
-        let anchorFrameID = deferredTrimAnchorFrameID
+        let anchorIdentity = deferredTrimAnchorIdentity
         let anchorTimestamp = deferredTrimAnchorTimestamp
         deferredTrimDirection = nil
-        deferredTrimAnchorFrameID = nil
+        deferredTrimAnchorIdentity = nil
         deferredTrimAnchorTimestamp = nil
 
         guard frames.count > WindowConfig.maxFrames else { return }
@@ -11275,7 +11254,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         )
         trimWindowIfNeeded(
             preserveDirection: deferredDirection,
-            anchorFrameID: anchorFrameID,
+            anchorIdentity: anchorIdentity,
             anchorTimestamp: anchorTimestamp,
             reason: "deferred.\(trigger)",
             allowDeferral: false
@@ -11285,7 +11264,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Trim the window if it exceeds max frames
     private func trimWindowIfNeeded(
         preserveDirection: TrimDirection,
-        anchorFrameID: FrameID? = nil,
+        anchorIdentity: TimelineImageIdentity? = nil,
         anchorTimestamp: Date? = nil,
         reason: String = "unspecified",
         allowDeferral: Bool = true
@@ -11294,9 +11273,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         if allowDeferral, preserveDirection == .newer, isActivelyScrolling {
             deferredTrimDirection = preserveDirection
-            deferredTrimAnchorFrameID = anchorFrameID ?? currentTimelineFrame?.frame.id
+            deferredTrimAnchorIdentity = anchorIdentity ?? currentTimelineFrame?.imageIdentity
             deferredTrimAnchorTimestamp = anchorTimestamp ?? currentTimelineFrame?.frame.timestamp
-            let anchorIDValue = deferredTrimAnchorFrameID?.value ?? -1
+            let anchorIDValue = deferredTrimAnchorIdentity?.capture.frameID.value ?? -1
             let anchorTS = deferredTrimAnchorTimestamp.map { Log.timestamp(from: $0) } ?? "nil"
             Log.info(
                 "[Memory] DEFERRING trim direction=\(trimDirectionLabel(preserveDirection)) reason=\(reason) frames=\(frames.count) anchorFrameID=\(anchorIDValue) anchorTs=\(anchorTS)",
@@ -11322,13 +11301,13 @@ public class SimpleTimelineViewModel: ObservableObject {
             // User is scrolling toward newer, trim older frames from start
             Log.info("[Memory] TRIMMING \(excessCount) older frames from START (preserving newer) reason=\(reason)", category: .ui)
             let oldIndex = currentIndex
-            let resolvedAnchorFrameID = anchorFrameID ?? currentTimelineFrame?.frame.id
+            let resolvedAnchorIdentity = anchorIdentity ?? currentTimelineFrame?.imageIdentity
             let resolvedAnchorTimestamp = anchorTimestamp ?? currentTimelineFrame?.frame.timestamp
             let trimmedFrames = Array(frames.dropFirst(excessCount))
 
             let targetIndexAfterTrim: Int
-            if let resolvedAnchorFrameID,
-               let anchoredIndex = trimmedFrames.firstIndex(where: { $0.frame.id == resolvedAnchorFrameID }) {
+            if let resolvedAnchorIdentity,
+               let anchoredIndex = trimmedFrames.firstIndex(where: { $0.imageIdentity == resolvedAnchorIdentity }) {
                 targetIndexAfterTrim = anchoredIndex
             } else if let resolvedAnchorTimestamp {
                 targetIndexAfterTrim = trimmedFrames.enumerated().min {
@@ -11341,7 +11320,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
             pendingCurrentIndexAfterFrameReplacement = targetIndexAfterTrim
             frames = trimmedFrames
-            let anchorIDValue = resolvedAnchorFrameID?.value ?? -1
+            let anchorIDValue = resolvedAnchorIdentity?.capture.frameID.value ?? -1
             let anchorTS = resolvedAnchorTimestamp.map { Log.timestamp(from: $0) } ?? "nil"
             Log.info(
                 "[Memory] TRIM anchor result reason=\(reason) oldIndex=\(oldIndex) newIndex=\(targetIndexAfterTrim) anchorFrameID=\(anchorIDValue) anchorTs=\(anchorTS)",

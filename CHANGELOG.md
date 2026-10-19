@@ -6,6 +6,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-10-19 — Timeline original-image repair (source candidate)
+
+- Display saved originals in ordinary Timeline while their video is unfinished, then use the exact finalized frame reader. Pending OCR no longer hides captures from filtered history; hidden-segment and privacy checks remain active.
+- Preserve source, capture time and source proof through list queries and status refresh. Search handoffs retain their immutable reference, including when the surrounding history read is cancelled. The canvas no longer chooses a separate video/file-size path over verified pixels.
+- Own and cancel one foreground image read at a time. Reopening a retained window, paging and window trimming resume the correct selected image. Regression coverage uses real private SQLite, original-frame journals, HEVC decoding and native AppKit hosting. Final clean builds and installed acceptance are pending in the [recovery ledger](docs/recovery-20261019.md).
+
 ### 2026-10-19 — Capture display and observer local trial 2610.19.4
 
 - Use the same checked visible-window geometry for display routing, capture attribution and document revalidation. Missing AX permission no longer forces a permitted secondary window onto the main display; invalid and transparent helper windows cannot choose its screen.

@@ -399,6 +399,77 @@ final class DashboardScreenshotIdentityTests: XCTestCase {
         XCTAssertEqual(nodes[importedRow.id]?.map(\.text), ["Imported authored OCR"])
     }
 
+    func testOrdinaryTimelineRejectsReplacementImportedStoreWithSameIDAndTime() async throws {
+        let probe = ScreenshotImageProbe(image: try image())
+        let service = service(probe: probe)
+        let model = SimpleTimelineViewModel(coordinator: AppCoordinator(), evidenceClient: .live(service: service),
+            transientDirectory: root.appendingPathComponent("timeline"))
+        defer { model.handleTimelineClosed() }
+        let adapter = adapter!
+        let rows = try await model.test_readTimelineRows { try await adapter.getMostRecentFramesWithVideoInfo(limit: 20) }
+        let imported = try XCTUnwrap(rows.first { $0.frame.source == .rewind })
+        model.frames = [imported]
+        await model.test_loadForegroundImage()
+        XCTAssertNotNil(model.currentImage, "The original imported source must be readable")
+        let readCount = await probe.reads
+        try await replaceImportedStore()
+        await model.test_loadForegroundImage()
+        XCTAssertNil(model.currentImage, "A replacement store cannot stand in for a retained source row")
+        XCTAssertTrue(model.frameLoadError)
+        let rejectedReadCount = await probe.reads
+        XCTAssertEqual(rejectedReadCount, readCount, "Reject the old source token before decoding replacement pixels")
+        await model.test_stopForegroundImages()
+    }
+
+    func testOrdinaryTimelineRefreshKeepsCollidingImportedIdentityAndNativeProof() async throws {
+        let service = service()
+        let model = SimpleTimelineViewModel(coordinator: AppCoordinator(), evidenceClient: .live(service: service),
+            transientDirectory: root.appendingPathComponent("timeline"))
+        defer { model.handleTimelineClosed() }
+        let adapter = adapter!, database = database!
+        let rows = try await model.test_readTimelineRows { try await adapter.getMostRecentFramesWithVideoInfo(limit: 20) }
+        let imported = try XCTUnwrap(rows.first { $0.frame.source == .rewind })
+        let native = try XCTUnwrap(rows.first { $0.frame.source == .native })
+        XCTAssertEqual(imported.frame.id, native.frame.id)
+        model.frames = [imported, native]
+        try await database.updateFrameProcessingStatus(frameID: native.frame.id.value, status: 2)
+        model.test_refreshProcessingStatusesHooks.getFrameProcessingStatuses = { ids in
+            try await database.getFrameProcessingStatuses(frameIDs: ids)
+        }
+        model.test_refreshProcessingStatusesHooks.getFrameWithVideoInfoByID = { id in
+            try await adapter.getFrameWithVideoInfoByID(id: id, source: .native)
+        }
+        await model.refreshProcessingStatuses()
+        XCTAssertEqual(model.frames[0].imageIdentity, imported.imageIdentity)
+        XCTAssertEqual(model.frames[0].processingStatus, -1)
+        XCTAssertEqual(model.frames[1].imageIdentity, native.imageIdentity)
+        XCTAssertEqual(model.frames[1].processingStatus, 2)
+        await model.test_stopForegroundImages()
+    }
+
+    func testClosedExactTimelineSelectionCannotRebindReplacementImportedStore() async throws {
+        let probe = ScreenshotImageProbe(image: try image())
+        let service = service(probe: probe)
+        let model = SimpleTimelineViewModel(coordinator: AppCoordinator(), evidenceClient: .live(service: service),
+            transientDirectory: root.appendingPathComponent("exact-timeline"))
+        let adapter = adapter!
+        let rows = try await model.test_readTimelineRows { try await adapter.getMostRecentFramesWithVideoInfo(limit: 20) }
+        let imported = try XCTUnwrap(rows.first { $0.frame.source == .rewind })
+        let reference = try await service.reference(frameID: imported.frame.id, source: .rewind)
+        await model.openEvidence(.screen(reference))
+        model.closeExactEvidence()
+        await model.test_loadForegroundImage()
+        XCTAssertNotNil(model.currentImage)
+        let readCount = await probe.reads
+        try await replaceImportedStore()
+        await model.test_loadForegroundImage()
+        XCTAssertNil(model.currentImage)
+        XCTAssertTrue(model.frameLoadError)
+        let rejectedReadCount = await probe.reads
+        XCTAssertEqual(rejectedReadCount, readCount)
+        await model.test_stopForegroundImages()
+    }
+
     private func service(probe: ScreenshotImageProbe? = nil, excluded: Set<String> = []) -> ProgressiveRecallService {
         ProgressiveRecallService(database: database, adapter: adapter,
             configuration: { CaptureConfig(excludedAppBundleIDs: excluded) }, imageReader: { _ in

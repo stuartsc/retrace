@@ -33,6 +33,15 @@ public class TimelineWindowController: NSObject {
     private var deferredHostingViewDetachTask: Task<Void, Never>?
     private var tapeShowAnimationTask: Task<Void, Never>?
     private var liveModeCaptureTask: Task<Void, Never>?
+    private var filteredOpenTask: Task<Void, Never>?
+    private var filteredReadTask: Task<Void, Never>?
+    private var pendingFilteredOpen: FilteredOpenRequest?
+    private struct FilteredOpenRequest {
+        let generation: UInt64
+        let viewModel: SimpleTimelineViewModel
+        let criteria: FilterCriteria
+        let startedAt: CFAbsoluteTime
+    }
     private var isHiding = false
     private var presentationGeneration: UInt64 = 0
     /// The override boundary is only installed by the native offscreen tests.
@@ -45,6 +54,7 @@ public class TimelineWindowController: NSObject {
         var restoreFocus: () -> Void
         var monitors: (Bool) -> Void
         var hideCompleted: () -> Void = {}
+        var liveCapture: (@MainActor () async -> NSImage?)? = nil
     }
     private var presentationOverrides: PresentationOverrides?
     /// Ignore scroll-wheel input for a short grace period after opening in live mode.
@@ -326,15 +336,24 @@ public class TimelineWindowController: NSObject {
     }
 
 #if DEBUG
-    init(preparedWindow: NSWindow, viewModel: SimpleTimelineViewModel, coordinator: AppCoordinator,
+    init(preparedWindow: NSWindow, hostingView: NSView? = nil, viewModel: SimpleTimelineViewModel, coordinator: AppCoordinator,
          presentationOverrides: PresentationOverrides) {
         self.window = preparedWindow
+        self.hostingView = hostingView
         self.timelineViewModel = viewModel
         self.coordinator = coordinator
         self.isPrepared = true
         self.presentationOverrides = presentationOverrides
         super.init()
     }
+
+    func test_startLiveCapture() async {
+        guard let timelineViewModel else { return }
+        startLiveModeCaptureIfNeeded(shouldUseLiveMode: true, viewModel: timelineViewModel)
+        await liveModeCaptureTask?.value
+    }
+
+    func test_joinFilteredOpen() async { await filteredOpenTask?.value }
 #endif
 
     public func openSearchResult(_ result: SearchResult, coordinator: AppCoordinator) async {
@@ -657,26 +676,20 @@ public class TimelineWindowController: NSObject {
 
     private func show(preservingEvidence: Bool) {
         cancelDeferredHostingViewDetach()
+        cancelFilteredOpen()
         guard let coordinator else { return }
 
         // A reopen owns a new presentation, including the monitors/session that
         // hide already ended. Its generation also invalidates every old await.
-        if isHiding, let window = window {
-            presentationGeneration &+= 1
-            isHiding = false
-            isHidingToShowDashboard = false
-            // Cancel any running animation by setting duration to 0
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0
-                window.animator().alphaValue = 1
-            })
+        if isHiding, window != nil {
+            beginPresentation()
             showPreparedWindow(coordinator: coordinator, openPath: "interrupted_hide",
                 showStartTime: CFAbsoluteTimeGetCurrent(), preservingEvidence: preservingEvidence)
             return
         }
 
         guard !isVisible else { return }
-        presentationGeneration &+= 1
+        beginPresentation()
         if presentationOverrides != nil {
             showPreparedWindow(coordinator: coordinator, openPath: "offscreen", showStartTime: CFAbsoluteTimeGetCurrent(),
                 preservingEvidence: preservingEvidence)
@@ -849,6 +862,23 @@ public class TimelineWindowController: NSObject {
         }
     }
 
+    @discardableResult
+    private func beginPresentation() -> UInt64 {
+        cancelDeferredHostingViewDetach()
+        cancelFilteredOpen()
+        liveModeCaptureTask?.cancel(); liveModeCaptureTask = nil
+        presentationGeneration &+= 1
+        if isHiding, let window {
+            isHiding = false
+            isHidingToShowDashboard = false
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                window.animator().alphaValue = 1
+            }
+        }
+        return presentationGeneration
+    }
+
     /// Show the prepared window with animation and setup event monitors
     private func showPreparedWindow(
         coordinator: AppCoordinator,
@@ -875,16 +905,10 @@ public class TimelineWindowController: NSObject {
             Log.info("[TIMELINE-SHOW] 🎬 About to show window - currentIndex=\(viewModel.currentIndex), frames.count=\(viewModel.frames.count), videoPath=\(currentVideoInfo?.videoPath.suffix(30) ?? "nil"), frameIndex=\(currentVideoInfo?.frameIndex ?? -1)", category: .ui)
         }
 
-        // Force video reload BEFORE showing window to avoid flicker
-        // This ensures AVPlayer loads fresh video data with any new frames
-        // Skip this when in live mode since we're showing a live screenshot instead
-        if let viewModel = timelineViewModel, !preservingEvidence, !viewModel.evidence.isPresentingEvidence,
-           !viewModel.isInLiveMode, viewModel.frames.count > 1 {
-            viewModel.forceVideoReload = true
-            let original = viewModel.currentIndex
-            viewModel.currentIndex = max(0, original - 1)
-            viewModel.currentIndex = original
-        }
+        // A retained hosting view need not receive onAppear again. The window
+        // owner resumes exact image reads after the final selection is ready.
+        timelineViewModel?.handleTimelineOpened()
+        timelineViewModel?.startPeriodicStatusRefresh()
 
         let isLive = timelineViewModel?.isInLiveMode ?? false
         if isLive {
@@ -981,6 +1005,7 @@ public class TimelineWindowController: NSObject {
 
     /// Hide the timeline overlay
     public func hide(restorePreviousFocus: Bool = true) {
+        cancelFilteredOpen()
         guard isVisible, let window = window, !isHiding else { return }
         Log.info(
             "[TimelineToggle] hide requested restorePreviousFocus=\(restorePreviousFocus) searchOverlayVisible=\(timelineViewModel?.isSearchOverlayVisible ?? false)",
@@ -989,7 +1014,8 @@ public class TimelineWindowController: NSObject {
         isHiding = true
         presentationGeneration &+= 1
         let hideGeneration = presentationGeneration
-        timelineViewModel?.closeExactEvidence(resumeHistory: false)
+        timelineViewModel?.stopPeriodicStatusRefresh()
+        timelineViewModel?.handleTimelineClosed()
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
 
@@ -1162,6 +1188,7 @@ public class TimelineWindowController: NSObject {
     /// When the timeline window is visible, capture only content below it so we don't
     /// bake partially hidden timeline controls into the live screenshot.
     private func captureLiveScreenshotAsync() async -> NSImage? {
+        if let capture = presentationOverrides?.liveCapture { return await capture() }
         let mouseLocation = NSEvent.mouseLocation
         guard let targetScreen = NSScreen.screens.first(where: {
             NSMouseInRect(mouseLocation, $0.frame, false)
@@ -1249,8 +1276,7 @@ public class TimelineWindowController: NSObject {
             guard targetViewModel.isNearLatestLoadedFrame(within: Self.instantLiveReopenFrameThreshold) else { return }
             guard let screenshot else {
                 // Fall back to historical frame rendering if live capture fails.
-                targetViewModel.isInLiveMode = false
-                targetViewModel.liveScreenshot = nil
+                targetViewModel.resumeHistoryAfterLiveCaptureFailure()
                 return
             }
 
@@ -1339,8 +1365,6 @@ public class TimelineWindowController: NSObject {
                     navigateToNewest: shouldNavigateToNewest,
                     allowNearLiveAutoAdvance: shouldAutoAdvanceNearLive || cacheExpired
                 )
-                // Force video reload so AVPlayer picks up new frames appended to the video file
-                viewModel.forceVideoReload = true
             }
         }
     }
@@ -1358,8 +1382,10 @@ public class TimelineWindowController: NSObject {
         // Save state before destroying for cross-session persistence
         timelineViewModel?.saveState()
         cancelDeferredHostingViewDetach()
+        cancelFilteredOpen()
         presentationGeneration &+= 1
-        timelineViewModel?.closeExactEvidence(resumeHistory: false)
+        timelineViewModel?.stopPeriodicStatusRefresh()
+        timelineViewModel?.handleTimelineClosed()
         liveModeCaptureTask?.cancel()
         liveModeCaptureTask = nil
 
@@ -1375,7 +1401,7 @@ public class TimelineWindowController: NSObject {
         cancelDeferredHostingViewDetach()
         deferredHostingViewDetachTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.hostingViewDetachDelay, clock: .continuous)
-            guard let self, !self.isVisible else { return }
+            guard let self, !Task.isCancelled, !self.isVisible else { return }
             self.hostingView?.removeFromSuperview()
         }
     }
@@ -1687,6 +1713,7 @@ public class TimelineWindowController: NSObject {
     ///   - endDate: Optional end date for filtering (e.g., now)
     ///   - clickStartTime: Optional start time from when the tab was clicked (for end-to-end timing)
     public func showWithFilter(bundleID: String, windowName: String?, browserUrl: String? = nil, startDate: Date? = nil, endDate: Date? = nil, clickStartTime: CFAbsoluteTime? = nil) {
+        guard coordinator != nil else { return }
         let startTime = clickStartTime ?? CFAbsoluteTimeGetCurrent()
 
         // Build the filter criteria upfront
@@ -1702,39 +1729,50 @@ public class TimelineWindowController: NSObject {
         criteria.startDate = startDate
         criteria.endDate = endDate
 
-        // Prepare window invisibly first (don't show yet)
+        let generation = beginPresentation()
         prepareWindowInvisibly()
-
-        // Load data, then fade in once ready
-        Task { @MainActor in
-            guard let viewModel = timelineViewModel, let coordinator = coordinator else { return }
-
-            // Dashboard-driven timeline opens should not carry stale search highlight overlays.
-            viewModel.resetSearchHighlightState()
-
-            // Apply the filter criteria to viewModel
-            viewModel.filterCriteria = criteria
-            viewModel.pendingFilterCriteria = criteria
-
-            // Query and load frames
-            let frames = try? await coordinator.getMostRecentFramesWithVideoInfo(limit: 50, filters: criteria)
-
-            // Load frames directly into viewModel
-            await viewModel.loadFramesDirectly(frames ?? [], clickStartTime: startTime)
-
-            // Small delay to let the view settle before fade-in
-            try? await Task.sleep(for: .nanoseconds(Int64(100_000_000)), clock: .continuous) // 0.1 seconds
-
-            // Now fade in the window with data already loaded
-            fadeInPreparedWindow()
-
+        guard let viewModel = timelineViewModel else { return }
+        viewModel.closeExactEvidence(resumeHistory: false)
+        viewModel.resetSearchHighlightState()
+        viewModel.isInLiveMode = false; viewModel.liveScreenshot = nil
+        pendingFilteredOpen = FilteredOpenRequest(generation: generation, viewModel: viewModel,
+            criteria: criteria, startedAt: startTime)
+        guard filteredOpenTask == nil else { return }
+        filteredOpenTask = Task { @MainActor [weak self] in
+            await self?.runFilteredOpenLoop()
         }
+    }
+
+    private func cancelFilteredOpen() {
+        pendingFilteredOpen = nil
+        filteredReadTask?.cancel()
+        // Retain the loop until the current query joins. Repeated opens replace
+        // one pending request instead of stacking tasks waiting on predecessors.
+    }
+
+    private func runFilteredOpenLoop() async {
+        while let request = pendingFilteredOpen {
+            pendingFilteredOpen = nil
+            let read = Task { @MainActor [weak self] in
+                guard let self, !Task.isCancelled, request.generation == presentationGeneration,
+                      timelineViewModel === request.viewModel else { return }
+                await request.viewModel.loadFilteredFrames(criteria: request.criteria, clickStartTime: request.startedAt)
+                guard !Task.isCancelled, request.generation == presentationGeneration,
+                      timelineViewModel === request.viewModel, let coordinator else { return }
+                showPreparedWindow(coordinator: coordinator, openPath: "filtered", showStartTime: request.startedAt)
+            }
+            filteredReadTask = read
+            await read.value
+            filteredReadTask = nil
+        }
+        filteredOpenTask = nil
     }
 
     /// Prepare the window invisibly without showing it yet
     /// Used by showWithFilter to load data before revealing
     private func prepareWindowInvisibly() {
         guard !isVisible, let coordinator = coordinator else { return }
+        guard presentationOverrides == nil else { return }
         captureFocusRestoreTarget()
 
         // Remember if dashboard was the key window before we take over
@@ -1795,78 +1833,6 @@ public class TimelineWindowController: NSObject {
         self.hostingView = hostingView
         self.isPrepared = true
             }
-
-    /// Fade in the prepared window (called after data is loaded)
-    private func fadeInPreparedWindow() {
-        guard let window = window, let coordinator = coordinator else { return }
-
-        // Reattach SwiftUI view if it was detached (on hide, we remove it from superview to stop display cycle)
-        if let hostingView = hostingView, hostingView.superview == nil {
-            hostingView.frame = window.contentView?.bounds ?? .zero
-            window.contentView?.addSubview(hostingView)
-            hostingView.needsLayout = true
-            window.contentView?.needsLayout = true
-        }
-
-        // Ensure tape starts hidden and cancel any pending animation
-        timelineViewModel?.isTapeHidden = true
-        tapeShowAnimationTask?.cancel()
-
-        // Force video reload before showing
-        if let viewModel = timelineViewModel, viewModel.frames.count > 1 {
-            viewModel.forceVideoReload = true
-            let original = viewModel.currentIndex
-            viewModel.currentIndex = max(0, original - 1)
-            viewModel.currentIndex = original
-        }
-
-        // Fade in for filter/historical path (data already loaded)
-        window.alphaValue = 0
-        // Re-enable mouse events before showing (was disabled while hidden to prevent blocking clicks)
-        window.ignoresMouseEvents = false
-        window.collectionBehavior.remove(.canJoinAllSpaces)
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        // Mark visible before activation to avoid activation-time dashboard reveal
-        // races that can switch Spaces on some machines.
-        isVisible = true
-        Self.isTimelineVisible = true
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        if let hostingView = hostingView {
-            DispatchQueue.main.async { [weak hostingView] in
-                hostingView?.layoutSubtreeIfNeeded()
-            }
-        }
-
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.35
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().alphaValue = 1
-        })
-
-        // Trigger tape slide-up animation
-        tapeShowAnimationTask = Task { @MainActor in
-            await Task.yield()
-            guard let viewModel = self.timelineViewModel, !Task.isCancelled else { return }
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                viewModel.isTapeHidden = false
-            }
-        }
-
-        // Track timeline open event
-        DashboardViewModel.recordTimelineOpen(coordinator: coordinator)
-
-        // Setup keyboard monitoring
-        setupEventMonitors()
-
-        // Notify coordinator to pause frame processing
-        Task {
-            await coordinator.setTimelineVisible(true)
-        }
-
-        // Post notification so menu bar can hide recording indicator
-        NotificationCenter.default.post(name: .timelineDidOpen, object: nil)
-    }
 
     // MARK: - Window Creation
 

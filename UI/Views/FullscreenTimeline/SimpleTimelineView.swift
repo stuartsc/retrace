@@ -779,6 +779,12 @@ public struct SimpleTimelineView: View {
 
     // MARK: - Frame Display
 
+#if DEBUG
+    /// Render the actual historical canvas against an isolated model, without
+    /// mounting Timeline's window, polling, hotkeys or startup callbacks.
+    func test_historicalFrameContent() -> some View { historicalFrameContent }
+#endif
+
 	    @ViewBuilder
 	    private var frameDisplay: some View {
             if evidence.isPresentingEvidence {
@@ -824,10 +830,10 @@ public struct SimpleTimelineView: View {
                 Image(systemName: "clock")
                     .font(.retraceDisplay)
                     .foregroundColor(.white.opacity(0.3))
-                Text("Come back in a few frames")
+                Text("Screenshot unavailable")
                     .font(.retraceBody)
                     .foregroundColor(.white.opacity(0.5))
-                Text("This frame is still being processed")
+                Text("The exact recorded image could not be opened.")
                     .font(.retraceCaption)
                     .foregroundColor(.white.opacity(0.3))
             }
@@ -840,12 +846,10 @@ public struct SimpleTimelineView: View {
                 Text("Frame not ready yet")
                     .font(.retraceBody)
                     .foregroundColor(.white.opacity(0.5))
-                Text("Still encoding...")
+                Text("The exact image is still being finalised.")
                     .font(.retraceCaption)
                     .foregroundColor(.white.opacity(0.3))
             }
-        } else if let videoInfo = viewModel.currentVideoInfo {
-            videoFrameContent(videoInfo: videoInfo)
         } else if let image = viewModel.currentImage {
             // Static image (Retrace) with URL overlay.
             FrameWithURLOverlay(viewModel: viewModel, onURLClicked: onClose) {
@@ -868,108 +872,13 @@ public struct SimpleTimelineView: View {
                         .font(.retraceCaption)
                         .foregroundColor(.white.opacity(0.3))
                 } else if !viewModel.frames.isEmpty {
-                    Text("Relaunch timeline in a few seconds")
+                    Text("Waiting for the recorded image…")
                         .font(.retraceCaption)
                         .foregroundColor(.white.opacity(0.3))
                 }
             }
         }
     }
-
-	    /// Video frame content extracted to separate view builder for cleaner code
-	    @ViewBuilder
-	    private func videoFrameContent(videoInfo: FrameVideoInfo) -> some View {
-	        let path = videoInfo.videoPath
-	        let pathWithExt = path + ".mp4"
-            let hasActiveFilters = viewModel.filterCriteria.hasActiveFilters
-            let selectedApps = (viewModel.filterCriteria.selectedApps ?? []).sorted()
-            let filteredFrameIndicesForVideo: Set<Int> = hasActiveFilters
-                ? Set(viewModel.frames.compactMap { entry in
-                    guard let info = entry.videoInfo, info.videoPath == videoInfo.videoPath else { return nil }
-                    return info.frameIndex
-                })
-                : []
-            let debugContext = viewModel.currentTimelineFrame.map {
-                VideoSeekDebugContext(
-                    frameID: $0.frame.id.value,
-                    timestamp: $0.frame.timestamp,
-                    currentIndex: viewModel.currentIndex,
-                    frameBundleID: $0.frame.metadata.appBundleID,
-                    hasActiveFilters: hasActiveFilters,
-                    selectedApps: selectedApps,
-                    filteredFrameIndicesForVideo: filteredFrameIndicesForVideo
-                )
-            }
-
-	        // Check if file exists FIRST - before trying to load it
-	        let fileExists = FileManager.default.fileExists(atPath: path) || FileManager.default.fileExists(atPath: pathWithExt)
-
-	        if !fileExists {
-	            // Video file is missing - show error message
-	            VStack(spacing: .spacingM) {
-	                Image(systemName: "exclamationmark.triangle")
-	                    .font(.retraceDisplay)
-	                    .foregroundColor(.white.opacity(0.3))
-	                Text("Could not find frame")
-	                    .font(.retraceBody)
-	                    .foregroundColor(.white.opacity(0.5))
-	                Text("Video file missing: \(path.suffix(50))")
-	                    .font(.retraceCaption)
-	                    .foregroundColor(.white.opacity(0.3))
-	            }
-	        } else {
-	            let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ??
-	                           (try? FileManager.default.attributesOfItem(atPath: pathWithExt)[.size] as? Int64) ?? 0
-
-	            // If video is finalized (processingState = 0), trust it's readable regardless of size.
-	            // Otherwise, require minimum file size to ensure fragments are written.
-	            // With movieFragmentInterval = 0.1s and ~3 frames needed before first fragment is written,
-	            // a typical fragment with 1920x1080 HEVC frames is ~40-50KB minimum per fragment.
-	            // However, to avoid corrupted/incomplete fragments, require at least 2 fragments written.
-	            // Observed: Fragment 2 written at ~280KB total. Use 200KB threshold for safety.
-	            let minFragmentSize: Int64 = 200_000  // 200KB threshold (~2 fragments)
-	            let fileReady = videoInfo.isVideoFinalized || fileSize >= minFragmentSize
-
-	            // Don't render video if we already know it will fail to load
-	            if fileReady && !viewModel.frameLoadError {
-	                FrameWithURLOverlay(viewModel: viewModel, onURLClicked: onClose) {
-	                    SimpleVideoFrameView(videoInfo: videoInfo, debugContext: debugContext, forceReload: .init(
-	                        get: { viewModel.forceVideoReload },
-	                        set: { viewModel.forceVideoReload = $0 }
-	                    ), onLoadFailed: {
-	                        // Don't set frameNotReady=true for completed frames (processingStatus=2) or Rewind frames (-1)
-	                        // Temporary video reload issues shouldn't show "Still encoding..." for ready frames
-	                        let status = viewModel.currentTimelineFrame?.processingStatus
-	                        if status != 2 && status != -1 {
-	                            viewModel.frameNotReady = true
-	                            viewModel.frameLoadError = false
-	                        } else {
-	                            // For completed frames or Rewind frames, this is a real error
-	                            viewModel.frameNotReady = false
-	                            viewModel.frameLoadError = true
-	                        }
-	                    }, onLoadSuccess: {
-	                        viewModel.frameNotReady = false
-	                        viewModel.frameLoadError = false
-	                    })
-	                }
-	            } else {
-	                let _ = Log.warning("[FrameDisplay] Video file too small (no fragments yet) and not finalized, showing placeholder. Size=\(fileSize), isFinalized=\(videoInfo.isVideoFinalized)", category: .ui)
-	                // Video file not ready - show friendly message
-	                VStack(spacing: .spacingM) {
-	                    Image(systemName: "clock")
-	                        .font(.retraceDisplay)
-	                        .foregroundColor(.white.opacity(0.3))
-	                    Text("Frame not ready yet")
-	                        .font(.retraceBody)
-	                        .foregroundColor(.white.opacity(0.5))
-	                    Text("Relaunch timeline in a few seconds")
-	                        .font(.retraceCaption)
-	                        .foregroundColor(.white.opacity(0.3))
-	                }
-	            }
-	        }
-	    }
 
     // MARK: - Top Right Controls
 
