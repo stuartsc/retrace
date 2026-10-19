@@ -238,6 +238,7 @@ final class ProcessCPUMonitor: ObservableObject {
                     )
                 }
             }
+            guard !Task.isCancelled else { break }
             if let nextSnapshot {
                 snapshot = nextSnapshot
             }
@@ -282,7 +283,10 @@ private actor SamplerRequestGate {
     }
 }
 
-private actor ProcessCPULogSampler {
+actor ProcessCPULogSampler {
+    #if DEBUG
+    @TaskLocal static var didConsumeLogEntryForTesting: (@Sendable () -> Void)?
+    #endif
     private typealias ProcPidRusageFunction = @convention(c) (pid_t, Int32, UnsafeMutableRawPointer?) -> Int32
 
     private struct ProcessIdentity {
@@ -313,10 +317,7 @@ private actor ProcessCPULogSampler {
         let groupDisplayNames: [String: String]?
     }
 
-    private static let logRetentionDuration: TimeInterval = 7 * 24 * 60 * 60
-    private static let logCompactionInterval: TimeInterval = 12 * 60 * 60
     private static let displayNamePersistInterval: TimeInterval = 30
-    private static let logReadChunkSize = 64 * 1024
     private static let nanosecondUnit = "ns"
     private static let acceptedSampleGapMultiplier: TimeInterval = 4.0
     private static let minimumAcceptedSampleGapSeconds: TimeInterval = 4.0
@@ -344,7 +345,6 @@ private actor ProcessCPULogSampler {
     private var displayNameMapDirty = false
     private var lastDisplayNamePersistDate: Date?
     private var retraceGroupKey: String?
-    private var lastCompactionDate: Date?
     private let retraceBundleID: String
     private let retraceDisplayName: String
     private var bundleMetadataByCanonicalPath: [String: BundleMetadata] = [:]
@@ -363,15 +363,15 @@ private actor ProcessCPULogSampler {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init() {
+    init(logFileURL: URL? = nil, displayNamesFileURL: URL? = nil) {
         retraceBundleID = Bundle.main.bundleIdentifier ?? "io.retrace.app"
         retraceDisplayName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
             ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
             ?? "Retrace"
-        logFileURL = Self.makeLogFileURL()
-        displayNamesFileURL = Self.makeDisplayNamesFileURL()
-        Self.ensureLogFileExists(at: logFileURL)
-        groupDisplayNameByKey = Self.readGroupDisplayNameMap(from: displayNamesFileURL)
+        self.logFileURL = logFileURL ?? Self.makeLogFileURL()
+        self.displayNamesFileURL = displayNamesFileURL ?? Self.makeDisplayNamesFileURL()
+        Self.ensureLogFileExists(at: self.logFileURL)
+        groupDisplayNameByKey = Self.readGroupDisplayNameMap(from: self.displayNamesFileURL)
         let retraceGroup = "bundle:\(retraceBundleID)"
         if groupDisplayNameByKey[retraceGroup] != retraceDisplayName {
             groupDisplayNameByKey[retraceGroup] = retraceDisplayName
@@ -384,26 +384,34 @@ private actor ProcessCPULogSampler {
         expectedIntervalSeconds: TimeInterval,
         shouldBuildSnapshot: Bool
     ) -> ProcessCPUSnapshot? {
+        guard !Task.isCancelled else { return nil }
         let now = Date()
         let appendedEntry = captureSample(at: now, expectedIntervalSeconds: expectedIntervalSeconds)
         maybePersistDisplayNameMap(at: now)
-        maybeCompactLog(at: now)
+        guard !Task.isCancelled else { return nil }
 
         guard shouldBuildSnapshot else {
             windowStateNeedsReload = true
             return nil
         }
 
-        if loadedWindowDuration != windowDuration || windowStateNeedsReload {
-            rebuildWindowStateFromLog(windowDuration: windowDuration, now: now)
-        } else if let appendedEntry {
-            appendEntryToWindowState(appendedEntry)
-            pruneWindowState(cutoffTimestamp: now.addingTimeInterval(-windowDuration).timeIntervalSince1970)
-        } else {
-            pruneWindowState(cutoffTimestamp: now.addingTimeInterval(-windowDuration).timeIntervalSince1970)
+        do {
+            if loadedWindowDuration != windowDuration || windowStateNeedsReload {
+                try rebuildWindowStateFromLog(windowDuration: windowDuration, now: now)
+            } else if let appendedEntry {
+                appendEntryToWindowState(appendedEntry)
+                pruneWindowState(cutoffTimestamp: now.addingTimeInterval(-windowDuration).timeIntervalSince1970)
+            } else {
+                pruneWindowState(cutoffTimestamp: now.addingTimeInterval(-windowDuration).timeIntervalSince1970)
+            }
+        } catch is CancellationError {
+            return nil
+        } catch {
+            Log.warning("[SettingsView] Process log read deferred: \(error)", category: .ui)
+            return nil
         }
 
-        return snapshotFromWindowState()
+        return Task.isCancelled ? nil : snapshotFromWindowState()
     }
 
     func resetAndLoadSnapshot(
@@ -414,7 +422,8 @@ private actor ProcessCPULogSampler {
         let now = Date()
         _ = captureSample(at: now, expectedIntervalSeconds: expectedIntervalSeconds)
         maybePersistDisplayNameMap(at: now, force: true)
-        rebuildWindowStateFromLog(windowDuration: windowDuration, now: now)
+        do { try rebuildWindowStateFromLog(windowDuration: windowDuration, now: now) }
+        catch { return .empty }
         return snapshotFromWindowState()
     }
 
@@ -754,6 +763,11 @@ private actor ProcessCPULogSampler {
     }
 
     private func appendEntryToWindowState(_ entry: CPULogEntry) {
+        defer {
+            if windowEntries.count > ProcessCPULogReader.recordLimit {
+                pruneWindowState(cutoffTimestamp: -.infinity)
+            }
+        }
         applyLegacyDisplayNamesIfPresent(from: entry)
         windowEntries.append(entry)
         windowTotalDuration += entry.durationSeconds
@@ -803,7 +817,9 @@ private actor ProcessCPULogSampler {
         var peakPowerKeysToRebuild: Set<String> = []
         var peakMemoryKeysToRebuild: Set<String> = []
         var removeCount = 0
-        while removeCount < windowEntries.count, windowEntries[removeCount].timestamp < cutoffTimestamp {
+        while removeCount < windowEntries.count,
+              windowEntries[removeCount].timestamp < cutoffTimestamp ||
+                windowEntries.count - removeCount > ProcessCPULogReader.recordLimit {
             let entry = windowEntries[removeCount]
             windowTotalDuration -= entry.durationSeconds
             for (key, rawDelta) in entry.groupDeltaNanoseconds {
@@ -876,7 +892,8 @@ private actor ProcessCPULogSampler {
         }
     }
 
-    private func rebuildWindowStateFromLog(windowDuration: TimeInterval, now: Date) {
+    private func rebuildWindowStateFromLog(windowDuration: TimeInterval, now: Date) throws {
+        windowStateNeedsReload = true
         loadedWindowDuration = windowDuration
         windowEntries.removeAll(keepingCapacity: true)
         windowTotalDuration = 0
@@ -888,11 +905,12 @@ private actor ProcessCPULogSampler {
         windowPeakResidentBytesByGroup.removeAll(keepingCapacity: true)
 
         let cutoffTimestamp = now.addingTimeInterval(-windowDuration).timeIntervalSince1970
-        streamLogEntries { entry in
+        try streamLogEntries { entry in
             guard entry.timestamp >= cutoffTimestamp else { return }
             appendEntryToWindowState(entry)
         }
 
+        try Task.checkCancellation()
         windowStateNeedsReload = false
         maybePersistDisplayNameMap(at: now)
     }
@@ -1121,22 +1139,6 @@ private actor ProcessCPULogSampler {
         )
     }
 
-    private func maybeCompactLog(at now: Date) {
-        if let lastCompactionDate, now.timeIntervalSince(lastCompactionDate) < Self.logCompactionInterval {
-            return
-        }
-
-        let retentionCutoff = now.addingTimeInterval(-Self.logRetentionDuration).timeIntervalSince1970
-        var retainedEntries: [CPULogEntry] = []
-        streamLogEntries { entry in
-            if entry.timestamp >= retentionCutoff {
-                retainedEntries.append(entry)
-            }
-        }
-        rewriteLog(with: retainedEntries)
-        lastCompactionDate = now
-    }
-
     private func appendLogEntry(_ entry: CPULogEntry) {
         do {
             Self.ensureLogFileExists(at: logFileURL)
@@ -1151,41 +1153,23 @@ private actor ProcessCPULogSampler {
         }
     }
 
-    private func streamLogEntries(_ consume: (CPULogEntry) -> Void) {
-        guard FileManager.default.fileExists(atPath: logFileURL.path) else { return }
-
-        do {
-            let handle = try FileHandle(forReadingFrom: logFileURL)
-            defer { try? handle.close() }
-
-            var pending = Data()
-            while let chunk = try handle.read(upToCount: Self.logReadChunkSize), !chunk.isEmpty {
-                pending.append(chunk)
-
-                var scanIndex = pending.startIndex
-                while let newlineIndex = pending[scanIndex...].firstIndex(of: 0x0A) {
-                    let lineData = Data(pending[scanIndex..<newlineIndex])
-                    if !lineData.isEmpty, let entry = try? decoder.decode(CPULogEntry.self, from: lineData) {
-                        consume(entry)
-                    }
-                    scanIndex = pending.index(after: newlineIndex)
-                }
-
-                if scanIndex > pending.startIndex {
-                    pending.removeSubrange(..<scanIndex)
-                }
-            }
-
-            if !pending.isEmpty, let entry = try? decoder.decode(CPULogEntry.self, from: pending) {
+    private func streamLogEntries(_ consume: (CPULogEntry) -> Void) throws {
+        let log = try ProcessCPULogReader.readTail(at: logFileURL)
+        for line in log.lines {
+            try Task.checkCancellation()
+            if let entry = try? decoder.decode(CPULogEntry.self, from: line) {
                 consume(entry)
+                #if DEBUG
+                Self.didConsumeLogEntryForTesting?()
+                #endif
             }
-        } catch {
-            Log.warning("[SettingsView] Failed to stream CPU usage log file: \(error)", category: .ui)
         }
+        try Task.checkCancellation()
     }
 
     private func rewriteLog(with entries: [CPULogEntry]) {
         do {
+            try Task.checkCancellation()
             Self.ensureLogFileExists(at: logFileURL)
             var output = Data()
             for entry in entries {
@@ -1193,6 +1177,7 @@ private actor ProcessCPULogSampler {
                 output.append(encoded)
                 output.append(0x0A)
             }
+            try Task.checkCancellation()
             try output.write(to: logFileURL, options: .atomic)
         } catch {
             Log.warning("[SettingsView] Failed to compact CPU usage log file: \(error)", category: .ui)
@@ -1221,7 +1206,6 @@ private actor ProcessCPULogSampler {
         windowMemoryIntegralByteSecondsByGroup = [:]
         windowPeakResidentBytesByGroup = [:]
         retraceGroupKey = nil
-        lastCompactionDate = nil
     }
 
     private static func ensureLogFileExists(at fileURL: URL) {

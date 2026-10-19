@@ -95,8 +95,8 @@ public struct SystemMonitorView: View {
                 Text("An audio batch could not be saved. Check free space and storage access.")
                     .foregroundStyle(.orange)
             }
-            Text("Audio text preparation: " + viewModel.backgroundPreparationStatus)
-            Text("Audio is saved while transcription waits. Screen OCR keeps its current settings.")
+            Text("Text preparation: " + viewModel.backgroundPreparationStatus)
+            Text("Recording continues while audio transcription and screen OCR share the CPU budget. Fresh recordings take priority; older text catches up when capacity permits.")
                 .font(.caption).foregroundStyle(.secondary)
             Button(viewModel.processingOverride ? "Cancel Process now" : "Process now") {
                 Task { await viewModel.setProcessingOverride(!viewModel.processingOverride) }
@@ -482,10 +482,10 @@ public struct SystemMonitorView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Large OCR Backlog Detected")
+                            Text("Screen text waiting")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.96))
-                            Text("\(viewModel.queueDepth) frames queued. Go to System Settings to increase your OCR Priority.")
+                            Text("\(viewModel.queueDepth) frames queued. Fresh captures take priority; older work waits for spare capacity.")
                                 .font(.retraceCaption2)
                                 .foregroundColor(.white.opacity(0.82))
                         }
@@ -493,7 +493,7 @@ public struct SystemMonitorView: View {
                         Spacer()
 
                         HStack(spacing: 4) {
-                            Text("Go to System Settings")
+                            Text("Processing settings")
                             Image(systemName: "arrow.up.right")
                                 .font(.system(size: 9, weight: .semibold))
                         }
@@ -556,7 +556,7 @@ public struct SystemMonitorView: View {
                     .font(.retraceCallout)
                     .foregroundColor(.retraceSecondary)
 
-                Text("Process Resource Logs (last 12h)")
+                Text("Recent process samples")
                     .font(.retraceCalloutBold)
                     .foregroundColor(.retracePrimary)
 

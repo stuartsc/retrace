@@ -49,11 +49,11 @@ struct ProcessCPUSummaryCard: View {
                 .background(Color.white.opacity(0.06))
 
             VStack(alignment: .leading, spacing: 12) {
-            Text("Avg % uses total machine capacity (\(max(snapshot.logicalCoreCount, 1)) cores). Energy is cumulative per-process estimate.")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.retraceSecondary.opacity(0.9))
-
             if snapshot.hasEnoughData {
+                Text("Up to 256 recent samples from a bounded log read. Avg % uses total machine capacity (\(max(snapshot.logicalCoreCount, 1)) cores). Energy is an estimate for these samples.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.retraceSecondary.opacity(0.9))
+
                 let totalRows = snapshot.topProcesses.count
                 let visibleRows = min(max(Self.cpuRowsPageSize, cpuProcessRowsVisible), totalRows)
                 let hasMoreRows = visibleRows < totalRows

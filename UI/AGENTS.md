@@ -15,6 +15,18 @@ The October 19 recovery candidate shares admission with current/historical OCR.
 substituting a nearby screen. `TranscriptWindowController.showExactSearchResult`
 pins that row independently of timeline refresh. `FuseIntelSnapshotCache` keeps
 an origin-bound last-good brief; Recent work uses only a ten-minute window.
+System Monitor describes shared audio/OCR admission and avoids recommending
+higher OCR priority when a backlog is deferred. Process CPU capacity labels wait
+for a real sampler baseline instead of presenting the empty snapshot's one-core
+placeholder as measured hardware.
+`ProcessCPULogReader` bounds diagnostic reads to a 4 MiB tail, 128 KiB records
+and 256 samples, rejects symlinks/nonregular files and honours cancellation.
+`ProcessCPULogReaderTests` exercises real sparse 2 GiB files, tail ordering,
+oversized/unfinished records, cancellation after opening, and a partial native
+sampler aggregate followed by a complete retry. `ProcessCPUMonitor` caps its
+in-memory window to the same record limit and performs no automatic log rewrite.
+Sampler tests inject private paths; debug-only task-local checkpoints never
+replace the real reader, process sampler or decoder.
 
 ```
 UI/
@@ -56,7 +68,8 @@ UI/
 │   ├── SearchEvidenceThumbnailLoader.swift # Bounded exact-source search previews and cancellable row presentation
 │   ├── SessionTimeline.swift            # App session visualization
 │   ├── DeeplinkHandler.swift            # URL scheme routing
-│   ├── ProcessCPUMonitor.swift          # Shared process CPU+memory sampler + 24h aggregation service
+│   ├── ProcessCPUMonitor.swift          # Optional process CPU/memory diagnostics with a bounded recent window
+│   ├── ProcessCPULogReader.swift        # Bounded cancellable diagnostic tail reader; never a recording reader
 │   ├── ProcessCPUSummaryCard.swift      # System Monitor CPU table/card UI
 │   └── ProcessMemorySummaryCard.swift   # System Monitor memory table/card UI
 ├── ViewModels/
@@ -69,6 +82,7 @@ UI/
 │   ├── FuseIntelSnapshotCache.swift      # Bounded origin-bound last-good brief, off-main disk I/O
 │   └── SettingsViewModel.swift
 └── Tests/
+    ├── ProcessCPULogReaderTests.swift   # Real-file size/record bounds, cancellation and no partial-log rewrite prerequisite
     ├── DashboardSavedRecordingsTests.swift # Pending Live recordings and owned refresh/playback lifetime
     ├── ApplicationTerminationWorkflowTests.swift # Async Quit/startup ordering, retry and real SQLite commit-before-close regressions
     ├── TimelineSessionMetricsTests.swift # Real SQLite retry, partial failure, hide/reopen, reconfiguration and timeout acknowledgements

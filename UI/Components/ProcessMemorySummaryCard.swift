@@ -55,7 +55,7 @@ struct ProcessMemorySummaryCard: View {
                 .background(Color.white.opacity(0.06))
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Avg and Peak are sampled across the visible 12h window. Now is the latest sample.")
+                Text("Avg and Peak use the bounded recent samples. Now is the latest sample.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.retraceSecondary.opacity(0.9))
 
