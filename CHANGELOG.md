@@ -6,12 +6,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-19 — Speech-priority preparation (source candidate)
+### 2026-10-19 — Speech-priority local trial 2610.19.3
 
 - Save low-energy classification alongside the pending audio row so likely speech gets the bounded fresh lane first. Quiet recordings remain eligible for historical and manual processing, with their original AAC preserved.
 - Limit a fresh first pass to one native inference. Uncertain text survives in a durable repair row; enhancement waits for a separate ambient permit, resumes across restart and ranks against the original candidate. Empty or worse repair output cannot erase that text or repeat the raw attempt.
 - Fence completion against a changed retained candidate and keep cancellation transactional. Content-free daily counters distinguish saved low-energy/unclassified recordings, queued repair and committed repair completion.
-- All 68 focused checks and a clean debug suite of **1,261 tests, nine intentional skips and zero failures** pass. The clean run uses the pinned native AAC fixture for audio recovery. Independent clean optimized compilation and installation remain separate in the [recovery ledger](docs/recovery-20261019.md); this source follow-up is not yet installed.
+- All 68 focused checks, a clean debug suite of **1,261 tests, nine intentional skips and zero failures**, and an independent clean optimized build pass. Signed build 2610.19.3/source `ae20860` reopened at 13:27:57 Brisbane; V23 and checked preferences are unchanged. New audio scheduling hints and an exact screenshot render are verified. The saved-audio restart gap was 159.917 seconds. A two-minute unmatched observation averaged 23.57% of one core with 450.7 MiB peak RSS; audio/OCR were still waiting. Spoken accuracy, latency and matched performance remain open. The longer screenshot gap began before installation and remains under investigation in the [recovery ledger](docs/recovery-20261019.md).
 
 ### 2026-10-19 — Recovery follow-up local trial 2610.19.2
 
