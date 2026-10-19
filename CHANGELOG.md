@@ -6,12 +6,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-19 — Capture display and observer repair candidate
+### 2026-10-19 — Capture display and observer local trial 2610.19.4
 
 - Use the same checked visible-window geometry for display routing, capture attribution and document revalidation. Missing AX permission no longer forces a permitted secondary window onto the main display; invalid and transparent helper windows cannot choose its screen.
 - Initialize display monitoring with the capture source actually opened, subscribe before reconciliation, and revoke delayed callbacks on Stop. Native observer ownership keeps callback context alive through removal and prevents a delayed install from surviving shutdown.
 - Report fixed capture rejection reasons with bounded counters and a coalesced asynchronous log writer. Preserve exact identity, exclusions, inventory and notification checks; cancellation during metadata now stops before reading pixels.
-- All 57 focused tests and a clean debug suite of **1,274 tests, nine intentional skips and zero failures** pass. This is an uninstalled candidate; the separate optimized build and installed checks remain pending in the [recovery ledger](docs/recovery-20261019.md).
+- All 57 focused tests, a clean debug suite of **1,274 tests, nine intentional skips and zero failures**, and a separate clean optimized build pass. Signed build 2610.19.4/source `8f671b9` reopened at 14:32 Brisbane. V23 and nine checked preferences are unchanged; new audio and screenshots are saved. A transient audio-sync handle interrupted the installer before swap; the verified resume retained the original writer checks. Saved-audio/screenshot gaps were 305.409/319.663 seconds. Sustained capture and performance acceptance remain open in the [recovery ledger](docs/recovery-20261019.md).
 
 ### 2026-10-19 — Speech-priority local trial 2610.19.3
 
