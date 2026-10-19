@@ -5,6 +5,13 @@ import Foundation
 
 // MARK: - Audio Models
 
+/// Versioned queue metadata in the existing audio quality_flags column. These
+/// flags never authorize recording deletion or claim a successful transcript.
+public enum AudioPreparationMetadata {
+    public static let lowEnergyPending = "pending_low_energy_v1"
+    public static let firstPassRepairPending = "first_pass_repair_pending_v1"
+}
+
 /// Captured audio data
 public struct CapturedAudio: Sendable {
     /// Unique identifier for this audio sample

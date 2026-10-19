@@ -132,9 +132,9 @@ public actor AudioBackfillManager {
             Log.error("[AudioBackfill] Failed to decode \(batch.audioPath): \(error)", category: .processing)
             do {
                 guard try await transcriptionQueries.updatePendingRawBatchOutcome(batch,
-                text: "",
+                text: batch.retainedFirstPass?.text ?? "",
                 transcriptStatus: AudioTranscriptStatus.decodeFailed.rawValue,
-                detectedLanguage: nil,
+                detectedLanguage: batch.retainedFirstPass?.language,
                 audioVariant: AudioEnhancementVariant.raw.rawValue,
                 qualityFlags: "decode_error",
                     cancellation: BackgroundProcessingContext.permit?.cancellation
@@ -153,7 +153,8 @@ public actor AudioBackfillManager {
                 channels: 1,
                 transcriptionService: transcriptionService,
                 wordLevel: true,
-                initialPrompt: nil
+                initialPrompt: nil,
+                retainedFirstPass: batch.retainedFirstPass
             )
             try BackgroundProcessingContext.checkCancellation()
         } catch is CancellationError {

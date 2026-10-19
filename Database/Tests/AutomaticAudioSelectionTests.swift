@@ -18,6 +18,31 @@ final class AutomaticAudioSelectionTests: XCTestCase {
 
     override func tearDown() async throws { try await database.close() }
 
+    func testFreshLaneDefersLowEnergyHintWithoutCompletingOrLosingQuietAudio() async throws {
+        let quiet = try await seed(at: now.addingTimeInterval(-90))
+        try exec("UPDATE audio_captures SET quality_flags = 'pending_low_energy_v1' WHERE id = \(quiet)")
+        let speech = try await seed(at: now.addingTimeInterval(-30))
+        let selected = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertEqual(selected?.id, speech, "Quiet scheduling hints must not consume the live speech turn")
+        let quietTime = try await queries.getOldestUntranscribedBatch()
+        XCTAssertEqual(quietTime?.id, quiet, "Quiet audio remains eligible for historical processing")
+        let manual = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertEqual(manual.map(\.id), [quiet, speech])
+        XCTAssertEqual(try scalar("SELECT COUNT(*) FROM audio_captures WHERE transcript_status='pending'"), 2)
+        try await queries.deleteTranscription(id: speech)
+        let onlyQuiet = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertNil(onlyQuiet)
+        let retained = try await queries.getRecentPendingBatch(now: now)
+        XCTAssertEqual(retained?.id, quiet)
+    }
+
+    func testUnknownSchedulingMetadataStillGetsAFirstPass() async throws {
+        let unknown = try await seed(at: now.addingTimeInterval(-30))
+        try exec("UPDATE audio_captures SET quality_flags = 'unrecognized_future_hint' WHERE id = \(unknown)")
+        let selected = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertEqual(selected?.id, unknown, "Only the exact supported hint may defer fresh processing")
+    }
+
     func testFreshLaneIsChronologicalBoundedAndDoesNotClaimRepairs() async throws {
         _ = try await seed(at: now.addingTimeInterval(-121))
         let first = try await seed(at: now.addingTimeInterval(-90))

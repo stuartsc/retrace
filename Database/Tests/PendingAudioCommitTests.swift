@@ -73,6 +73,69 @@ final class PendingAudioCommitTests: XCTestCase {
         XCTAssertEqual(remaining, 1)
     }
 
+    func testRetainedFirstPassRejectsStaleRawAndChangedRepairCompletions() async throws {
+        let raw = try await makePending()
+        let queued = try await queries.updatePendingRawBatchOutcome(raw, text: "Keep invoice number four seven.",
+            transcriptStatus: "needs_repair", detectedLanguage: "nn", audioVariant: "raw",
+            qualityFlags: AudioPreparationMetadata.firstPassRepairPending)
+        XCTAssertTrue(queued)
+        let selected = try await queries.getOldestUntranscribedBatch()
+        let repair = try XCTUnwrap(selected)
+        XCTAssertTrue(repair.needsFirstPassRepair)
+        let staleRaw = try await queries.completePendingRawBatch(raw, with: [record(raw)])
+        XCTAssertFalse(staleRaw, "An older raw snapshot cannot consume a newly retained first pass")
+        guard !staleRaw else { return }
+
+        try await queries.updateBatchOutcome(id: raw.id, text: "Corrected invoice number four eight.",
+            transcriptStatus: "needs_repair", detectedLanguage: "en", audioVariant: "raw",
+            qualityFlags: AudioPreparationMetadata.firstPassRepairPending)
+        let staleRepair = try await queries.completePendingRawBatch(repair, with: [record(repair)])
+        XCTAssertFalse(staleRepair, "Repair must still match the candidate it ranked")
+        let rows = try await queries.getUntranscribedBatches(limit: 1)
+        XCTAssertEqual(rows.first?.retainedFirstPass?.text, "Corrected invoice number four eight.")
+        XCTAssertEqual(rows.first?.retainedFirstPass?.language, "en")
+    }
+
+    func testPreparationMetricsFollowCommittedOutcomesWithoutRecordingContent() async throws {
+        _ = try await queries.insertRawBatch(startTime: Date(timeIntervalSince1970: 1_000),
+            endTime: Date(timeIntervalSince1970: 1_010), source: .microphone,
+            audioPath: "audio/batch_private.m4a", audioSize: 100, deferForLowEnergy: true)
+        let rawRows = try await queries.getUntranscribedBatches(limit: 1)
+        let raw = try XCTUnwrap(rawRows.first)
+        _ = try await queries.updatePendingRawBatchOutcome(raw, text: "Private provisional text.",
+            transcriptStatus: "needs_repair", detectedLanguage: "nn", audioVariant: "raw",
+            qualityFlags: AudioPreparationMetadata.firstPassRepairPending)
+        let selected = try await queries.getOldestUntranscribedBatch()
+        let repair = try XCTUnwrap(selected)
+        let token = BackgroundProcessingCancellation()
+        await queries.setPendingTransactionWillCommitForTesting { token.cancel() }
+        do {
+            _ = try await queries.completePendingRawBatch(repair, with: [record(repair)], cancellation: token)
+            XCTFail("Cancelled outcome must not be counted as completed")
+        } catch is CancellationError {}
+        await queries.setPendingTransactionWillCommitForTesting(nil)
+        XCTAssertEqual(try preparationMetrics(), [
+            "{\"outcome\":\"saved_low_energy\",\"source\":\"microphone\"}",
+            "{\"outcome\":\"repair_queued\",\"source\":\"microphone\"}"
+        ])
+        _ = try await queries.completePendingRawBatch(repair, with: [record(repair)])
+        XCTAssertEqual(try preparationMetrics().last,
+            "{\"outcome\":\"repair_completed\",\"source\":\"microphone\"}")
+        XCTAssertEqual(try preparationMetrics().count, 3)
+    }
+
+    private func preparationMetrics() throws -> [String] {
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection,
+            "SELECT metadata FROM daily_metrics WHERE metricType = 'audio_preparation' ORDER BY id", -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        var result: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            result.append(String(cString: sqlite3_column_text(statement, 0)))
+        }
+        return result
+    }
+
     func testPendingIdentityRetainsSQLiteMillisecondsWithoutDateRoundTrip() async throws {
         let pending = try await makePending()
         // NSDate's internal reference epoch can lose a fraction when reconstructing this date.

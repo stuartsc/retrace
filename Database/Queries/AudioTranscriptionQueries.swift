@@ -76,6 +76,9 @@ public actor AudioTranscriptionQueries {
                     audioVariant: item.audioVariant, qualityFlags: item.qualityFlags)
             }
             try deleteTranscription(id: batch.id)
+            if batch.needsFirstPassRepair {
+                recordPreparationMetric(outcome: "repair_completed", source: batch.source)
+            }
         }
     }
 
@@ -88,6 +91,24 @@ public actor AudioTranscriptionQueries {
         try mutatePendingRawBatch(batch, cancellation: cancellation) {
             try updateBatchOutcome(id: batch.id, text: text, transcriptStatus: transcriptStatus,
                 detectedLanguage: detectedLanguage, audioVariant: audioVariant, qualityFlags: qualityFlags)
+            if transcriptStatus == "needs_repair",
+               qualityFlags?.split(separator: ",").contains(Substring(AudioPreparationMetadata.firstPassRepairPending)) == true {
+                recordPreparationMetric(outcome: "repair_queued", source: batch.source)
+            } else if batch.needsFirstPassRepair {
+                recordPreparationMetric(outcome: transcriptStatus == "decode_failed"
+                    ? "repair_decode_failed" : "repair_completed", source: batch.source)
+            }
+        }
+    }
+
+    private func recordPreparationMetric(outcome: String, source: AudioSource) {
+        // Categorical accounting must not prevent durable recording or expose
+        // captured text, timestamps, names or media paths.
+        do {
+            try DailyMetricsQueries.recordEvent(db: db, metricType: .audioPreparation,
+                metadata: "{\"outcome\":\"\(outcome)\",\"source\":\"\(source.rawValue)\"}")
+        } catch {
+            Log.warning("[AudioTranscriptionQueries] Preparation metric could not be recorded", category: .database)
         }
     }
 
@@ -125,7 +146,11 @@ public actor AudioTranscriptionQueries {
         let sql = """
             SELECT 1 FROM audio_captures WHERE id = ? AND audio_path = ? AND source = ?
             AND start_time = ? AND end_time = ? AND audio_size = ?
-            AND transcript_status IN ('pending', 'needs_repair') LIMIT 1;
+            AND transcript_status IN ('pending', 'needs_repair')
+            AND (transcript_status = 'needs_repair' AND
+                 instr(',' || COALESCE(quality_flags, '') || ',', ',\(AudioPreparationMetadata.firstPassRepairPending),') > 0) = ?
+            \(batch.retainedFirstPass == nil ? "" : "AND text = ? AND detected_language IS ?")
+            LIMIT 1;
             """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -138,6 +163,15 @@ public actor AudioTranscriptionQueries {
         sqlite3_bind_int64(statement, 4, batch.startTimeMilliseconds)
         sqlite3_bind_int64(statement, 5, batch.endTimeMilliseconds)
         sqlite3_bind_int64(statement, 6, batch.audioSize)
+        sqlite3_bind_int(statement, 7, batch.needsFirstPassRepair ? 1 : 0)
+        if let retained = batch.retainedFirstPass {
+            sqlite3_bind_text(statement, 8, retained.text, -1, SQLITE_TRANSIENT)
+            if let language = retained.language {
+                sqlite3_bind_text(statement, 9, language, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(statement, 9)
+            }
+        }
         let result = sqlite3_step(statement)
         guard result == SQLITE_ROW || result == SQLITE_DONE else {
             throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
@@ -392,20 +426,27 @@ public actor AudioTranscriptionQueries {
     }
 
     /// Insert a raw audio batch record (before transcription)
-    /// Saves the audio file path so raw audio is never lost even if transcription fails
+    /// Saves the audio file path so raw audio is never lost even if transcription fails.
+    /// Low energy is a versioned scheduling hint, never a completed transcript outcome.
     @discardableResult
     public func insertRawBatch(
         startTime: Date,
         endTime: Date,
         source: AudioSource,
         audioPath: String,
-        audioSize: Int64
+        audioSize: Int64,
+        deferForLowEnergy: Bool = false
     ) throws -> Int64 {
+        guard let mutex = sqlite3_db_mutex(db) else {
+            throw DatabaseError.queryExecutionFailed("Raw audio requires a serialized SQLite connection")
+        }
+        sqlite3_mutex_enter(mutex)
+        defer { sqlite3_mutex_leave(mutex) }
         let sql = """
             INSERT INTO audio_captures (
                 session_id, text, start_time, end_time, source, confidence, audio_path,
-                audio_size, transcription_pass, pipeline_version, transcript_status, audio_variant
-            ) VALUES (NULL, '', ?, ?, ?, NULL, ?, ?, 1, ?, 'pending', 'raw');
+                audio_size, transcription_pass, pipeline_version, transcript_status, audio_variant, quality_flags
+            ) VALUES (NULL, '', ?, ?, ?, NULL, ?, ?, 1, ?, 'pending', 'raw', ?);
             """
 
         var stmt: OpaquePointer?
@@ -420,12 +461,19 @@ public actor AudioTranscriptionQueries {
         sqlite3_bind_text(stmt, 4, audioPath, -1, SQLITE_TRANSIENT)
         sqlite3_bind_int64(stmt, 5, audioSize)
         sqlite3_bind_int(stmt, 6, Int32(CURRENT_PIPELINE_VERSION))
+        if deferForLowEnergy {
+            sqlite3_bind_text(stmt, 7, AudioPreparationMetadata.lowEnergyPending, -1, SQLITE_TRANSIENT)
+        } else {
+            sqlite3_bind_null(stmt, 7)
+        }
 
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
         }
 
-        return sqlite3_last_insert_rowid(db)
+        let rawID = sqlite3_last_insert_rowid(db)
+        recordPreparationMetric(outcome: deferForLowEnergy ? "saved_low_energy" : "saved_unclassified", source: source)
+        return rawID
     }
 
     // MARK: - Query Transcriptions
@@ -779,8 +827,9 @@ public actor AudioTranscriptionQueries {
 
     // MARK: - Backfill Queries
 
-    /// A bounded chronological lane for newly captured audio. Late work remains in
-    /// the durable historical queue; repair passes cannot displace first-pass text.
+    /// A bounded chronological lane for newly captured speech-like or unclassified
+    /// audio. Low-energy hints and late work remain pending in the historical queue;
+    /// neither classification nor lane selection deletes or completes a recording.
     public func getFreshPendingBatch(now: Date = Date()) throws -> UntranscribedBatch? {
         let lower = now.addingTimeInterval(-120).timeIntervalSince1970 * 1_000
         let upper = now.timeIntervalSince1970 * 1_000
@@ -788,7 +837,7 @@ public actor AudioTranscriptionQueries {
             throw DatabaseError.queryExecutionFailed("Fresh audio selection requires a representable clock")
         }
         return try selectAutomaticBatch(status: "pending", newestFirst: false,
-                                        timeRange: (Int64(lower), Int64(upper)))
+                                        timeRange: (Int64(lower), Int64(upper)), excludeLowEnergy: true)
     }
 
     /// New first-pass recordings get a recent lane without changing manual backfill order.
@@ -824,14 +873,19 @@ public actor AudioTranscriptionQueries {
     }
 
     private func selectAutomaticBatch(status: String, newestFirst: Bool,
-                                     timeRange: (lower: Int64, upper: Int64)? = nil) throws -> UntranscribedBatch? {
+                                     timeRange: (lower: Int64, upper: Int64)? = nil,
+                                     excludeLowEnergy: Bool = false) throws -> UntranscribedBatch? {
         try Task.checkCancellation()
         let order = newestFirst ? "DESC" : "ASC"
         let sql = """
-            SELECT id, start_time, end_time, source, audio_path, audio_size
+            SELECT id, start_time, end_time, source, audio_path, audio_size,
+                   transcript_status = 'needs_repair' AND
+                   instr(',' || COALESCE(quality_flags, '') || ',', ',\(AudioPreparationMetadata.firstPassRepairPending),') > 0,
+                   text, detected_language
             FROM audio_captures INDEXED BY idx_audio_captures_transcript_status
             WHERE transcript_status = ?
             \(timeRange == nil ? "" : "AND start_time BETWEEN ? AND ?")
+            \(excludeLowEnergy ? "AND COALESCE(quality_flags, '') != ?" : "")
             AND audio_path IS NOT NULL
             AND audio_path LIKE '%batch_%'
             ORDER BY start_time \(order), id \(order)
@@ -847,6 +901,9 @@ public actor AudioTranscriptionQueries {
             sqlite3_bind_int64(statement, 2, timeRange.lower)
             sqlite3_bind_int64(statement, 3, timeRange.upper)
         }
+        if excludeLowEnergy {
+            sqlite3_bind_text(statement, timeRange == nil ? 2 : 4, AudioPreparationMetadata.lowEnergyPending, -1, SQLITE_TRANSIENT)
+        }
         let result = sqlite3_step(statement)
         try Task.checkCancellation()
         if result == SQLITE_DONE { return nil }
@@ -861,14 +918,25 @@ public actor AudioTranscriptionQueries {
             source: AudioSource(rawValue: String(cString: sqlite3_column_text(statement, 3))) ?? .microphone,
             audioPath: String(cString: sqlite3_column_text(statement, 4)),
             audioSize: sqlite3_column_int64(statement, 5),
-            startTimeMilliseconds: start, endTimeMilliseconds: end)
+            startTimeMilliseconds: start, endTimeMilliseconds: end,
+            retainedFirstPass: Self.retainedFirstPass(from: statement))
+    }
+
+    private static func retainedFirstPass(from statement: OpaquePointer?) -> DetailedTranscriptionResult? {
+        guard sqlite3_column_int(statement, 6) != 0 else { return nil }
+        return DetailedTranscriptionResult(
+            text: sqlite3_column_text(statement, 7).map { String(cString: $0) } ?? "",
+            words: [], language: sqlite3_column_text(statement, 8).map { String(cString: $0) }, duration: nil)
     }
 
     /// Get raw batch records that haven't been transcribed yet
     /// These have text="" and a batch audio file path
     public func getUntranscribedBatches(limit: Int = 50) throws -> [UntranscribedBatch] {
         let sql = """
-            SELECT id, start_time, end_time, source, audio_path, audio_size
+            SELECT id, start_time, end_time, source, audio_path, audio_size,
+                   transcript_status = 'needs_repair' AND
+                   instr(',' || COALESCE(quality_flags, '') || ',', ',\(AudioPreparationMetadata.firstPassRepairPending),') > 0,
+                   text, detected_language
             FROM audio_captures
             WHERE audio_path IS NOT NULL
             AND audio_path LIKE '%batch_%'
@@ -903,7 +971,8 @@ public actor AudioTranscriptionQueries {
                 audioPath: audioPath,
                 audioSize: audioSize,
                 startTimeMilliseconds: sqlite3_column_int64(stmt, 1),
-                endTimeMilliseconds: sqlite3_column_int64(stmt, 2)
+                endTimeMilliseconds: sqlite3_column_int64(stmt, 2),
+                retainedFirstPass: Self.retainedFirstPass(from: stmt)
             ))
         }
 
@@ -1533,6 +1602,10 @@ public struct UntranscribedBatch: Sendable {
     public let audioSize: Int64
     public let startTimeMilliseconds: Int64
     public let endTimeMilliseconds: Int64
+    /// The original raw candidate survives process restart and is ranked alongside
+    /// later enhancement results. Empty text is still a completed raw attempt.
+    public let retainedFirstPass: DetailedTranscriptionResult?
+    public var needsFirstPassRepair: Bool { retainedFirstPass != nil }
 
     public init(
         id: Int64,
@@ -1542,7 +1615,8 @@ public struct UntranscribedBatch: Sendable {
         audioPath: String,
         audioSize: Int64,
         startTimeMilliseconds: Int64? = nil,
-        endTimeMilliseconds: Int64? = nil
+        endTimeMilliseconds: Int64? = nil,
+        retainedFirstPass: DetailedTranscriptionResult? = nil
     ) {
         self.id = id
         self.startTime = startTime
@@ -1552,5 +1626,6 @@ public struct UntranscribedBatch: Sendable {
         self.audioSize = audioSize
         self.startTimeMilliseconds = startTimeMilliseconds ?? Schema.dateToTimestamp(startTime)
         self.endTimeMilliseconds = endTimeMilliseconds ?? Schema.dateToTimestamp(endTime)
+        self.retainedFirstPass = retainedFirstPass
     }
 }

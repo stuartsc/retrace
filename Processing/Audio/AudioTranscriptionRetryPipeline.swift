@@ -18,6 +18,9 @@ public struct AudioTranscriptionDecision: Sendable {
 public enum AudioTranscriptionProfile: Sendable, Equatable {
     /// Fast, user-facing pass. Raw audio remains on disk for exhaustive repair.
     case liveFirstPass
+    /// The previous bounded enhancement sequence, admitted independently after
+    /// an uncertain first pass. Also preserves legacy immediate fallback behavior.
+    case deferredFirstPassRepair
     /// Offline/backfill/refinement pass. Spend more compute to recover quiet or multilingual speech.
     case exhaustiveRepair
 }
@@ -30,7 +33,8 @@ public enum AudioTranscriptionRetryPipeline {
         transcriptionService: any TranscriptionProtocol,
         wordLevel: Bool,
         initialPrompt: String?,
-        profile: AudioTranscriptionProfile = .exhaustiveRepair
+        profile: AudioTranscriptionProfile = .exhaustiveRepair,
+        retainedFirstPass: DetailedTranscriptionResult? = nil
     ) async throws -> AudioTranscriptionDecision {
         try BackgroundProcessingContext.checkCancellation()
         let activity = AudioSpeechActivityPolicy.evaluate(
@@ -39,24 +43,31 @@ public enum AudioTranscriptionRetryPipeline {
             channels: channels
         )
 
-        var bestDecision: AudioTranscriptionDecision?
+        let retained = profile == .liveFirstPass ? nil : retainedFirstPass
+        var bestDecision = retained.map { transcription in
+            let assessment = AudioTranscriptQualityPolicy.assess(
+                text: transcription.text, language: transcription.language, activity: activity)
+            return AudioTranscriptionDecision(transcription: transcription, status: assessment.status,
+                audioVariant: .raw, languageHint: .english, qualityFlags: assessment.flags, attempts: 0)
+        }
         var attempts = 0
-        let attemptPlan = attemptPlan(for: profile)
-        let requestedWordLevel = profile == .liveFirstPass ? false : wordLevel
+        let attemptPlan = attemptPlan(for: profile, hasRetainedFirstPass: retained != nil)
+        let requestedWordLevel = profile != .exhaustiveRepair ? false : wordLevel
         // Context helps offline repair, but it can make quiet live batches echo the
         // previous transcript and feed that hallucination into every later batch.
-        let effectiveInitialPrompt = profile == .liveFirstPass ? nil : initialPrompt
+        let effectiveInitialPrompt = profile != .exhaustiveRepair ? nil : initialPrompt
 
         for variant in attemptPlan.variants {
             try BackgroundProcessingContext.checkCancellation()
             let shouldKeepSearching = bestDecision.map {
                 shouldContinueForCompleteness(activity: activity, decision: $0, profile: profile)
             } ?? true
-            let hints = languageHints(
-                for: bestDecision,
-                continueAfterTranscribed: shouldKeepSearching,
-                profile: profile
-            )
+            // Explicit exhaustive repair still begins with its original auto
+            // attempt, even when a saved candidate seeds ranking. Do not expand
+            // the raw variant into four language calls merely because it exists.
+            let hints: [AudioTranscriptionLanguageHint] = profile == .exhaustiveRepair && variant == .raw
+                ? [.auto]
+                : languageHints(for: bestDecision, continueAfterTranscribed: shouldKeepSearching, profile: profile)
             guard !hints.isEmpty else { break }
 
             let candidateAudio = AudioEnhancer.enhance(
@@ -93,52 +104,24 @@ public enum AudioTranscriptionRetryPipeline {
                 if isBetter(decision, than: bestDecision) {
                     bestDecision = decision
                 }
-                if profile == .liveFirstPass,
+                if profile != .exhaustiveRepair,
                    activity.isProbablySilence,
                    assessment.status == .probableSilence,
-                   transcription.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return AudioTranscriptionDecision(
-                        transcription: transcription,
-                        status: assessment.status,
-                        audioVariant: variant,
-                        languageHint: languageHint,
-                        qualityFlags: assessment.flags,
-                        attempts: attempts
-                    )
+                   bestDecision?.shouldStoreText != true {
+                    return selected(bestDecision ?? decision, attempts: attempts)
                 }
-                if profile == .liveFirstPass, isAcceptableLiveCandidate(decision) {
-                    return AudioTranscriptionDecision(
-                        transcription: transcription,
-                        status: assessment.status,
-                        audioVariant: variant,
-                        languageHint: languageHint,
-                        qualityFlags: assessment.flags,
-                        attempts: attempts
-                    )
+                if profile != .exhaustiveRepair, isAcceptableLiveCandidate(decision) {
+                    return selected(bestDecision ?? decision, attempts: attempts)
                 }
                 if assessment.status == .transcribed,
                    !shouldContinueForCompleteness(activity: activity, decision: decision, profile: profile) {
-                    return AudioTranscriptionDecision(
-                        transcription: transcription,
-                        status: assessment.status,
-                        audioVariant: variant,
-                        languageHint: languageHint,
-                        qualityFlags: assessment.flags,
-                        attempts: attempts
-                    )
+                    return selected(bestDecision ?? decision, attempts: attempts)
                 }
             }
         }
 
         if let bestDecision {
-            return AudioTranscriptionDecision(
-                transcription: bestDecision.transcription,
-                status: bestDecision.status,
-                audioVariant: bestDecision.audioVariant,
-                languageHint: bestDecision.languageHint,
-                qualityFlags: bestDecision.qualityFlags,
-                attempts: attempts
-            )
+            return selected(bestDecision, attempts: attempts)
         }
 
         return AudioTranscriptionDecision(
@@ -155,10 +138,22 @@ public enum AudioTranscriptionRetryPipeline {
         let variants: [AudioEnhancementVariant]
     }
 
-    private static func attemptPlan(for profile: AudioTranscriptionProfile) -> AttemptPlan {
+    private static func selected(_ decision: AudioTranscriptionDecision, attempts: Int) -> AudioTranscriptionDecision {
+        AudioTranscriptionDecision(transcription: decision.transcription, status: decision.status,
+            audioVariant: decision.audioVariant, languageHint: decision.languageHint,
+            qualityFlags: decision.qualityFlags, attempts: attempts)
+    }
+
+    private static func attemptPlan(for profile: AudioTranscriptionProfile, hasRetainedFirstPass: Bool) -> AttemptPlan {
         switch profile {
         case .liveFirstPass:
-            return AttemptPlan(variants: [.raw, .normalized, .highPassBoosted])
+            // One admitted first pass must not expand into repeated native
+            // inference. Retain its text/status and original audio; enhancement
+            // belongs to a separately admitted repair lane.
+            return AttemptPlan(variants: [.raw])
+        case .deferredFirstPassRepair:
+            return AttemptPlan(variants: hasRetainedFirstPass
+                ? [.normalized, .highPassBoosted] : [.raw, .normalized, .highPassBoosted])
         case .exhaustiveRepair:
             return AttemptPlan(variants: AudioEnhancementVariant.retryOrder)
         }
@@ -169,7 +164,7 @@ public enum AudioTranscriptionRetryPipeline {
         continueAfterTranscribed: Bool,
         profile: AudioTranscriptionProfile
     ) -> [AudioTranscriptionLanguageHint] {
-        if profile == .liveFirstPass {
+        if profile != .exhaustiveRepair {
             return bestDecision == nil || continueAfterTranscribed ? [.english] : []
         }
         guard let bestDecision else {
@@ -190,12 +185,32 @@ public enum AudioTranscriptionRetryPipeline {
     ) -> Bool {
         guard let existing else { return true }
 
+        // An empty result cannot erase earlier recoverable text, even when its
+        // categorical status happens to score higher (for example empty review
+        // versus a nonempty caption). Retain that text with its review status.
+        if candidate.shouldStoreText != existing.shouldStoreText { return candidate.shouldStoreText }
+
+        let candidateQuality = qualityRank(candidate)
+        let existingQuality = qualityRank(existing)
+        if candidateQuality != existingQuality { return candidateQuality > existingQuality }
+
         let candidateScore = score(candidate)
         let existingScore = score(existing)
         if candidateScore != existingScore {
             return candidateScore > existingScore
         }
         return candidate.transcription.text.count > existing.transcription.text.count
+    }
+
+    private static func qualityRank(_ decision: AudioTranscriptionDecision) -> Int {
+        // Readable speech must beat a long caption or other artifact before
+        // completeness/length scoring is considered.
+        if isAcceptableLiveCandidate(decision) { return 3 }
+        switch decision.status {
+        case .transcribed, .needsReview, .languageUncertain: return 2
+        case .probableJunk: return 1
+        default: return 0
+        }
     }
 
     private static func score(_ decision: AudioTranscriptionDecision) -> Int {
@@ -225,7 +240,7 @@ public enum AudioTranscriptionRetryPipeline {
         decision: AudioTranscriptionDecision,
         profile: AudioTranscriptionProfile
     ) -> Bool {
-        if profile == .liveFirstPass {
+        if profile != .exhaustiveRepair {
             return !isAcceptableLiveCandidate(decision)
         }
 
@@ -261,6 +276,11 @@ public enum AudioTranscriptionRetryPipeline {
              .refinementFailed, .refinementSkipped:
             return false
         }
+    }
+
+    static func needsDeferredFirstPassRepair(_ decision: AudioTranscriptionDecision) -> Bool {
+        if decision.status == .probableSilence && !decision.shouldStoreText { return false }
+        return !isAcceptableLiveCandidate(decision)
     }
 
     private static func isReadableShortLiveText(_ text: String, language: String?) -> Bool {

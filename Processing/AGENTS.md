@@ -154,6 +154,22 @@ This repair preserves the previous immediate in-memory fallback when AAC or raw-
 
 ### October 6 automatic audio freshness repair (source candidate)
 
+October 19 follow-up source candidate: newly saved PCM is classified only after
+canonical AAC persistence. The exact `pending_low_energy_v1` hint postpones the
+120-second fresh lane; historical/manual work still processes those recordings.
+An admitted fresh first pass makes one raw inference. An uncertain result keeps
+its text/language in the original `needs_repair` row with
+`first_pass_repair_pending_v1`; a separate ambient permit owns enhancement.
+On restart, the retained raw candidate participates in ranking and only normalized
+and high-pass variants remain. Empty or worse output cannot erase it; readable
+speech outranks long captions before completeness is compared. Unmarked legacy
+pending/repair rows start with raw and queue enhancement if needed. Persistence-
+failure/immediate paths retain three variants in one turn. Manual exhaustive
+backfill remains separate, preserves the retained candidate and keeps its full
+attempt plan. Decode failure also retains earlier text. Cancellation retains the row and media.
+`AudioProcessingFreshnessTests` covers actual AAC persistence/decoding, on-disk
+SQLite reopen, quiet/speech ordering and cancelled/worse deferred repair.
+
 The governed first-pass worker gives up to three admitted attempts to the newest
 `pending` recordings captured within the previous 24 hours, then one attempt to
 the oldest retained `pending`/`needs_repair` recording. When no recent pending row

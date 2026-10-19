@@ -37,7 +37,7 @@ private struct PersistedAudioBatch: Sendable {
 }
 
 /// Coordinates audio capture → batch buffering → transcription → database storage pipeline
-/// Accumulates PCM into 30-second batches per source before calling whisper.cpp
+/// Accumulates PCM into bounded batches per source before calling whisper.cpp.
 public actor AudioProcessingManager {
 
     private var transcriptionService: any TranscriptionProtocol
@@ -208,12 +208,17 @@ public actor AudioProcessingManager {
                 // Insert DB record for the raw batch
                 if let queries = transcriptionQueries {
                     do {
+                        // Prioritization only. Quiet speech can be misclassified, so
+                        // every original remains pending and eligible for catch-up.
+                        let activity = AudioSpeechActivityPolicy.evaluate(batch.audioData,
+                            sampleRate: batch.sampleRate, channels: batch.channels)
                         rawBatchID = try await queries.insertRawBatch(
                             startTime: batch.startTimestamp,
                             endTime: batch.endTimestamp,
                             source: batch.source,
                             audioPath: batchPath,
-                            audioSize: batchSize
+                            audioSize: batchSize,
+                            deferForLowEnergy: activity.isProbablySilence
                         )
                         if let rawBatchID {
                             pendingRecord = UntranscribedBatch(id: rawBatchID,
@@ -400,9 +405,9 @@ public actor AudioProcessingManager {
             Log.error("[AudioProcessingManager] Failed to load queued batch audio: \(error)", category: .processing)
             if persistedBatch.pendingRecord != nil {
                 try await updatePendingOutcome(persistedBatch,
-                    text: "",
+                    text: persistedBatch.pendingRecord?.retainedFirstPass?.text ?? "",
                     transcriptStatus: AudioTranscriptStatus.decodeFailed.rawValue,
-                    detectedLanguage: nil,
+                    detectedLanguage: persistedBatch.pendingRecord?.retainedFirstPass?.language,
                     audioVariant: AudioEnhancementVariant.raw.rawValue,
                     qualityFlags: "decode_error"
                 )
@@ -410,6 +415,9 @@ public actor AudioProcessingManager {
             return
         }
         let savedBatchPath = persistedBatch.savedBatchPath
+        let canDeferRepair = governor != nil && persistedBatch.pendingRecord != nil
+        let profile: AudioTranscriptionProfile = canDeferRepair && persistedBatch.pendingRecord?.needsFirstPassRepair != true
+            ? .liveFirstPass : .deferredFirstPassRepair
 
         do {
             // Step 1: Always attempt transcription. Silence/junk detection is metadata,
@@ -421,10 +429,23 @@ public actor AudioProcessingManager {
                 transcriptionService: service,
                 wordLevel: config.enableWordLevelTimestamps,
                 initialPrompt: nil,
-                profile: .liveFirstPass
+                profile: profile,
+                retainedFirstPass: persistedBatch.pendingRecord?.retainedFirstPass
             )
             try BackgroundProcessingContext.checkCancellation()
             let transcription = decision.transcription
+
+            if profile == .liveFirstPass, AudioTranscriptionRetryPipeline.needsDeferredFirstPassRepair(decision) {
+                // Preserve the raw identity and provisional result in the durable
+                // queue. A later historical permit owns enhancement; it cannot
+                // consume this fresh turn or loop back into the live lane.
+                try await updatePendingOutcome(persistedBatch, text: transcription.text,
+                    transcriptStatus: "needs_repair", detectedLanguage: transcription.language,
+                    audioVariant: decision.audioVariant.rawValue,
+                    qualityFlags: Self.qualityFlags(decision,
+                        appending: [AudioPreparationMetadata.firstPassRepairPending]))
+                return
+            }
 
             guard decision.shouldStoreText else {
                 if persistedBatch.pendingRecord != nil {

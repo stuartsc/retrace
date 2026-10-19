@@ -12,6 +12,7 @@ final class AudioProcessingFreshnessTests: XCTestCase {
     private var queries: AudioTranscriptionQueries!
     private var root: URL!
     private var fixture: Data!
+    private var fixturePCM: Data!
     private var fixtureDuration: TimeInterval = 0
     private var fixtureExtension = "wav"
 
@@ -35,6 +36,7 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         }
         let decoded = try AudioFileDecoder.decodeToPCM(fileURL: fixtureURL)
         XCTAssertFalse(decoded.data.isEmpty)
+        fixturePCM = decoded.data
         fixtureDuration = decoded.duration
         database = DatabaseManager(databasePath: "file:audio_freshness_\(UUID().uuidString)?mode=memory&cache=shared")
         try await database.initialize()
@@ -47,6 +49,210 @@ final class AudioProcessingFreshnessTests: XCTestCase {
     override func tearDown() async throws {
         try await database?.close()
         if let root { try? FileManager.default.removeItem(at: root) }
+    }
+
+    func testIngestionPersistsQuietHintAndRestartProcessesSpeechBeforeRetainedQuietAAC() async throws {
+        let service = FreshnessTestTranscriber()
+        let governor = FreshnessTestGovernor()
+        let run = start(service: service, governor: governor)
+        let now = Date()
+        let quiet = Data(count: 15 * 16_000 * 2)
+        var speech = try XCTUnwrap(fixturePCM)
+        if speech.count < quiet.count { speech.append(Data(count: quiet.count - speech.count)) }
+        run.continuation.yield(.init(timestamp: now.addingTimeInterval(-40), audioData: quiet,
+            duration: 15, source: .microphone))
+        run.continuation.yield(.init(timestamp: now.addingTimeInterval(-20), audioData: speech,
+            duration: Double(speech.count) / 32_000, source: .system))
+        let persisted = await eventually {
+            (try? await self.queries.getUntranscribedBatchCount()) == 2
+        }
+        XCTAssertTrue(persisted)
+        await stop(run)
+        let callsBeforeAdmission = await service.callCount
+        XCTAssertEqual(callsBeforeAdmission, 0, "Classification must not start inference")
+        let originals = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertEqual(originals.count, 2)
+        let quietRow = try XCTUnwrap(originals.first { $0.source == .microphone })
+        let speechRow = try XCTUnwrap(originals.first { $0.source == .system })
+        var hashes: [String: SHA256.Digest] = [:]
+        for row in originals {
+            let url = root.appendingPathComponent(row.audioPath)
+            let decoded = try AudioFileDecoder.decodeToPCM(fileURL: url)
+            XCTAssertEqual(decoded.duration, row.endTime.timeIntervalSince(row.startTime), accuracy: 0.1)
+            hashes[row.audioPath] = SHA256.hash(data: try Data(contentsOf: url))
+        }
+        let fresh = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertEqual(fresh?.id, speechRow.id)
+
+        let restartedService = FreshnessTestTranscriber()
+        let restartedGovernor = FreshnessTestGovernor()
+        let restarted = start(service: restartedService, governor: restartedGovernor)
+        await restartedGovernor.grantOne()
+        let speechCompleted = await eventually { await restartedGovernor.releaseCount == 1 }
+        XCTAssertTrue(speechCompleted)
+        let remaining = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertEqual(remaining.map(\.id), [quietRow.id])
+        let freshAfterSpeech = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertNil(freshAfterSpeech)
+        await restartedGovernor.grantOne()
+        let quietCompleted = await eventually { await restartedGovernor.releaseCount == 2 }
+        XCTAssertTrue(quietCompleted, "Quiet audio still receives its admitted catch-up turn")
+        await stop(restarted)
+        let remainingCount = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(remainingCount, 0)
+        for row in originals {
+            XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: root.appendingPathComponent(row.audioPath))),
+                           hashes[row.audioPath], "Processing must preserve both canonical AAC files")
+        }
+    }
+
+    func testUncertainFirstPassQueuesDurableRepairForSeparateAdmissionAfterRestart() async throws {
+        let now = Date()
+        let saved = try await seed(at: now.addingTimeInterval(-30))
+        let originals = try await queries.getUntranscribedBatches(limit: 10)
+        let original = try XCTUnwrap(originals.first)
+        let originalHash = SHA256.hash(data: try Data(contentsOf: root.appendingPathComponent(original.audioPath)))
+        let firstService = FreshnessTestTranscriber(texts: ["(fire crackling)", "Repair must not run in this turn."])
+        let firstGovernor = FreshnessTestGovernor()
+        let first = start(service: firstService, governor: firstGovernor)
+        await firstGovernor.grantOne()
+        let completed = await eventually { await firstGovernor.releaseCount == 1 }
+        XCTAssertTrue(completed)
+        await stop(first)
+        let firstCalls = await firstService.callCount
+        XCTAssertEqual(firstCalls, 1, "A fresh permit buys one native inference")
+        let retained = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertEqual(retained.map(\.id), [saved], "Uncertain first-pass text must leave durable repair work")
+        guard retained.count == 1 else { return }
+        XCTAssertTrue(retained[0].needsFirstPassRepair)
+        let fresh = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertNil(fresh, "Repair must not re-enter the foreground first-pass lane")
+
+        let repairService = FreshnessTestTranscriber(texts: ["(noise)", "The invoice total is twelve dollars."])
+        let repairGovernor = FreshnessTestGovernor()
+        let restarted = start(service: repairService, governor: repairGovernor)
+        let requested = await eventually { await repairGovernor.requestCount == 1 }
+        XCTAssertTrue(requested)
+        let callsBeforeAdmission = await repairService.callCount
+        let requestedKinds = await repairGovernor.requestedKinds
+        XCTAssertEqual(callsBeforeAdmission, 0)
+        XCTAssertEqual(requestedKinds, [.ambientSpeech])
+        await repairGovernor.grantOne()
+        let repaired = await eventually { await repairGovernor.releaseCount == 1 }
+        XCTAssertTrue(repaired)
+        await stop(restarted)
+        let repairCalls = await repairService.callCount
+        XCTAssertEqual(repairCalls, 2, "The separately admitted repair must try enhancement after another rejected result")
+        let remaining = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(remaining, 0)
+        let text = try await queries.getTranscriptions(from: now.addingTimeInterval(-60), to: now)
+        XCTAssertEqual(text.map(\.text), ["The invoice total is twelve dollars."])
+        XCTAssertEqual(text.first?.audioPath, original.audioPath)
+        XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: root.appendingPathComponent(original.audioPath))), originalHash)
+    }
+
+    func testDeferredRepairPreservesPriorTextAcrossDatabaseReopenCancellationAndWorseResults() async throws {
+        // Close and reopen an actual on-disk store, not just the manager, so the
+        // retained candidate must be recovered from its durable row.
+        let databasePath = root.appendingPathComponent("repair.sqlite").path
+        try await reopenDatabase(at: databasePath)
+        let cases: [(text: String, language: String, replacements: [String])] = [
+            ("(fire crackling)", "en", ["", ""]),
+            ("Please keep invoice number four seven.", "nn", ["", "(noise)"])
+        ]
+        for item in cases {
+            let now = Date()
+            let id = try await seed(at: now.addingTimeInterval(-30))
+            let firstService = FreshnessTestTranscriber(texts: [item.text], language: item.language)
+            let firstGovernor = FreshnessTestGovernor()
+            let first = start(service: firstService, governor: firstGovernor)
+            await firstGovernor.grantOne()
+            let firstFinished = await eventually { await firstGovernor.releaseCount == 1 }
+            XCTAssertTrue(firstFinished)
+            await stop(first)
+            try await reopenDatabase(at: databasePath)
+            let pending = try await queries.getUntranscribedBatches(limit: 10)
+            let row = try XCTUnwrap(pending.first { $0.id == id })
+            XCTAssertTrue(row.needsFirstPassRepair)
+            let media = root.appendingPathComponent(row.audioPath)
+            let originalHash = SHA256.hash(data: try Data(contentsOf: media))
+
+            let heldService = FreshnessTestTranscriber(hold: true)
+            let heldGovernor = FreshnessTestGovernor()
+            let held = start(service: heldService, governor: heldGovernor)
+            await heldGovernor.grantOne()
+            let repairEntered = await eventually { await heldService.callCount == 1 }
+            XCTAssertTrue(repairEntered)
+            await heldGovernor.cancelCurrent()
+            let cancelled = await eventually { await heldGovernor.releaseCount == 1 }
+            XCTAssertTrue(cancelled)
+            await stop(held)
+            try await reopenDatabase(at: databasePath)
+            let afterCancellation = try await queries.getUntranscribedBatches(limit: 10)
+            XCTAssertEqual(afterCancellation.map(\.id), [id])
+            let provisional = try await queries.getTranscriptions(from: now.addingTimeInterval(-60), to: Date())
+            XCTAssertEqual(provisional.first { $0.id == id }?.text, item.text)
+
+            let repairService = FreshnessTestTranscriber(texts: item.replacements)
+            let repairGovernor = FreshnessTestGovernor()
+            let repair = start(service: repairService, governor: repairGovernor)
+            await repairGovernor.grantOne()
+            let finished = await eventually { await repairGovernor.releaseCount == 1 }
+            XCTAssertTrue(finished)
+            await stop(repair)
+            let calls = await repairService.callCount
+            XCTAssertEqual(calls, 2, "Retained raw output leaves only the two enhancement attempts")
+            let remaining = try await queries.getUntranscribedBatchCount()
+            XCTAssertEqual(remaining, 0, "A bounded unsuccessful repair must not loop forever")
+            let rows = try await queries.getTranscriptions(from: now.addingTimeInterval(-60), to: Date(), includeActivityRows: true)
+            let result = try XCTUnwrap(rows.first { $0.audioPath == row.audioPath })
+            XCTAssertEqual(result.text, item.text, "Empty or worse repair output cannot erase the earlier candidate")
+            XCTAssertEqual(result.detectedLanguage, item.language)
+            XCTAssertEqual(result.audioVariant, "raw")
+            XCTAssertEqual(result.source, row.source)
+            XCTAssertFalse(result.qualityFlags?.contains(AudioPreparationMetadata.firstPassRepairPending) == true)
+            XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: media)), originalHash)
+        }
+    }
+
+    private func reopenDatabase(at path: String) async throws {
+        try await database.close()
+        database = DatabaseManager(databasePath: path)
+        try await database.initialize()
+        let connection = await database.getConnection()
+        queries = AudioTranscriptionQueries(db: try XCTUnwrap(connection))
+    }
+
+    func testManualRepairPreservesRetainedTextOnEmptyInferenceAndDecodeFailure() async throws {
+        for missingMedia in [false, true] {
+            let now = Date()
+            let id = try await seed(at: now.addingTimeInterval(-30))
+            let originalText = "Keep invoice number four seven."
+            try await queries.updateBatchOutcome(id: id, text: originalText, transcriptStatus: "needs_repair",
+                detectedLanguage: "nn", audioVariant: "raw", qualityFlags: AudioPreparationMetadata.firstPassRepairPending)
+            let pending = try await queries.getUntranscribedBatches(limit: 1)
+            let row = try XCTUnwrap(pending.first)
+            let media = root.appendingPathComponent(row.audioPath)
+            let hash = SHA256.hash(data: try Data(contentsOf: media))
+            if missingMedia { try FileManager.default.removeItem(at: media) }
+            let service = FreshnessTestTranscriber(texts: [""])
+            let repair = AudioBackfillManager(transcriptionService: service, transcriptionQueries: queries,
+                audioWriter: AudioSegmentWriter(storageRoot: root), storageRoot: root)
+            let summary = await repair.processAllPendingBatches(maxBatches: 1)
+            XCTAssertEqual(summary.failedCount, missingMedia ? 1 : 0)
+            XCTAssertEqual(summary.processedCount, missingMedia ? 0 : 1)
+            let results = try await queries.getTranscriptions(from: now.addingTimeInterval(-60), to: Date(), includeActivityRows: true)
+            let result = try XCTUnwrap(results.first { $0.audioPath == row.audioPath })
+            XCTAssertEqual(result.text, originalText)
+            XCTAssertEqual(result.detectedLanguage, "nn")
+            XCTAssertEqual(result.source, row.source)
+            XCTAssertEqual(result.transcriptStatus, missingMedia ? "decode_failed" : "language_uncertain")
+            if !missingMedia {
+                XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: media)), hash)
+                let calls = await service.callCount
+                XCTAssertGreaterThan(calls, 2, "Explicit exhaustive repair retains its separate full attempt plan")
+            }
+        }
     }
 
     func testThreeNewestFirstPassAttemptsThenOldestAlternatesBothBacklogs() async throws {
@@ -385,9 +591,11 @@ private actor FreshnessTestGovernor: BackgroundProcessingProtocol {
     private(set) var requestCount = 0
     private(set) var peakActivePermits = 0
     private(set) var lastReleasedCancellation = false
+    private(set) var requestedKinds: [BackgroundProcessingKind] = []
 
     func acquire(_ kind: BackgroundProcessingKind) async throws -> BackgroundProcessingPermit {
         requestCount += 1
+        requestedKinds.append(kind)
         while grants == 0 || current != nil {
             try await Task.sleep(for: .milliseconds(5), clock: .continuous)
         }
@@ -414,6 +622,8 @@ private actor FreshnessTestTranscriber: TranscriptionProtocol {
     private var hold: Bool
     private let failCalls: Set<Int>
     private let words: [TranscriptionWord]
+    private let texts: [String]
+    private let language: String
     private let holdCancellationCleanup: Bool
     private var cancellationCleanupContinuation: CheckedContinuation<Void, Never>?
     private(set) var cancellationCleanupEntered = false
@@ -423,10 +633,13 @@ private actor FreshnessTestTranscriber: TranscriptionProtocol {
     private(set) var observedThreads: [Int] = []
     private(set) var nonNilPromptCount = 0
 
-    init(hold: Bool = false, failCalls: Set<Int> = [], words: [TranscriptionWord] = [], holdCancellationCleanup: Bool = false) {
+    init(hold: Bool = false, failCalls: Set<Int> = [], words: [TranscriptionWord] = [], holdCancellationCleanup: Bool = false,
+         texts: [String] = [], language: String = "en") {
         self.hold = hold
         self.failCalls = failCalls
         self.words = words
+        self.texts = texts
+        self.language = language
         self.holdCancellationCleanup = holdCancellationCleanup
     }
     func initialize() { initializationCount += 1 }
@@ -454,8 +667,10 @@ private actor FreshnessTestTranscriber: TranscriptionProtocol {
             }
             throw error
         }
-        let text = words.isEmpty ? "The invoice total is twelve dollars." : words.map(\.word).joined(separator: " ")
-        return .init(text: text, words: words, language: "en", duration: 1)
+        let text = texts.isEmpty
+            ? (words.isEmpty ? "The invoice total is twelve dollars." : words.map(\.word).joined(separator: " "))
+            : texts[min(callCount - 1, texts.count - 1)]
+        return .init(text: text, words: words, language: language, duration: 1)
     }
     func allowCompletion() { hold = false }
     func holdCompletion() { hold = true }

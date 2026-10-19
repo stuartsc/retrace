@@ -105,7 +105,7 @@ retrace/
 │   │   ├── Segment.swift        # Segment data model
 │   │   ├── Config.swift         # Configuration types
 │   │   ├── Errors.swift         # Error types
-│   │   ├── Audio.swift          # Audio capture and transcription model types
+│   │   ├── Audio.swift          # Audio capture/transcription types and versioned preparation metadata
 │   │   ├── Dictation.swift      # Push-to-dictate config/session model types
 │   │   ├── FilterCriteria.swift # Timeline/search filter criteria
 │   │   ├── Source.swift         # Data source enum (native, rewind, etc.)

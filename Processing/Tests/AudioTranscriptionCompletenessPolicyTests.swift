@@ -318,7 +318,7 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertEqual(decision.attempts, 1)
     }
 
-    func testLiveRetryProfileUsesEnglishHintAndRejectsJunkBeforeReturning() async throws {
+    func testLiveFirstPassReturnsReviewableRawResultWithoutSpendingEnhancementAttempts() async throws {
         let junk = DetailedTranscriptionResult(
             text: "ɔːɔːɔːɔːɔːɔː",
             words: [],
@@ -340,10 +340,11 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         )
 
         let languageHints = await service.languageHintsSeen()
-        XCTAssertEqual(decision.transcription.text, readable.text)
-        XCTAssertEqual(decision.status, .transcribed)
-        XCTAssertEqual(decision.attempts, 2)
-        XCTAssertEqual(languageHints, ["en", "en"])
+        XCTAssertEqual(decision.transcription.text, junk.text)
+        XCTAssertEqual(decision.status, .probableJunk)
+        XCTAssertEqual(decision.attempts, 1)
+        XCTAssertEqual(languageHints, ["en"])
+        XCTAssertTrue(decision.shouldStoreText, "First-pass uncertainty must not erase captured text")
     }
 
     func testLiveRetryProfileDoesNotSeedDecoderWithPreviousBatchText() async throws {
@@ -387,7 +388,7 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertEqual(prompts.first ?? nil, "trusted neighboring transcript")
     }
 
-    func testLiveRetryProfileRejectsSoundEffectCaptionsBeforeReturning() async throws {
+    func testLiveFirstPassKeepsCaptionForReviewAndLeavesEnhancementToRepair() async throws {
         let caption = DetailedTranscriptionResult(
             text: "(fire crackling)",
             words: [],
@@ -408,9 +409,26 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
             profile: .liveFirstPass
         )
 
-        XCTAssertEqual(decision.transcription.text, readable.text)
-        XCTAssertEqual(decision.status, .transcribed)
-        XCTAssertEqual(decision.attempts, 2)
+        XCTAssertEqual(decision.transcription.text, caption.text)
+        XCTAssertEqual(decision.status, .probableJunk)
+        XCTAssertEqual(decision.attempts, 1)
+        XCTAssertTrue(decision.shouldStoreText)
+    }
+
+    func testDeferredRepairPrefersShortReadableSpeechToLongRetainedJunk() async throws {
+        let junk = Self.result("Thanks for watching. " + String(repeating: "Keep these unrelated caption words. ", count: 12))
+        for text in ["The invoice is paid.", "Paid."] {
+            let service = ScriptedTranscriptionService(results: [Self.result(text)])
+            try await service.initialize()
+            let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+                audioData: Self.pcmSine(duration: 1, sampleRate: 16_000, amplitude: 0.02),
+                sampleRate: 16_000, channels: 1, transcriptionService: service,
+                wordLevel: false, initialPrompt: nil, profile: .deferredFirstPassRepair,
+                retainedFirstPass: junk)
+            XCTAssertEqual(decision.transcription.text, text, "Junk length must not outrank readable speech")
+            XCTAssertEqual(decision.audioVariant, .normalized)
+            XCTAssertEqual(decision.attempts, 1)
+        }
     }
 
     func testSentenceSegmenterKeepsTextWhenWordTimingsAreMissing() {

@@ -59,6 +59,7 @@ public enum DailyMetricsQueries {
         case playbackSpeedChanged = "playback_speed_changed"
         case audioTranscriptPlayback = "audio_transcript_playback" // JSON {outcome,source}; categorical, no content or paths
         case audioSearch = "audio_search" // categorical query/open outcomes, never transcript content
+        case audioPreparation = "audio_preparation" // JSON {outcome,source}; saved hints and committed repair outcomes, no content or paths
 
         // Recording/pause/system-monitor/settings metrics
         case recordingStartedFromMenu = "recording_started_from_menu"

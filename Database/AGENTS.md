@@ -1,5 +1,18 @@
 # DATABASE Agent Instructions
 
+October 19 recovery follow-up: `AudioPreparationMetadata` uses versioned tokens
+in existing `quality_flags`; it adds no schema migration or historical pipeline
+reset. The low-energy token only affects the bounded fresh selector. A marked
+`needs_repair` row carries the exact raw text/language into deferred enhancement;
+the pending completion transaction must still match that retained candidate.
+Unmarked legacy pending/repair rows keep their existing eligibility.
+`audio_preparation` daily metrics carry only outcome/source: `saved_low_energy`,
+`saved_unclassified`, `repair_queued`, `repair_completed` or `repair_decode_failed`.
+Completion means the bounded attempt finished, not recognition accuracy acceptance.
+Repair outcome events share cancellation rollback; raw recording IDs are captured
+before metric insertion under the connection mutex. Metric failure must not
+reject a successfully persisted recording.
+
 You are responsible for the **Database** module of Retrace. Your job is to implement SQLite database operations including schema, migrations, CRUD operations, and full-text search indexing.
 
 **Status**: ✅ Core tables fully implemented (segments, frames, searchRanking FTS5). Uses SQLCipher for optional encryption and Rewind database import compatibility. Audio capture/transcription tables, contextual refinement tracking, daily metrics, and dictation session history are active. **Advanced tables not yet implemented** (app_sessions, encoding_queue, junction tables - planned for future release).
