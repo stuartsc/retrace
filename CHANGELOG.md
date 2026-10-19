@@ -6,7 +6,14 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-19 — Recovery candidate: fresh audio, shared CPU control, search and useful Live context
+### 2026-10-19 — Recovery follow-up under validation
+
+- Allow the read-only private-primary brief connection through exact IP ATS exceptions. A native packaged URLSession probe reproduced macOS error -1022 with the old plist and returned HTTP 200 with the corrected plist. Public HTTP remains restricted.
+- Dashboard storage now uses the same 15-minute categorized report as Settings, includes audio and related copies, and labels unknown/partial/stale measurements. Remove repeated `du` scans and the misleading screen-only monthly extrapolation.
+- Recover automatic admission after CPU stays below the 20% target for fifteen continuous seconds. The old below-15% release rule could leave fresh text waiting indefinitely when capture alone used 15–20%. Sustained load above 20% remains deferred; this does not establish transcript latency acceptance.
+- All 119 focused tests pass, including a live primary BFF wire-contract read. Optimized compilation and installed follow-up checks remain separate.
+
+### 2026-10-19 — Recovery local trial 2610.19.1: fresh audio, shared CPU control, search and useful Live context
 
 - New audio has a bounded chronological first-pass lane during active use, with one Whisper thread in Low Power Mode or two otherwise. Historical repair continues to wait for quiet time. Cancellation retains durable pending work; native execution remains single-flight.
 - Fixed native Whisper CPU cancellation reaching the scheduled encoder/decoder graphs, including language detection. The explicit small-model regression improved from a 12.233-second join to 0.008/0.062 seconds, with successful reuse and unchanged authored transcription. This is a measured fixture result, not a worst-case guarantee for all models/backends.
@@ -18,7 +25,7 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 - Live uses the configured private FuseIntel service and an origin-bound last-good cache with visible age. Recent work is limited to the last ten minutes and no longer describes the interval between sparse screenshots as time spent working.
 - Storage settings show periodic categorized logical/allocated totals and volume free space. Scans are bounded, run off main, coalesce manual refreshes, and distinguish incomplete checks from zero usage.
 - Clean debug validation passes **1,249 tests with nine intentional skips and zero failures**, and the separate clean optimized build passes with 366 unchanged product inputs. The explicit spare-Mac worker candidate uses pinned offline MLX/pyannote models and read-only Outlook voice matching; its authored native test passes. Automatic speaker naming, App transport/import, provisional streaming and semantic search integration remain separate work.
-- Source verification, packaging, installation and measured latency/CPU acceptance are tracked separately in the [recovery ledger](docs/recovery-20261019.md). This candidate is not installed.
+- Build 2610.19.1, source `42404ee`, was installed and reopened at 12:05 Brisbane. V23 and checked preferences remain unchanged; new screens and audio are durable. The normal Quit/install gap was 527.043 seconds between saved audio ranges and 535.573 seconds between screenshots. A two-minute unmatched observation averaged 20.53% of one core with 541.8 MiB peak RSS. These are scoped observations, not matched performance or fresh-transcript acceptance. Source verification, installation and remaining checks are tracked in the [recovery ledger](docs/recovery-20261019.md).
 
 ### 2026-10-06 — Follow the selected microphone (local trial 2610.6.2 installed 7 October)
 

@@ -27,6 +27,13 @@ sampler aggregate followed by a complete retry. `ProcessCPUMonitor` caps its
 in-memory window to the same record limit and performs no automatic log rewrite.
 Sampler tests inject private paths; debug-only task-local checkpoints never
 replace the real reader, process sampler or decoder.
+`StorageUsagePresentation` selects the same cached complete/partial report for
+Dashboard and Settings. Dashboard no longer runs `du` or presents a screen-only
+growth estimate as total storage. Its cancellable five-second cache read starts
+no filesystem scan. `StorageUsagePresentationTests` uses real private files and
+the native scanner to check audio, rollback copies, incomplete scans and cached
+reads. The Info.plist ATS exceptions name only the private primary IP and IPv4/
+IPv6 loopback; packaging must copy this reviewed dictionary before signing.
 
 ```
 UI/
@@ -61,6 +68,7 @@ UI/
 │       └── SettingsView.swift           # Settings root and all General/Capture/Storage/Privacy/Power sections
 ├── Components/
 │   ├── StorageUsageCard.swift          # Periodic categorized accounting, cached reads and explicit refresh
+│   ├── StorageUsagePresentation.swift  # Shared cached totals, unknown/partial states and measurement age
 │   ├── AppResourceBundle.swift          # Packaged app resource bundle and SwiftPM/Xcode fallbacks
 │   ├── ApplicationTerminationWorkflow.swift # Coalesced startup cancellation and async metrics/service shutdown before Quit
 │   ├── TimelineSessionMetrics.swift     # Shared duration/scrub write ownership and acknowledgement across hide/Quit/retry
@@ -82,6 +90,7 @@ UI/
 │   ├── FuseIntelSnapshotCache.swift      # Bounded origin-bound last-good brief, off-main disk I/O
 │   └── SettingsViewModel.swift
 └── Tests/
+    ├── StorageUsagePresentationTests.swift # Real-file complete/partial totals and cache-only presentation
     ├── ProcessCPULogReaderTests.swift   # Real-file size/record bounds, cancellation and no partial-log rewrite prerequisite
     ├── DashboardSavedRecordingsTests.swift # Pending Live recordings and owned refresh/playback lifetime
     ├── ApplicationTerminationWorkflowTests.swift # Async Quit/startup ordering, retry and real SQLite commit-before-close regressions

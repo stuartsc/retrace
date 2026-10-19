@@ -70,6 +70,7 @@ public struct DashboardView: View {
     @StateObject private var fuseIntelViewModel: FuseIntelViewModel
     @StateObject private var screenshotEvidence: EvidenceViewModel
     @StateObject private var savedRecordings: DashboardSavedRecordingsModel
+    @State private var storageSnapshot = StorageUsageSnapshot()
     @State private var screenshotPresenter = DashboardScreenshotEvidencePresenter()
     @State private var startedEvidenceSelection: ScreenshotEvidenceSelection?
     @ObservedObject var launchOnLoginReminderManager: LaunchOnLoginReminderManager
@@ -301,6 +302,14 @@ public struct DashboardView: View {
                 )
             } else {
                 Log.debug("[Dashboard] Tab switch - skipping reload", category: .ui)
+            }
+        }
+        .task(id: viewModel.isWindowVisible) {
+            while viewModel.isWindowVisible && !Task.isCancelled {
+                let snapshot = await coordinatorWrapper.coordinator.storageUsageSnapshot()
+                guard !Task.isCancelled, viewModel.isWindowVisible else { return }
+                if storageSnapshot != snapshot { storageSnapshot = snapshot }
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
             }
         }
         .task(id: "\(selectedDashboardTab.rawValue):\(viewModel.isWindowVisible):\(screenshotReadEpoch)") {
@@ -998,8 +1007,9 @@ public struct DashboardView: View {
         let graphData: [DailyDataPoint]?
         let graphColor: Color
         let valueFormatter: ((Int64) -> String)?
+        let detail: String?
 
-        init(icon: String, title: String, value: String, subtitle: String, graphData: [DailyDataPoint]? = nil, graphColor: Color = .retraceAccent, valueFormatter: ((Int64) -> String)? = nil) {
+        init(icon: String, title: String, value: String, subtitle: String, graphData: [DailyDataPoint]? = nil, graphColor: Color = .retraceAccent, valueFormatter: ((Int64) -> String)? = nil, detail: String? = nil) {
             self.id = title
             self.icon = icon
             self.title = title
@@ -1008,11 +1018,13 @@ public struct DashboardView: View {
             self.graphData = graphData
             self.graphColor = graphColor
             self.valueFormatter = valueFormatter
+            self.detail = detail
         }
     }
 
     private var statsCards: [StatCardData] {
-        [
+        let storage = StorageUsagePresentation(snapshot: storageSnapshot)
+        return [
             StatCardData(
                 icon: "calendar",
                 title: "Total Days Recorded",
@@ -1033,11 +1045,10 @@ public struct DashboardView: View {
             ),
             StatCardData(
                 icon: "externaldrive.fill",
-                title: "Total Storage Used",
-                value: formatStorageSize(viewModel.totalStorageBytes),
-                subtitle: formatStoragePerMonth(),
-                graphData: viewModel.dailyStorageData.isEmpty ? nil : viewModel.dailyStorageData,
-                graphColor: .cyan
+                title: "Retrace storage",
+                value: storage.value,
+                subtitle: storage.subtitle,
+                detail: storage.detail
             ),
             StatCardData(
                 icon: "timelapse",
@@ -1141,6 +1152,7 @@ public struct DashboardView: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(themeBorderColor.opacity(0.8), lineWidth: 1)
         )
+        .help(card.detail ?? "\(card.title): \(card.value). \(card.subtitle)")
     }
 
     private func statCard(
@@ -1208,30 +1220,6 @@ public struct DashboardView: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(theme.controlBorderColor.opacity(0.6), lineWidth: 1)
         )
-    }
-
-    private func formatStorageSize(_ bytes: Int64) -> String {
-        // Use decimal (SI) units to match Finder
-        let gb = Double(bytes) / 1_000_000_000
-        if gb >= 1.0 {
-            return String(format: "%.2f GB", gb)
-        } else {
-            let mb = Double(bytes) / 1_000_000
-            return String(format: "%.0f MB", mb)
-        }
-    }
-
-    private func formatStoragePerMonth() -> String {
-        let dailyData = viewModel.dailyStorageData
-        guard !dailyData.isEmpty else { return "est. 0 GB/month" }
-
-        // Sum all daily values and extrapolate to 30 days
-        let totalBytes = dailyData.reduce(0) { $0 + $1.value }
-        let daysWithData = dailyData.count
-        let bytesPerDay = Double(totalBytes) / Double(daysWithData)
-        let bytesPerMonth = bytesPerDay * 30.0
-        let gbPerMonth = bytesPerMonth / 1_000_000_000
-        return String(format: "est. %.1f GB/month", gbPerMonth)
     }
 
     private func formatOldestDateSubtitle(_ date: Date?) -> String {

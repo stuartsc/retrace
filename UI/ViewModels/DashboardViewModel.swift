@@ -25,8 +25,6 @@ public class DashboardViewModel: ObservableObject {
     @Published public var weekDateRange: String = ""
 
     // Overall statistics
-    @Published public var totalStorageBytes: Int64 = 0
-    @Published public var weeklyStorageBytes: Int64 = 0
     @Published public var daysRecorded: Int = 0
     @Published public var oldestRecordedDate: Date?
 
@@ -37,7 +35,6 @@ public class DashboardViewModel: ObservableObject {
 
     // Daily graph data (7 days, Monday through Sunday)
     @Published public var dailyScreenTimeData: [DailyDataPoint] = []
-    @Published public var dailyStorageData: [DailyDataPoint] = []
     @Published public var dailyTimelineOpensData: [DailyDataPoint] = []
     @Published public var dailySearchesData: [DailyDataPoint] = []
     @Published public var dailyTextCopiesData: [DailyDataPoint] = []
@@ -284,12 +281,9 @@ public class DashboardViewModel: ObservableObject {
             formatter.dateFormat = "MMM d"
             weekDateRange = "\(formatter.string(from: weekStart)) - \(formatter.string(from: weekEnd))"
 
-            // Fire slow queries (storage + dates) in background - don't block
+            // Date history is independent of the weekly statistics. Storage is
+            // supplied by the App-owned periodic report, never a dashboard scan.
             Task {
-                if let storage = try? await coordinator.getTotalStorageUsed() {
-                    await MainActor.run { self.totalStorageBytes = storage }
-                }
-
                 if let allDates = try? await coordinator.getDistinctDates() {
                     await MainActor.run {
                         self.daysRecorded = allDates.count
@@ -302,8 +296,6 @@ public class DashboardViewModel: ObservableObject {
             let todayStart = calendar.startOfDay(for: now)
 
             // Run queries sequentially to identify which one hangs
-            let weeklyStorage = try await coordinator.getStorageUsedForDateRange(from: weekStart, to: weekEnd)
-
             let appStats = try await coordinator.getAppUsageStats(from: weekStart, to: weekEnd)
 
             let todayStats = try await coordinator.getAppUsageStats(from: todayStart, to: weekEnd)
@@ -311,7 +303,6 @@ public class DashboardViewModel: ObservableObject {
             await loadDailyGraphData(weekStart: weekStart, weekEnd: weekEnd)
 
 
-            weeklyStorageBytes = weeklyStorage
             totalWeeklyTime = appStats.reduce(0) { $0 + $1.duration }
             totalDailyTime = todayStats.reduce(0) { $0 + $1.duration }
 
@@ -363,9 +354,6 @@ public class DashboardViewModel: ObservableObject {
             )
             dailyScreenTimeData = fillMissingDays(data: screenTimeData, allDays: allDays)
 
-            // Load storage data for each day (just that day's folder size)
-            dailyStorageData = try await loadDailyStorageData(for: allDays)
-
             // Load timeline opens data
             let timelineData = try await coordinator.getDailyMetrics(
                 metricType: .timelineOpens,
@@ -396,7 +384,6 @@ public class DashboardViewModel: ObservableObject {
         } catch {
             // Initialize with empty data on error
             dailyScreenTimeData = allDays.map { DailyDataPoint(date: $0, value: 0) }
-            dailyStorageData = allDays.map { DailyDataPoint(date: $0, value: 0) }
             dailyTimelineOpensData = allDays.map { DailyDataPoint(date: $0, value: 0) }
             dailySearchesData = allDays.map { DailyDataPoint(date: $0, value: 0) }
             dailyTextCopiesData = allDays.map { DailyDataPoint(date: $0, value: 0) }
@@ -404,16 +391,6 @@ public class DashboardViewModel: ObservableObject {
             searchesThisWeek = 0
             textCopiesThisWeek = 0
         }
-    }
-
-    /// Load storage for each day's folder
-    private func loadDailyStorageData(for days: [Date]) async throws -> [DailyDataPoint] {
-        var dataPoints: [DailyDataPoint] = []
-        for day in days {
-            let dayStorage = try await coordinator.getStorageUsedForDateRange(from: day, to: day)
-            dataPoints.append(DailyDataPoint(date: day, value: dayStorage))
-        }
-        return dataPoints
     }
 
     /// Fill missing days with zero values to ensure we always have 7 data points

@@ -10,8 +10,7 @@ struct StorageUsageCard: View {
     @State private var refreshing = false
 
     private var report: StorageUsageReport? {
-        snapshot.latestReport?.isComplete == true ? snapshot.latestReport
-            : (snapshot.lastCompleteReport ?? snapshot.latestReport)
+        StorageUsagePresentation(snapshot: snapshot).report
     }
 
     var body: some View {

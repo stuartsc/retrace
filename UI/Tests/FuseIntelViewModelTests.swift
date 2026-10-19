@@ -566,7 +566,9 @@ final class FuseIntelViewModelTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["RUN_LIVE_FUSEINTEL_TESTS"] == "1" else {
             throw XCTSkip("Set RUN_LIVE_FUSEINTEL_TESTS=1 for the resource-intensive local contract check")
         }
-        let client = FuseIntelClient(baseURL: URL(string: "http://127.0.0.1:9010")!)
+        let address = ProcessInfo.processInfo.environment["RETRACE_FUSEINTEL_TEST_URL"] ?? "http://127.0.0.1:9010"
+        let url = try XCTUnwrap(FuseIntelConnectionConfiguration.validatedURL(address))
+        let client = FuseIntelClient(baseURL: url)
 
         do {
             let snapshot = try await client.fetchSnapshot()

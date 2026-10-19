@@ -44,7 +44,10 @@ struct ResourceProcessingPolicy {
         if active && app > 20 { appThrottled = true; recoveryStarted = nil }
         if system > 80 { systemThrottled = true; recoveryStarted = nil }
         if appThrottled || systemThrottled {
-            if (!active || app < 15) && system < 70 {
+            // Capture and durable writes are never throttled and can themselves
+            // use 15–20% of a core. Recover below the actual target for fifteen
+            // continuous seconds; a lower release threshold can latch forever.
+            if (!active || app < 20) && system < 70 {
                 if recoveryStarted == nil { recoveryStarted = time }
                 if time - (recoveryStarted ?? time) >= 15 {
                     appThrottled = false

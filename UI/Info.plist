@@ -46,11 +46,30 @@
     <key>NSHighResolutionCapable</key>
     <true/>
 
-    <!-- Read-only FuseIntel BFF is loopback-only and never exposes Retrace data externally. -->
+    <!-- Read-only BFF on the configured private primary Mac; no public HTTP exception.
+         macOS 14+ requires explicit IP exceptions even with local networking enabled. -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>100.82.166.96</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+            <key>127.0.0.1</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+            <key>::1</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+        </dict>
     </dict>
 
     <!-- Privacy - Screen Recording Usage Description -->

@@ -3,6 +3,21 @@ import Shared
 @testable import App
 
 final class ResourceProcessingPolicyTests: XCTestCase {
+    func testCaptureNearBudgetCanRecoverWithoutFallingBelowFifteenPercent() {
+        var policy = ResourceProcessingPolicy()
+        policy.update(sample(0, cpu: 40), idleSeconds: 0)
+        for time in 1...15 {
+            policy.update(sample(Double(time), cpu: 19), idleSeconds: 0)
+            XCTAssertEqual(policy.reason, .cpuBudget)
+        }
+        policy.update(sample(16, cpu: 19), idleSeconds: 0)
+        XCTAssertNil(policy.reason, "Capture alone can use 15–20%; recovery must not permanently starve fresh text")
+        policy.update(sample(17, cpu: 21), idleSeconds: 0)
+        XCTAssertEqual(policy.reason, .cpuBudget, "New work still stops above the target")
+        for time in 18...33 { policy.update(sample(Double(time), cpu: 20), idleSeconds: 0) }
+        XCTAssertEqual(policy.reason, .cpuBudget, "The target itself leaves no measured capacity")
+    }
+
     func testActiveBudgetAndContinuousRecoveryHysteresis() {
         var policy = ResourceProcessingPolicy()
         policy.update(sample(10, cpu: 25), idleSeconds: 0)
