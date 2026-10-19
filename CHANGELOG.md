@@ -9,7 +9,7 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 ### 2026-10-19 — Periodic capture during menu tracking (source candidate)
 
 - Keep the existing screen-capture timer running in AppKit's common run-loop modes. Both initial scheduling and window-change rescheduling use one helper; capture cadence, privacy checks and timer invalidation remain in their existing owners.
-- A native run-loop regression first reproduced zero periodic ticks during event tracking, then passed after the correction. All **179 Capture tests pass, with two intentional skips and zero failures**. Independent source review is clear. No actor/protocol layout changed; the preceding 1,302-test combined suite remains a separate checkpoint. Optimized build and installed tracking-mode acceptance are pending.
+- A native run-loop regression first reproduced zero periodic ticks during event tracking, then passed after the correction. All **179 Capture tests pass, with two intentional skips and zero failures**. Independent source review is clear. No actor/protocol layout changed; the preceding 1,302-test combined suite remains a separate checkpoint. A separate clean optimized build passed in **289.02 seconds**. Signed build 2610.19.6/source `63ddce2` is verified and ready; installation and native tracking-mode acceptance are pending.
 
 ### 2026-10-19 — Timeline images and capture availability local trial 2610.19.5
 
