@@ -50,7 +50,7 @@ final class ResourceProcessingPolicyTests: XCTestCase {
         let optional = try await governor.tryAcquire(.freshOCR)
         let permit = try XCTUnwrap(optional, "A deferred history waiter must not block fresh OCR")
         await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample(2, cpu: 30)))
-        XCTAssertTrue(permit.cancellation.isCancelled)
+        XCTAssertFalse(permit.cancellation.isCancelled, "An admitted bounded fresh job can finish its own CPU burst")
         await governor.release(permit)
         let blocked = try await governor.tryAcquire(.freshOCR)
         XCTAssertNil(blocked)

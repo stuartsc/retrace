@@ -4,6 +4,42 @@ import Shared
 @testable import App
 
 final class BackgroundProcessingGovernorTests: XCTestCase {
+    func testFreshTranscriptionRunsDuringInputAndKeepsNativeSchedulerGrant() async throws {
+        let scheduler = ConsumableBackgroundGrant()
+        let governor = BackgroundProcessingGovernor(scheduler: scheduler)
+        await governor.updateEnvironment(.init(idleSeconds: 0, lowPowerMode: true,
+                                               systemAllowsProcessing: false))
+        scheduler.grant()
+        let admitted = try await governor.tryAcquire(.freshTranscription)
+        let permit = try XCTUnwrap(admitted)
+        XCTAssertEqual(permit.threadCount, 1)
+        await governor.updateEnvironment(.init(idleSeconds: 0, systemAllowsProcessing: false))
+        await governor.setProcessNow(false)
+        XCTAssertFalse(permit.cancellation.isCancelled, "Typing and cancelling catch-up do not cancel fresh text")
+        await governor.release(permit)
+        XCTAssertTrue(scheduler.allowsProcessing)
+        let history = try await governor.tryAcquire(.ambientSpeech)
+        XCTAssertNil(history, "Historical audio still waits for quiet time")
+        await governor.close()
+    }
+
+    func testFreshTranscriptionPreemptsHistoryButJoinsItsNativeExit() async throws {
+        let governor = BackgroundProcessingGovernor(observeSystem: false)
+        await governor.updateEnvironment(.init(idleSeconds: 600))
+        let history = try await governor.acquire(.indexing)
+        let fresh = Task { try await governor.acquire(.freshTranscription) }
+        try await waitForQueue(governor, count: 1)
+        XCTAssertTrue(history.cancellation.isCancelled)
+        let beforeRelease = await governor.snapshot()
+        XCTAssertEqual(beforeRelease.activeKind, .indexing)
+        await governor.release(history)
+        let permit = try await fresh.value
+        await governor.updateEnvironment(.init(idleSeconds: 0, pressureAllowsProcessing: false))
+        XCTAssertTrue(permit.cancellation.isCancelled, "Native pressure still revokes fresh work")
+        await governor.release(permit)
+        await governor.close()
+    }
+
     func testAlternatingFreshAndSpeechCannotResetTheHistoricalFairnessBudget() async throws {
         let governor = BackgroundProcessingGovernor(observeSystem: false)
         await governor.updateEnvironment(.init(idleSeconds: 600, pressureAllowsProcessing: false))
@@ -346,6 +382,7 @@ private final class ConsumableBackgroundGrant: BackgroundActivityScheduling, @un
     private let lock = NSLock()
     private var available = true
     var allowsProcessing: Bool { lock.withLock { available } }
+    func grant() { lock.withLock { available = true } }
     func start() { }
     func finish(deferred: Bool) { lock.withLock { available = false } }
     func invalidate() { finish(deferred: true) }

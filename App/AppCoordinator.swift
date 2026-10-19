@@ -383,6 +383,20 @@ public actor AppCoordinator {
         await services.resourceUsage.snapshot()
     }
 
+    public func storageUsageSnapshot() async -> StorageUsageSnapshot {
+        await services.storageUsage.snapshot()
+    }
+
+    public func refreshStorageUsage() async -> StorageUsageSnapshot {
+        try? await services.database.recordMetricEvent(metricType: .storageUsage,
+            metadata: "{\"action\":\"refreshRequested\"}")
+        let snapshot = await services.storageUsage.refresh()
+        let outcome = snapshot.latestReport?.isComplete == true ? "complete" : "partial"
+        try? await services.database.recordMetricEvent(metricType: .storageUsage,
+            metadata: "{\"action\":\"refreshFinished\",\"outcome\":\"\(outcome)\"}")
+        return snapshot
+    }
+
     public func setBackgroundProcessNow(_ enabled: Bool) async {
         await services.backgroundProcessing.setProcessNow(enabled)
         try? await services.database.recordMetricEvent(metricType: .backgroundProcessing,
@@ -2089,6 +2103,22 @@ public actor AppCoordinator {
     public func search(query: SearchQuery) async throws -> SearchResults {
         guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
         return try await adapter.search(query: query)
+    }
+
+    public func searchAudio(query: SearchQuery) async throws -> AudioSearchPage {
+        guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
+        let page = try await adapter.searchAudio(query: query)
+        try? await recordMetricEvent(metricType: .audioSearch,
+            metadata: "action=query;outcome=\(page.notice == nil ? "complete" : "unsupported_filters");truncated=\(page.isTruncated)")
+        return page
+    }
+
+    public func resolveAudioSearchHit(_ hit: AudioSearchHit) async throws -> AudioTranscription {
+        guard let adapter = await services.dataAdapter else { throw AudioSearchError.changed }
+        _ = try await adapter.resolveAudioSearchHit(hit)
+        try? await recordMetricEvent(metricType: .audioSearch, metadata: "action=open;outcome=resolved")
+        // Metrics yield to the writer; validate again after that boundary.
+        return try await adapter.resolveAudioSearchHit(hit)
     }
 
     // MARK: - Frame Retrieval

@@ -35,6 +35,7 @@ public actor AudioBufferManager {
     private var micDuration: TimeInterval = 0
     private var micSampleRate: Int = 16000
     private var micChannels: Int = 1
+    private var micHasUnsavedAudio = false
 
     private var systemBuffer = Data()
     private var systemStartTimestamp: Date?
@@ -42,6 +43,7 @@ public actor AudioBufferManager {
     private var systemDuration: TimeInterval = 0
     private var systemSampleRate: Int = 16000
     private var systemChannels: Int = 1
+    private var systemHasUnsavedAudio = false
 
     public init(maxBufferDuration: TimeInterval = 30.0) {
         self.maxBufferDuration = maxBufferDuration
@@ -52,11 +54,12 @@ public actor AudioBufferManager {
     public func addSample(_ audio: CapturedAudio) -> AudioBatch? {
         switch audio.source {
         case .microphone:
+            micHasUnsavedAudio = true
             micBuffer.append(audio.audioData)
             if micStartTimestamp == nil {
                 micStartTimestamp = audio.timestamp
             }
-            micEndTimestamp = audio.timestamp
+            micEndTimestamp = audio.timestamp.addingTimeInterval(audio.duration)
             micDuration += audio.duration
             micSampleRate = audio.sampleRate
             micChannels = audio.channels
@@ -66,11 +69,12 @@ public actor AudioBufferManager {
             }
 
         case .system, .zoom, .googleMeet, .microsoftTeams, .slack, .discord, .unknown:
+            systemHasUnsavedAudio = true
             systemBuffer.append(audio.audioData)
             if systemStartTimestamp == nil {
                 systemStartTimestamp = audio.timestamp
             }
-            systemEndTimestamp = audio.timestamp
+            systemEndTimestamp = audio.timestamp.addingTimeInterval(audio.duration)
             systemDuration += audio.duration
             systemSampleRate = audio.sampleRate
             systemChannels = audio.channels
@@ -87,12 +91,15 @@ public actor AudioBufferManager {
     /// Returns up to 2 batches (one per source).
     public func flush() -> [AudioBatch] {
         var batches: [AudioBatch] = []
-        if let batch = flushMicBuffer() {
+        if micHasUnsavedAudio, let batch = flushMicBuffer() {
             batches.append(batch)
         }
-        if let batch = flushSystemBuffer() {
+        if systemHasUnsavedAudio, let batch = flushSystemBuffer() {
             batches.append(batch)
         }
+        micBuffer.removeAll(); micStartTimestamp = nil; micEndTimestamp = nil; micDuration = 0
+        systemBuffer.removeAll(); systemStartTimestamp = nil; systemEndTimestamp = nil; systemDuration = 0
+        micHasUnsavedAudio = false; systemHasUnsavedAudio = false
         return batches
     }
 
@@ -100,6 +107,7 @@ public actor AudioBufferManager {
 
     private func flushMicBuffer() -> AudioBatch? {
         guard !micBuffer.isEmpty, let start = micStartTimestamp else { return nil }
+        micHasUnsavedAudio = false
 
         let batch = AudioBatch(
             audioData: micBuffer,
@@ -130,6 +138,7 @@ public actor AudioBufferManager {
 
     private func flushSystemBuffer() -> AudioBatch? {
         guard !systemBuffer.isEmpty, let start = systemStartTimestamp else { return nil }
+        systemHasUnsavedAudio = false
 
         let batch = AudioBatch(
             audioData: systemBuffer,

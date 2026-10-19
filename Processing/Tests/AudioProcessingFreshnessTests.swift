@@ -234,7 +234,9 @@ final class AudioProcessingFreshnessTests: XCTestCase {
     }
 
     func testReverseRecentWindowsAndOldLaneHopPreserveWordsTimesAndEmptyPrompt() async throws {
-        let newestStart = Date().addingTimeInterval(-60)
+        // Outside the two-minute live lane, the existing recent/history catch-up
+        // order remains newest-first. Live windows have their own chronological test.
+        let newestStart = Date().addingTimeInterval(-180)
         let old = try await seed(at: newestStart.addingTimeInterval(-48 * 3_600))
         // These windows overlap by the production five seconds, but will be selected
         // backwards. Repeated leading/trailing words would be wrongly removed if the

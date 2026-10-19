@@ -47,6 +47,7 @@ public actor AudioProcessingManager {
     private let governor: (any BackgroundProcessingProtocol)?
     private var ingestionTask: Task<Void, Never>?
     private var admissionTask: Task<BackgroundProcessingPermit, Error>?
+    private var admissionKind: BackgroundProcessingKind?
     private var pendingGeneration: UInt64 = 0
     /// Attempt budget survives quiet-time revocation for this manager's lifetime. Durable
     /// rows remain the queue; a new process starts by giving current recordings a turn.
@@ -241,6 +242,7 @@ public actor AudioProcessingManager {
         pendingGeneration &+= 1
         if governor != nil, persistedBatch.pendingRecord != nil {
             // The legacy SQLite pending row is the queue. No deferred PCM or metadata array.
+            if admissionKind == .ambientSpeech { admissionTask?.cancel() }
             startLiveTranscriptionWorkerIfNeeded()
             return
         }
@@ -278,7 +280,17 @@ public actor AudioProcessingManager {
             guard let governor, let queries = transcriptionQueries, let writer = audioWriter,
                   !(transcriptionService is MockTranscriptionService) else { return }
             let generation = pendingGeneration
-            let request = Task { try await governor.acquire(.ambientSpeech) }
+            let fresh: UntranscribedBatch?
+            do { fresh = try await queries.getFreshPendingBatch() }
+            catch {
+                if Task.isCancelled { break }
+                Log.warning("[AudioProcessingManager] Fresh queue read failed; retaining pending work", category: .processing)
+                try? await Task.sleep(for: .seconds(5))
+                continue
+            }
+            let kind: BackgroundProcessingKind = fresh == nil ? .ambientSpeech : .freshTranscription
+            let request = Task { try await governor.acquire(kind) }
+            admissionKind = kind
             admissionTask = request
             let permit: BackgroundProcessingPermit
             do {
@@ -287,12 +299,17 @@ public actor AudioProcessingManager {
                 } onCancel: { request.cancel() }
             } catch {
                 admissionTask = nil
+                admissionKind = nil
                 if Task.isCancelled { break }
                 if !liveTranscriptionQueue.isEmpty { continue }
+                // New durable audio deliberately interrupts a historical wait.
+                // Re-evaluate its lane immediately; this is not a model failure.
+                if error is CancellationError, generation != pendingGeneration { continue }
                 try? await Task.sleep(for: .seconds(5), clock: .continuous)
                 continue
             }
             admissionTask = nil
+            admissionKind = nil
             if Task.isCancelled || !liveTranscriptionQueue.isEmpty {
                 await governor.release(permit)
                 continue
@@ -304,7 +321,12 @@ public actor AudioProcessingManager {
                     try await BackgroundProcessingContext.$permit.withValue(permit) {
                         try BackgroundProcessingContext.checkCancellation()
                         let recent: UntranscribedBatch?
-                        if consecutiveRecentAutomaticAttempts < 3 {
+                        if kind == .freshTranscription {
+                            recent = try await queries.getFreshPendingBatch()
+                            // It may have aged out or been completed while waiting for
+                            // admission. Never use a fresh permit for old/repair work.
+                            guard recent != nil else { return false }
+                        } else if consecutiveRecentAutomaticAttempts < 3 {
                             recent = try await queries.getRecentPendingBatch()
                         } else {
                             recent = nil

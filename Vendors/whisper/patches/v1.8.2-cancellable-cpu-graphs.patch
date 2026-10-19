@@ -1,0 +1,150 @@
+diff --git a/src/whisper.cpp b/src/whisper.cpp
+index 33e556c..d3ada79 100644
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -191,7 +191,27 @@ static bool ggml_graph_compute_helper(
+       ggml_backend_sched_t   sched,
+         struct ggml_cgraph * graph,
+                        int   n_threads,
+-                      bool   sched_reset = true) {
++                      bool   sched_reset = true,
++       ggml_abort_callback   abort_callback = nullptr,
++                      void * abort_callback_data = nullptr) {
++    // Backends retain this callback until replaced. Clear it on every exit so
++    // the next inference never observes a caller's expired cancellation token.
++    struct abort_callback_scope {
++        ggml_backend_sched_t sched;
++        ~abort_callback_scope() {
++            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
++                ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
++                ggml_backend_dev_t dev = ggml_backend_get_device(backend);
++                ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
++                auto set_abort = reg ? reinterpret_cast<ggml_backend_set_abort_callback_t>(
++                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_abort_callback")) : nullptr;
++                if (set_abort) {
++                    set_abort(backend, nullptr, nullptr);
++                }
++            }
++        }
++    } callback_scope { sched };
++
+     for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+         ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+         ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+@@ -201,9 +221,17 @@ static bool ggml_graph_compute_helper(
+         if (fn_set_n_threads) {
+             fn_set_n_threads(backend, n_threads);
+         }
++        auto set_abort = reg ? reinterpret_cast<ggml_backend_set_abort_callback_t>(
++            ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_abort_callback")) : nullptr;
++        if (set_abort) {
++            set_abort(backend, abort_callback, abort_callback_data);
++        }
+     }
+
+-    const bool t = (ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
++    // graph_compute synchronizes all scheduled backends before returning. The
++    // callback scope therefore outlives every native callback on these graphs.
++    const bool t = !(abort_callback && abort_callback(abort_callback_data)) &&
++        (ggml_backend_sched_graph_compute(sched, graph) == GGML_STATUS_SUCCESS);
+
+     if (!t || sched_reset) {
+         ggml_backend_sched_reset(sched);
+@@ -2399,7 +2427,7 @@ static bool whisper_encode_internal(
+         }
+
+         if (!whisper_encode_external(wstate)) {
+-            if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++            if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
+                 return false;
+             }
+         } else {
+@@ -2424,7 +2452,7 @@ static bool whisper_encode_internal(
+             return false;
+         }
+
+-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
+             return false;
+         }
+     }
+@@ -2440,7 +2468,7 @@ static bool whisper_encode_internal(
+             return false;
+         }
+
+-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
+             return false;
+         }
+     }
+@@ -2937,7 +2965,7 @@ static bool whisper_decode_internal(
+
+         logits = ggml_graph_node(gf, -1);
+
+-        if (!ggml_graph_compute_helper(sched, gf, n_threads)) {
++        if (!ggml_graph_compute_helper(sched, gf, n_threads, true, abort_callback, abort_callback_data)) {
+             return false;
+         }
+     }
+@@ -4014,12 +4042,14 @@ const char * whisper_lang_str_full(int id) {
+     return nullptr;
+ }
+
+-int whisper_lang_auto_detect_with_state(
++static int whisper_lang_auto_detect_internal(
+         struct whisper_context * ctx,
+           struct whisper_state * state,
+                            int   offset_ms,
+                            int   n_threads,
+-                         float * lang_probs) {
++                         float * lang_probs,
++           ggml_abort_callback   abort_callback,
++                          void * abort_callback_data) {
+     const int seek = offset_ms/10;
+
+     if (seek < 0) {
+@@ -4033,14 +4063,16 @@ int whisper_lang_auto_detect_with_state(
+     }
+
+     // run the encoder
+-    if (whisper_encode_with_state(ctx, state, seek, n_threads) != 0) {
++    if (!whisper_encode_internal(*ctx, *state, seek, n_threads, abort_callback, abort_callback_data)) {
+         WHISPER_LOG_ERROR("%s: failed to encode\n", __func__);
+         return -6;
+     }
+
+     const std::vector<whisper_token> prompt = { whisper_token_sot(ctx) };
+
+-    if (whisper_decode_with_state(ctx, state, prompt.data(), prompt.size(), 0, n_threads) != 0) {
++    whisper_batch_prep_legacy(state->batch, prompt.data(), prompt.size(), 0, 0);
++    whisper_kv_cache_seq_rm(state->kv_self, 0, 0, -1);
++    if (!whisper_decode_internal(*ctx, *state, state->batch, n_threads, false, abort_callback, abort_callback_data)) {
+         WHISPER_LOG_ERROR("%s: failed to decode\n", __func__);
+         return -7;
+     }
+@@ -4089,6 +4121,15 @@ int whisper_lang_auto_detect_with_state(
+     return logits_id[0].second;
+ }
+
++int whisper_lang_auto_detect_with_state(
++        struct whisper_context * ctx,
++          struct whisper_state * state,
++                           int   offset_ms,
++                           int   n_threads,
++                         float * lang_probs) {
++    return whisper_lang_auto_detect_internal(ctx, state, offset_ms, n_threads, lang_probs, nullptr, nullptr);
++}
++
+ int whisper_lang_auto_detect(
+         struct whisper_context * ctx,
+                            int   offset_ms,
+@@ -6808,7 +6849,8 @@ int whisper_full_with_state(
+     if (params.language == nullptr || strlen(params.language) == 0 || strcmp(params.language, "auto") == 0 || params.detect_language) {
+         std::vector<float> probs(whisper_lang_max_id() + 1, 0.0f);
+
+-        const auto lang_id = whisper_lang_auto_detect_with_state(ctx, state, 0, params.n_threads, probs.data());
++        const auto lang_id = whisper_lang_auto_detect_internal(ctx, state, 0, params.n_threads,
++            probs.data(), params.abort_callback, params.abort_callback_user_data);
+         if (lang_id < 0) {
+             WHISPER_LOG_ERROR("%s: failed to auto-detect language\n", __func__);
+             return -3;

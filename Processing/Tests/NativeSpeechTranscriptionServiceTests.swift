@@ -121,9 +121,11 @@ final class NativeSpeechTranscriptionServiceTests: XCTestCase {
             try await service.initialize()
             let initialization = Self.seconds(initStart.duration(to: .now))
             let start = ContinuousClock.now
-            let result = try await service.transcribeWithTimestamps(
-                pcm, wordLevel: true, initialPrompt: nil, languageHint: "en"
-            )
+            let result = try await BackgroundProcessingContext.$permit.withValue(.init(threadCount: 2)) {
+                try await service.transcribeWithTimestamps(
+                    pcm, wordLevel: true, initialPrompt: nil, languageHint: "en"
+                )
+            }
             let elapsed = Self.seconds(start.duration(to: .now))
             var report: [String: Any] = [
                 "backend": name,

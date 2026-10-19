@@ -23,6 +23,27 @@ final class FramePipelinePersistenceTests: XCTestCase {
         database = nil
     }
 
+    func testGovernorLaneSelectionNeverClaimsDeferredHistoryAsFreshWork() async throws {
+        let historical = try await insertPendingFrame()
+        let fresh = try await insertPendingFrame(capturedAt: Date())
+        try await execute("UPDATE processing_queue SET priority=10 WHERE frameId=\(fresh)")
+        let pending = try await database.pendingFrameProcessingLanes()
+        XCTAssertEqual(Set(pending), [.current, .historical])
+        let stillPending = try await database.getFrameProcessingStatuses(frameIDs: [historical, fresh])
+        XCTAssertEqual(stillPending[historical], 0)
+        XCTAssertEqual(stillPending[fresh], 0, "Demand registration must not claim either frame")
+        let noManual = try await database.dequeueFrameForProcessing(lane: .manual)
+        XCTAssertNil(noManual)
+        let current = try await database.dequeueFrameForProcessing(lane: .current)
+        XCTAssertEqual(current?.frameID, fresh)
+        let noCurrent = try await database.dequeueFrameForProcessing(lane: .current)
+        XCTAssertNil(noCurrent)
+        let statuses = try await database.getFrameProcessingStatuses(frameIDs: [historical])
+        XCTAssertEqual(statuses[historical], 0, "A governor denial must leave history durably pending")
+        let old = try await database.dequeueFrameForProcessing(lane: .historical)
+        XCTAssertEqual(old?.frameID, historical)
+    }
+
     func testDeferredClaimReturnsToDurableQueueAtomically() async throws {
         let frameID = try await insertPendingFrame()
         _ = try await database.dequeueFrameForProcessing()

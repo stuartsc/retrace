@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "packages": {"mlx-whisper": "0.4.3", "pyannote.audio": "4.0.4", "torch": "2.11.0", "numpy": "2.4.6", "PyYAML": "6.0.3"},
+  "outlook": {
+    "voice_match.py": "2132d1a32e5aad3301cc878a517fce95438f6f3bce4ccefcb2b85aa0bc705127",
+    "retrace_diarizer.py": "77e6d6686868d32948177e6542ca5922791b6a8629d115d0db0f1e7be8f39e8a"
+  },
+  "models": {
+    "mlx-community/whisper-large-v3-mlx": {
+      "revision": "49e6aa286ad60c14352c404340ded53710378a11",
+      "files": {
+        "config.json": "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3",
+        "weights.npz": "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d"
+      }
+    },
+    "pyannote/speaker-diarization-3.1": {
+      "revision": "84fd25912480287da0247647c3d2b4853cb3ee5d",
+      "files": {"config.yaml": "04ad9cd59a93c3a7c754200ecc9e1c4ba87bf1657ef8a4debf7555e711daeeda"}
+    },
+    "pyannote/segmentation-3.0": {
+      "revision": "e66f3d3b9eb0873085418a7b813d3b369bf160bb",
+      "files": {"pytorch_model.bin": "da85c29829d4002daedd676e012936488234d9255e65e86dfab9bec6b1729298"}
+    },
+    "pyannote/wespeaker-voxceleb-resnet34-LM": {
+      "revision": "837717ddb9ff5507820346191109dc79c958d614",
+      "files": {"pytorch_model.bin": "366edf44f4c80889a3eb7a9d7bdf02c4aede3127f7dd15e274dcdb826b143c56"}
+    }
+  }
+}

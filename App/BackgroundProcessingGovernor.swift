@@ -95,13 +95,13 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         let explicitRequest = BackgroundProcessingContext.explicitRequest
         guard active == nil, !waiters.contains(where: { mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest) }),
               mayProcess(kind: kind, explicitRequest: explicitRequest) else { return nil }
-        let permit = BackgroundProcessingPermit(threadCount: environment.lowPowerMode ? 2 : 4)
+        let permit = BackgroundProcessingPermit(threadCount: threadCount(for: kind))
         active = permit
         activeKind = kind
         activeExplicitRequest = explicitRequest
-        consecutiveSpeech = kind == .ambientSpeech ? min(consecutiveSpeech + 1, 3) : 0
+        consecutiveSpeech = kind == .ambientSpeech || kind == .freshTranscription ? min(consecutiveSpeech + 1, 3) : 0
         consecutiveFreshOCR = kind == .freshOCR ? min(consecutiveFreshOCR + 1, 3) : 0
-        consecutivePreferred = kind == .freshOCR || kind == .ambientSpeech ? min(consecutivePreferred + 1, 3) : 0
+        consecutivePreferred = kind.isFresh || kind == .ambientSpeech ? min(consecutivePreferred + 1, 3) : 0
         return permit
     }
 
@@ -124,6 +124,10 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
                 waiters.append(Waiter(id: id, kind: kind, explicitRequest: explicitRequest,
                                       continuation: continuation, cancellation: cancellation))
                 if explicitRequest && !activeExplicitRequest { active?.cancellation.cancel() }
+                if kind.isFresh, !activeExplicitRequest, activeKind?.isFresh != true,
+                   mayProcess(kind: kind, explicitRequest: false) {
+                    active?.cancellation.cancel()
+                }
                 admit()
             }
         } onCancel: {
@@ -138,7 +142,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         // Explicit/manual probes and fresh OCR never consume the native quiet-
         // time grant. Otherwise an empty manual lane could end every scheduler
         // window before the historical lane gets a chance to claim its work.
-        let usedScheduledWindow = !activeExplicitRequest && activeKind != .freshOCR
+        let usedScheduledWindow = !activeExplicitRequest && activeKind?.isFresh != true
         active = nil
         activeKind = nil
         activeExplicitRequest = false
@@ -156,7 +160,13 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     public func updateEnvironment(_ value: BackgroundProcessingEnvironment) {
         environment = value
         if let sample = value.resourceUsage { resourcePolicy.update(sample, idleSeconds: value.idleSeconds) }
-        if !mayProcess(kind: activeKind, explicitRequest: activeExplicitRequest) { active?.cancellation.cancel() }
+        // An admitted, bounded fresh utterance may finish its own CPU burst. Killing
+        // it for raising the app average would repeatedly redo the same audio.
+        let finishingFreshBurst = activeKind?.isFresh == true && value.pressureAllowsProcessing &&
+            resourcePolicy.reason == .cpuBudget
+        if !finishingFreshBurst && !mayProcess(kind: activeKind, explicitRequest: activeExplicitRequest) {
+            active?.cancellation.cancel()
+        }
         if active == nil && !mayProcess { scheduler?.finish(deferred: true) }
         admit()
     }
@@ -164,13 +174,14 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     public func setProcessNow(_ enabled: Bool) {
         guard !closed else { return }
         processNow = enabled
-        if !enabled && !activeExplicitRequest { active?.cancellation.cancel() }
+        if !enabled && !activeExplicitRequest && activeKind?.isFresh != true { active?.cancellation.cancel() }
         admit()
     }
 
     public func snapshot() -> BackgroundProcessingSnapshot {
         .init(waitingCount: waiters.count, isRunning: active != nil, processNow: processNow,
-              isWaitingForQuietMoment: !closed && !waiters.isEmpty && !mayProcess, isClosed: closed,
+              isWaitingForQuietMoment: !closed && !waiters.isEmpty &&
+                !waiters.contains(where: { mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest) }), isClosed: closed,
               originalSpoolUnderPressure: originalSpoolUnderPressure, activeKind: activeKind,
               waitReason: waitReason, resourceUsage: environment.resourceUsage ?? .unavailable)
     }
@@ -238,7 +249,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         guard !closed, environment.pressureAllowsProcessing else { return false }
         if processNow || explicitRequest { return true }
         guard resourcePolicy.reason == nil else { return false }
-        if kind == .freshOCR { return true }
+        if kind?.isFresh == true { return true }
         return environment.idleSeconds.isFinite && environment.idleSeconds >= 300 && environment.systemAllowsProcessing
     }
 
@@ -247,7 +258,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         if !environment.pressureAllowsProcessing { return .resourcePressure }
         if processNow || activeExplicitRequest { return nil }
         if let reason = resourcePolicy.reason { return reason }
-        if activeKind == .freshOCR { return nil }
+        if activeKind?.isFresh == true || waiters.contains(where: { $0.kind.isFresh }) { return nil }
         if !environment.idleSeconds.isFinite || environment.idleSeconds < 300 { return .activeUse }
         return environment.systemAllowsProcessing ? nil : .systemDeferral
     }
@@ -256,6 +267,11 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         if let index = waiters.firstIndex(where: { $0.id == id }) {
             waiters.remove(at: index).continuation.resume(throwing: CancellationError())
         }
+    }
+
+    private func threadCount(for kind: BackgroundProcessingKind) -> Int {
+        if kind == .freshTranscription { return environment.lowPowerMode ? 1 : 2 }
+        return environment.lowPowerMode ? 2 : 4
     }
 
     private func admit() {
@@ -269,12 +285,18 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
                       let extraction = waiters.firstIndex(where: { $0.kind == .historicalOCR }) {
                 index = extraction
             } else if consecutivePreferred >= 3, let other = waiters.firstIndex(where: {
-                $0.kind != .freshOCR && $0.kind != .ambientSpeech &&
+                !$0.kind.isFresh && $0.kind != .ambientSpeech &&
                     mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest)
             }) {
                 // Alternating preferred kinds must not reset one another's
                 // budget and starve historical OCR or other queued work.
                 index = other
+            } else if let fresh = waiters.firstIndex(where: {
+                $0.kind == .freshTranscription && mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest)
+            }), consecutiveSpeech < 3 || !waiters.contains(where: {
+                $0.kind == .freshOCR && mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest)
+            }) {
+                index = fresh
             } else if let fresh = waiters.firstIndex(where: { $0.kind == .freshOCR && mayProcess(kind: .freshOCR, explicitRequest: false) }),
                       consecutiveFreshOCR < 3 || !waiters.contains(where: {
                           $0.kind != .freshOCR && mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest)
@@ -292,11 +314,11 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
                 waiter.continuation.resume(throwing: CancellationError())
                 continue
             }
-            consecutiveSpeech = waiter.kind == .ambientSpeech ? min(consecutiveSpeech + 1, 3) : 0
+            consecutiveSpeech = waiter.kind == .ambientSpeech || waiter.kind == .freshTranscription ? min(consecutiveSpeech + 1, 3) : 0
             consecutiveFreshOCR = waiter.kind == .freshOCR ? min(consecutiveFreshOCR + 1, 3) : 0
-            consecutivePreferred = waiter.kind == .freshOCR || waiter.kind == .ambientSpeech
+            consecutivePreferred = waiter.kind.isFresh || waiter.kind == .ambientSpeech
                 ? min(consecutivePreferred + 1, 3) : 0
-            let permit = BackgroundProcessingPermit(id: waiter.id, threadCount: environment.lowPowerMode ? 2 : 4,
+            let permit = BackgroundProcessingPermit(id: waiter.id, threadCount: threadCount(for: waiter.kind),
                                                     cancellation: waiter.cancellation)
             active = permit
             activeKind = waiter.kind

@@ -9,6 +9,14 @@ import Shared
 final class WhisperModelResidencyTests: XCTestCase {
     #if DEBUG
     func testNativePermitRevocationJoinsInferenceAndModelRemainsUsable() async throws {
+        try await assertNativePermitRevocation(languageHint: "en")
+    }
+
+    func testNativeAutomaticLanguageDetectionHonoursPermitRevocation() async throws {
+        try await assertNativePermitRevocation(languageHint: nil)
+    }
+
+    private func assertNativePermitRevocation(languageHint: String?) async throws {
         let modelPath = try Self.requiredEnvironment("RETRACE_WHISPER_WORD_TEST_MODEL_PATH")
         let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "authored", withExtension: "wav",
             subdirectory: "WhisperTimedWords"))
@@ -24,7 +32,7 @@ final class WhisperModelResidencyTests: XCTestCase {
         let permit = BackgroundProcessingPermit(threadCount: 2)
         let inference = Task.detached(priority: .utility) {
             try await BackgroundProcessingContext.$permit.withValue(permit) {
-                try await service.transcribeWithTimestamps(input, wordLevel: true, initialPrompt: nil, languageHint: "en")
+                try await service.transcribeWithTimestamps(input, wordLevel: true, initialPrompt: nil, languageHint: languageHint)
             }
         }
         await fulfillment(of: [entered], timeout: 30)
@@ -43,7 +51,7 @@ final class WhisperModelResidencyTests: XCTestCase {
         let result = try await service.transcribeWithTimestamps(fixture.pcm, wordLevel: false,
             initialPrompt: nil, languageHint: "en")
         XCTAssertFalse(result.text.isEmpty, "Cancellation must leave the native context reusable")
-        print("WHISPER_NATIVE_CANCELLATION join_seconds=\(seconds) reused_model_nonempty=\(!result.text.isEmpty)")
+        print("WHISPER_NATIVE_CANCELLATION language=\(languageHint ?? "automatic") join_seconds=\(seconds) reused_model_nonempty=\(!result.text.isEmpty)")
     }
     #endif
 

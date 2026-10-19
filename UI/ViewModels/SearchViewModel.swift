@@ -240,6 +240,7 @@ public class SearchViewModel: ObservableObject {
     @Published public var isSearching = false
     @Published public var isLoadingMore = false
     @Published public var error: String?
+    @Published public private(set) var audioResults: AudioSearchPage?
 
     // Filters
     @Published public var selectedAppFilters: Set<String>?  // nil = all apps, empty set also means all apps
@@ -389,6 +390,7 @@ public class SearchViewModel: ObservableObject {
     private let defaults: UserDefaults
     private nonisolated let cacheDirectory: URL
     private let searchDispatch: @Sendable (SearchQuery) async throws -> SearchResults
+    private let audioSearchDispatch: @Sendable (SearchQuery) async throws -> AudioSearchPage
     private let submissionMetrics: @MainActor (String, String?) -> Void
     private var cancellables = Set<AnyCancellable>()
 
@@ -497,11 +499,13 @@ public class SearchViewModel: ObservableObject {
     init(coordinator: AppCoordinator, defaults: UserDefaults, cacheDirectory: URL,
          startBackgroundWork: Bool = true,
          searchDispatch: (@Sendable (SearchQuery) async throws -> SearchResults)? = nil,
+         audioSearchDispatch: (@Sendable (SearchQuery) async throws -> AudioSearchPage)? = nil,
          submissionMetrics: (@MainActor (String, String?) -> Void)? = nil) {
         self.coordinator = coordinator
         self.defaults = defaults
         self.cacheDirectory = cacheDirectory
         self.searchDispatch = searchDispatch ?? { try await coordinator.search(query: $0) }
+        self.audioSearchDispatch = audioSearchDispatch ?? { try await coordinator.searchAudio(query: $0) }
         self.submissionMetrics = submissionMetrics ?? { query, filters in
             DashboardViewModel.recordSearch(coordinator: coordinator, query: query)
             if let filters {
@@ -532,6 +536,7 @@ public class SearchViewModel: ObservableObject {
                     self?.isSearching = false
                     self?.isLoadingMore = false
                     self?.results = nil
+                    self?.audioResults = nil
                     self?.committedSearchQuery = ""
                     self?.hasSubmittedSearch = false  // Reset so filters don't auto-update for new query
                     self?.resetSearchOrderToDefault()
@@ -1283,6 +1288,8 @@ public class SearchViewModel: ObservableObject {
     public func performSearch(query: String, trigger: String = "unknown") async {
         guard !query.isEmpty else {
             results = nil
+            audioResults = nil
+            searchGeneration += 1
             committedSearchQuery = ""
             clearInMemoryThumbnailCache()
             didReachPaginationEnd = false
@@ -1295,6 +1302,7 @@ public class SearchViewModel: ObservableObject {
         error = nil
 
         results = nil  // Clear old results immediately to prevent stale thumbnail loads
+        audioResults = nil
         savedScrollPosition = 0  // Reset scroll position for new search
         clearInMemoryThumbnailCache()  // Clear in-memory thumbnail cache for new search
         searchGeneration += 1  // Increment generation to invalidate in-flight thumbnail loads
@@ -1308,22 +1316,29 @@ public class SearchViewModel: ObservableObject {
             try Task.checkCancellation()
 
             let searchQuery = buildSearchQuery(query)
-
-            let searchResults = try await searchDispatch(searchQuery)
+            let searchScreens = contentType != .audio
+            let searchAudio = contentType != .ocr
+            async let audioPage = loadAudioPage(searchQuery, enabled: searchAudio)
+            let screenOutcome: Result<SearchResults, Error>
+            do {
+                screenOutcome = .success(searchScreens ? try await searchDispatch(searchQuery) :
+                    SearchResults(query: searchQuery, results: [], totalCount: 0, searchTimeMs: 0))
+            } catch { screenOutcome = .failure(error) }
+            let audio = await audioPage
 
             // Check for cancellation after the search completes
             try Task.checkCancellation()
             guard requestGeneration == searchGeneration else { return }
 
-            if !searchResults.results.isEmpty {
-                let firstResult = searchResults.results[0]
-            }
-
-            // Ensure UI updates happen on main actor
-            await MainActor.run {
+            audioResults = audio
+            switch screenOutcome {
+            case .success(let searchResults):
                 results = searchResults
                 nextPageCursor = searchResults.nextCursor
                 didReachPaginationEnd = searchResults.nextCursor == nil
+                isSearching = false
+            case .failure(let failure):
+                error = "Screen search unavailable: \(failure.localizedDescription)"
                 isSearching = false
             }
         } catch is CancellationError {
@@ -1340,6 +1355,13 @@ public class SearchViewModel: ObservableObject {
                 isSearching = false
             }
         }
+    }
+
+    private func loadAudioPage(_ query: SearchQuery, enabled: Bool) async -> AudioSearchPage? {
+        guard enabled else { return nil }
+        do { return try await audioSearchDispatch(query) }
+        catch is CancellationError { return nil }
+        catch { return AudioSearchPage(notice: "Audio search is unavailable. Refresh to retry; recordings are retained.") }
     }
 
     private func buildSearchQuery(_ text: String, offset: Int = 0, cursor: SearchPageCursor? = nil) -> SearchQuery {
@@ -2058,7 +2080,7 @@ public class SearchViewModel: ObservableObject {
     // MARK: - Statistics
 
     public var resultCount: Int {
-        results?.results.count ?? 0
+        (results?.results.count ?? 0) + (audioResults?.hits.count ?? 0)
     }
 
     public var hasResults: Bool {
@@ -2405,6 +2427,7 @@ public class SearchViewModel: ObservableObject {
 
         // Clear results and query
         results = nil
+        audioResults = nil
         searchQuery = ""
         committedSearchQuery = ""
         resetSearchOrderToDefault()
@@ -2432,6 +2455,7 @@ public class SearchViewModel: ObservableObject {
         currentLoadMoreTask = nil
         isSearching = false
         isLoadingMore = false
+        searchGeneration += 1
     }
 
     deinit {

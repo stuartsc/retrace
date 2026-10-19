@@ -1,137 +1,73 @@
-# Bundled whisper.cpp Library
+# Bundled whisper.cpp
 
-This directory contains the pre-compiled whisper.cpp library bundled with Retrace to enable self-contained builds.
+This checkout carries an **arm64** macOS 13+ build of whisper.cpp **v1.8.2**,
+upstream commit `4979e04f5dcaccb36057e059bbaed8a2f5288315`, with a narrow CPU
+cancellation patch. It is not a universal binary. The public `whisper.h` matches
+that upstream commit byte for byte (SHA-256
+`0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be`).
 
-## Contents
+`lib/` contains `libwhisper.dylib`, its two versioned aliases, and five retained
+ggml libraries: base, CPU, BLAS, Metal and the backend registry. The aliases are
+regular copies. Swift uses `module.modulemap` and the headers under `include/`.
+Packaged apps resolve libraries from `Contents/lib`; release verification must
+reject developer-directory runtime paths. Models are selected/downloaded by the
+app and stored outside the application bundle.
 
-```
-Vendors/whisper/
-├── lib/
-│   └── libwhisper.dylib   # Pre-compiled universal binary (arm64 + x86_64)
-├── include/
-│   ├── whisper.h          # Main whisper.cpp header
-│   └── ggml/              # GGML dependency headers
-│       ├── ggml.h
-│       ├── ggml-cpu.h
-│       └── ... (other ggml headers)
-├── module.modulemap       # Swift module bridge
-└── README.md             # This file
-```
+## CPU cancellation repair
 
-## Why Bundled?
+[`patches/v1.8.2-cancellable-cpu-graphs.patch`](patches/v1.8.2-cancellable-cpu-graphs.patch)
+passes the owned abort token into each scheduled encoder/decoder graph and the
+private language-detection path. A scoped cleanup clears borrowed backend
+callbacks only after synchronous graph execution has joined. The public ABI and
+uncancelled graph operations stay unchanged.
 
-**Previous Approach**: Required manual whisper.cpp installation
-- ❌ Build failed if not installed
-- ❌ Machine-specific paths in Package.swift
-- ❌ Hard to onboard new developers
+The CPU backend checks cancellation between graph nodes. An individual BLAS
+operation and external encoders remain noninterruptible. The generic registry
+does not expose Metal cancellation; this patch does not establish Metal support
+or a worst-case bound for every model and input.
 
-**Current Approach**: Bundle pre-compiled library in repository
-- ✅ `git clone` → `swift build` → works immediately
-- ✅ No external installation needed
-- ✅ Consistent builds across machines
+On 19 October the real small-model tests joined cancellation in 0.0076 s with
+English selected and 0.0625 s during automatic language detection, then reused
+the model successfully. The unpatched English case took 12.233 s. Full text,
+timed words and spans on both uncancelled authored regressions were unchanged.
+See [the recovery ledger](../../docs/recovery-20261019.md) for limits and receipts.
 
-## Runtime Model Downloads
+## Rebuild the patched library
 
-The whisper.cpp library is bundled, but **AI models are downloaded at runtime** on first app launch:
+Use an isolated source/build directory. Verify the exact upstream commit, apply
+the versioned patch with `git apply --check` followed by `git apply`, then build:
 
-- **Whisper Small Model** (~465 MB): For speech-to-text transcription
-- **Nomic Embed v1.5** (~80 MB): For semantic search embeddings
-
-Models are downloaded to: `{AppPaths.storageRoot}/models/` (default: `~/Library/Application Support/Retrace/models/`, configurable in Settings)
-
-This approach:
-- Keeps repository size small (~400 KB for library vs ~545 MB for models)
-- Gives users control over downloads
-- Allows graceful degradation if downloads are skipped
-
-## Version
-
-- whisper.cpp: Latest as of 2025-12-13
-- Built on: macOS 13+
-- Architecture: Universal (arm64 + x86_64)
-
-## Rebuilding the Library
-
-If you need to rebuild `libwhisper.dylib` (e.g., to update whisper.cpp version):
-
-### 1. Build whisper.cpp
-
-```bash
-# Clone whisper.cpp
-git clone https://github.com/ggerganov/whisper.cpp.git
-cd whisper.cpp
-
-# Build as universal binary (arm64 + x86_64)
-cmake -B build \
-    -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
-    -DBUILD_SHARED_LIBS=ON \
-    -DWHISPER_METAL=ON \
-    -DWHISPER_COREML=ON
-
-cmake --build build --config Release
+```sh
+cmake -S . -B build-retrace \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DBUILD_SHARED_LIBS=ON \
+  -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF \
+  -DWHISPER_COREML=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+  -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_OPENMP=OFF
+cmake --build build-retrace --config Release --parallel 2
 ```
 
-### 2. Copy Files
+Copy only `build-retrace/src/libwhisper.1.8.2.dylib` to a private staging location.
+Remove all three absolute build rpaths (`ggml/src`, `ggml/src/ggml-blas`, and
+`ggml/src/ggml-metal`) with `install_name_tool -delete_rpath`, then add
+`@loader_path` using `-add_rpath`. Ad-hoc sign the staged binary for local native
+tests. Confirm `otool -l` reports only `@loader_path` and `otool -L` retains the
+same ggml dependency names. Do not promote newly rebuilt ggml backends as part
+of this repair. Copy the verified native payload to all three vendored Whisper
+names; packaging copies `libwhisper.1.dylib` and re-signs it before the app.
 
-```bash
-# From whisper.cpp directory:
+The normalized, ad-hoc-signed payload tested for this repair has SHA-256
+`8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a`.
+Developer ID signing changes its file hash; retain both hashes in the release
+receipt. Compiler/signing differences can change hashes on a rebuild, so new
+payloads require their own native validation.
 
-# Copy library
-cp build/src/libwhisper.dylib /path/to/retrace/Vendors/whisper/lib/
-
-# Copy headers
-cp include/whisper.h /path/to/retrace/Vendors/whisper/include/
-cp -r ggml/include/* /path/to/retrace/Vendors/whisper/include/ggml/
-```
-
-### 3. Verify Universal Binary
-
-```bash
-lipo -info Vendors/whisper/lib/libwhisper.dylib
-# Should output: Architectures in the fat file: ... are: x86_64 arm64
-```
-
-### 4. Test Build
-
-```bash
-swift build
-swift test
-```
-
-## Integration with Swift
-
-The library is integrated via `module.modulemap`:
-
-```
-module CWhisper {
-    header "include/whisper.h"
-    export *
-}
-```
-
-And linked in `Package.swift`:
-
-```swift
-cSettings: [
-    .unsafeFlags([
-        "-I" + whisperIncludePath,
-        "-I" + whisperIncludePath + "/ggml",
-        "-fmodule-map-file=" + whisperPath + "/module.modulemap"
-    ])
-],
-linkerSettings: [
-    .unsafeFlags([
-        "-L" + whisperLibPath,
-        "-lwhisper",
-        "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"
-    ]),
-    .linkedFramework("Accelerate"),
-    .linkedFramework("CoreML"),
-    .linkedFramework("Metal")
-]
-```
+Run `WhisperModelResidencyTests` with `RETRACE_TEST_DISABLE_FILE_LOGGING=1` and
+an explicit `RETRACE_WHISPER_WORD_TEST_MODEL_PATH`. The tests use authored audio,
+cover English/automatic-language cancellation and reuse, and verify timed-word
+coverage. A suite that skips these tests is not native cancellation acceptance.
 
 ## License
 
-whisper.cpp is licensed under the MIT License.
-See: https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE
+The upstream MIT license is retained in [LICENSE](LICENSE) and must accompany
+redistributed libraries. Upstream: https://github.com/ggml-org/whisper.cpp.

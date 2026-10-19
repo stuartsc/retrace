@@ -27,6 +27,8 @@ final class AudioProcessingGovernorTests: XCTestCase {
         let manager = makeManager(queries, service, governor)
         let (stream, continuation) = AsyncStream<CapturedAudio>.makeStream()
         let task = Task { await manager.startProcessing(audioStream: stream) }
+        let waiting = await eventually { await governor.requestCount > 0 }
+        XCTAssertTrue(waiting, "Exercise arrival while an earlier queue wait is suspended")
         continuation.yield(Self.sample(at: 1_000, duration: 0.25))
         let didPersist = await eventually { (try? await queries.getUntranscribedBatchCount()) == 1 }
         XCTAssertTrue(didPersist, "Original AAC and pending row must be durable before admission")

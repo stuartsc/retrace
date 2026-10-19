@@ -21,6 +21,7 @@ Storage/
 ├── FileManager/
 │   ├── DirectoryManager.swift
 │   └── StorageHealthMonitor.swift
+│   └── StorageUsageMonitor.swift        # Bounded periodic metadata scan, categories, volume free space
 ├── VideoEncoder/
 │   ├── HEVCEncoder.swift
 │   └── FrameConverter.swift
@@ -34,6 +35,7 @@ Storage/
     ├── ExactFrameReaderTests.swift
     ├── ExactWALFrameTests.swift
     ├── StorageManagerTests.swift
+    ├── StorageUsageMonitorTests.swift   # Real file, hard-link, symlink, sparse-file and scan lifecycle checks
     ├── WALRecoveryTests.swift
     └── TestLogger.swift
 ```

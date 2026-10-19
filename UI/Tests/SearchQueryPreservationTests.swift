@@ -56,6 +56,29 @@ final class SearchQueryPreservationTests: XCTestCase {
         try FileManager.default.removeItem(at: cacheDirectory)
     }
 
+    func testOneSubmittedFieldSearchesScreenAndAudioAndContentFilterIsHonoured() async throws {
+        _ = try await insert("invoice total on screen")
+        let pointer = await database.getConnection()
+        let queries = AudioTranscriptionQueries(db: try XCTUnwrap(pointer))
+        let audioID = try await queries.insertTranscription(sessionID: nil, text: "invoice total spoken",
+            startTime: capturedAt, endTime: capturedAt.addingTimeInterval(3), source: .microphone,
+            confidence: 0.9, words: [], audioPath: "audio/authored.m4a")
+        let model = makeModel()
+        await model.performSearch(query: "invoice")
+        XCTAssertEqual(model.results?.results.count, 1)
+        XCTAssertEqual(model.audioResults?.hits.map(\.record.id), [audioID])
+        model.contentType = .audio
+        await model.performSearch(query: "invoice")
+        XCTAssertEqual(model.results?.results.count, 0)
+        XCTAssertEqual(model.audioResults?.hits.map(\.record.id), [audioID])
+        model.contentType = .ocr
+        await model.performSearch(query: "invoice")
+        XCTAssertEqual(model.results?.results.count, 1)
+        XCTAssertNil(model.audioResults)
+        model.clearSearchResults()
+        XCTAssertNil(model.audioResults)
+    }
+
     func testTypedQuestionKeepsMeaningfulQuotedConditionAfterWordFifteen() async throws {
         XCTAssertEqual(fifteenWords.split(separator: " ").count, 15)
         let accepted = try await insert("\(fifteenWords) approval not granted")
@@ -325,8 +348,10 @@ final class SearchQueryPreservationTests: XCTestCase {
 
     private func makeModel() -> SearchViewModel {
         let probe = probe!, database = database!
+        let adapter = adapter!
         let model = SearchViewModel(coordinator: coordinator, defaults: defaults, cacheDirectory: cacheDirectory,
             startBackgroundWork: false, searchDispatch: { query in try await probe.search(query) },
+            audioSearchDispatch: { query in try await adapter.searchAudio(query: query) },
             submissionMetrics: { [weak self] query, filters in
                 self?.submissions.append((query, filters))
                 let task = Task {

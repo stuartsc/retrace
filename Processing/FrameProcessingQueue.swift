@@ -44,6 +44,10 @@ public actor FrameProcessingQueue {
     private let storage: StorageProtocol
     private let processing: ProcessingProtocol
     private let search: SearchProtocol
+    private let governor: (any BackgroundProcessingProtocol)?
+    private var pendingAdmissions: [FrameProcessingLane: (id: UUID, task: Task<Void, Never>)] = [:]
+    private var readyAdmissions: [FrameProcessingLane: BackgroundProcessingPermit] = [:]
+    private var consecutiveFreshAdmissions = 0
 
     private let config: ProcessingQueueConfig
     private var workers: [Task<Void, Never>] = []
@@ -108,13 +112,15 @@ public actor FrameProcessingQueue {
         storage: StorageProtocol,
         processing: ProcessingProtocol,
         search: SearchProtocol,
-        config: ProcessingQueueConfig = .default
+        config: ProcessingQueueConfig = .default,
+        governor: (any BackgroundProcessingProtocol)? = nil
     ) {
         self.databaseManager = database
         self.storage = storage
         self.processing = processing
         self.search = search
         self.config = config
+        self.governor = governor
     }
 
     // MARK: - Power Configuration
@@ -149,16 +155,20 @@ public actor FrameProcessingQueue {
         }
 
         // Update priority and restart workers if priority changed
-        let priorityChanged = self.workerPriority != taskPriority
-        self.workerPriority = taskPriority
+        // Governed OCR has one stable worker. Preference changes must not replace
+        // an in-flight native worker and lose its joined shutdown ownership.
+        let effectivePriority: TaskPriority = governor == nil ? taskPriority : .utility
+        let effectiveCount = governor == nil ? workerCount : 1
+        let priorityChanged = self.workerPriority != effectivePriority
+        self.workerPriority = effectivePriority
 
         // Adjust worker count or restart if priority changed
         if isRunning {
             if priorityChanged {
                 // Must restart all workers to apply new priority
-                restartWorkers(count: workerCount)
-            } else if workers.count != workerCount {
-                adjustWorkerCount(to: workerCount)
+                restartWorkers(count: effectiveCount)
+            } else if workers.count != effectiveCount {
+                adjustWorkerCount(to: effectiveCount)
             }
         }
 
@@ -260,6 +270,106 @@ public actor FrameProcessingQueue {
         return QueuedFrame(queueID: result.queueID, frameID: result.frameID, retryCount: result.retryCount)
     }
 
+    private func dequeueAdmitted() async throws -> (QueuedFrame, BackgroundProcessingPermit?)? {
+        guard let governor else { return try await dequeue().map { ($0, nil) } }
+        let available = try await databaseManager.pendingFrameProcessingLanes()
+        for lane in Array(pendingAdmissions.keys) where !available.contains(lane) {
+            let pending = pendingAdmissions.removeValue(forKey: lane)
+            pending?.task.cancel()
+            if let permit = readyAdmissions.removeValue(forKey: lane) {
+                permit.cancellation.cancel()
+                await governor.release(permit)
+            }
+            await pending?.task.value
+        }
+        let lanes: [FrameProcessingLane] = consecutiveFreshAdmissions >= 3
+            ? [.manual, .historical, .current] : [.manual, .current, .historical]
+        for lane in lanes where available.contains(lane) {
+            try Task.checkCancellation()
+            guard let permit = readyAdmissions.removeValue(forKey: lane) else {
+                if pendingAdmissions[lane] == nil {
+                    let id = UUID()
+                    let kind: BackgroundProcessingKind = lane == .current ? .freshOCR : .historicalOCR
+                    let task = Task { [weak self] in
+                        do {
+                            let permit = try await BackgroundProcessingContext.$explicitRequest.withValue(lane == .manual) {
+                                try await governor.acquire(kind)
+                            }
+                            guard let self else { await governor.release(permit); return }
+                            await self.receiveAdmission(permit, lane: lane, id: id)
+                        } catch {
+                            await self?.admissionFailed(lane: lane, id: id)
+                        }
+                    }
+                    pendingAdmissions[lane] = (id, task)
+                }
+                continue
+            }
+            let admitted = pendingAdmissions.removeValue(forKey: lane)
+            await admitted?.task.value
+            do {
+                try Task.checkCancellation()
+                guard !permit.cancellation.isCancelled else { throw CancellationError() }
+                guard let result = try await databaseManager.dequeueFrameForProcessing(lane: lane) else {
+                    await governor.release(permit)
+                    continue
+                }
+                currentQueueDepth = max(0, currentQueueDepth - 1)
+                if lane == .current { consecutiveFreshAdmissions = min(3, consecutiveFreshAdmissions + 1) }
+                if lane == .historical { consecutiveFreshAdmissions = 0 }
+                return (QueuedFrame(queueID: result.queueID, frameID: result.frameID,
+                                    retryCount: result.retryCount, lane: lane), permit)
+            } catch {
+                await governor.release(permit)
+                if error is CancellationError, !Task.isCancelled { continue }
+                throw error
+            }
+        }
+        return nil
+    }
+
+    private func receiveAdmission(_ permit: BackgroundProcessingPermit, lane: FrameProcessingLane, id: UUID) async {
+        guard isRunning, pendingAdmissions[lane]?.id == id, !Task.isCancelled else {
+            permit.cancellation.cancel()
+            await governor?.release(permit)
+            return
+        }
+        readyAdmissions[lane] = permit
+        await wakeSignal.notify()
+    }
+
+    private func admissionFailed(lane: FrameProcessingLane, id: UUID) async {
+        if pendingAdmissions[lane]?.id == id { pendingAdmissions.removeValue(forKey: lane) }
+        // A closed/full governor retries on the worker's bounded one-second
+        // cadence, never a failure-notify-retry loop that burns the CPU budget.
+    }
+
+    private func clearAdmissions() async {
+        let requests = Array(pendingAdmissions.values)
+        let permits = Array(readyAdmissions.values)
+        pendingAdmissions.removeAll(); readyAdmissions.removeAll()
+        requests.forEach { $0.task.cancel() }
+        for permit in permits {
+            permit.cancellation.cancel()
+            await governor?.release(permit)
+        }
+        for request in requests { await request.task.value }
+    }
+
+    private func processAdmittedFrame(_ frame: QueuedFrame, permit: BackgroundProcessingPermit?) async throws -> ProcessFrameResult {
+        do {
+            let result = try await BackgroundProcessingContext.$permit.withValue(permit) {
+                try BackgroundProcessingContext.checkCancellation()
+                return try await processFrame(frame)
+            }
+            if let permit { await governor?.release(permit) }
+            return result
+        } catch {
+            if let permit { await governor?.release(permit) }
+            throw error
+        }
+    }
+
     /// Get current queue depth
     public func getQueueDepth() async throws -> Int {
         return try await databaseManager.getProcessingQueueDepth()
@@ -284,7 +394,7 @@ public actor FrameProcessingQueue {
         }
 
         let priority = workerPriority
-        for workerID in 0..<config.workerCount {
+        for workerID in 0..<(governor == nil ? config.workerCount : 1) {
             let task = Task(priority: priority) {
                 await runWorker(id: workerID)
             }
@@ -312,6 +422,7 @@ public actor FrameProcessingQueue {
         workers.removeAll()
         await wakeSignal.notify()
         for worker in stoppingWorkers { await worker.value }
+        await clearAdmissions()
         memoryReportTask?.cancel()
         memoryReportTask = nil
 
@@ -329,6 +440,7 @@ public actor FrameProcessingQueue {
         while isRunning && !Task.isCancelled {
             // Check if OCR is disabled globally
             guard ocrEnabled else {
+                await clearAdmissions()
                 try? await Task.sleep(for: .nanoseconds(Int64(1_000_000_000)), clock: .continuous) // 1s poll when disabled
                 if Task.isCancelled { break }
                 continue
@@ -336,6 +448,7 @@ public actor FrameProcessingQueue {
 
             // Check if paused due to battery/low-power policy
             guard !isPausedForPowerState else {
+                await clearAdmissions()
                 try? await Task.sleep(for: .nanoseconds(Int64(2_000_000_000)), clock: .continuous) // 2s poll when paused by power policy
                 if Task.isCancelled { break }
                 continue
@@ -343,6 +456,7 @@ public actor FrameProcessingQueue {
 
             // Wait for database to be ready before attempting any operations
             guard await databaseManager.isReady() else {
+                await clearAdmissions()
                 // Log.debug("[Queue-DIAG] Worker \(id) waiting for database to be ready", category: .processing)
                 try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 500ms
                 if Task.isCancelled { break }
@@ -350,6 +464,7 @@ public actor FrameProcessingQueue {
             }
 
             if shouldBackOffForResidentMemory() {
+                await clearAdmissions()
                 try? await Task.sleep(for: .seconds(memoryBackoffSeconds), clock: .continuous)
                 if Task.isCancelled { break }
                 continue
@@ -358,7 +473,7 @@ public actor FrameProcessingQueue {
             do {
                 // Snapshot before the database await so an enqueue cannot be lost.
                 let generation = await wakeSignal.snapshot()
-                guard let queuedFrame = try await dequeue() else {
+                guard let (queuedFrame, permit) = try await dequeueAdmitted() else {
                     await wakeSignal.wait(after: generation, timeout: .seconds(1))
                     continue
                 }
@@ -369,8 +484,7 @@ public actor FrameProcessingQueue {
                 let startTime = Date()
                 let pacingStart = ContinuousClock.now
                 do {
-                    try Task.checkCancellation()
-                    let result = try await processFrame(queuedFrame)
+                    let result = try await processAdmittedFrame(queuedFrame, permit: permit)
 
                     // Handle deferred processing result
                     if case .deferredSourceNotReady = result {
@@ -378,7 +492,7 @@ public actor FrameProcessingQueue {
                         // The database expires automatic priority after 60 seconds
                         // of capture age, so old sources still join historical FIFO.
                         try await databaseManager.releaseFrameProcessingClaim(
-                            frameID: queuedFrame.frameID, priority: 10, retryCount: queuedFrame.retryCount
+                            frameID: queuedFrame.frameID, priority: queuedFrame.retryPriority, retryCount: queuedFrame.retryCount
                         )
                         currentQueueDepth += 1
                         try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 500ms before next attempt
@@ -399,9 +513,10 @@ public actor FrameProcessingQueue {
 
                 } catch is CancellationError {
                     try await databaseManager.releaseFrameProcessingClaim(
-                        frameID: queuedFrame.frameID, priority: 10, retryCount: queuedFrame.retryCount
+                        frameID: queuedFrame.frameID, priority: queuedFrame.retryPriority, retryCount: queuedFrame.retryCount
                     )
-                    break
+                    if Task.isCancelled { break }
+                    continue
                 } catch {
                     totalFailed += 1
                     relieveMallocPressure()
@@ -515,13 +630,13 @@ public actor FrameProcessingQueue {
         }
 
         // The database already claimed the frame atomically when it was dequeued.
-        try Task.checkCancellation()
+        try BackgroundProcessingContext.checkCancellation()
 
         let tFrame = CFAbsoluteTimeGetCurrent()
 
         // Run OCR
         let extractedText = try await processing.extractText(from: capturedFrame)
-        try Task.checkCancellation()
+        try BackgroundProcessingContext.checkCancellation()
 
         let tOCR = CFAbsoluteTimeGetCurrent()
 
@@ -947,6 +1062,8 @@ private struct QueuedFrame {
     let queueID: Int64
     let frameID: Int64
     let retryCount: Int
+    var lane: FrameProcessingLane? = nil
+    var retryPriority: Int { lane == .manual ? 75 : 10 }
 }
 
 private enum FrameProcessingFailure: Error, Sendable {

@@ -2063,6 +2063,10 @@ public struct DashboardView: View {
                     Text("Business evidence updated \(freshness, style: .relative)")
                         .foregroundColor(.retraceSecondary)
                 }
+                if fuseIntelViewModel.isShowingCachedData, let received = fuseIntelViewModel.lastUpdatedAt {
+                    Text("Cached \(received, style: .relative) ago")
+                        .foregroundColor(.retraceWarning)
+                }
             }
             .font(.retraceCaption2)
 
@@ -2390,7 +2394,7 @@ public struct DashboardView: View {
 
             Text(fuseIntelConnectionLabel == "Delayed"
                 ? "The local intel loop is taking longer than usual. Retrace keeps recording while it finishes; retry remains available."
-                : "Retrace keeps recording locally. Start the FuseIntel BFF on 127.0.0.1:9010 to restore the wider work feed.")
+                : "Retrace keeps recording locally. The configured FuseIntel service at \(fuseIntelViewModel.baseURL.host ?? "your primary Mac") is unavailable. Check the primary Mac and its private connection, then retry.")
                 .font(.retraceCaption2)
                 .foregroundColor(.retraceSecondary)
                 .multilineTextAlignment(.center)
@@ -2547,13 +2551,13 @@ public struct DashboardView: View {
                         .font(.retraceCaptionMedium)
                         .foregroundColor(.retraceSuccess)
 
-                    Text("Activity Pulse")
+                    Text("Recent work")
                         .font(.retraceCalloutMedium)
                         .foregroundColor(.retracePrimary)
 
                     Spacer()
 
-                    Text("LOCAL · LIVE")
+                    Text("LAST 10 MIN")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
                         .tracking(0.7)
                         .foregroundColor(.retraceSuccess)
@@ -2564,7 +2568,7 @@ public struct DashboardView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("WORKING ON NOW")
+                    Text("LATEST CAPTURED CONTEXT")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
                         .tracking(0.8)
                         .foregroundColor(.retraceSuccess)
@@ -2626,15 +2630,15 @@ public struct DashboardView: View {
                 HStack(spacing: 6) {
                     activityPulseMetric(
                         value: activityDurationLabel(liveActivityBrief.duration),
-                        label: "window"
+                        label: "sample span"
                     )
                     activityPulseMetric(
                         value: "\(liveActivityBrief.capturedMomentCount)",
                         label: "moments"
                     )
                     activityPulseMetric(
-                        value: "\(liveActivityBrief.appSwitchCount)",
-                        label: "switches"
+                        value: "\(liveActivityBrief.speechSegmentCount)",
+                        label: "speech clips"
                     )
                 }
 
@@ -2903,6 +2907,7 @@ public struct DashboardView: View {
             return "Delayed"
         }
         guard let snapshot = fuseIntelViewModel.snapshot else { return "Offline" }
+        if fuseIntelViewModel.isShowingCachedData { return "Cached" }
         if fuseIntelViewModel.errorMessage != nil { return "Stale" }
         if snapshot.commandEnvelope.degraded || snapshot.feedEnvelope.degraded || !fuseIntelViewModel.warnings.isEmpty {
             return "Degraded"
@@ -2918,7 +2923,7 @@ public struct DashboardView: View {
         switch fuseIntelConnectionLabel {
         case "Connected": return .retraceSuccess
         case "Connecting": return .retraceAccent
-        case "Stale", "Degraded", "Delayed": return .retraceWarning
+        case "Cached", "Stale", "Degraded", "Delayed": return .retraceWarning
         default: return .retraceSecondary
         }
     }
@@ -4027,11 +4032,13 @@ public struct DashboardView: View {
             guard !Task.isCancelled else { return }
 
             var seenFrameIDs = Set<FrameID>()
+            let now = Date()
             let usefulFrames = (frames.filter { !isRetraceActivityFrame($0) } + recentActivityFrames)
                 .sorted { $0.frame.timestamp > $1.frame.timestamp }
+                .filter { $0.frame.timestamp <= now && now.timeIntervalSince($0.frame.timestamp) <= RetraceActivityBriefPolicy.recentWindowSeconds }
                 .filter { seenFrameIDs.insert($0.frame.id).inserted }
             recentActivityFrames = Array(usefulFrames.prefix(RetraceActivityBriefPolicy.maximumMoments))
-            latestLiveContextFrame = frames.first
+            latestLiveContextFrame = usefulFrames.first
         } catch {
             Log.warning("[Dashboard] Unable to refresh latest live screen context: \(error)", category: .ui)
         }

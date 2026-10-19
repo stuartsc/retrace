@@ -138,6 +138,8 @@ public struct SettingsView: View {
     }
 
     // MARK: General Settings
+    @State private var fuseIntelAddress = FuseIntelConnectionConfiguration.configuredURL.absoluteString
+    @State private var fuseIntelAddressMessage: String?
     @AppStorage("launchAtLogin", store: settingsStore) private var launchAtLogin = SettingsDefaults.launchAtLogin
     @AppStorage("showMenuBarIcon", store: settingsStore) private var showMenuBarIcon = SettingsDefaults.showMenuBarIcon
     @AppStorage("theme", store: settingsStore) private var theme: ThemePreference = SettingsDefaults.theme
@@ -1105,12 +1107,41 @@ public struct SettingsView: View {
             updatesCard
             keyboardShortcutsCard
             startupCard
+            fuseIntelConnectionCard
             appearanceCard
             aboutSupportCard
         }
     }
 
     // MARK: - General Cards (extracted for search)
+
+    private var fuseIntelConnectionCard: some View {
+        ModernSettingsCard(title: "Operating Brief connection", icon: "network") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Brief, Signals and Ahead come from FuseIntel on your primary Mac. Recording and local search continue when it is offline.")
+                    .font(.retraceCaption).foregroundColor(.retraceSecondary)
+                HStack {
+                    TextField("Private FuseIntel address", text: $fuseIntelAddress)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Private FuseIntel address")
+                    Button("Save") {
+                        guard let url = FuseIntelConnectionConfiguration.validatedURL(fuseIntelAddress) else {
+                            fuseIntelAddressMessage = "Use a localhost or Tailscale address, without a path or password."
+                            recordSettingsUtilityAction("fuseintel_address_invalid")
+                            return
+                        }
+                        settingsStore.set(url.absoluteString, forKey: FuseIntelConnectionConfiguration.defaultsKey)
+                        fuseIntelAddress = url.absoluteString
+                        fuseIntelAddressMessage = "Saved. Live will use this connection on its next refresh."
+                        recordSettingsUtilityAction("fuseintel_address_saved")
+                    }
+                }
+                if let message = fuseIntelAddressMessage {
+                    Text(message).font(.retraceCaption).foregroundColor(.retraceSecondary)
+                }
+            }
+        }
+    }
 
     @ViewBuilder
     private var keyboardShortcutsCard: some View {
@@ -2102,6 +2133,7 @@ public struct SettingsView: View {
 
     private var storageSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            StorageUsageCard(coordinator: coordinatorWrapper.coordinator)
             rewindDataCard
             databaseLocationsCard
             retentionPolicyCard

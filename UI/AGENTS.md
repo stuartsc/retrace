@@ -9,7 +9,12 @@ You are the **UI** agent responsible for building the SwiftUI interface for Retr
 The October 1 V23 CPU repair adds `Components/ResourceUsageCard.swift` and a
 System Monitor audio-preparation status/Process now control. Views read the
 App-owned cached sampler; opening a view must not start another resource loop.
-Current screen OCR settings remain in force in this narrow branch.
+The October 19 recovery candidate shares admission with current/historical OCR.
+`SearchViewModel` sends the same committed query to screen and audio readers;
+`SpotlightSearchOverlay` opens a freshly validated exact transcript without
+substituting a nearby screen. `TranscriptWindowController.showExactSearchResult`
+pins that row independently of timeline refresh. `FuseIntelSnapshotCache` keeps
+an origin-bound last-good brief; Recent work uses only a ten-minute window.
 
 ```
 UI/
@@ -43,6 +48,7 @@ UI/
 │   └── Settings/
 │       └── SettingsView.swift           # Settings root and all General/Capture/Storage/Privacy/Power sections
 ├── Components/
+│   ├── StorageUsageCard.swift          # Periodic categorized accounting, cached reads and explicit refresh
 │   ├── AppResourceBundle.swift          # Packaged app resource bundle and SwiftPM/Xcode fallbacks
 │   ├── ApplicationTerminationWorkflow.swift # Coalesced startup cancellation and async metrics/service shutdown before Quit
 │   ├── TimelineSessionMetrics.swift     # Shared duration/scrub write ownership and acknowledgement across hide/Quit/retry
@@ -60,6 +66,7 @@ UI/
 │   ├── SearchViewModel.swift
 │   ├── DashboardViewModel.swift
 │   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
+│   ├── FuseIntelSnapshotCache.swift      # Bounded origin-bound last-good brief, off-main disk I/O
 │   └── SettingsViewModel.swift
 └── Tests/
     ├── DashboardSavedRecordingsTests.swift # Pending Live recordings and owned refresh/playback lifetime

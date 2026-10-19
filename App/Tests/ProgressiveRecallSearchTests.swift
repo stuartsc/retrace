@@ -15,6 +15,73 @@ final class ProgressiveRecallSearchTests: XCTestCase {
         (.relevant, .newestFirst), (.all, .newestFirst), (.all, .oldestFirst)
     ]
 
+    func testAudioSearchFindsExactPhraseExcludesOldPassAndRejectsChangedOrDeletedHits() async throws {
+        try await withStore(source: .native) { fixture in
+            let queries = AudioTranscriptionQueries(db: fixture.nativeConnection.getConnection()!)
+            let insert: (String, Int, String) async throws -> Int64 = { text, pass, path in
+                try await queries.insertTranscription(sessionID: nil, text: text,
+                    startTime: self.start, endTime: self.start.addingTimeInterval(5),
+                    source: .microphone, confidence: 0.9, words: [], audioPath: path,
+                    transcriptionPass: pass, batchAudioPath: path)
+            }
+            _ = try await insert("invoice total obsolete", 1, "audio/a.m4a")
+            let expected = try await insert("invoice total forty two dollars", 2, "audio/a.m4a")
+            _ = try await insert("invoice total private", 1, "audio/b.m4a")
+            let query = SearchQuery(text: "\"invoice total\" -private")
+            let page = try await fixture.adapter.searchAudio(query: query)
+            XCTAssertEqual(page.hits.map(\.record.id), [expected])
+            let hit = try XCTUnwrap(page.hits.first)
+            let resolved = try await fixture.adapter.resolveAudioSearchHit(hit)
+            XCTAssertEqual(resolved.audioPath, "audio/a.m4a")
+            XCTAssertEqual(resolved.startTime, self.start)
+            try fixture.nativeConnection.execute(sql: "UPDATE audio_captures SET text='changed' WHERE id=\(expected)")
+            do { _ = try await fixture.adapter.resolveAudioSearchHit(hit); XCTFail("Changed text must invalidate selection") }
+            catch AudioSearchError.changed {}
+            try fixture.nativeConnection.execute(sql: "DELETE FROM audio_captures WHERE id=\(expected)")
+            do { _ = try await fixture.adapter.resolveAudioSearchHit(hit); XCTFail("Deleted row must not resolve nearby audio") }
+            catch AudioSearchError.changed {}
+        }
+    }
+
+    func testAudioSearchBoundsResultsBeforePublishingAndReportsUnsupportedScreenFilters() async throws {
+        try await withStore(source: .native) { fixture in
+            let queries = AudioTranscriptionQueries(db: fixture.nativeConnection.getConnection()!)
+            for index in 0..<4 {
+                _ = try await queries.insertTranscription(sessionID: nil, text: "invoice amount \(index)",
+                    startTime: self.start.addingTimeInterval(Double(index)), endTime: self.start.addingTimeInterval(Double(index + 1)),
+                    source: .system, confidence: 0.9, words: [], audioPath: "audio/\(index).m4a")
+            }
+            let page = try await fixture.adapter.searchAudio(query: SearchQuery(text: "invoice", limit: 2))
+            XCTAssertEqual(page.hits.count, 2)
+            XCTAssertTrue(page.isTruncated)
+            XCTAssertGreaterThan(page.hits[0].record.startTime, page.hits[1].record.startTime)
+            let filtered = try await fixture.adapter.searchAudio(query: SearchQuery(text: "invoice", filters: .init(appBundleIDs: ["ghostty"])))
+            XCTAssertTrue(filtered.hits.isEmpty)
+            XCTAssertNotNil(filtered.notice, "Do not silently ignore a screen-specific filter for audio")
+            let dated = try await fixture.adapter.searchAudio(query: SearchQuery(text: "invoice", filters: .init(startDate: self.start.addingTimeInterval(2))))
+            XCTAssertEqual(dated.hits.count, 2)
+        }
+    }
+
+    func testWindowTitleIsSearchableAndExclusionsApplyAcrossTextAndTitle() async throws {
+        for source in [FrameSource.native, .rewind] {
+            try await withStore(source: source) { fixture in
+                try fixture.insert([
+                    Row(id: 1, timestamp: start, text: "compiler output", app: "com.mitchellh.ghostty", title: "Back In Time"),
+                    Row(id: 2, timestamp: start, text: "Back In Time notes", title: "private draft"),
+                    Row(id: 3, timestamp: start, text: "Back In Time private", title: "another terminal")
+                ])
+                for (mode, order) in modes {
+                    let result = try await collect(fixture.adapter, text: "\"Back In Time\" -private",
+                        limit: 1, mode: mode, order: order)
+                    XCTAssertEqual(result.map(\.id.value), [1])
+                    XCTAssertEqual(result.first?.metadata.windowName, "Back In Time")
+                    XCTAssertEqual(result.first?.source, source)
+                }
+            }
+        }
+    }
+
     func testConstrainedEvidenceSurvivesTwoThousandStrongerOutOfScopeHits() async throws {
         for source in [FrameSource.native, .rewind] {
             try await withStore(source: source) { fixture in
@@ -250,7 +317,7 @@ final class ProgressiveRecallSearchTests: XCTestCase {
         }
     }
 
-    func testQuerySemanticsPreservePhrasesExclusionsUnicodeAndTitleIsolation() async throws {
+    func testQuerySemanticsPreservePhrasesExclusionsUnicodeAcrossTextAndTitle() async throws {
         for source in [FrameSource.native, .rewind] {
             try await withStore(source: source) { fixture in
                 try fixture.insert([
@@ -260,7 +327,7 @@ final class ProgressiveRecallSearchTests: XCTestCase {
                 ])
                 for (mode, order) in modes {
                     let result = try await collect(fixture.adapter, text: "\"café contract\" -not", limit: 2, mode: mode, order: order)
-                    XCTAssertEqual(result.map(\.id.value), [1])
+                    XCTAssertEqual(Set(result.map(\.id.value)), [1, 3])
                     let empty = try await collect(fixture.adapter, text: "", limit: 2, mode: mode, order: order)
                     XCTAssertTrue(empty.isEmpty)
                 }

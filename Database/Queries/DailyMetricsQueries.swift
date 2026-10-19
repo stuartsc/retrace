@@ -58,6 +58,7 @@ public enum DailyMetricsQueries {
         case playbackToggled = "playback_toggled"
         case playbackSpeedChanged = "playback_speed_changed"
         case audioTranscriptPlayback = "audio_transcript_playback" // JSON {outcome,source}; categorical, no content or paths
+        case audioSearch = "audio_search" // categorical query/open outcomes, never transcript content
 
         // Recording/pause/system-monitor/settings metrics
         case recordingStartedFromMenu = "recording_started_from_menu"
@@ -67,6 +68,7 @@ public enum DailyMetricsQueries {
         case systemMonitorOpened = "system_monitor_opened"
         case backgroundProcessing = "background_processing"
         case resourceUsage = "resource_usage"
+        case storageUsage = "storage_usage" // metadata: action, categorical completion outcome
         case settingsSearchOpened = "settings_search_opened"
         case redactionRulesUpdated = "redaction_rules_updated"
         case systemMonitorSettingsOpened = "system_monitor_settings_opened"

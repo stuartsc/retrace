@@ -2606,47 +2606,14 @@ public actor DatabaseManager: DatabaseProtocol {
 
     /// Claim atomically: manual work first, then three current captures per historical turn.
     /// Automatic priorities expire after 60 seconds; all historical work shares FIFO order.
-    public func dequeueFrameForProcessing() async throws -> (queueID: Int64, frameID: Int64, retryCount: Int)? {
+    public func dequeueFrameForProcessing(lane admittedLane: FrameProcessingLane? = nil) async throws -> (queueID: Int64, frameID: Int64, retryCount: Int)? {
         guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
-        enum Lane { case manual, current, historical }
+        typealias Lane = FrameProcessingLane
         let currentCutoff = Schema.dateToTimestamp(Date().addingTimeInterval(-60))
         let selected = try PipelineSQL.transaction(db) { () -> (Int64, Int64, Int, Lane)? in
             func candidate(_ lane: Lane) throws -> (Int64, Int64, Int, Lane)? {
-                let condition: String
-                let index: String
-                let order: String
-                let values: [PipelineSQL.Value]
-                switch lane {
-                case .manual:
-                    condition = "pq.priority > 10"
-                    index = "idx_processing_queue_priority"
-                    order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
-                    values = []
-                case .current:
-                    condition = "pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?"
-                    index = "idx_processing_queue_priority"
-                    order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
-                    values = [.integer(currentCutoff)]
-                case .historical:
-                    condition = """
-                        (pq.priority IS NULL OR pq.priority <= 0 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt < ?))
-                        AND NOT EXISTS (
-                            SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
-                            WHERE preferred.frameId=pq.frameId AND
-                                (preferred.priority > 10 OR (preferred.priority BETWEEN 1 AND 10 AND f.createdAt >= ?))
-                        )
-                        """
-                    index = "idx_processing_queue_enqueued"
-                    order = "pq.enqueuedAt ASC,pq.id ASC"
-                    values = [.integer(currentCutoff), .integer(currentCutoff)]
-                }
-                return try PipelineSQL.query(db, """
-                    SELECT pq.id,pq.frameId,pq.retryCount,pq.priority
-                    FROM processing_queue pq INDEXED BY \(index)
-                    CROSS JOIN frame f ON f.id=pq.frameId
-                    WHERE f.processingStatus=0 AND \(condition)
-                    ORDER BY \(order) LIMIT 1
-                    """, values) { (sqlite3_column_int64($0, 0), sqlite3_column_int64($0, 1), Int(sqlite3_column_int($0, 2)), lane) }.first
+                guard admittedLane == nil || admittedLane == lane else { return nil }
+                return try nextFrameProcessingCandidate(db: db, lane: lane, cutoff: currentCutoff)
             }
             // Manual requests retain precedence without consuming the current/history budget.
             var item = try candidate(.manual)
@@ -2666,6 +2633,55 @@ public actor DatabaseManager: DatabaseProtocol {
         case .historical: consecutivePriorityClaims = 0
         }
         return (selected.0, selected.1, selected.2)
+    }
+
+    /// Reads at most one indexed candidate per lane without claiming any frame.
+    /// Owners may register asynchronous demand while their worker remains free.
+    public func pendingFrameProcessingLanes() throws -> [FrameProcessingLane] {
+        let db = try requireRecallConnection()
+        let cutoff = Schema.dateToTimestamp(Date().addingTimeInterval(-60))
+        return try [.manual, .current, .historical].filter {
+            try nextFrameProcessingCandidate(db: db, lane: $0, cutoff: cutoff) != nil
+        }
+    }
+
+    private func nextFrameProcessingCandidate(db: OpaquePointer, lane: FrameProcessingLane,
+        cutoff: Int64) throws -> (Int64, Int64, Int, FrameProcessingLane)? {
+        let condition: String
+        let index: String
+        let order: String
+        let values: [PipelineSQL.Value]
+        switch lane {
+        case .manual:
+            condition = "pq.priority > 10"
+            index = "idx_processing_queue_priority"
+            order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
+            values = []
+        case .current:
+            condition = "pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?"
+            index = "idx_processing_queue_priority"
+            order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
+            values = [.integer(cutoff)]
+        case .historical:
+            condition = """
+                (pq.priority IS NULL OR pq.priority <= 0 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt < ?))
+                AND NOT EXISTS (
+                    SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
+                    WHERE preferred.frameId=pq.frameId AND
+                        (preferred.priority > 10 OR (preferred.priority BETWEEN 1 AND 10 AND f.createdAt >= ?))
+                )
+                """
+            index = "idx_processing_queue_enqueued"
+            order = "pq.enqueuedAt ASC,pq.id ASC"
+            values = [.integer(cutoff), .integer(cutoff)]
+        }
+        return try PipelineSQL.query(db, """
+            SELECT pq.id,pq.frameId,pq.retryCount,pq.priority
+            FROM processing_queue pq INDEXED BY \(index)
+            CROSS JOIN frame f ON f.id=pq.frameId
+            WHERE f.processingStatus=0 AND \(condition)
+            ORDER BY \(order) LIMIT 1
+            """, values) { (sqlite3_column_int64($0, 0), sqlite3_column_int64($0, 1), Int(sqlite3_column_int($0, 2)), lane) }.first
     }
 
     /// Get the current processing queue depth

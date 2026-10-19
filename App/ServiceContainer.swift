@@ -22,6 +22,7 @@ public actor ServiceContainer {
     public let processing: ProcessingManager
     public let audioProcessing: AudioProcessingManager
     public let resourceUsage: ResourceUsageMonitor
+    public let storageUsage: StorageUsageService
     public let backgroundProcessing: BackgroundProcessingGovernor
     let manualAudioWork = ManualAudioWorkOwner()
     public let dictation: DictationManager
@@ -98,6 +99,8 @@ public actor ServiceContainer {
         self.ftsEngine = FTSManager(databasePath: databasePath)
         // Use the correct storage root (respects custom path setting)
         let storageRootURL = URL(fileURLWithPath: NSString(string: storageConfig.storageRootPath).expandingTildeInPath, isDirectory: true)
+        self.storageUsage = StorageUsageService(
+            roots: StorageUsageService.roots(native: storageRootURL, includeRelatedLibraries: true), resources: resourceUsage)
         self.storage = StorageManager(storageRoot: storageRootURL)
         self.capture = CaptureManager(config: captureConfig,
             configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database))
@@ -195,6 +198,8 @@ public actor ServiceContainer {
         self.database = DatabaseManager(databasePath: sharedMemoryPath)
         self.ftsEngine = FTSManager(databasePath: sharedMemoryPath)
         self.storage = StorageManager(storageRoot: testStorageRoot)
+        self.storageUsage = StorageUsageService(
+            roots: StorageUsageService.roots(native: testStorageRoot, includeRelatedLibraries: false), resources: resourceUsage)
         self.capture = CaptureManager(config: captureConfig,
             configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database))
         self.audioCapture = AudioCaptureManager()
@@ -274,6 +279,8 @@ public actor ServiceContainer {
             catch { Log.warning("Could not save CPU usage aggregate", category: .app) }
         }
         Log.info("✓ Database initialized", category: .app)
+        await storageUsage.start()
+        try? await database.recordMetricEvent(metricType: .storageUsage, metadata: "{\"action\":\"started\"}")
 
         // Historical evidence has an owning policy even while recording is
         // paused. Install it before any remaining service can claim derived work.
@@ -373,7 +380,8 @@ public actor ServiceContainer {
             storage: storage,
             processing: processing,
             search: search,
-            config: .default
+            config: .default,
+            governor: backgroundProcessing
         )
         self.processingQueue = queue
         Log.info("✓ Processing queue initialized", category: .app)
@@ -701,6 +709,7 @@ public actor ServiceContainer {
         Log.info("✓ Processing queue drained", category: .app)
 
         await backgroundProcessing.close()
+        await storageUsage.close()
         await resourceUsage.close()
 
         // Audio ingestion, native work and metric delivery are joined above.

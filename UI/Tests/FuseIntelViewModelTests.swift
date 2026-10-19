@@ -31,6 +31,82 @@ private final class FuseIntelURLProtocolStub: URLProtocol {
 }
 
 final class FuseIntelViewModelTests: XCTestCase {
+    func testCachedBriefSurvivesOfflineRestartButNeverCrossesOrigins() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = FuseIntelSnapshotCache(directory: root)
+        let origin = URL(string: "http://100.82.166.96:9010")!
+        let receivedAt = Date().addingTimeInterval(-3_600)
+        let payload = Data(#"{"data":{"nextMoves":[],"radar":[],"recentIntel":[],"waiting":[],"upcoming":[],"system":{"state":"healthy","ready":true,"signalCount":0,"alerts":[]}},"generatedAt":"2026-10-19T00:00:00Z","degraded":false,"warnings":[],"correlationId":"cache-test"}"#.utf8)
+        try await cache.store(payload: payload, origin: origin, receivedAt: receivedAt)
+        let restarted = FuseIntelSnapshotCache(directory: root)
+        let restored = try await restarted.load(origin: origin)
+        XCTAssertEqual(restored?.snapshot.commandEnvelope.correlationId, "cache-test")
+        XCTAssertEqual(restored?.receivedAt, receivedAt)
+        let wrongOrigin = try await restarted.load(origin: URL(string: "http://127.0.0.1:9010")!)
+        XCTAssertNil(wrongOrigin)
+        do {
+            try await cache.store(payload: Data(repeating: 32, count: 2_097_153), origin: origin, receivedAt: Date())
+            XCTFail("An oversized response must not replace the last good cache")
+        } catch { }
+        let retained = try await restarted.load(origin: origin)
+        XCTAssertEqual(retained?.snapshot.commandEnvelope.correlationId, "cache-test")
+        do {
+            try await cache.store(payload: Data(#"{"data":{},"generatedAt":"now","degraded":false,"warnings":[],"correlationId":"empty"}"#.utf8), origin: origin, receivedAt: Date())
+            XCTFail("An unrelated empty envelope must not be treated as a successful brief")
+        } catch { }
+    }
+
+    @MainActor
+    func testOfflineViewModelShowsCachedAgeWithoutClaimingConnection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = FuseIntelSnapshotCache(directory: root)
+        let origin = URL(string: "http://127.0.0.1:9010")!
+        let date = Date().addingTimeInterval(-600)
+        let payload = Data(#"{"data":{"nextMoves":[],"radar":[],"recentIntel":[],"waiting":[],"upcoming":[],"system":{"state":"healthy","ready":true,"signalCount":0,"alerts":[]}},"generatedAt":"2026-10-19T00:00:00Z","degraded":false,"warnings":[],"correlationId":"offline"}"#.utf8)
+        try await cache.store(payload: payload, origin: origin, receivedAt: date)
+        FuseIntelURLProtocolStub.requestHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FuseIntelURLProtocolStub.self]
+        let client = FuseIntelClient(baseURL: origin, session: URLSession(configuration: config), cache: cache)
+        let model = FuseIntelViewModel(baseURL: origin, client: client)
+        await model.refresh()
+        XCTAssertNotNil(model.snapshot)
+        XCTAssertTrue(model.isShowingCachedData)
+        XCTAssertFalse(model.isConnected)
+        XCTAssertEqual(model.lastUpdatedAt, date)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    func testRecentWorkExcludesOldAndFutureScreensAndSpeech() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let recent = RetraceActivityMoment(timestamp: now.addingTimeInterval(-30),
+            appName: "Ghostty", windowTitle: "Back In Time", browserURL: nil)
+        let old = RetraceActivityMoment(timestamp: now.addingTimeInterval(-7 * 86_400),
+            appName: "Old workspace", windowTitle: "Old window", browserURL: nil)
+        let future = RetraceActivityMoment(timestamp: now.addingTimeInterval(60),
+            appName: "Future", windowTitle: nil, browserURL: nil)
+        let brief = RetraceActivityBriefPolicy.make(moments: [old, future, recent], speech: [
+            .init(startedAt: now.addingTimeInterval(-86_400), endedAt: now.addingTimeInterval(-86_390), text: "Stale conversation")
+        ], now: now)
+        XCTAssertEqual(brief.headline, "Back In Time")
+        XCTAssertEqual(brief.capturedMomentCount, 1)
+        XCTAssertEqual(brief.speechSegmentCount, 0)
+        XCTAssertFalse(brief.contextText.contains("Stale conversation"))
+        XCTAssertFalse(brief.summary.contains("main workspace"), "Samples are not a measurement of continuous work")
+        XCTAssertLessThanOrEqual(brief.duration, 600)
+    }
+
+    func testFuseIntelConnectionOnlyAcceptsPrivateConfiguredServices() throws {
+        XCTAssertEqual(FuseIntelConnectionConfiguration.validatedURL("http://100.82.166.96:9010")?.host, "100.82.166.96")
+        XCTAssertNotNil(FuseIntelConnectionConfiguration.validatedURL("https://primary.example.ts.net"))
+        XCTAssertNotNil(FuseIntelConnectionConfiguration.validatedURL("http://127.0.0.1:9010"))
+        for address in ["https://example.com", "file:///etc/passwd", "http://user:password@100.82.166.96:9010", "http://100.82.166.96:9010/private?token=x"] {
+            XCTAssertNil(FuseIntelConnectionConfiguration.validatedURL(address))
+        }
+    }
+
     override func tearDown() {
         FuseIntelURLProtocolStub.requestHandler = nil
         super.tearDown()
@@ -199,7 +275,7 @@ final class FuseIntelViewModelTests: XCTestCase {
                     endedAt: base.addingTimeInterval(470),
                     text: "Connect the current dashboard work to the UDC commercial priority."
                 )
-            ]
+            ], now: base.addingTimeInterval(600)
         )
 
         XCTAssertEqual(brief.currentApp, "Codex")

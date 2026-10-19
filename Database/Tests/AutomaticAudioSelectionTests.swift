@@ -18,6 +18,24 @@ final class AutomaticAudioSelectionTests: XCTestCase {
 
     override func tearDown() async throws { try await database.close() }
 
+    func testFreshLaneIsChronologicalBoundedAndDoesNotClaimRepairs() async throws {
+        _ = try await seed(at: now.addingTimeInterval(-121))
+        let first = try await seed(at: now.addingTimeInterval(-90))
+        let second = try await seed(at: now.addingTimeInterval(-30))
+        _ = try await seed(at: now.addingTimeInterval(-100), status: "needs_repair")
+        _ = try await seed(at: now.addingTimeInterval(1))
+        let selected = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertEqual(selected?.id, first)
+        try await queries.deleteTranscription(id: first)
+        let next = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertEqual(next?.id, second)
+        try await queries.deleteTranscription(id: second)
+        let exhausted = try await queries.getFreshPendingBatch(now: now)
+        XCTAssertNil(exhausted)
+        let historical = try await queries.getOldestUntranscribedBatch()
+        XCTAssertNotNil(historical, "Older saved audio is retained for catch-up")
+    }
+
     func testRecentLaneChoosesNewestPendingAndSkipsRepairAndCompletedOutcomes() async throws {
         _ = try await seed(at: now.addingTimeInterval(-3_600))
         let newest = try await seed(at: now.addingTimeInterval(-60), path: "audio/batch_Élodie_😀_' OR 1=1 --.m4a")

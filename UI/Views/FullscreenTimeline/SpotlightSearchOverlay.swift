@@ -59,6 +59,7 @@ public struct SpotlightSearchOverlay: View {
     @State private var isSearchFieldFocused = false
     @State private var thumbnailLoader = SearchEvidenceThumbnailLoader()
     @State private var selectionDelivery = SpotlightSelectionDelivery()
+    @State private var audioSelectionTask: Task<Void, Never>?
     @State private var dismissalTask: Task<Void, Never>?
 
     private let panelWidth: CGFloat = 1000
@@ -226,6 +227,7 @@ public struct SpotlightSearchOverlay: View {
             logRecentEntriesState(context: "onAppear:afterRefresh")
         }
         .onDisappear {
+            audioSelectionTask?.cancel(); audioSelectionTask = nil
             dismissalTask?.cancel(); dismissalTask = nil
             recentEntriesRevealTask?.cancel()
             recentEntriesRevealTask = nil
@@ -295,6 +297,7 @@ public struct SpotlightSearchOverlay: View {
             syncKeyboardSelectionWithCurrentResults()
         }
         .onChange(of: viewModel.searchGeneration) { generation in
+            audioSelectionTask?.cancel(); audioSelectionTask = nil
             Log.info(
                 "\(searchLog) searchGeneration changed to \(generation) (query='\(viewModel.searchQuery)', committed='\(viewModel.committedSearchQuery)', currentResults=\(viewModel.results?.results.count ?? 0))",
                 category: .ui
@@ -1106,8 +1109,8 @@ public struct SpotlightSearchOverlay: View {
         if viewModel.isSearching && viewModel.results == nil {
             searchingView
                 .frame(height: reservedResultsHeight)
-        } else if viewModel.results != nil {
-            if viewModel.visibleResults.isEmpty {
+        } else if viewModel.results != nil || viewModel.audioResults != nil {
+            if viewModel.visibleResults.isEmpty && viewModel.audioResults?.hits.isEmpty != false && viewModel.audioResults?.notice == nil {
                 noResultsView
                     .frame(height: reservedResultsHeight)
             } else {
@@ -1121,6 +1124,7 @@ public struct SpotlightSearchOverlay: View {
     private func resultsList(_ visibleResults: [SearchResult]) -> some View {
         return ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
+                audioResultsSection
                 LazyVGrid(columns: gridColumns, spacing: 16) {
                     ForEach(Array(visibleResults.enumerated()), id: \.element.sourceQualifiedID) { index, result in
                         GalleryResultCard(
@@ -1210,6 +1214,61 @@ public struct SpotlightSearchOverlay: View {
                 withAnimation(.easeOut(duration: 0.15)) {
                     proxy.scrollTo(selectedResultID, anchor: .center)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var audioResultsSection: some View {
+        if let page = viewModel.audioResults {
+            VStack(alignment: .leading, spacing: 10) {
+                if let notice = page.notice {
+                    Text(notice).font(.caption).foregroundStyle(.orange)
+                }
+                if !page.hits.isEmpty {
+                    Label("Transcript matches", systemImage: "waveform").font(.headline)
+                    ForEach(page.hits) { hit in
+                        Button { selectAudioResult(hit) } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text(hit.record.startTime, format: .dateTime.day().month().year().hour().minute())
+                                    Text(hit.record.source == .microphone ? "Microphone" : "System audio")
+                                    Spacer()
+                                    Image(systemName: "arrow.up.right.square")
+                                }.font(.caption).foregroundStyle(.secondary)
+                                Text(hit.record.text).lineLimit(3).multilineTextAlignment(.leading)
+                            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
+                            .accessibilityLabel("Open transcript: \(hit.record.text.prefix(160))")
+                    }
+                    if page.isTruncated {
+                        Text("Showing the first \(page.hits.count) transcript matches. Narrow the date or text to find more.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !viewModel.visibleResults.isEmpty {
+                        Divider()
+                        Label("Screen matches", systemImage: "display").font(.headline)
+                    }
+                }
+            }.padding(.horizontal, 16).padding(.top, 12)
+        }
+    }
+
+    private func selectAudioResult(_ hit: AudioSearchHit) {
+        audioSelectionTask?.cancel()
+        let generation = viewModel.searchGeneration
+        audioSelectionTask = Task { @MainActor in
+            do {
+                let row = try await coordinator.resolveAudioSearchHit(hit)
+                guard !Task.isCancelled, generation == viewModel.searchGeneration else { return }
+                let panel = TranscriptWindowController.shared
+                panel.configure(coordinator: coordinator)
+                panel.showExactSearchResult(row)
+                onDismiss()
+            } catch {
+                guard !Task.isCancelled, generation == viewModel.searchGeneration else { return }
+                viewModel.error = "This transcript changed or is unavailable. Refresh the search."
             }
         }
     }

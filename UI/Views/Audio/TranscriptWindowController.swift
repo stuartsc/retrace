@@ -124,6 +124,17 @@ public class TranscriptWindowController: NSObject {
 
     // MARK: - Show/Hide
 
+    /// Keep an exact selected transcript pinned. A timeline poll must not replace
+    /// it with a neighbouring time range; playback remains an explicit action.
+    func showExactSearchResult(_ record: AudioTranscription) {
+        cancelOpen()
+        refreshGeneration = UUID()
+        refreshTask?.cancel()
+        stopRefreshTimer()
+        show(transcriptions: [record], timestamp: record.startTime)
+        stopRefreshTimer()
+    }
+
     /// Load the same bounded recording page used by refresh before an explicit open.
     func open(at timestamp: Date) async {
         guard !Task.isCancelled, let loadRecordings else { return }

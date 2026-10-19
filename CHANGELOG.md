@@ -1,10 +1,22 @@
 # Updates and changelog
 
-Last updated: 2026-10-07.
+Last updated: 2026-10-19.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-10-19 — Recovery candidate: fresh audio, shared CPU control, search and useful Live context
+
+- New audio has a bounded chronological first-pass lane during active use, with one Whisper thread in Low Power Mode or two otherwise. Historical repair continues to wait for quiet time. Cancellation retains durable pending work; native execution remains single-flight.
+- Fixed native Whisper CPU cancellation reaching the scheduled encoder/decoder graphs, including language detection. The explicit small-model regression improved from a 12.233-second join to 0.008/0.062 seconds, with successful reuse and unchanged authored transcription. This is a measured fixture result, not a worst-case guarantee for all models/backends.
+- OCR joins the same governor before claiming a frame. One stable OCR worker survives power-setting changes; cancelled work returns to its durable queue. Recording and foreground requests retain priority. An admitted fresh job may finish its own CPU burst, while subsequent admissions still obey measured resource limits.
+- Timeline's query also searches native transcript text and captured window titles. Exact transcript selections are revalidated and open the matching audio panel. Unsupported screen-only audio filters and bounded result truncation are explicit.
+- Audio batch end times include the last PCM packet, and shutdown no longer writes an overlap-only duplicate tail. The existing overlapping storage format remains readable and unchanged.
+- Live uses the configured private FuseIntel service and an origin-bound last-good cache with visible age. Recent work is limited to the last ten minutes and no longer describes the interval between sparse screenshots as time spent working.
+- Storage settings show periodic categorized logical/allocated totals and volume free space. Scans are bounded, run off main, coalesce manual refreshes, and distinguish incomplete checks from zero usage.
+- Clean debug validation passes **1,239 tests with eight intentional skips and zero failures**. The explicit spare-Mac worker candidate uses pinned offline MLX/pyannote models and read-only Outlook voice matching; its authored native test passes. Automatic speaker naming, App transport/import, provisional streaming and semantic search integration remain separate work.
+- Source verification, packaging, installation and measured latency/CPU acceptance are tracked separately in the [recovery ledger](docs/recovery-20261019.md). This candidate is not installed.
 
 ### 2026-10-06 — Follow the selected microphone (local trial 2610.6.2 installed 7 October)
 

@@ -290,6 +290,10 @@ struct FuseIntelCommandResponse: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.nextMoves), container.contains(.recentIntel), container.contains(.upcoming) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                debugDescription: "Not a FuseIntel command response"))
+        }
         nextMoves = try container.decodeIfPresent([FuseIntelActionItem].self, forKey: .nextMoves) ?? []
         radar = try container.decodeIfPresent([FuseIntelRadarItem].self, forKey: .radar) ?? []
         recentIntel = try container.decodeIfPresent([FuseIntelFeedItem].self, forKey: .recentIntel) ?? []
@@ -320,6 +324,16 @@ struct FuseIntelCommandResponse: Decodable, Equatable, Sendable {
 struct FuseIntelSnapshot: Sendable {
     let commandEnvelope: FuseIntelEnvelope<FuseIntelCommandResponse>
     let feedEnvelope: FuseIntelEnvelope<[FuseIntelFeedItem]>
+
+    static func decode(_ payload: Data) throws -> FuseIntelSnapshot {
+        guard payload.count <= FuseIntelSnapshotCache.maximumPayloadBytes else {
+            throw FuseIntelClientError.invalidResponse
+        }
+        let command = try JSONDecoder().decode(FuseIntelEnvelope<FuseIntelCommandResponse>.self, from: payload)
+        return .init(commandEnvelope: command, feedEnvelope: .init(data: [], generatedAt: command.generatedAt,
+            freshness: command.freshness, degraded: command.degraded, warnings: [],
+            correlationId: "\(command.correlationId):command-only"))
+    }
 }
 
 enum FuseIntelClientError: LocalizedError {
@@ -377,14 +391,41 @@ enum FuseIntelRefreshPolicy {
     }
 }
 
+enum FuseIntelConnectionConfiguration {
+    static let defaultsKey = "fuseIntelBaseURL"
+    static let defaultAddress = "http://100.82.166.96:9010"
+
+    static func validatedURL(_ address: String) -> URL? {
+        guard let parts = URLComponents(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = parts.host?.lowercased(), parts.user == nil, parts.password == nil,
+              parts.query == nil, parts.fragment == nil, parts.path.isEmpty || parts.path == "/",
+              parts.port.map({ (1...65535).contains($0) }) ?? true else { return nil }
+        let components = host.split(separator: ".", omittingEmptySubsequences: false)
+        let octets = components.compactMap { Int($0) }
+        let tailnetIP = components.count == 4 && octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1]) &&
+            octets.allSatisfy { (0...255).contains($0) }
+        let loopback = host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1"
+        guard loopback || tailnetIP || (scheme == "https" && host.hasSuffix(".ts.net")) else { return nil }
+        return parts.url
+    }
+
+    static var configuredURL: URL {
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        return validatedURL(defaults.string(forKey: defaultsKey) ?? defaultAddress) ?? URL(string: defaultAddress)!
+    }
+}
+
 actor FuseIntelClient {
-    static let defaultBaseURL = URL(string: "http://127.0.0.1:9010")!
+    static var defaultBaseURL: URL { FuseIntelConnectionConfiguration.configuredURL }
 
     private let baseURL: URL
     private let session: URLSession
+    private let cache: FuseIntelSnapshotCache?
 
-    init(baseURL: URL = defaultBaseURL, session: URLSession? = nil) {
+    init(baseURL: URL = defaultBaseURL, session: URLSession? = nil, cache: FuseIntelSnapshotCache? = nil) {
         self.baseURL = baseURL
+        self.cache = cache
         if let session {
             self.session = session
         } else {
@@ -396,48 +437,43 @@ actor FuseIntelClient {
         }
     }
 
-    func fetchSnapshot() async throws -> FuseIntelSnapshot {
-        let command: FuseIntelEnvelope<FuseIntelCommandResponse> = try await fetch(
-            path: "/api/command",
-            queryItems: [URLQueryItem(name: "recent_hours", value: "24")]
-        )
-
-        // The command view already includes recentIntel. Avoid polling the wider
-        // feed query because it can monopolize the local single-worker BFF.
-        let feed = FuseIntelEnvelope<[FuseIntelFeedItem]>(
-            data: [],
-            generatedAt: command.generatedAt,
-            freshness: command.freshness,
-            degraded: command.degraded,
-            warnings: [],
-            correlationId: "\(command.correlationId):command-only"
-        )
-        return FuseIntelSnapshot(commandEnvelope: command, feedEnvelope: feed)
+    func cachedSnapshot() async -> FuseIntelSnapshotCache.Entry? {
+        try? await cache?.load(origin: baseURL)
     }
 
-    private func fetch<Value: Decodable & Sendable>(
-        path: String,
-        queryItems: [URLQueryItem]
-    ) async throws -> FuseIntelEnvelope<Value> {
+    func fetchSnapshot() async throws -> FuseIntelSnapshot {
+        // The command view includes recentIntel; the wider feed is a separate,
+        // expensive query on the primary. Fetch only this bounded response.
         guard var components = URLComponents(
-            url: baseURL.appendingPathComponent(path),
+            url: baseURL.appendingPathComponent("/api/command"),
             resolvingAgainstBaseURL: false
         ) else {
             throw FuseIntelClientError.invalidResponse
         }
-        components.queryItems = queryItems
+        components.queryItems = [URLQueryItem(name: "recent_hours", value: "24")]
         guard let url = components.url else {
             throw FuseIntelClientError.invalidResponse
         }
 
-        let (data, response) = try await session.data(from: url)
+        let (bytes, response) = try await session.bytes(from: url)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw FuseIntelClientError.invalidResponse
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw FuseIntelClientError.httpStatus(httpResponse.statusCode)
         }
-        return try JSONDecoder().decode(FuseIntelEnvelope<Value>.self, from: data)
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < FuseIntelSnapshotCache.maximumPayloadBytes else {
+                throw FuseIntelClientError.invalidResponse
+            }
+            data.append(byte)
+        }
+        try Task.checkCancellation()
+        let snapshot = try FuseIntelSnapshot.decode(data)
+        // Cache failures do not hide a valid live response. The cache is disposable.
+        try? await cache?.store(payload: data, origin: baseURL, receivedAt: Date())
+        return snapshot
     }
 }
 
@@ -447,18 +483,25 @@ final class FuseIntelViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastUpdatedAt: Date?
+    @Published private(set) var isShowingCachedData = false
 
-    let baseURL: URL
-    private let client: FuseIntelClient
+    private(set) var baseURL: URL
+    private var client: FuseIntelClient
+    private let followsPreferences: Bool
+    private var configurationGeneration: UInt64 = 0
     private var lastAttemptAt: Date?
+    private var lastNetworkSuccessAt: Date?
+    private var loadedCache = false
     private var consecutiveFailures = 0
 
     init(
-        baseURL: URL = FuseIntelClient.defaultBaseURL,
+        baseURL: URL? = nil,
         client: FuseIntelClient? = nil
     ) {
-        self.baseURL = baseURL
-        self.client = client ?? FuseIntelClient(baseURL: baseURL)
+        let resolvedURL = baseURL ?? FuseIntelClient.defaultBaseURL
+        self.baseURL = resolvedURL
+        self.client = client ?? FuseIntelClient(baseURL: resolvedURL, cache: FuseIntelSnapshotCache())
+        followsPreferences = baseURL == nil && client == nil
     }
 
     var command: FuseIntelCommandResponse? { snapshot?.commandEnvelope.data }
@@ -468,7 +511,7 @@ final class FuseIntelViewModel: ObservableObject {
     }
 
     /// A last-good snapshot remains useful when a refresh fails; the UI labels it stale.
-    var isConnected: Bool { snapshot != nil }
+    var isConnected: Bool { snapshot != nil && !isShowingCachedData && errorMessage == nil }
 
     var freshnessDate: Date? {
         FuseIntelDateParser.date(
@@ -478,30 +521,60 @@ final class FuseIntelViewModel: ObservableObject {
     }
 
     func refresh(force: Bool = false) async {
+        if followsPreferences, baseURL != FuseIntelConnectionConfiguration.configuredURL {
+            baseURL = FuseIntelConnectionConfiguration.configuredURL
+            client = FuseIntelClient(baseURL: baseURL, cache: FuseIntelSnapshotCache())
+            configurationGeneration &+= 1
+            snapshot = nil
+            lastUpdatedAt = nil
+            lastNetworkSuccessAt = nil
+            loadedCache = false
+            isShowingCachedData = false
+            lastAttemptAt = nil
+            errorMessage = nil
+            consecutiveFailures = 0
+            isLoading = false
+        }
+        let generation = configurationGeneration
+        let requestClient = client
         let now = Date()
         guard FuseIntelRefreshPolicy.shouldRefresh(
             force: force,
             isLoading: isLoading,
             lastAttemptAt: lastAttemptAt,
-            lastSuccessAt: lastUpdatedAt,
+            lastSuccessAt: lastNetworkSuccessAt,
             consecutiveFailures: consecutiveFailures,
             now: now
         ) else { return }
         lastAttemptAt = now
         isLoading = true
-        defer { isLoading = false }
+        defer { if generation == configurationGeneration { isLoading = false } }
 
+        if !loadedCache {
+            loadedCache = true
+            let cached = await requestClient.cachedSnapshot()
+            guard !Task.isCancelled, generation == configurationGeneration else { return }
+            if let cached {
+                snapshot = cached.snapshot
+                lastUpdatedAt = cached.receivedAt
+                isShowingCachedData = true
+            }
+        }
         do {
-            let result = try await client.fetchSnapshot()
-            guard !Task.isCancelled else { return }
+            let result = try await requestClient.fetchSnapshot()
+            guard !Task.isCancelled, generation == configurationGeneration else { return }
             snapshot = result
             errorMessage = nil
             lastUpdatedAt = Date()
+            lastNetworkSuccessAt = lastUpdatedAt
+            isShowingCachedData = false
             consecutiveFailures = 0
         } catch is CancellationError {
             return
         } catch {
+            guard generation == configurationGeneration else { return }
             consecutiveFailures += 1
+            isShowingCachedData = snapshot != nil
             errorMessage = error.localizedDescription
             Log.warning("[FuseIntel] Dashboard BFF unavailable: \(error.localizedDescription)", category: .ui)
         }
@@ -560,6 +633,7 @@ enum RetraceActivityBriefPolicy {
     static let maximumMoments = 24
     static let maximumSpeechSegments = 8
     static let maximumContextCharacters = 6_000
+    static let recentWindowSeconds: TimeInterval = 600
 
     private static let stopWords: Set<String> = [
         "about", "actually", "after", "again", "alright", "also", "anything", "backintime",
@@ -575,15 +649,19 @@ enum RetraceActivityBriefPolicy {
 
     static func make(
         moments: [RetraceActivityMoment],
-        speech: [RetraceSpeechMoment]
+        speech: [RetraceSpeechMoment],
+        now: Date = Date()
     ) -> RetraceActivityBrief {
         let orderedMoments = Array(
             moments
-                .filter { !$0.isSelfCapture }
+                .filter { !$0.isSelfCapture && $0.timestamp <= now && now.timeIntervalSince($0.timestamp) <= recentWindowSeconds }
                 .sorted { $0.timestamp > $1.timestamp }
                 .prefix(maximumMoments)
         )
-        let orderedSpeech = Array(speech.sorted { $0.endedAt > $1.endedAt }.prefix(maximumSpeechSegments))
+        let orderedSpeech = Array(speech.filter {
+            $0.startedAt <= $0.endedAt && $0.endedAt <= now &&
+                now.timeIntervalSince($0.startedAt) <= recentWindowSeconds
+        }.sorted { $0.endedAt > $1.endedAt }.prefix(maximumSpeechSegments))
         let currentMoment = orderedMoments.first
         let currentApp = nonEmpty(currentMoment?.appName)
         let currentWindow = nonEmpty(currentMoment?.windowTitle)
@@ -615,16 +693,18 @@ enum RetraceActivityBriefPolicy {
             excluding: excludedFocusTerms
         )
 
-        let headline = currentWindow ?? currentApp.map { "Working in \($0)" }
-            ?? (orderedSpeech.isEmpty ? "Waiting for recent activity" : "Recent spoken context")
-        let summary = summary(
-            currentApp: currentApp,
-            primaryApp: primaryApp,
-            appTrail: appTrail,
-            focusTerms: focusTerms,
-            duration: duration(from: startedAt, to: endedAt),
-            hasSpeech: !orderedSpeech.isEmpty
-        )
+        let headline = currentWindow ?? currentApp.map { "Recent activity in \($0)" }
+            ?? (orderedSpeech.isEmpty ? "No activity captured in the last ten minutes" : "Recent spoken context")
+        var summaryParts: [String] = []
+        if let currentApp { summaryParts.append("Latest captured window: \(currentApp).") }
+        let preceding = orderedMoments.dropFirst().first { $0.appName != currentApp || $0.windowTitle != currentWindow }
+        if let preceding {
+            summaryParts.append("Previously: \(preceding.appName)\(preceding.windowTitle.map { " — \($0)" } ?? "").")
+        }
+        if let spoken = orderedSpeech.first {
+            summaryParts.append("Recent transcript: “\(String(spoken.text.prefix(240)))”.")
+        }
+        let summary = summaryParts.isEmpty ? "Recording and text preparation status are shown separately." : summaryParts.joined(separator: " ")
 
         return RetraceActivityBrief(
             headline: headline,
@@ -640,42 +720,6 @@ enum RetraceActivityBriefPolicy {
             startedAt: startedAt,
             endedAt: endedAt
         )
-    }
-
-    private static func summary(
-        currentApp: String?,
-        primaryApp: String?,
-        appTrail: [String],
-        focusTerms: [String],
-        duration: TimeInterval,
-        hasSpeech: Bool
-    ) -> String {
-        guard currentApp != nil || hasSpeech else {
-            return "Retrace is ready to describe the next captured work sequence."
-        }
-
-        var parts: [String] = []
-        if let primaryApp {
-            let span = durationLabel(duration)
-            if let span {
-                parts.append("\(primaryApp) has been the main workspace across \(span)")
-            } else {
-                parts.append("\(primaryApp) has been the main workspace")
-            }
-        } else if hasSpeech {
-            parts.append("Recent audio is available even though no readable screen moment is loaded")
-        }
-
-        let supportingApps = appTrail.filter { $0 != primaryApp }.prefix(2)
-        if !supportingApps.isEmpty {
-            parts.append("Recent movement also includes \(supportingApps.joined(separator: " and "))")
-        }
-
-        let usefulTerms = focusTerms.prefix(3)
-        if !usefulTerms.isEmpty {
-            parts.append("The captured context is centred on \(usefulTerms.joined(separator: ", "))")
-        }
-        return parts.joined(separator: ". ") + "."
     }
 
     private static func uniqueApps(from moments: [RetraceActivityMoment]) -> [String] {
@@ -739,16 +783,6 @@ enum RetraceActivityBriefPolicy {
     private static func duration(from start: Date?, to end: Date?) -> TimeInterval {
         guard let start, let end else { return 0 }
         return max(end.timeIntervalSince(start), 0)
-    }
-
-    private static func durationLabel(_ duration: TimeInterval) -> String? {
-        guard duration >= 60 else { return nil }
-        if duration < 3_600 {
-            return "\(max(Int(duration / 60), 1)) min"
-        }
-        let hours = Int(duration / 3_600)
-        let minutes = Int(duration.truncatingRemainder(dividingBy: 3_600) / 60)
-        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

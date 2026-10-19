@@ -33,6 +33,37 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         if let root { try? FileManager.default.removeItem(at: root) }
     }
 
+    func testGovernedFreshOCRPassesHistoryAndCancellationLeavesDurableRetry() async throws {
+        let old = try await makeFinalizedFixture(createEmptyVideo: false, capturedAt: Date().addingTimeInterval(-3600))
+        let fresh = try await makeFinalizedFixture(createEmptyVideo: true)
+        let wal = await storage.getWALManager()
+        var session = try await wal.createSession(videoID: fresh.pathID)
+        try await wal.appendFrame(rawFrame(value: 37), to: &session)
+        try await wal.registerFrameID(videoID: fresh.pathID, frameID: fresh.frameID, frameIndex: 0)
+        let governor = FreshOnlySourceGovernor()
+        await processor.cancelNextGovernedRead()
+        let search = SearchManager(database: database,
+            ftsEngine: FTSManager(databasePath: root.appendingPathComponent("test.db").path))
+        queue = FrameProcessingQueue(database: database, storage: storage, processing: processor, search: search,
+            config: ProcessingQueueConfig(workerCount: 4), governor: governor)
+        try await queue.enqueue(frameID: old.frameID, priority: 0)
+        try await queue.enqueue(frameID: fresh.frameID, priority: 10)
+        await queue.startWorkers()
+        let workers = await queue.getStatistics()
+        XCTAssertEqual(workers.workerCount, 1, "The shared governor owns a single automatic OCR worker")
+        let status = try await waitForTerminalStatus(fresh.frameID)
+        await queue.stopWorkers()
+        XCTAssertEqual(status, 2)
+        let history = try await database.sourceReadinessQueueState(frameID: old.frameID)
+        XCTAssertEqual(history.status, 0, "Deferred history must never occupy the sole OCR worker")
+        XCTAssertNotNil(history.queueID)
+        let frames = await processor.frames
+        XCTAssertEqual(frames.count, 2, "The first cancellation must retry the same original without failing it")
+        XCTAssertTrue(frames.allSatisfy { $0.imageData == rawFrame(value: 37).imageData })
+        let outstanding = await governor.outstanding
+        XCTAssertEqual(outstanding, 0, "Every empty lane, cancellation and success releases its permit")
+    }
+
     func testExactWALFrameOverridesFinalizedMetadataAndEmptyEncodedVideo() async throws {
         let fixture = try await makeFinalizedFixture(createEmptyVideo: true)
         let wal = await storage.getWALManager()
@@ -136,13 +167,13 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: metadataURL), metadataBefore)
     }
 
-    private func makeFinalizedFixture(createEmptyVideo: Bool) async throws -> (frameID: Int64, pathID: VideoSegmentID, videoURL: URL) {
+    private func makeFinalizedFixture(createEmptyVideo: Bool, capturedAt: Date? = nil) async throws -> (frameID: Int64, pathID: VideoSegmentID, videoURL: URL) {
         let writer = try await storage.createSegmentWriter()
         let pathID = await writer.segmentID
         let relativePath = await writer.relativePath
         let videoURL = root.appendingPathComponent(relativePath)
         if createEmptyVideo { try Data().write(to: videoURL) }
-        let timestamp = Date()
+        let timestamp = capturedAt ?? Date()
         let videoID = try await database.insertVideoSegment(VideoSegment(id: VideoSegmentID(value: 0), startTime: timestamp,
             endTime: timestamp, frameCount: 1, fileSizeBytes: 0, relativePath: relativePath, width: 64, height: 64))
         try await database.markVideoFinalized(id: videoID, frameCount: 1, fileSize: 0)
@@ -174,9 +205,15 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
 
 private actor FrameSourceRecordingProcessor: ProcessingProtocol {
     private(set) var frames: [CapturedFrame] = []
+    private var cancelNext = false
+    func cancelNextGovernedRead() { cancelNext = true }
     func initialize(config: ProcessingConfig) async throws { }
     func extractText(from frame: CapturedFrame) async throws -> ExtractedText {
         frames.append(frame)
+        if cancelNext {
+            cancelNext = false
+            BackgroundProcessingContext.permit?.cancellation.cancel()
+        }
         return ExtractedText(frameID: FrameID(value: 0), timestamp: frame.timestamp, regions: [])
     }
     func extractTextViaOCR(from frame: CapturedFrame) async throws -> [TextRegion] { [] }
@@ -204,4 +241,20 @@ private extension DatabaseManager {
             sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : Int(sqlite3_column_int(statement, 2)),
             sqlite3_column_type(statement, 3) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 3))
     }
+}
+
+private actor FreshOnlySourceGovernor: BackgroundProcessingProtocol {
+    private(set) var outstanding = 0
+    func acquire(_ kind: BackgroundProcessingKind) async throws -> BackgroundProcessingPermit {
+        while kind != .freshOCR { try await Task.sleep(for: .seconds(60)) }
+        let value = try await tryAcquire(kind)
+        return try XCTUnwrap(value)
+    }
+    func tryAcquire(_ kind: BackgroundProcessingKind) async throws -> BackgroundProcessingPermit? {
+        guard kind == .freshOCR else { return nil }
+        XCTAssertEqual(outstanding, 0)
+        outstanding += 1
+        return .init(threadCount: 2)
+    }
+    func release(_ permit: BackgroundProcessingPermit) { outstanding -= 1 }
 }

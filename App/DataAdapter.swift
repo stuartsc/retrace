@@ -3480,6 +3480,21 @@ public actor DataAdapter {
         let excludeTerms: [String]
     }
 
+    public func searchAudio(query: SearchQuery) throws -> AudioSearchPage {
+        guard isInitialized else { throw DataAdapterError.notInitialized }
+        let parts = Self.parseFTSQueryComponents(query.text)
+        guard !parts.includeParts.isEmpty else { return AudioSearchPage() }
+        let match = "(" + parts.includeParts.joined(separator: " ") + ")" +
+            parts.excludeTerms.map { " NOT \($0)" }.joined()
+        return try AudioSearchReader.search(connection: retraceConnection, owner: searchConnectionIdentity,
+                                            query: query, match: match)
+    }
+
+    public func resolveAudioSearchHit(_ hit: AudioSearchHit) throws -> AudioTranscription {
+        guard isInitialized else { throw AudioSearchError.changed }
+        return try AudioSearchReader.resolve(hit, connection: retraceConnection, owner: searchConnectionIdentity)
+    }
+
     private static func parseFTSQueryComponents(_ text: String) -> FTSQueryComponents {
         let tokens = tokenizeSearchQuery(text)
         var includeParts: [String] = []
@@ -3565,17 +3580,17 @@ public actor DataAdapter {
         return tokens
     }
 
-    /// Restrict FTS MATCH to content columns only (exclude window title metadata).
+    /// Match the retained OCR and captured window title in the same token scope.
+    /// Negative terms apply to all three fields, including title-only matches.
     private static func scopeToSearchableTextColumns(_ components: FTSQueryComponents) -> String {
         guard !components.includeParts.isEmpty else {
             return "\"__retrace_no_match__\""
         }
 
         let includeClause = components.includeParts.joined(separator: " ")
-        var parts = ["((text:(\(includeClause))) OR (otherText:(\(includeClause))))"]
+        var parts = ["({text otherText title}:(\(includeClause)))"]
         for excludedTerm in components.excludeTerms {
-            parts.append("NOT text:(\(excludedTerm))")
-            parts.append("NOT otherText:(\(excludedTerm))")
+            parts.append("NOT {text otherText title}:(\(excludedTerm))")
         }
         return parts.joined(separator: " ")
     }

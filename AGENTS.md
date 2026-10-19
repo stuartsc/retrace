@@ -6,7 +6,7 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 **Status**: Core screen capture (CGWindowListCapture), OCR (Vision), full-text search (FTS5), HEVC encoding, Rewind import, audio transcription, and push-to-dictate are working. Vector search is planned for a future release.
 
-**Installed local repair (2026-10-01):** build **2610.1.1** from source `f1551be` adds CPU monitoring and quiet-time audio admission to the V23-compatible masked-recording fix. Installed UI, recording advancement and preserved settings/schema are verified. OCR is unchanged; matched performance and the 20% CPU target remain open. The larger source candidate remains uninstalled. See the [CPU repair ledger](docs/installed-cpu-protection.md) for measurements, disclosed restart gaps and recovery material.
+**Installed local repair (verified 2026-10-19):** build **2610.6.2** from source `0dbdbe3` follows the selected microphone and includes saved-audio visibility, recent-first quiet-time transcription and CPU monitoring. The recovery work in this checkout remains a source candidate until the [recovery ledger](docs/recovery-20261019.md) records installation. Matched performance and the 20% CPU target remain open. The wider V24–V32 candidate in `/Users/stuartbond/backintime` remains separate.
 
 **Saved-audio display repair (2026-10-03, installed 6 October):** pending microphone recordings were being saved but omitted from the Timeline panel and the Live transcript presentation. The narrow UI repair exposes saved audio before text preparation and keeps explicit playback independent of transcription. Build **2610.6.1** now shows and plays newly recorded audio in both surfaces. See the [audio visibility ledger](docs/audio-recording-visibility-repair.md) for source checks and the [freshness repair ledger](docs/audio-transcription-freshness-repair.md) for combined installation evidence.
 
@@ -17,6 +17,13 @@ Retrace is a local-first screen recording and search application for macOS, insp
 ---
 
 ## Quick Reference
+
+- **Recovery implementation (19 October)**: [docs/recovery-20261019.md](docs/recovery-20261019.md). Root coordinates Shared/App/Processing/Database/Search/UI/Storage contracts in the isolated recovery checkout; installation and acceptance are separate.
+- **Periodic storage accounting**: `Shared/Models/StorageUsage.swift`, `Shared/Protocols/StorageUsageReportingProtocol.swift`, `Storage/FileManager/StorageUsageMonitor.swift`, `App/StorageUsageService.swift` and `App/Tests/StorageUsageServiceTests.swift` own bounded metadata scans and joined shutdown. The UI reads cached reports; allocated totals do not imply reclaimable APFS space.
+- **Audio and metadata search**: `App/AudioSearch.swift` performs bounded native audio FTS on the owned reader and validates an ephemeral exact row proof before opening. `ProgressiveRecallSearchTests` and `UI/Tests/SearchQueryPreservationTests.swift` cover real SQLite phrase/exclusion/date/latest-pass matching and the shared query field. Speaker search, semantic integration and immutable V30 audio references remain separate.
+- **Fresh processing and audio timing**: `Shared/Models/FrameProcessingLane.swift` coordinates manual/current/historical OCR admission. `Processing/Tests/AudioBufferTimingTests.swift` checks real PCM batch timing and duplicate shutdown-tail prevention. Governed OCR keeps one stable worker through power-setting changes.
+- **Native CPU cancellation**: `Vendors/whisper/patches/v1.8.2-cancellable-cpu-graphs.patch` pins the narrow native repair; its README and LICENSE record build/dependency/provenance requirements. `WhisperModelResidencyTests` checks real English and automatic-language cancellation followed by successful reuse. Public headers and the five ggml backends remain unchanged.
+- **Explicit spare-Mac worker**: `scripts/audio_worker/{contract.py,speakers.py,outlook_backend.py,__main__.py,runtime-pins.json}` and its tests implement one bounded immutable job with pinned offline models and read-only Outlook voice matching. [Worker instructions](scripts/audio_worker/README.md) distinguish tested worker output from unimplemented App transport/import and uncalibrated name suggestions.
 
 - **Installed-version CPU repair**: [docs/installed-cpu-protection.md](docs/installed-cpu-protection.md). The October 1 branch isolates resource monitoring and audio admission against V23; source tests, installed checks and matched performance acceptance remain separate.
 

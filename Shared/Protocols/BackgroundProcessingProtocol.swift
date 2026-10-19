@@ -2,7 +2,10 @@ import Foundation
 
 /// Automatic work only. Recording, playback, explicit searches and dictation do not acquire a permit.
 public enum BackgroundProcessingKind: String, Sendable {
-    case ambientSpeech, ambientSilence, freshOCR, historicalOCR, refinement, indexing, localSummary
+    case freshTranscription, ambientSpeech, ambientSilence, freshOCR, historicalOCR, refinement, indexing, localSummary
+
+    /// Fresh capture preparation has a latency budget, not an inactivity requirement.
+    public var isFresh: Bool { self == .freshOCR || self == .freshTranscription }
 }
 
 /// Synchronous, lock-protected cancellation for native inference callbacks.

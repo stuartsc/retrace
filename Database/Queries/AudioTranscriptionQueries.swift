@@ -779,6 +779,18 @@ public actor AudioTranscriptionQueries {
 
     // MARK: - Backfill Queries
 
+    /// A bounded chronological lane for newly captured audio. Late work remains in
+    /// the durable historical queue; repair passes cannot displace first-pass text.
+    public func getFreshPendingBatch(now: Date = Date()) throws -> UntranscribedBatch? {
+        let lower = now.addingTimeInterval(-120).timeIntervalSince1970 * 1_000
+        let upper = now.timeIntervalSince1970 * 1_000
+        guard lower.isFinite, upper.isFinite, lower >= Double(Int64.min), upper < Double(Int64.max) else {
+            throw DatabaseError.queryExecutionFailed("Fresh audio selection requires a representable clock")
+        }
+        return try selectAutomaticBatch(status: "pending", newestFirst: false,
+                                        timeRange: (Int64(lower), Int64(upper)))
+    }
+
     /// New first-pass recordings get a recent lane without changing manual backfill order.
     /// The rolling 24-hour window includes both endpoints; future-dated recordings remain
     /// available to the oldest-work lane rather than leading the recent lane after a clock change.
