@@ -6,12 +6,13 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
-### 2026-10-19 — Recovery follow-up under validation
+### 2026-10-19 — Recovery follow-up local trial 2610.19.2
 
 - Allow the read-only private-primary brief connection through exact IP ATS exceptions. A native packaged URLSession probe reproduced macOS error -1022 with the old plist and returned HTTP 200 with the corrected plist. Public HTTP remains restricted.
 - Dashboard storage now uses the same 15-minute categorized report as Settings, includes audio and related copies, and labels unknown/partial/stale measurements. Remove repeated `du` scans and the misleading screen-only monthly extrapolation.
 - Recover automatic admission after CPU stays below the 20% target for fifteen continuous seconds. The old below-15% release rule could leave fresh text waiting indefinitely when capture alone used 15–20%. Sustained load above 20% remains deferred; this does not establish transcript latency acceptance.
-- All 119 focused tests pass, including a live primary BFF wire-contract read. Optimized compilation and installed follow-up checks remain separate.
+- All 119 focused tests pass, including a live primary BFF wire-contract read. Optimized compilation passes; signed build 2610.19.2/source `4042aac` was reopened at 12:24:38 Brisbane. Brief, Signals and Ahead populate, with the upstream service's degraded status retained. Dashboard shows the complete periodic accounting, including audio and rollback copies.
+- V23 and checked preferences are unchanged. The normal Quit/install gap was 203.694 seconds between saved audio ranges and 216.964 seconds between screenshots. A two-minute unmatched observation averaged 24.13% of one core with 1,173.3 MiB peak RSS and one automatic probable-silence completion. New audio and OCR still outpaced processing; spoken-text freshness and matched CPU acceptance remain open.
 
 ### 2026-10-19 — Recovery local trial 2610.19.1: fresh audio, shared CPU control, search and useful Live context
 
