@@ -1,15 +1,16 @@
 # Updates and changelog
 
-Last updated: 2026-10-19.
+Last updated: 2026-10-20.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
 
-### 2026-10-19 — Periodic capture during menu tracking (source candidate)
+### 2026-10-20 — Periodic capture during menu tracking local trial 2610.19.6
 
 - Keep the existing screen-capture timer running in AppKit's common run-loop modes. Both initial scheduling and window-change rescheduling use one helper; capture cadence, privacy checks and timer invalidation remain in their existing owners.
-- A native run-loop regression first reproduced zero periodic ticks during event tracking, then passed after the correction. All **179 Capture tests pass, with two intentional skips and zero failures**. Independent source review is clear. No actor/protocol layout changed; the preceding 1,302-test combined suite remains a separate checkpoint. A separate clean optimized build passed in **289.02 seconds**. Signed build 2610.19.6/source `63ddce2` is verified and ready; installation and native tracking-mode acceptance are pending.
+- A native run-loop regression first reproduced zero periodic ticks during event tracking, then passed after the correction. All **179 Capture tests pass, with two intentional skips and zero failures**. Independent source review is clear. No actor/protocol layout changed; the preceding 1,302-test combined suite remains a separate checkpoint. A separate clean optimized build passed in **289.02 seconds**. Signed build 2610.19.6/source `63ddce2` was installed and reopened on 20 October at 11:37:01 Brisbane; installed native tracking-mode acceptance remains open.
+- Installed hashes/signature, V23, nine checked preferences and the retained .5 app pass verification. New screenshots, decodable microphone AAC, OCR and a new transcript are observed. The audio restart gap is **12.123 seconds**; the **1,752.241-second** separation between saved screenshots began before installation. Five complete CPU minutes average **20.68% of one core**, with a **205.55%** sample peak. Text lag and matched performance remain open; this is a short observation, not sustained acceptance. See the [recovery ledger](docs/recovery-20261019.md).
 
 ### 2026-10-19 — Timeline images and capture availability local trial 2610.19.5
 
