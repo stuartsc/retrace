@@ -1,6 +1,17 @@
 # Disk-space audit — 2 November 2026
 
-The initial read-only audit was followed by Stuart's explicit instruction to safely delete the four identified older backups. Deletion completed at 17:20 Brisbane on 2 November. No application settings were changed. Builds and the unfinished transcript-scrolling installation remain paused while space is addressed.
+The initial read-only audit was followed by Stuart's explicit instruction to safely delete the four identified older backups. That deletion completed at 17:20 Brisbane on 2 November. Stuart subsequently said "continue" after the recommended 13 GB rebuildable-file shortlist; that cleanup completed at 19:09. No application settings were changed. The unfinished transcript-scrolling repair still needs a fresh build, validation and installation.
+
+## Completed rebuildable-file cleanup — 19:09 Brisbane
+
+- Removed exactly the recommended 24 directories: nine Retrace `.build` trees, five old release-build trees, two npm cache trees, two Puppeteer download trees and six old Playwright browser trees. The exact paths remain listed below for the audit trail; they are now absent.
+- Fresh independent checks found no matching open handles, referencing processes or installed-command symlinks into the cache targets. All build dependency checkouts were clean, with no active Swift/Xcode build. A final open-file/process check passed at 19:08:22.
+- One advisory code review approved the narrow cleanup executor with no material findings. It enforced the literal target allowlist, pinned non-symlink parent directories, rechecked target identities, used symlink-resistant deletion, and saved partial progress before every removal.
+- Execution ran from 19:08:58 to 19:09:19. Available disk space increased from **27,047,993,344 bytes** to **39,434,104,832 bytes**: **12,386,111,488 bytes (12.39 GB) net gain**.
+- Independent verification at 19:09:59 confirmed all 24 targets absent, all seven protected identities unchanged, and the source worktrees present with their project files and Git metadata. Available space was then **39,429,160,960 bytes (39.43 GB)**.
+- The installed executable's full SHA-256 was unchanged. The live database retained its identity and remained readable. The retained backup's identity, size, modification time and sampled-page digest were unchanged. Retrace remained running as PID 2289; no restart was performed.
+- The live recording library, newest backup/recovery app, current Playwright version, running uv tools and simulator files were preserved. No simulator cache/runtime or personal documents were deleted. Development dependencies and removed test-browser versions may need downloads/recompilation when next used.
+- Plan, preflight, reviewed executor, per-target results and verification are saved in `/Users/stuartbond/Library/Application Support/Retrace Cleanup Receipts/2026-11-02-rebuildable/`. This cleanup does not authorise any further deletion.
 
 ## Completed cleanup
 
@@ -55,13 +66,13 @@ These cache roots are not symlinks. Their dependency checkouts are clean, and no
 
 Allocated file totals do not establish unique reclaimable APFS blocks. Measure volume free space after any authorised deletion. No Time Machine local snapshots were listed. Downloads occupy approximately 17.4 GiB and accessible user caches approximately 8.2 GiB, but neither was approved for blanket deletion; protected cache folders and Trash could not be inspected.
 
-No additional deletion is authorised by this audit. Build caches, other candidate files and the retained recovery set were left in place.
+At the end of the first backup cleanup, build caches and the retained recovery set were still in place. The later authorisation and bounded rebuildable-file cleanup are recorded above. Other candidate files and the retained recovery set remain preserved.
 
 ## Follow-up: further cleanup candidates
 
-Stuart asked what else was safe to remove after the backup cleanup. This follow-up is read-only; no additional deletion was performed. The latest `df` check reported 25,754,316 KiB available (26.37 GB); free space continues to vary while other applications run.
+Stuart asked what else was safe to remove after the backup cleanup. This follow-up began as a read-only audit. At that checkpoint, `df` reported 25,754,316 KiB available (26.37 GB). The recommended 24 targets were subsequently removed after his "continue" instruction; see the completed-cleanup section above. Simulator options remain unexecuted.
 
-### Recommended first: approximately 12.94 GB of rebuildable files
+### Rebuildable targets subsequently removed: approximately 12.94 GB reported allocation
 
 The nine `.build` folders listed above now report 5,066,145,792 bytes. Five older release-build trees add 3,105,800,192 bytes, giving **8.17 GB** total:
 
