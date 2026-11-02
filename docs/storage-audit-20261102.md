@@ -56,3 +56,48 @@ These cache roots are not symlinks. Their dependency checkouts are clean, and no
 Allocated file totals do not establish unique reclaimable APFS blocks. Measure volume free space after any authorised deletion. No Time Machine local snapshots were listed. Downloads occupy approximately 17.4 GiB and accessible user caches approximately 8.2 GiB, but neither was approved for blanket deletion; protected cache folders and Trash could not be inspected.
 
 No additional deletion is authorised by this audit. Build caches, other candidate files and the retained recovery set were left in place.
+
+## Follow-up: further cleanup candidates
+
+Stuart asked what else was safe to remove after the backup cleanup. This follow-up is read-only; no additional deletion was performed. The latest `df` check reported 25,754,316 KiB available (26.37 GB); free space continues to vary while other applications run.
+
+### Recommended first: approximately 12.94 GB of rebuildable files
+
+The nine `.build` folders listed above now report 5,066,145,792 bytes. Five older release-build trees add 3,105,800,192 bytes, giving **8.17 GB** total:
+
+- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-09-29-masked-history/release`
+- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-01-cpu-guard/release`
+- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-06-microphone-routing/release`
+- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-06-audio-freshness/release`
+- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-19-recovery/Release build`
+
+All 14 roots are real directories, dependency checkouts are clean, and no active Swift/Xcode build or visible open target files were found. Installed Retrace loads its Whisper, ggml and Sparkle dependencies from its application bundle. Removing these build trees requires recompilation/downloads for later development, not changes to the running app or recording library. Preserve the enclosing source, app and receipt directories.
+
+Unused package and automation-browser downloads add approximately **4.77 GB**:
+
+| Exact path | Reported allocation |
+| --- | ---: |
+| `/Users/stuartbond/.npm/_cacache` | 1.067 GB |
+| `/Users/stuartbond/.npm/_npx` | 0.698 GB |
+| `/Users/stuartbond/.cache/puppeteer` | 0.598 GB |
+| `/Users/stuartbond/.cache/puppeteer-fusecall` | 0.725 GB |
+| Six older Playwright folders below | 1.684 GB combined |
+
+The six Playwright folders under `/Users/stuartbond/Library/Caches/ms-playwright/` are `chromium-1208`, `chromium-1228`, `chromium-1234`, `chromium_headless_shell-1208`, `chromium_headless_shell-1228` and `chromium_headless_shell-1234`. No matching open handles or process arguments were found. Removing these makes packages reinstall; automation using those browser versions may require its browser installation command again. Retain the current browser versions and recheck activity immediately before deletion.
+
+### Additional candidates requiring more care
+
+- Generated simulator cache `/Library/Developer/CoreSimulator/Caches/dyld/25B78`: **7.86 GB**. Simulator devices are shut down and no visible payload handles were found. This is root-owned (0755); before removal, an administrator must stop simulator services and check root-owned handles, which this audit could not fully inspect. Cache regeneration is required on subsequent use. Preserve simulator device data.
+- Optional installed iOS simulator runtimes: **17.38 GB** allocated across iOS 18.3.1 and 26.2. `simctl` reports both deletable. Remove through runtime management, not the mounted `Volumes` or `Cryptex` paths. Removing one disables tests on that iOS version until it is downloaded again. Mounted directory totals duplicate these backing images and must not be added again.
+
+### Exclusions and low-value targets
+
+- Preserve live tool runtimes: a Python process runs directly from `.cache/uv/archive-v0/1kKEB3y3ciLztAjnH1jTN`. Do not clear `.cache/uv` wholesale.
+- VS Code's updater, Codex caches, Chrome caches and the latest Playwright Chromium have current process/handle use. Leave them in place during this session.
+- Preserve HuggingFace models, Codex runtimes, `.claude/projects`, `.codex/sessions`, Claude virtual machines, and application profiles. Their size does not make them disposable cache.
+- Docker occupies approximately 25 GB, but its local engine is stopped and the storage query could not inspect unused images/volumes. Do not delete its backing disk or volumes without an application-level audit.
+- Downloads contains only 29.74 MB of installer DMGs. Larger Downloads folders contain documents, recordings or unverified archives; do not clear Downloads as a whole.
+- A 2.14 GB `Retrace/logs/cpu_process_usage.jsonl` diagnostic file exists, but its producer and unique validation value were not established. It is not part of the recommended deletion set.
+- Xcode DerivedData is empty; Time Machine reports no local snapshots. Device-backup storage remains permission-restricted.
+
+These are allocated-file totals, not promised free-space gains. Measure actual free space around any subsequent authorised cleanup.
