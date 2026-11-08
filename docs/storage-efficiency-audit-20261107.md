@@ -75,3 +75,27 @@ The source supports choosing a complete native library on another disk through `
 5. Audit database payload/index allocation during a quiet period; measure exact-data compression or deduplication before any schema conversion.
 
 Backup relocation is an independent optional space measure. Bulk historical audio/video recompression, deletion of likely silence, shortening retention and deletion of unverified WAL originals are outside this proposal. No live data was changed by this audit.
+
+## 9 November: diagnostic archive completed
+
+Stuart asked whether anything could now be deleted. The inactive CPU process log was archived losslessly, and only its redundant full-size uncompressed copy was removed. The log was still 2,144,479,189 bytes, unchanged since 19 October, with one hard link and no observed open handles. Audio, screenshots, OCR/search data, raw recovery frames, models, preferences, the installed app and the retained database rollback were outside the operation.
+
+| Measurement | Verified result |
+| --- | ---: |
+| Original diagnostic content | 2,144,479,189 bytes |
+| Complete gzip archive | 407,184,504 bytes |
+| Compatible current plain-text tail | 4,183,253 bytes |
+| Reduction in reported file allocation | 1,720,143,872 bytes (1.72 GB) |
+| Data-volume available space before preparation | 93,311,500,288 bytes |
+| Data-volume available space after removal | 94,664,208,384 bytes |
+| Net available-space increase during operation | 1,352,708,096 bytes (1.35 GB) |
+
+File allocation and net volume availability are deliberately reported separately. Retrace and the rest of the Mac remained active during the operation; concurrent usage affects the volume-wide change. A subsequent independent check reported 94,664,753,152 bytes available.
+
+The archive is `/Users/stuartbond/Library/Application Support/Retrace/logs/cpu_process_usage.through-20261019.jsonl.gz`. Decompressing its entire contents reproduces all 2,144,479,189 original bytes with SHA-256 `137b343c255f61f6bbf229d591ea8633d88e0a5d4cf202020907257cefbbdc09`. The original filename retains a bounded plain-text tail. A separately compiled copy of the actual `ProcessCPULogReader.swift` returned the same 204 complete diagnostic records before and after replacement, with the same length-prefixed record hash `1455dd43cf036560fbdda1a34094f17968972afe602a667c878567ce5e14c61d`. The gzip retains all earlier records independently of this bounded view.
+
+The one-time executor used pinned, non-symlink directory descriptors, exclusive output creation, full source/archive hashes, identity checks and an atomic macOS filename swap. The original inode remained present until its contents were verified again after the swap and no open handle was observed. One advisory review identified the need for macOS `F_FULLFSYNC` durability barriers; these were added and exercised on a private fixture before removal. Successful file/directory flushing and full-sync barriers were required for the archive and replacement tail. The exact redundant original was then unlinked, bypassing Trash; its complete contents remain in the verified archive.
+
+Post-operation checks confirmed the native database remained readable, the database/media-directory identities were unchanged, the retained rollback database metadata was unchanged, and the installed executable and process-group metadata retained their hashes. Retrace remained running as PID 68427. No restart or recording interruption was requested. This verifies the scoped storage cleanup, not a new capture, transcription or performance acceptance run.
+
+Local execution and verification receipts are in `/Users/stuartbond/Library/Application Support/Retrace Cleanup Receipts/2026-11-09-cpu-log-archive/`: `plan.json`, `review.json`, `swap.json`, `verified-before-removal.json`, `result.json`, `verification.json` and native reader comparison outputs. The executor and its fixture/wrapper are retained there for review. This was a one-time inactive-file cleanup; it does not install future log rotation or provide exclusion against a live writer. No further large disposable live-library files have been demonstrated. The recovery backup and unverified raw-frame originals remain protected.
