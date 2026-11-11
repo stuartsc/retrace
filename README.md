@@ -7,7 +7,15 @@ A local-first screen recording and search application for macOS, inspired by Rew
 
 See [Updates and changelog](CHANGELOG.md) for bug fixes, improvements, validation and release status.
 
-Progressive recall Phase 0/1 is in development on `feature/push-to-dictate`: an opt-in activity timeline, metadata search during OCR backlog, confirmed organisation changes, and exact saved evidence navigation. Activity context starts disabled and can be enabled with **Collect activity context while recording**; master pause still applies. [Validation and remaining Mac/Timely acceptance](docs/progressive-recall-validation.md) are tracked separately from installation and release.
+## Explore the app without installing it
+
+The [standalone click-through package](prototypes/retrace-clickthrough/) includes the main Retrace screens, the [full product specification](prototypes/retrace-clickthrough/docs/full-spec.md), a [50-issue history and recovery journal](prototypes/retrace-clickthrough/docs/issues-journal.md), and 24 supporting source records.
+
+Download or copy the entire `prototypes/retrace-clickthrough/` directory, then open [index.html](prototypes/retrace-clickthrough/index.html) in a browser. It works offline with no server, installation or dependencies outside that folder. GitHub displays the HTML source; open the downloaded file to use the click-through. All recordings, transcripts and controls in the prototype are simulated sample data. See the [verification record](prototypes/retrace-clickthrough/docs/validation.md) for the browser and portability checks.
+
+## Development direction
+
+The active direction is [one searchable computer history](docs/unified-history-plan.md), delivered in capture, workspace and recall stages. New macOS 26 capture/workspace/semantic candidates have independent switches and remain separate from the last installed trial. Activity context starts disabled and can be enabled with **Collect activity context while recording**; master pause applies. Exact saved evidence keeps its original source and revision. See [validation and Mac acceptance](docs/progressive-recall-validation.md); project assignment is outside the active scope.
 
 ## What is Retrace?
 
@@ -33,7 +41,6 @@ Retrace is an open source alternative to Rewind AI that gives you photographic m
 ### 🚧 Coming Soon
 
 - **Optimized storage** - Improving HEVC compression efficiency
-- **Advanced keyboard shortcuts** - More customizable shortcuts
 - **Decrypt and backup Rewind database** - Export your Rewind data
 
 ## Architecture
@@ -56,7 +63,7 @@ Retrace is built with a modular architecture:
 
 - **Database** - SQLite + FTS5 for metadata and full-text search
 - **Storage** - HEVC video encoding for screen recordings
-- **Capture** - Screen capture using CGWindowListCapture API
+- **Capture** - Legacy comparison baseline plus an optional all-display ScreenCaptureKit backend
 - **Processing** - OCR text extraction using Apple's Vision framework
 - **Search** - Query parsing, FTS5 ranking, and result snippets
 - **Migration** - Import from Rewind AI databases
@@ -70,24 +77,25 @@ See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
 ### Active
 
 - **Language**: Swift 5.9+ with async/await, Actors, Sendable
-- **Platform**: macOS 13.0+ (Apple Silicon required)
+- **Platform**: macOS 26.0+ (Apple Silicon required)
 - **UI**: SwiftUI with custom design system
-- **Screen Capture**: CGWindowListCapture API (legacy, no privacy indicator)
+- **Screen Capture**: legacy comparison baseline; native-resolution ScreenCaptureKit candidate
 - **OCR**: Vision framework (macOS native)
 - **Video**: VideoToolbox (HEVC encoding)
 - **Database**: SQLite with FTS5 full-text search
 - **Encryption**: CryptoKit (AES-256-GCM) for database
 
-### Planned for Future Releases
+- **Audio transcription**: whisper.cpp with local recording and push-to-dictate
 
-- **Audio transcription**: whisper.cpp (bundled, ready but disabled)
-- **Embeddings**: llama.cpp for semantic search (prepared but not active)
+### Independently enabled source candidates
+
+- **Embeddings**: pinned MiniLM with native Core ML, an independently enabled screen-text search candidate; see [delivery and validation gates](docs/unified-history-plan.md).
 
 ## Requirements
 
-- **macOS 13.0+** (Ventura or later)
+- **macOS 26.0+** (Tahoe or later)
 - **Apple Silicon** (M1/M2/M3) - Intel not supported
-- **Xcode 15.0+** or Swift 5.9+ for building from source
+- **Xcode 26+** with the macOS 26 SDK for building from source
 
 ### Permissions Required
 
@@ -186,6 +194,7 @@ retrace/
 ├── Search/              # Query parsing and FTS5 ranking
 ├── Migration/           # Rewind import tools
 ├── Shared/              # Protocols and shared models
+├── prototypes/          # Standalone app click-through and bundled project records
 └── scripts/             # Build and utility scripts
 ```
 
@@ -223,9 +232,9 @@ _Roadmap for future releases to be determined based on user feedback and priorit
 
 ## Known Limitations
 
-- **macOS 13.0+ and Apple Silicon only** - Intel Macs not supported
+- **macOS 26.0+ and Apple Silicon only** - Intel Macs not supported; existing archives remain readable
 - **Storage not yet efficient** - Currently 4-5x less efficient than Rewind AI (~50-70GB/month vs ~15GB/month). HEVC encoding is working but not optimized
-- **No audio capture** - Audio recording and transcription infrastructure exists but is currently disabled
+- **Audio acceptance remains scoped** - Local audio recording and transcription are implemented. Freshness, device switching, speech quality and installed performance still require the checks recorded in the [delivery ledger](docs/responsiveness-storage-validation.md).
 
 See [GitHub Issues](https://github.com/haseab/retrace/issues) for known bugs and feature requests.
 
@@ -244,9 +253,8 @@ Retrace uses minimal external dependencies:
 - **[Sparkle](https://github.com/sparkle-project/Sparkle)** - Auto-update framework
 - **Apple Frameworks**: CoreGraphics, Vision, AppKit, SwiftUI, VideoToolbox, CryptoKit
 
-Future releases will add:
 - **whisper.cpp** (bundled in Vendors/) - Local audio transcription
-- **llama.cpp** (bundled in Vendors/) - Local embeddings for semantic search
+- **Core ML** (macOS) - Optional pinned local MiniLM candidate; a verified model package is selected explicitly.
 
 ## Contributing
 
@@ -271,8 +279,8 @@ Created with ♥ by [@haseab](https://github.com/haseab)
 ## Acknowledgments
 
 - Inspired by [Rewind AI](https://www.rewind.ai/)
-- Future audio transcription will use [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by @ggerganov
-- Future semantic search will use [llama.cpp](https://github.com/ggerganov/llama.cpp) by @ggerganov
+- Local audio transcription uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by @ggerganov
+- The optional local MiniLM candidate uses Apple Core ML; existing `Vendors/llama.cpp` experiments are not the active semantic runtime.
 
 ---
 
