@@ -1,0 +1,703 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Retrace recovery — 19 October 2026 — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Retrace recovery — 19 October 2026</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/recovery-20261019.md</code></p><p>Source modified UTC: 2026-10-21T09:43:34.906347+00:00. 45,652 bytes; 703 lines.</p><p>Original SHA-256: <code>eb59c39585124b8428caaa280d92797a20b7d7d40b40c29da3c55e60caeea81e</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Retrace recovery — 19 October 2026</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">## Accepted direction</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">Restore useful live transcription without starving capture or the foreground.</span>
+<span class="source-line" id="L6" data-line="6">Search screen text, audio, app/window context and meaning from one field. Reuse</span>
+<span class="source-line" id="L7" data-line="7">Outlook&#x27;s known-speaker library and continuous-window processing on the spare</span>
+<span class="source-line" id="L8" data-line="8">Mac, while keeping immediate text and exact search local. Separate recent work</span>
+<span class="source-line" id="L9" data-line="9">from the wider FuseIntel business brief.</span>
+<span class="source-line" id="L10" data-line="10"> </span>
+<span class="source-line" id="L11" data-line="11">The root implementation owns coordination across Shared, App, Processing,</span>
+<span class="source-line" id="L12" data-line="12">Database, Search and UI in this isolated checkout. No changes from another</span>
+<span class="source-line" id="L13" data-line="13">checkout are reverted. Existing V24–V32 candidate work remains separate.</span>
+<span class="source-line" id="L14" data-line="14"> </span>
+<span class="source-line" id="L15" data-line="15">## Baseline</span>
+<span class="source-line" id="L16" data-line="16"> </span>
+<span class="source-line" id="L17" data-line="17">- Installed product: 2610.6.2, source `0dbdbe366c788ae270909bccdc06b54bd142e2c4`.</span>
+<span class="source-line" id="L18" data-line="18">- Isolated branch: `fix/retrace-recovery-20261019`, based on `d2e81b6`</span>
+<span class="source-line" id="L19" data-line="19">  (installed product plus its installation notes).</span>
+<span class="source-line" id="L20" data-line="20">- The installed governor defers all ambient transcription for five minutes of</span>
+<span class="source-line" id="L21" data-line="21">  input inactivity. A bounded live read on 19 October found 2,702 pending rows</span>
+<span class="source-line" id="L22" data-line="22">  among the newest 3,000 audio records; this is not a corpus-wide count.</span>
+<span class="source-line" id="L23" data-line="23">- Search restricts normal FTS matching to OCR content columns, excluding window</span>
+<span class="source-line" id="L24" data-line="24">  titles, and has a separate audio path. Ghostty / Back In Time metadata exists.</span>
+<span class="source-line" id="L25" data-line="25">- The dashboard points at localhost:9010, while Outlook&#x27;s role file identifies</span>
+<span class="source-line" id="L26" data-line="26">  the spare Mac as primary. Peer requests and the capture-push manifest reported</span>
+<span class="source-line" id="L27" data-line="27">  connection timeouts. Service recovery has not been inferred from source fixes.</span>
+<span class="source-line" id="L28" data-line="28"> </span>
+<span class="source-line" id="L29" data-line="29">## Delivery sequence and acceptance</span>
+<span class="source-line" id="L30" data-line="30"> </span>
+<span class="source-line" id="L31" data-line="31">1. Fresh audio admission, cancellation, durable retry and measured CPU limits.</span>
+<span class="source-line" id="L32" data-line="32">2. Local provisional/final transcription and explicit preparation health.</span>
+<span class="source-line" id="L33" data-line="33">3. Exact metadata/audio search, semantic enrichment and exact navigation.</span>
+<span class="source-line" id="L34" data-line="34">4. Revisioned remote speaker enrichment, corrections and failure recovery.</span>
+<span class="source-line" id="L35" data-line="35">5. Connected/cached Brief, Signals and Ahead; bounded useful recent work.</span>
+<span class="source-line" id="L36" data-line="36">6. Periodic storage accounting and reproducible quality/latency/resource checks.</span>
+<span class="source-line" id="L37" data-line="37"> </span>
+<span class="source-line" id="L38" data-line="38">Targets: provisional text p95 &lt;=3 s, saved/searchable text &lt;=15 s after utterance</span>
+<span class="source-line" id="L39" data-line="39">end; exact fixture recall 100%, descriptive top-five recall &gt;=90%; automatic</span>
+<span class="source-line" id="L40" data-line="40">speaker-name precision &gt;=98% on held-out examples; no wrong media navigation,</span>
+<span class="source-line" id="L41" data-line="41">hidden capture gaps or lost pending work. Compare helper/system resource use,</span>
+<span class="source-line" id="L42" data-line="42">not only app CPU; aim for 20% of one core average and &gt;=50% reduction against the</span>
+<span class="source-line" id="L43" data-line="43">reproduced overload, with foreground p95 within 10% of baseline. These are</span>
+<span class="source-line" id="L44" data-line="44">acceptance targets, not results.</span>
+<span class="source-line" id="L45" data-line="45"> </span>
+<span class="source-line" id="L46" data-line="46">Each slice requires focused tests and review. Protocol changes require clean</span>
+<span class="source-line" id="L47" data-line="47">debug validation and an independent clean optimized build. Installation and</span>
+<span class="source-line" id="L48" data-line="48">rendered Live/Timeline acceptance must be recorded separately. Existing history,</span>
+<span class="source-line" id="L49" data-line="49">power settings and rollback material remain protected.</span>
+<span class="source-line" id="L50" data-line="50"> </span>
+<span class="source-line" id="L51" data-line="51">## Verification ledger</span>
+<span class="source-line" id="L52" data-line="52"> </span>
+<span class="source-line" id="L53" data-line="53">### Implemented recovery slice</span>
+<span class="source-line" id="L54" data-line="54"> </span>
+<span class="source-line" id="L55" data-line="55">- Fresh pending audio (last 120 seconds, oldest first within the fresh lane) can</span>
+<span class="source-line" id="L56" data-line="56">  enter while the user is active. One native automatic job runs at a time;</span>
+<span class="source-line" id="L57" data-line="57">  fresh Whisper uses one thread in Low Power Mode and two otherwise. Historical</span>
+<span class="source-line" id="L58" data-line="58">  repair retains quiet-time admission. The CPU, system-load, thermal and memory</span>
+<span class="source-line" id="L59" data-line="59">  limits still apply. An admitted bounded fresh job finishes its own CPU burst</span>
+<span class="source-line" id="L60" data-line="60">  rather than repeatedly cancelling and redoing the same recording.</span>
+<span class="source-line" id="L61" data-line="61">- OCR registers manual/current/historical demand before its SQLite claim. A</span>
+<span class="source-line" id="L62" data-line="62">  history wait cannot occupy the sole OCR worker. Cancellation preserves the</span>
+<span class="source-line" id="L63" data-line="63">  original and returns work to pending. Governed power-setting changes retain</span>
+<span class="source-line" id="L64" data-line="64">  one joined worker instead of replacing a native operation mid-flight.</span>
+<span class="source-line" id="L65" data-line="65">  System Monitor now explains that shared budget and removes the old advice to</span>
+<span class="source-line" id="L66" data-line="66">  raise OCR priority merely because history is waiting. The process table hides</span>
+<span class="source-line" id="L67" data-line="67">  placeholder hardware capacity until it has a real sampled baseline.</span>
+<span class="source-line" id="L68" data-line="68">- The saved-audio end timestamp includes its final PCM packet. Shutdown writes</span>
+<span class="source-line" id="L69" data-line="69">  an unsaved tail once; retained overlap alone cannot create a duplicate file.</span>
+<span class="source-line" id="L70" data-line="70">  This is not a new sample-clock or non-overlapping storage implementation.</span>
+<span class="source-line" id="L71" data-line="71">- One committed Timeline query searches native transcript FTS and screen OCR /</span>
+<span class="source-line" id="L72" data-line="72">  window titles. Transcript phrase, prefix, exclusion, date and ordering use the</span>
+<span class="source-line" id="L73" data-line="73">  same query. Latest-pass rows are bounded and revalidated before exact opening;</span>
+<span class="source-line" id="L74" data-line="74">  source or revision changes cannot redirect selection to a nearby screenshot.</span>
+<span class="source-line" id="L75" data-line="75">  Screen-only filters and truncation have explicit notices. Audio pagination,</span>
+<span class="source-line" id="L76" data-line="76">  speaker search, cross-field app/URL matching and semantic integration remain.</span>
+<span class="source-line" id="L77" data-line="77">- Live connects to the configured private primary BFF, defaulting to</span>
+<span class="source-line" id="L78" data-line="78">  `http://100.82.166.96:9010`. A bounded origin-bound disk cache carries the last</span>
+<span class="source-line" id="L79" data-line="79">  good Brief/Signals/Ahead snapshot with visible age and offline status. Recent</span>
+<span class="source-line" id="L80" data-line="80">  work uses only the last ten minutes; sparse screenshot span is not claimed as</span>
+<span class="source-line" id="L81" data-line="81">  time spent working. The primary health endpoint was verified healthy during</span>
+<span class="source-line" id="L82" data-line="82">  this run. The old local service was not restarted.</span>
+<span class="source-line" id="L83" data-line="83">- A lifecycle-owned 15-minute storage scan categorizes logical and allocated</span>
+<span class="source-line" id="L84" data-line="84">  bytes, file counts, partial/unavailable roots and volume free space. Settings</span>
+<span class="source-line" id="L85" data-line="85">  reads cached reports and coalesces manual refreshes. Shared APFS allocations</span>
+<span class="source-line" id="L86" data-line="86">  do not imply the amount recoverable by deleting a backup.</span>
+<span class="source-line" id="L87" data-line="87"> </span>
+<span class="source-line" id="L88" data-line="88">### Automated checks</span>
+<span class="source-line" id="L89" data-line="89"> </span>
+<span class="source-line" id="L90" data-line="90">- Clean debug command: `RETRACE_TEST_DISABLE_FILE_LOGGING=1 nice -n 10 swift test</span>
+<span class="source-line" id="L91" data-line="91">  --jobs 2`, following `swift package clean`. **1,249 tests, nine intentional</span>
+<span class="source-line" id="L92" data-line="92">  skips, zero failures**, completed 19 October 11:53:53 Brisbane.</span>
+<span class="source-line" id="L93" data-line="93">  Receipt: `/tmp/retrace-recovery-final-clean-debug.log`. The earlier 1,239-test</span>
+<span class="source-line" id="L94" data-line="94">  clean pass is retained in `retrace-recovery-clean-debug-2.log`.</span>
+<span class="source-line" id="L95" data-line="95">- The first clean run exposed old title-scope expectations, a five-second retry</span>
+<span class="source-line" id="L96" data-line="96">  delay after new audio interrupted history, and a fresh-job CPU-burst test</span>
+<span class="source-line" id="L97" data-line="97">  assumption. Their failure receipt is retained in</span>
+<span class="source-line" id="L98" data-line="98">  `/tmp/retrace-recovery-clean-debug.log`; the fixes pass the final clean suite.</span>
+<span class="source-line" id="L99" data-line="99">- Focused real SQLite/WAL/audio-buffer/search/storage/cache tests also pass.</span>
+<span class="source-line" id="L100" data-line="100">  Native optional checks and hardware measurements are recorded separately;</span>
+<span class="source-line" id="L101" data-line="101">  ordinary-suite skips are not native acceptance.</span>
+<span class="source-line" id="L102" data-line="102">- A separate optimized build passed from a fresh scratch directory in 1,716.50 s,</span>
+<span class="source-line" id="L103" data-line="103">  with all 366 recorded product inputs unchanged. It includes the native</span>
+<span class="source-line" id="L104" data-line="104">  cancellation and bounded monitor repairs. The earlier 789.56-second build and</span>
+<span class="source-line" id="L105" data-line="105">  its 365-input manifest remain retained as superseded receipts. Product input</span>
+<span class="source-line" id="L106" data-line="106">  hashes and package/install receipts belong in</span>
+<span class="source-line" id="L107" data-line="107">  `~/Library/Application Support/Retrace Candidates/2026-10-19-recovery/`.</span>
+<span class="source-line" id="L108" data-line="108">  Completed validation logs are copied into its private `Validation receipts/`</span>
+<span class="source-line" id="L109" data-line="109">  directory so that temporary-file cleanup cannot erase the evidence.</span>
+<span class="source-line" id="L110" data-line="110"> </span>
+<span class="source-line" id="L111" data-line="111">### Native Whisper cancellation repair</span>
+<span class="source-line" id="L112" data-line="112"> </span>
+<span class="source-line" id="L113" data-line="113">The explicit real small-model test exposed a 12.233-second cancellation join</span>
+<span class="source-line" id="L114" data-line="114">despite the Swift token being wired correctly. Upstream v1.8.2 checked that</span>
+<span class="source-line" id="L115" data-line="115">callback after encoding but did not install it on scheduled CPU graphs. The</span>
+<span class="source-line" id="L116" data-line="116">versioned patch under `Vendors/whisper/patches/` forwards it into encoder,</span>
+<span class="source-line" id="L117" data-line="117">decoder and automatic-language detection and clears borrowed callbacks after</span>
+<span class="source-line" id="L118" data-line="118">joined synchronous native execution. The public header/ABI is unchanged.</span>
+<span class="source-line" id="L119" data-line="119"> </span>
+<span class="source-line" id="L120" data-line="120">Six native tests now pass, including model reuse after cancellation. English</span>
+<span class="source-line" id="L121" data-line="121">joined in 0.007621 s and automatic-language detection in 0.062466 s. Returned</span>
+<span class="source-line" id="L122" data-line="122">text, timed words and spans on both authored uncancelled regressions exactly</span>
+<span class="source-line" id="L123" data-line="123">match the earlier unpatched run. Receipt:</span>
+<span class="source-line" id="L124" data-line="124">`/tmp/retrace-recovery-native-whisper-final-backends.log`.</span>
+<span class="source-line" id="L125" data-line="125">The first failed receipt is retained; a separate test run using freshly built</span>
+<span class="source-line" id="L126" data-line="126">backend paths was interrupted and is not an acceptance result.</span>
+<span class="source-line" id="L127" data-line="127"> </span>
+<span class="source-line" id="L128" data-line="128">Only the patched Whisper library is promoted. The five retained ggml backends</span>
+<span class="source-line" id="L129" data-line="129">match their committed source bytes; their installed code/data section hashes</span>
+<span class="source-line" id="L130" data-line="130">also match (signing and load paths change whole-file hashes). Runtime inspection</span>
+<span class="source-line" id="L131" data-line="131">confirmed the final tests loaded the retained vendored backends. C++ review</span>
+<span class="source-line" id="L132" data-line="132">found no must-fix issues; clang-tidy and cppcheck are unavailable. Individual</span>
+<span class="source-line" id="L133" data-line="133">BLAS operations, Metal and external encoders are not made interruptible, and</span>
+<span class="source-line" id="L134" data-line="134">this authored small-model test is not a worst-case bound for every model/input.</span>
+<span class="source-line" id="L135" data-line="135"> </span>
+<span class="source-line" id="L136" data-line="136">### Monitoring must not create load</span>
+<span class="source-line" id="L137" data-line="137"> </span>
+<span class="source-line" id="L138" data-line="138">An installed UI check found a separate regression: opening System Monitor starts</span>
+<span class="source-line" id="L139" data-line="139">legacy process-log compaction and window loading against a 2.0 GB JSONL file.</span>
+<span class="source-line" id="L140" data-line="140">Observed app RSS rose from roughly 0.8 GB before that check to over 8 GB while</span>
+<span class="source-line" id="L141" data-line="141">the view was collecting its baseline. The reader/compactor materialized the</span>
+<span class="source-line" id="L142" data-line="142">whole retained log and did not check cancellation. Returning to Dashboard did</span>
+<span class="source-line" id="L143" data-line="143">not promptly stop that native file work. This observation was not a matched</span>
+<span class="source-line" id="L144" data-line="144">benchmark and does not attribute all app load to the monitor.</span>
+<span class="source-line" id="L145" data-line="145"> </span>
+<span class="source-line" id="L146" data-line="146">The recovery reader now limits reads to the last 4 MiB, complete records to</span>
+<span class="source-line" id="L147" data-line="147">128 KiB and the retained window to 256 samples. Automatic compaction is removed;</span>
+<span class="source-line" id="L148" data-line="148">only the existing explicit Restart Baseline action can reset the log. File descriptors are owned, regular files are</span>
+<span class="source-line" id="L149" data-line="149">checked without following symlinks, and cancelled work cannot publish an old</span>
+<span class="source-line" id="L150" data-line="150">snapshot. The UI labels this a bounded recent sample rather than all 12 hours.</span>
+<span class="source-line" id="L151" data-line="151">The old diagnostic file remains in place. Real sparse-file, boundary and</span>
+<span class="source-line" id="L152" data-line="152">cancellation regressions are under `UI/Tests/ProcessCPULogReaderTests.swift`,</span>
+<span class="source-line" id="L153" data-line="153">including cancellation after opening the native descriptor and after a first</span>
+<span class="source-line" id="L154" data-line="154">decoded sampler row, then a complete retry. The final clean debug/optimized</span>
+<span class="source-line" id="L155" data-line="155">validation above follows the changed private actor method signatures.</span>
+<span class="source-line" id="L156" data-line="156">After that clean pass, the cancellation test&#x27;s oracle was strengthened to check</span>
+<span class="source-line" id="L157" data-line="157">the authored process&#x27;s exact 0.02 CPU seconds, so unrelated live sample duration</span>
+<span class="source-line" id="L158" data-line="158">cannot hide a missing row. All nine focused tests pass again in</span>
+<span class="source-line" id="L159" data-line="159">`/tmp/retrace-recovery-final-reader-oracle.log`; product inputs remain unchanged.</span>
+<span class="source-line" id="L160" data-line="160"> </span>
+<span class="source-line" id="L161" data-line="161">### Explicit native speech and speaker-worker comparison</span>
+<span class="source-line" id="L162" data-line="162"> </span>
+<span class="source-line" id="L163" data-line="163">The authored `au-names-padded.m4a` is 15.377 seconds / 246,033 samples at 16 kHz,</span>
+<span class="source-line" id="L164" data-line="164">with an independently retained 29-token oracle. It is synthetic test speech,</span>
+<span class="source-line" id="L165" data-line="165">not a held-out human or multi-speaker quality corpus. Raw token WER can penalize</span>
+<span class="source-line" id="L166" data-line="166">number formatting and is not a promotion decision.</span>
+<span class="source-line" id="L167" data-line="167"> </span>
+<span class="source-line" id="L168" data-line="168">| Backend | Initialization plus inference | Raw WER | Scope |</span>
+<span class="source-line" id="L169" data-line="169">| --- | ---: | ---: | --- |</span>
+<span class="source-line" id="L170" data-line="170">| Apple SpeechAnalyzer, en-AU | 1.022 s | 0.345 | Installed assets prepared explicitly for comparison; 27 native timed spans |</span>
+<span class="source-line" id="L171" data-line="171">| CPU Whisper small, two-thread permit | 11.760 s | 0.897 | 18 returned timed spans |</span>
+<span class="source-line" id="L172" data-line="172">| Spare-Mac MLX large-v3 + pyannote + Outlook matching | 13.444 s process wall time | 0.207 | Pinned local snapshots; 12.450 s worker elapsed; 4.172 GB peak process RSS |</span>
+<span class="source-line" id="L173" data-line="173"> </span>
+<span class="source-line" id="L174" data-line="174">Apple native AAC transcription and in-flight cancellation pass. Receipts:</span>
+<span class="source-line" id="L175" data-line="175">`/tmp/retrace-native-prepared.log`,</span>
+<span class="source-line" id="L176" data-line="176">`/tmp/retrace-speech-comparison-20261019.log`.</span>
+<span class="source-line" id="L177" data-line="177">Apple&#x27;s helper memory and whole-system energy have not been measured; lower app</span>
+<span class="source-line" id="L178" data-line="178">CPU alone would be insufficient. CPU Whisper remains the production backend.</span>
+<span class="source-line" id="L179" data-line="179"> </span>
+<span class="source-line" id="L180" data-line="180">The one-job Python worker uses the exact `~/outlook` matching implementation and</span>
+<span class="source-line" id="L181" data-line="181">read-only enrollment library on the primary spare Mac. It verifies package,</span>
+<span class="source-line" id="L182" data-line="182">source, config and model bytes, then binds every model component to the verified</span>
+<span class="source-line" id="L183" data-line="183">local snapshot. Names remain suggestions; the authored result stayed anonymous.</span>
+<span class="source-line" id="L184" data-line="184">Fourteen boundary tests pass with real AAC decoding, private immutable snapshots,</span>
+<span class="source-line" id="L185" data-line="185">range/provenance checks, interrupted/malformed output handling and ambiguous</span>
+<span class="source-line" id="L186" data-line="186">speaker overlap. Native run 5 passed in</span>
+<span class="source-line" id="L187" data-line="187">`/Users/stuartbond/retrace-recovery-worker-20261019/` on the primary. Failed earlier</span>
+<span class="source-line" id="L188" data-line="188">runs are retained (missing decoder PATH, NumPy timing compatibility, and a wrong</span>
+<span class="source-line" id="L189" data-line="189">test media-directory argument); none wrote recording history.</span>
+<span class="source-line" id="L190" data-line="190"> </span>
+<span class="source-line" id="L191" data-line="191">The worker is not connected to Retrace. App-owned durable publication, transport,</span>
+<span class="source-line" id="L192" data-line="192">acknowledgement, cancellation/backoff, bounded disk use, native result import,</span>
+<span class="source-line" id="L193" data-line="193">speaker corrections and held-out name calibration are still required. Its CLI</span>
+<span class="source-line" id="L194" data-line="194">does not create those capabilities implicitly.</span>
+<span class="source-line" id="L195" data-line="195"> </span>
+<span class="source-line" id="L196" data-line="196">### Space, installation and remaining acceptance</span>
+<span class="source-line" id="L197" data-line="197"> </span>
+<span class="source-line" id="L198" data-line="198">Only unreferenced generated Swift build caches were cleaned after checking for</span>
+<span class="source-line" id="L199" data-line="199">open handles. No recordings, models, old app rollback copies or retained database</span>
+<span class="source-line" id="L200" data-line="200">backups were removed. Available Data-volume space was about 24 GiB during the</span>
+<span class="source-line" id="L201" data-line="201">optimized build; the 20 GiB headroom remains a constraint.</span>
+<span class="source-line" id="L202" data-line="202"> </span>
+<span class="source-line" id="L203" data-line="203">Build **2610.19.1**, source `42404eee6a55fbcac6d888c66ff4f5b8fe9bfa93`, was</span>
+<span class="source-line" id="L204" data-line="204">signed, installed and reopened at 12:05 Brisbane. Normal Quit completed at about</span>
+<span class="source-line" id="L205" data-line="205">11:56:32. The first installer stopped before moving either bundle after a</span>
+<span class="source-line" id="L206" data-line="206">transient writer guard; live database identities remained unchanged. A reviewed</span>
+<span class="source-line" id="L207" data-line="207">resume rehashed the completed rollback copy, rechecked preferences and signatures,</span>
+<span class="source-line" id="L208" data-line="208">and continued the original guarded exclusive swap. The old app, verified database</span>
+<span class="source-line" id="L209" data-line="209">clone and both attempt receipts are retained. The installer wrote no library files.</span>
+<span class="source-line" id="L210" data-line="210"> </span>
+<span class="source-line" id="L211" data-line="211">Native capture advanced from frame 51193205 to 51193206 and audio 4842886 to</span>
+<span class="source-line" id="L212" data-line="212">4842887. The measured gap between saved audio ranges is **527.043 seconds**;</span>
+<span class="source-line" id="L213" data-line="213">between screenshots it is **535.573 seconds**. V23 and checked recording/context/</span>
+<span class="source-line" id="L214" data-line="214">exclusion/library preferences remain unchanged. The retained legacy damaged WAL</span>
+<span class="source-line" id="L215" data-line="215">still reports recovery failure and is preserved; it was not silently discarded.</span>
+<span class="source-line" id="L216" data-line="216"> </span>
+<span class="source-line" id="L217" data-line="217">System Monitor opened against the retained 2 GiB process log without the earlier</span>
+<span class="source-line" id="L218" data-line="218">8 GiB RSS surge. A separate 120-second observation after minimizing Dashboard</span>
+<span class="source-line" id="L219" data-line="219">measured **20.533% of one core and 541.8 MiB peak RSS**. Other applications remained</span>
+<span class="source-line" id="L220" data-line="220">active; this is not a matched benchmark or acceptance of the CPU target. New audio</span>
+<span class="source-line" id="L221" data-line="221">was visible as pending. Automatic first-pass publication has not yet been proven.</span>
+<span class="source-line" id="L222" data-line="222"> </span>
+<span class="source-line" id="L223" data-line="223">Settings rendered a complete 12:05 storage report: 57.02 GiB audio, 33.48 GiB</span>
+<span class="source-line" id="L224" data-line="224">screens, 39.84 GiB database/journals, 2.05 GiB models, 2 GiB logs and 74.73 GiB</span>
+<span class="source-line" id="L225" data-line="225">candidate/validation copies; total allocated-file accounting 209.12 GiB, with</span>
+<span class="source-line" id="L226" data-line="226">23.22 GiB volume free. Shared APFS allocations are not reclaimable space.</span>
+<span class="source-line" id="L227" data-line="227"> </span>
+<span class="source-line" id="L228" data-line="228">This slice does not establish the provisional three-second / searchable</span>
+<span class="source-line" id="L229" data-line="229">fifteen-second goals, matched active-use CPU reduction, foreground p95, human</span>
+<span class="source-line" id="L230" data-line="230">speaker accuracy, full semantic recall, exact chunk storage, higher-quality</span>
+<span class="source-line" id="L231" data-line="231">original retention or codec promotion. Those remain in the accepted delivery</span>
+<span class="source-line" id="L232" data-line="232">sequence; the large uninstalled candidate is not treated as installed work.</span>
+<span class="source-line" id="L233" data-line="233"> </span>
+<span class="source-line" id="L234" data-line="234">### Follow-up from installed checks</span>
+<span class="source-line" id="L235" data-line="235"> </span>
+<span class="source-line" id="L236" data-line="236">The legacy Dashboard total omitted audio and invoked repeated `du` scans from</span>
+<span class="source-line" id="L237" data-line="237">the Storage actor. The follow-up uses the periodic report already shown in</span>
+<span class="source-line" id="L238" data-line="238">Settings, displays its age and incomplete state, and removes the unsupported</span>
+<span class="source-line" id="L239" data-line="239">screen-only monthly extrapolation. Reads are cached and cancellation-fenced.</span>
+<span class="source-line" id="L240" data-line="240"> </span>
+<span class="source-line" id="L241" data-line="241">The connected brief failed with native URLSession error -1022 (ATS), despite</span>
+<span class="source-line" id="L242" data-line="242">the BFF returning valid HTTP 200 to a direct read. `NSAllowsLocalNetworking`</span>
+<span class="source-line" id="L243" data-line="243">alone did not permit the primary IP on this Mac. The follow-up names only</span>
+<span class="source-line" id="L244" data-line="244">100.82.166.96 and IPv4/IPv6 loopback in `NSExceptionDomains`, following</span>
+<span class="source-line" id="L245" data-line="245">[Apple&#x27;s current IP exception documentation](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsexceptiondomains).</span>
+<span class="source-line" id="L246" data-line="246">An actual app-bundle probe reproduced the original failure and succeeded with</span>
+<span class="source-line" id="L247" data-line="247">the corrected plist. Packaging must import this dictionary instead of retaining</span>
+<span class="source-line" id="L248" data-line="248">the old app&#x27;s plist unchanged. No broad arbitrary-load exception is added.</span>
+<span class="source-line" id="L249" data-line="249"> </span>
+<span class="source-line" id="L250" data-line="250">Near-target capture load also exposed a recovery dead zone: after a CPU burst,</span>
+<span class="source-line" id="L251" data-line="251">the governor required fifteen seconds below 15%, even if capture alone stayed</span>
+<span class="source-line" id="L252" data-line="252">at 15–20%. The follow-up recovers after fifteen continuous seconds below 20%.</span>
+<span class="source-line" id="L253" data-line="253">Missing samples and new overload still reset recovery; sustained CPU above 20%</span>
+<span class="source-line" id="L254" data-line="254">remains deferred. This removes that dead zone, not all possible transcription lag.</span>
+<span class="source-line" id="L255" data-line="255">The regression failed before the change and now passes.</span>
+<span class="source-line" id="L256" data-line="256"> </span>
+<span class="source-line" id="L257" data-line="257">The 119 focused tests pass, including real-file partial/cache storage checks,</span>
+<span class="source-line" id="L258" data-line="258">governor ordering, Dashboard routing and the primary BFF wire contract.</span>
+<span class="source-line" id="L259" data-line="259">Receipts: `retrace-followup-focused.log`, `retrace-budget-recovery-red.log`,</span>
+<span class="source-line" id="L260" data-line="260">`retrace-storage-presentation-red.log`, and `retrace-native-transport-{red,green}.log`.</span>
+<span class="source-line" id="L261" data-line="261">The optimized follow-up build passed in 265.66 seconds from the previously clean</span>
+<span class="source-line" id="L262" data-line="262">release scratch build, with 367 recorded product inputs unchanged. This follow-up</span>
+<span class="source-line" id="L263" data-line="263">changed no actor/protocol method layouts; it is not a second clean build.</span>
+<span class="source-line" id="L264" data-line="264"> </span>
+<span class="source-line" id="L265" data-line="265">Signed build **2610.19.2**, source `4042aac99f98830cb01e48c5f8a615e2f402ff7b`,</span>
+<span class="source-line" id="L266" data-line="266">was installed at 12:22:28 and reopened at **12:24:38 Brisbane**. The app had quit</span>
+<span class="source-line" id="L267" data-line="267">normally at about 12:21:17. The measured saved-audio gap is **203.694 seconds**;</span>
+<span class="source-line" id="L268" data-line="268">the screenshot gap is **216.964 seconds**. V23, configured library, recording,</span>
+<span class="source-line" id="L269" data-line="269">capture/context and checked exclusions remain unchanged. The previous signed</span>
+<span class="source-line" id="L270" data-line="270">app and a verified quiescent database clone remain in the private follow-up</span>
+<span class="source-line" id="L271" data-line="271">candidate directory. The installer wrote no library files. Deep/strict signature</span>
+<span class="source-line" id="L272" data-line="272">verification and the packaged executable digest match after installation.</span>
+<span class="source-line" id="L273" data-line="273"> </span>
+<span class="source-line" id="L274" data-line="274">Installed Live checks show populated Brief, **18 Signals** and **17 Ahead** items</span>
+<span class="source-line" id="L275" data-line="275">after refresh. The service&#x27;s own degraded status is retained; data transport is</span>
+<span class="source-line" id="L276" data-line="276">working but this is not an assertion that every upstream connector is healthy.</span>
+<span class="source-line" id="L277" data-line="277">Dashboard now shows **249.19 GiB** of allocated-file accounting, measured at</span>
+<span class="source-line" id="L278" data-line="278">12:25, including the additional retained rollback clone. Shared APFS allocations</span>
+<span class="source-line" id="L279" data-line="279">are not uniquely occupied or reclaimable space.</span>
+<span class="source-line" id="L280" data-line="280"> </span>
+<span class="source-line" id="L281" data-line="281">An unmatched 120-second active-use observation with Dashboard minimized measured</span>
+<span class="source-line" id="L282" data-line="282">**24.134% of one core and 1,173.3 MiB peak RSS**. One newly saved batch completed</span>
+<span class="source-line" id="L283" data-line="283">automatically as probable silence; 30 were pending at that observation&#x27;s end,</span>
+<span class="source-line" id="L284" data-line="284">and all 12 new screen frames were awaiting OCR. Native AAC decoding of a separate</span>
+<span class="source-line" id="L285" data-line="285">fresh microphone file found nonzero samples. None of these checks proves spoken</span>
+<span class="source-line" id="L286" data-line="286">recognition accuracy, sustained throughput or the target latency. Capture and UI</span>
+<span class="source-line" id="L287" data-line="287">load can still exhaust the 20% admission budget. The installed profile contains</span>
+<span class="source-line" id="L288" data-line="288">capture conversion/context reads and UI work; it does not quantify a causal</span>
+<span class="source-line" id="L289" data-line="289">breakdown. New speech prioritization and first-pass cost reduction remain source</span>
+<span class="source-line" id="L290" data-line="290">work until separately validated and installed.</span>
+<span class="source-line" id="L291" data-line="291"> </span>
+<span class="source-line" id="L292" data-line="292">Receipts are retained under `2026-10-19-recovery/followup-2610.19.2/`, including</span>
+<span class="source-line" id="L293" data-line="293">`installation-complete.json`, `postinstall-capture-advancement.json`,</span>
+<span class="source-line" id="L294" data-line="294">`installed-ui-checks-2610.19.2.json`, `postinstall-resource-observation.json` and</span>
+<span class="source-line" id="L295" data-line="295">the native `postinstall-cpu-sample.txt`.</span>
+<span class="source-line" id="L296" data-line="296"> </span>
+<span class="source-line" id="L297" data-line="297">### Speech-priority follow-up (local trial 2610.19.3)</span>
+<span class="source-line" id="L298" data-line="298"> </span>
+<span class="source-line" id="L299" data-line="299">New raw rows retain a versioned low-energy scheduling hint after the AAC write.</span>
+<span class="source-line" id="L300" data-line="300">Only that exact hint is excluded from the bounded 120-second fresh lane; quiet</span>
+<span class="source-line" id="L301" data-line="301">recordings remain pending for historical/manual work. No existing rows are</span>
+<span class="source-line" id="L302" data-line="302">reclassified and the pipeline version/schema are unchanged.</span>
+<span class="source-line" id="L303" data-line="303"> </span>
+<span class="source-line" id="L304" data-line="304">A fresh permit makes one raw inference. An uncertain result retains its text and</span>
+<span class="source-line" id="L305" data-line="305">language in the same durable row and queues a separate ambient repair. Restart</span>
+<span class="source-line" id="L306" data-line="306">hydrates that candidate before attempting normalization/high-pass enhancement;</span>
+<span class="source-line" id="L307" data-line="307">there are at most two further calls, without repeating raw inference. Empty or</span>
+<span class="source-line" id="L308" data-line="308">worse output cannot replace earlier text. Cancellation leaves the marked row and</span>
+<span class="source-line" id="L309" data-line="309">canonical media intact. Completion compares the retained candidate as well as its</span>
+<span class="source-line" id="L310" data-line="310">exact media identity, so an older result cannot consume a changed repair row.</span>
+<span class="source-line" id="L311" data-line="311">Unmarked legacy pending/repair rows start with raw and queue enhancement if needed.</span>
+<span class="source-line" id="L312" data-line="312">Immediate fallback retains its three-variant sequence. Manual exhaustive repair</span>
+<span class="source-line" id="L313" data-line="313">keeps its full attempt plan but also ranks against retained text, including</span>
+<span class="source-line" id="L314" data-line="314">preservation on decode failure. Readable speech outranks long captions before</span>
+<span class="source-line" id="L315" data-line="315">completeness/length is compared.</span>
+<span class="source-line" id="L316" data-line="316"> </span>
+<span class="source-line" id="L317" data-line="317">Daily `audio_preparation` events contain only categorical outcome and audio source.</span>
+<span class="source-line" id="L318" data-line="318">They distinguish saved low-energy/unclassified recordings, queued repair,</span>
+<span class="source-line" id="L319" data-line="319">committed repair completion and decode failure; cancelled transactions roll back their outcome event.</span>
+<span class="source-line" id="L320" data-line="320">Metrics failure cannot turn a successfully saved raw recording into a failed write.</span>
+<span class="source-line" id="L321" data-line="321"> </span>
+<span class="source-line" id="L322" data-line="322">The real native AAC/private SQLite regression verifies speech-before-quiet</span>
+<span class="source-line" id="L323" data-line="323">admission without deleting media. Another closes/reopens an on-disk SQLite store,</span>
+<span class="source-line" id="L324" data-line="324">cancels an admitted repair, reopens again and supplies empty/worse output. The</span>
+<span class="source-line" id="L325" data-line="325">original bug erased earlier text and repeated raw inference; the preservation</span>
+<span class="source-line" id="L326" data-line="326">test now passes. Separate red tests exposed stale raw completion consuming the</span>
+<span class="source-line" id="L327" data-line="327">new repair row, manual repair losing earlier text, and long captions outranking</span>
+<span class="source-line" id="L328" data-line="328">short readable speech. Those regressions are fixed and reviewed.</span>
+<span class="source-line" id="L329" data-line="329"> </span>
+<span class="source-line" id="L330" data-line="330">All **68 focused tests** pass. Following `swift package clean`, the complete</span>
+<span class="source-line" id="L331" data-line="331">debug suite passed **1,261 tests with nine intentional skips and zero failures**</span>
+<span class="source-line" id="L332" data-line="332">at 13:12 Brisbane. The audio recovery tests used the pinned real AAC fixture</span>
+<span class="source-line" id="L333" data-line="333">(`12d984dc...8830dd`). All 367 product inputs and the complete source diff remained</span>
+<span class="source-line" id="L334" data-line="334">unchanged during that build and run. The separate release scratch directory was</span>
+<span class="source-line" id="L335" data-line="335">also cleaned before optimized compilation, which passed in **603.88 seconds**.</span>
+<span class="source-line" id="L336" data-line="336">All 367 product input hashes still match. This scheduling change does not establish</span>
+<span class="source-line" id="L337" data-line="337">spoken accuracy or the latency/CPU targets.</span>
+<span class="source-line" id="L338" data-line="338"> </span>
+<span class="source-line" id="L339" data-line="339">Red/green receipts, the complete clean debug log, source patch and input manifests</span>
+<span class="source-line" id="L340" data-line="340">are retained under `2026-10-19-recovery/followup-2610.19.3/`. Generated compiler</span>
+<span class="source-line" id="L341" data-line="341">artifacts in the unused masked-history checkout were cleaned only after an open-</span>
+<span class="source-line" id="L342" data-line="342">handle check. Recordings, models and app/database rollback copies were preserved.</span>
+<span class="source-line" id="L343" data-line="343"> </span>
+<span class="source-line" id="L344" data-line="344">Signed build **2610.19.3**, source `ae20860f764a419e036b2aec0bb7bdfd1a827443`,</span>
+<span class="source-line" id="L345" data-line="345">was installed with the reviewed guarded installer and reopened at **13:27:57</span>
+<span class="source-line" id="L346" data-line="346">Brisbane**. The prior signed app and verified quiescent V23 database clone remain</span>
+<span class="source-line" id="L347" data-line="347">in the private follow-up directory. No library files were written by the installer;</span>
+<span class="source-line" id="L348" data-line="348">the checked recording, context and exclusion preferences remain unchanged.</span>
+<span class="source-line" id="L349" data-line="349">Executable SHA-256 is `2846c37b278bf7931aec104c5c65a064e7f2ed1d79b9abd85d833bbdc895017f`.</span>
+<span class="source-line" id="L350" data-line="350"> </span>
+<span class="source-line" id="L351" data-line="351">The last pre-quit audio ended at 13:25:20.302; the first new range started at</span>
+<span class="source-line" id="L352" data-line="352">13:28:00.219, a **159.917-second** saved-audio gap. The first new screenshot was</span>
+<span class="source-line" id="L353" data-line="353">13:28:03.603, **687.468 seconds** after the previous saved image. That screen gap</span>
+<span class="source-line" id="L354" data-line="354">started well before Quit: the capture log reported stable-context refusal from</span>
+<span class="source-line" id="L355" data-line="355">13:16 onward. Restart resumed one frame, then refusal recurred. Audio continued.</span>
+<span class="source-line" id="L356" data-line="356">The new screenshot renders exactly in Visual Memory with revision 0 and explicit</span>
+<span class="source-line" id="L357" data-line="357">unavailable OCR. New raw rows retain their low-energy hint and content-free daily</span>
+<span class="source-line" id="L358" data-line="358">preparation metrics. No new human spoken-phrase response has been received.</span>
+<span class="source-line" id="L359" data-line="359"> </span>
+<span class="source-line" id="L360" data-line="360">A separate unmatched 120-second observation with Dashboard minimized and no</span>
+<span class="source-line" id="L361" data-line="361">compiler running averaged **23.573% of one core**, with **450.7 MiB peak RSS**.</span>
+<span class="source-line" id="L362" data-line="362">At its end, 30 new low-energy rows and three unclassified rows were pending; the</span>
+<span class="source-line" id="L363" data-line="363">one new screen frame was waiting for OCR. The installed monitor reports resource</span>
+<span class="source-line" id="L364" data-line="364">deferral rather than completion. Its bounded log view opened successfully, and</span>
+<span class="source-line" id="L365" data-line="365">the periodic allocated-file report showed 289.17 GiB, including the latest shared</span>
+<span class="source-line" id="L366" data-line="366">APFS rollback clone. That total is not uniquely occupied or reclaimable storage.</span>
+<span class="source-line" id="L367" data-line="367"> </span>
+<span class="source-line" id="L368" data-line="368">Read-only source review found independent capture-display and attribution-display</span>
+<span class="source-line" id="L369" data-line="369">selection rules (AX centre versus top CG window/largest overlap), plus a startup</span>
+<span class="source-line" id="L370" data-line="370">second lookup that can initialize monitoring to a different display from capture.</span>
+<span class="source-line" id="L371" data-line="371">These are concrete refusal paths, not an established explanation of the observed</span>
+<span class="source-line" id="L372" data-line="372">interval. Specific rejection diagnostics and focused native/lifecycle regressions</span>
+<span class="source-line" id="L373" data-line="373">are the next capture repair; existing exclusion and A→B→A fences must remain.</span>
+<span class="source-line" id="L374" data-line="374"> </span>
+<span class="source-line" id="L375" data-line="375">Receipts: `verified-source-and-build.json`, `installation-complete.json`,</span>
+<span class="source-line" id="L376" data-line="376">`postinstall-settings-and-launch.json`, `postinstall-capture-advancement.json`,</span>
+<span class="source-line" id="L377" data-line="377">`installed-ui-checks-2610.19.3.json`, `postinstall-resource-observation.json`, and</span>
+<span class="source-line" id="L378" data-line="378">`postinstall-cpu-sample.txt` under `followup-2610.19.3/`.</span>
+<span class="source-line" id="L379" data-line="379"> </span>
+<span class="source-line" id="L380" data-line="380">### Capture display and observer follow-up (local trial 2610.19.4)</span>
+<span class="source-line" id="L381" data-line="381"> </span>
+<span class="source-line" id="L382" data-line="382">A shared WindowServer resolver now selects the first visible, nontransparent,</span>
+<span class="source-line" id="L383" data-line="383">nondegenerate window of the sampled process and its largest display overlap.</span>
+<span class="source-line" id="L384" data-line="384">Routing, attribution and document revalidation use that resolver; a display tie</span>
+<span class="source-line" id="L385" data-line="385">is deterministic. AX permission remains separately reported and does not force a</span>
+<span class="source-line" id="L386" data-line="386">secondary-display window back to the main screen. Startup monitoring takes the</span>
+<span class="source-line" id="L387" data-line="387">same display ID used to open the source, then subscribes to bounded activation</span>
+<span class="source-line" id="L388" data-line="388">notifications before reconciling current focus.</span>
+<span class="source-line" id="L389" data-line="389"> </span>
+<span class="source-line" id="L390" data-line="390">Observer review exposed an existing Stop/registration race. The candidate owns</span>
+<span class="source-line" id="L391" data-line="391">the native observer and callback context together, publishes that owner before</span>
+<span class="source-line" id="L392" data-line="392">installation, and closes it on MainActor. Close vetoes any later install. Session</span>
+<span class="source-line" id="L393" data-line="393">and setup generations reject stale completions and callbacks; old teardown cannot</span>
+<span class="source-line" id="L394" data-line="394">clear a restarted owner. Stop does not join a notification callback that may be</span>
+<span class="source-line" id="L395" data-line="395">queued behind CaptureManager&#x27;s lifecycle operation.</span>
+<span class="source-line" id="L396" data-line="396"> </span>
+<span class="source-line" id="L397" data-line="397">Fixed sampling outcomes distinguish missing context/window identity, wrong</span>
+<span class="source-line" id="L398" data-line="398">display, inventory changes, notification revision changes, pixel failure and</span>
+<span class="source-line" id="L399" data-line="399">elapsed-time refusal. Counts are bounded and emitted at most every 30 seconds,</span>
+<span class="source-line" id="L400" data-line="400">with one in-flight log write and one coalesced pending summary. No titles, URLs,</span>
+<span class="source-line" id="L401" data-line="401">images or application identities enter these diagnostics. They count sampling</span>
+<span class="source-line" id="L402" data-line="402">attempts before outer generation, deduplication and durable storage admission,</span>
+<span class="source-line" id="L403" data-line="403">not retained frames or measured coverage. No policy fence or exclusion is relaxed.</span>
+<span class="source-line" id="L404" data-line="404"> </span>
+<span class="source-line" id="L405" data-line="405">The startup regression first failed with source display 7 and monitor display 8,</span>
+<span class="source-line" id="L406" data-line="406">then passed after eliminating the second lookup. A native CoreGraphics geometry</span>
+<span class="source-line" id="L407" data-line="407">fixture exposed CGRect.infinite&#x27;s finite sentinel representation; explicit null/</span>
+<span class="source-line" id="L408" data-line="408">infinite rejection was added. Real Foundation notifications and held native</span>
+<span class="source-line" id="L409" data-line="409">registration boundaries exercise observation before reconciliation and Stop /</span>
+<span class="source-line" id="L410" data-line="410">restart ownership. A separate ordering regression rejects an older asynchronous</span>
+<span class="source-line" id="L411" data-line="411">display lookup after a newer switch has committed.</span>
+<span class="source-line" id="L412" data-line="412"> </span>
+<span class="source-line" id="L413" data-line="413">All **57 focused tests** pass. After a clean rebuild, the complete debug suite</span>
+<span class="source-line" id="L414" data-line="414">passed **1,274 tests, nine intentional skips and zero failures** at 14:19 Brisbane.</span>
+<span class="source-line" id="L415" data-line="415">All 381 product inputs, 131 test inputs and the frozen source diff remained</span>
+<span class="source-line" id="L416" data-line="416">unchanged. An earlier clean run was deliberately interrupted before tests to fix</span>
+<span class="source-line" id="L417" data-line="417">a new observer isolation warning; the final clean run has no such warning. The</span>
+<span class="source-line" id="L418" data-line="418">independent optimized build passed in **323.13 seconds** after cleaning its</span>
+<span class="source-line" id="L419" data-line="419">separate scratch directory. All product and test input hashes remained unchanged.</span>
+<span class="source-line" id="L420" data-line="420"> </span>
+<span class="source-line" id="L421" data-line="421">During this validation, build 2610.19.3 published three nonempty first-pass</span>
+<span class="source-line" id="L422" data-line="422">transcripts from audio recorded around 14:05. The Live panel displayed fresh</span>
+<span class="source-line" id="L423" data-line="423">text; this is publication evidence, not a ground-truth speech accuracy check.</span>
+<span class="source-line" id="L424" data-line="424">Normal Timeline still showed an unavailable image for a video being written.</span>
+<span class="source-line" id="L425" data-line="425">Visual Memory and its Open moment action rendered the exact retained original</span>
+<span class="source-line" id="L426" data-line="426">at 14:06:29 with revision 1. The normal Timeline loader uses the encoded-video</span>
+<span class="source-line" id="L427" data-line="427">path rather than that exact original reader; this is a separate follow-up.</span>
+<span class="source-line" id="L428" data-line="428"> </span>
+<span class="source-line" id="L429" data-line="429">Signed build **2610.19.4**, source `8f671b9edbb7e0c5a92e82fe76931e32956a5bea`,</span>
+<span class="source-line" id="L430" data-line="430">reopened at **14:32 Brisbane**. Executable SHA-256 is</span>
+<span class="source-line" id="L431" data-line="431">`5eb7fe3bdcb3017790c5011d2b779846151cf0a360a7b1b0441aff8ac21d5b6b`.</span>
+<span class="source-line" id="L432" data-line="432">The first installer attempt completed rollback hashing and candidate staging,</span>
+<span class="source-line" id="L433" data-line="433">then stopped before the bundle swap when the original library-wide writer guard</span>
+<span class="source-line" id="L434" data-line="434">found a transient working-directory handle from an audio `rsync --sender`.</span>
+<span class="source-line" id="L435" data-line="435">No application or library replacement occurred in that attempt. After the handle</span>
+<span class="source-line" id="L436" data-line="436">closed, source inode/size/mtime/ctime remained identical. A reviewed resume</span>
+<span class="source-line" id="L437" data-line="437">rechecked the configured root, clone hash and file-state bracket, signatures,</span>
+<span class="source-line" id="L438" data-line="438">bundle identities and the unchanged writer guard before completing the exclusive</span>
+<span class="source-line" id="L439" data-line="439">swap. The old app and verified V23 database clone remain retained. The installer</span>
+<span class="source-line" id="L440" data-line="440">wrote no live library files; all nine checked preferences are unchanged.</span>
+<span class="source-line" id="L441" data-line="441"> </span>
+<span class="source-line" id="L442" data-line="442">The last saved audio ended at 14:27:14.671 and new audio began at 14:32:20.080,</span>
+<span class="source-line" id="L443" data-line="443">a **305.409-second** gap. Screenshots resumed at 14:32:21.588, **319.663 seconds**</span>
+<span class="source-line" id="L444" data-line="444">after the last pre-quit image. The first sample was rejected for an inventory</span>
+<span class="source-line" id="L445" data-line="445">change; the next full diagnostic interval accepted all sixteen attempts. These</span>
+<span class="source-line" id="L446" data-line="446">are sampling outcomes, not proof that all accepted samples became distinct</span>
+<span class="source-line" id="L447" data-line="447">retained frames. Sustained capture and matched resource/foreground latency</span>
+<span class="source-line" id="L448" data-line="448">acceptance remain open.</span>
+<span class="source-line" id="L449" data-line="449"> </span>
+<span class="source-line" id="L450" data-line="450">Receipts are under `2026-10-19-recovery/followup-2610.19.4/`, including the</span>
+<span class="source-line" id="L451" data-line="451">original install failure, approved `resume_install.py`, completed installation,</span>
+<span class="source-line" id="L452" data-line="452">checked settings, exact build/input hashes and saved-media restart boundaries.</span>
+<span class="source-line" id="L453" data-line="453"> </span>
+<span class="source-line" id="L454" data-line="454">A later sustained check found that screen capture did **not** remain healthy.</span>
+<span class="source-line" id="L455" data-line="455">At approximately 15:39, audio continued to advance but the latest screenshot was</span>
+<span class="source-line" id="L456" data-line="456">from 15:15:41.580. Forty-seven diagnostic summaries from 15:16:23 to 15:39:54</span>
+<span class="source-line" id="L457" data-line="457">contained 999 rejected sampling attempts and no accepted attempts: 698 inventory</span>
+<span class="source-line" id="L458" data-line="458">changes during metadata, 249 notification changes before pixels, 32 context</span>
+<span class="source-line" id="L459" data-line="459">changes and 20 notification changes during pixels. The initial successful</span>
+<span class="source-line" id="L460" data-line="460">interval above must not be treated as sustained capture acceptance. The bounded,</span>
+<span class="source-line" id="L461" data-line="461">content-free receipt is `followup-2610.19.4/postinstall-capture-stall-1539.json`.</span>
+<span class="source-line" id="L462" data-line="462"> </span>
+<span class="source-line" id="L463" data-line="463">Source inspection identified optional Accessibility document enrichment inside</span>
+<span class="source-line" id="L464" data-line="464">the pixel-admission bracket. Multiple synchronous AX lookups can extend the gap</span>
+<span class="source-line" id="L465" data-line="465">between the before/after window inventory and notification checks. The proposed</span>
+<span class="source-line" id="L466" data-line="466">narrow correction removes that optional enrichment from this critical path;</span>
+<span class="source-line" id="L467" data-line="467">the independent activity observer retains its source-bound enrichment. App,</span>
+<span class="source-line" id="L468" data-line="468">window and title attribution and every inventory, revision, exclusion and pixel</span>
+<span class="source-line" id="L469" data-line="469">guard stay in place. Capture recovery requires a new installed observation.</span>
+<span class="source-line" id="L470" data-line="470"> </span>
+<span class="source-line" id="L471" data-line="471"> </span>
+<span class="source-line" id="L472" data-line="472">### Ordinary Timeline images (source candidate 2610.19.5)</span>
+<span class="source-line" id="L473" data-line="473"> </span>
+<span class="source-line" id="L474" data-line="474">The ordinary Timeline had a separate encoded-video path from Visual Memory&#x27;s</span>
+<span class="source-line" id="L475" data-line="475">exact reader. It rejected processing-status 4 rows, preferred a video view over</span>
+<span class="source-line" id="L476" data-line="476">verified original pixels, and checked a growing video file&#x27;s size in the render</span>
+<span class="source-line" id="L477" data-line="477">path. Filtered history queries also omitted status 4 rows. These were media</span>
+<span class="source-line" id="L478" data-line="478">readiness gates, separate from the preserved privacy exclusions.</span>
+<span class="source-line" id="L479" data-line="479"> </span>
+<span class="source-line" id="L480" data-line="480">The candidate routes ordinary foreground images through the existing exact</span>
+<span class="source-line" id="L481" data-line="481">service: source-qualified retained originals before finalization, then the exact</span>
+<span class="source-line" id="L482" data-line="482">archive index. Every list row retains its query-time source generation and capture</span>
+<span class="source-line" id="L483" data-line="483">time. The historical canvas renders only the validated image. Search handoffs</span>
+<span class="source-line" id="L484" data-line="484">retain their original immutable reference immediately; neighborhood loading is</span>
+<span class="source-line" id="L485" data-line="485">optional and cannot replace the citation with a new lookup by numeric ID.</span>
+<span class="source-line" id="L486" data-line="486"> </span>
+<span class="source-line" id="L487" data-line="487">One owned foreground loop joins cancellation and holds at most one latest pending</span>
+<span class="source-line" id="L488" data-line="488">selection. Selection changes from paging/trim reconcile pixels without adding OCR</span>
+<span class="source-line" id="L489" data-line="489">work to every scroll event. Window presentation explicitly opens/closes that owner</span>
+<span class="source-line" id="L490" data-line="490">because a retained NSHostingView need not repeat onAppear. Source changes,</span>
+<span class="source-line" id="L491" data-line="491">deletion, policy changes and reused IDs cannot publish late pixels.</span>
+<span class="source-line" id="L492" data-line="492"> </span>
+<span class="source-line" id="L493" data-line="493">Real private SQLite/WAL/HEVC/native-hosting regressions first reproduced the</span>
+<span class="source-line" id="L494" data-line="494">missing-original, wrong canvas path, cancellation, status-refresh and window</span>
+<span class="source-line" id="L495" data-line="495">transition failures. The first complete focused pass has **64 tests and zero</span>
+<span class="source-line" id="L496" data-line="496">failures** (`/tmp/retrace-timeline-final-focused.log`). Review identified two</span>
+<span class="source-line" id="L497" data-line="497">remaining presentation cases, failed live capture and filtered-open/close races;</span>
+<span class="source-line" id="L498" data-line="498">their separate regressions first reproduced both failures. The final fix restores</span>
+<span class="source-line" id="L499" data-line="499">the selected historical image after a failed live capture and owns one filtered</span>
+<span class="source-line" id="L500" data-line="500">request plus the latest pending request through native window transitions. A</span>
+<span class="source-line" id="L501" data-line="501">further regression reproduced an older initial query overwriting the accepted</span>
+<span class="source-line" id="L502" data-line="502">filter; filter criteria and rows now publish together after invalidating that</span>
+<span class="source-line" id="L503" data-line="503">older query.</span>
+<span class="source-line" id="L504" data-line="504"> </span>
+<span class="source-line" id="L505" data-line="505">After `swift package clean`, the full debug suite passed **1,300 tests, nine</span>
+<span class="source-line" id="L506" data-line="506">intentional skips and zero failures** at 15:48 Brisbane. Compilation took 468.11</span>
+<span class="source-line" id="L507" data-line="507">seconds and tests took 474.539 seconds on the loaded Mac. All **381 product and</span>
+<span class="source-line" id="L508" data-line="508">132 test input hashes** remained identical. The 23 new original-image tests and</span>
+<span class="source-line" id="L509" data-line="509">three added source-identity regressions pass. Source review has no outstanding</span>
+<span class="source-line" id="L510" data-line="510">high/medium findings. Logs and `timeline-clean-debug-complete.json` are retained</span>
+<span class="source-line" id="L511" data-line="511">under `followup-2610.19.5/`. The separate optional capture-metadata correction,</span>
+<span class="source-line" id="L512" data-line="512">optimized build and installation remain pending at this checkpoint.</span>
+<span class="source-line" id="L513" data-line="513"> </span>
+<span class="source-line" id="L514" data-line="514">### Optional capture metadata follow-up (source candidate 2610.19.5)</span>
+<span class="source-line" id="L515" data-line="515"> </span>
+<span class="source-line" id="L516" data-line="516">The capture sampler now returns its already-permitted base window context without</span>
+<span class="source-line" id="L517" data-line="517">awaiting optional AX document enrichment. The independent ActivityMonitor path</span>
+<span class="source-line" id="L518" data-line="518">continues to enrich its own source-bound observations. Screenshot app, process,</span>
+<span class="source-line" id="L519" data-line="519">window, title and display attribution remain intact; optional document, pane and</span>
+<span class="source-line" id="L520" data-line="520">URL fields are absent. An enriched activity event cannot lend its document</span>
+<span class="source-line" id="L521" data-line="521">identity to such a screenshot. All existing inventory, notification revision,</span>
+<span class="source-line" id="L522" data-line="522">identity, exclusion, elapsed-time and pixel guards are unchanged.</span>
+<span class="source-line" id="L523" data-line="523"> </span>
+<span class="source-line" id="L524" data-line="524">The regression holds an optional document lookup while executing the real sampler</span>
+<span class="source-line" id="L525" data-line="525">and pixel sequencer with native-rendered authored pixels. It first failed because</span>
+<span class="source-line" id="L526" data-line="526">capture started another lookup and waited for its release; after the correction,</span>
+<span class="source-line" id="L527" data-line="527">capture completes while the optional lookup remains held. Separate assertions</span>
+<span class="source-line" id="L528" data-line="528">retain inventory/application-change refusal and conservative absent-document</span>
+<span class="source-line" id="L529" data-line="529">activity linking. All **70 focused tests** pass, including the existing private</span>
+<span class="source-line" id="L530" data-line="530">window, lifecycle, same-title navigation and A→B→A checks. Independent review has</span>
+<span class="source-line" id="L531" data-line="531">no outstanding high/medium findings.</span>
+<span class="source-line" id="L532" data-line="532"> </span>
+<span class="source-line" id="L533" data-line="533">The only production change after the clean Timeline checkpoint is this sampling</span>
+<span class="source-line" id="L534" data-line="534">correction and an inventory-reader overload on a struct for isolated tests. No</span>
+<span class="source-line" id="L535" data-line="535">actor/protocol layout changed. The final combined debug suite passed **1,302</span>
+<span class="source-line" id="L536" data-line="536">tests, nine intentional skips and zero failures** at 16:01 Brisbane in 451.997</span>
+<span class="source-line" id="L537" data-line="537">seconds. All **381 product and 133 test input hashes** remained identical.</span>
+<span class="source-line" id="L538" data-line="538">`final-debug-complete.json` and the retained full log record the checkpoint.</span>
+<span class="source-line" id="L539" data-line="539"> </span>
+<span class="source-line" id="L540" data-line="540">The independent optimized build passed in **321.61 seconds** after cleaning its</span>
+<span class="source-line" id="L541" data-line="541">separate scratch directory. All 381 product and 133 test input hashes still</span>
+<span class="source-line" id="L542" data-line="542">matched. Signed build **2610.19.5** packages source</span>
+<span class="source-line" id="L543" data-line="543">`ce70ecefa51e1868662c6b57fe132c153a181bc7`; strict signature verification, the</span>
+<span class="source-line" id="L544" data-line="544">accepted native cancellation library, all five retained ggml backends and fifteen</span>
+<span class="source-line" id="L545" data-line="545">resource files pass. Packaged executable SHA-256 is</span>
+<span class="source-line" id="L546" data-line="546">`f6bf4714dd6334aa897e75d844a846b5a928fa8e0987b07491587db33238829d`.</span>
+<span class="source-line" id="L547" data-line="547">`verified-source-and-build.json`, `candidate-2610.19.5.json` and</span>
+<span class="source-line" id="L548" data-line="548">`package-verification.json` retain separate build, packaging and verification</span>
+<span class="source-line" id="L549" data-line="549">receipts under `followup-2610.19.5/`.</span>
+<span class="source-line" id="L550" data-line="550"> </span>
+<span class="source-line" id="L551" data-line="551">At the 16:11 Brisbane packaging check, build 2610.19.4 was still running; no</span>
+<span class="source-line" id="L552" data-line="552">installation attempt had started. Native computer control repeatedly failed with</span>
+<span class="source-line" id="L553" data-line="553">`Sky Computer Use native pipe startup failed`, including after reconnect. A normal</span>
+<span class="source-line" id="L554" data-line="554">Quit/install/reopen handoff is pending. The reviewed `install_app_only.py` replaces</span>
+<span class="source-line" id="L555" data-line="555">only the signed app, retains the previous app and checks that database metadata</span>
+<span class="source-line" id="L556" data-line="556">does not change during the swap. It neither copies nor writes the live library;</span>
+<span class="source-line" id="L557" data-line="557">rollback uses the retained app against the current V23 library. The older</span>
+<span class="source-line" id="L558" data-line="558">database-copying installer is not used for this read-only/UI-compatible update.</span>
+<span class="source-line" id="L559" data-line="559"> </span>
+<span class="source-line" id="L560" data-line="560">While this candidate was still uninstalled, build 2610.19.4 resumed screenshots at</span>
+<span class="source-line" id="L561" data-line="561">15:41:49.772, **1,568.192 seconds** after the 15:15:41.580 frame. That spontaneous</span>
+<span class="source-line" id="L562" data-line="562">resumption does not establish the candidate&#x27;s effectiveness. The exact frame</span>
+<span class="source-line" id="L563" data-line="563">boundaries are retained in `preinstall-capture-resumption.json`; audio and frames</span>
+<span class="source-line" id="L564" data-line="564">were again advancing in the 16:09 baseline. Restored installed capture, rendered</span>
+<span class="source-line" id="L565" data-line="565">Timeline checks, restart-gap boundaries and CPU measurements remain separate</span>
+<span class="source-line" id="L566" data-line="566">acceptance steps. The 20%-of-one-core target and matched performance acceptance</span>
+<span class="source-line" id="L567" data-line="567">remain open.</span>
+<span class="source-line" id="L568" data-line="568"> </span>
+<span class="source-line" id="L569" data-line="569">### Installed 2610.19.5 and remaining timer gap</span>
+<span class="source-line" id="L570" data-line="570"> </span>
+<span class="source-line" id="L571" data-line="571">The initial Terminal attempt stopped before any swap because the original</span>
+<span class="source-line" id="L572" data-line="572">14:32 Retrace process was still running. After normal Quit, a separate invocation</span>
+<span class="source-line" id="L573" data-line="573">completed the reviewed app-only installation at **16:29:59.041 Brisbane** and</span>
+<span class="source-line" id="L574" data-line="574">reopened Retrace at **16:29:59.095**. A redundant agent invocation then refused to</span>
+<span class="source-line" id="L575" data-line="575">overwrite the completed installation/rollback receipts and performed no swap.</span>
+<span class="source-line" id="L576" data-line="576">Strict signature verification and the installed executable, native library,</span>
+<span class="source-line" id="L577" data-line="577">backend and rollback-app hashes pass. V23 and all nine checked preferences are</span>
+<span class="source-line" id="L578" data-line="578">unchanged. The installer confirms that the database metadata stayed identical</span>
+<span class="source-line" id="L579" data-line="579">through the app swap and that it wrote no live library files.</span>
+<span class="source-line" id="L580" data-line="580"> </span>
+<span class="source-line" id="L581" data-line="581">A later bounded decode of new AAC row 4844509 produced 240,576 PCM frames at</span>
+<span class="source-line" id="L582" data-line="582">16 kHz (15.036 seconds), including 237,033 nonzero samples. The original stayed</span>
+<span class="source-line" id="L583" data-line="583">unchanged and no decoded audio was retained. RMS was -60.69 dBFS: this was a quiet</span>
+<span class="source-line" id="L584" data-line="584">recording, not a spoken-accuracy fixture. `postinstall-aac-decode.json` records the</span>
+<span class="source-line" id="L585" data-line="585">native media check separately from text preparation and UI acceptance.</span>
+<span class="source-line" id="L586" data-line="586"> </span>
+<span class="source-line" id="L587" data-line="587">Audio last ended at 16:29:23.924 and resumed at 16:30:01.661, a **37.737-second**</span>
+<span class="source-line" id="L588" data-line="588">gap. Screenshots resumed at 16:30:03.542 after the 16:29:16.180 frame, a</span>
+<span class="source-line" id="L589" data-line="589">**47.362-second** gap. The first receipts prove resumed durable writes, not</span>
+<span class="source-line" id="L590" data-line="590">sustained capture or spoken accuracy. `postinstall-identity-settings-media.json`</span>
+<span class="source-line" id="L591" data-line="591">holds the exact boundaries. `preinstall-after-quit.json` was taken after the</span>
+<span class="source-line" id="L592" data-line="592">separate install had already completed; its correction receipt explicitly</span>
+<span class="source-line" id="L593" data-line="593">disqualifies it as a pre-install boundary. The earlier settings baseline and</span>
+<span class="source-line" id="L594" data-line="594">installer&#x27;s unchanged file-state bracket remain authoritative.</span>
+<span class="source-line" id="L595" data-line="595"> </span>
+<span class="source-line" id="L596" data-line="596">Continued observation found another gap: periodic capture paused while the app</span>
+<span class="source-line" id="L597" data-line="597">was tracking its menu-bar control. The native 16:32:57 process sample shows the</span>
+<span class="source-line" id="L598" data-line="598">main thread in `NSStatusBarWindow` / `NSControl mouseDown` / AppKit event tracking.</span>
+<span class="source-line" id="L599" data-line="599">Source inspection finds both initial and window-change timer creation paths use</span>
+<span class="source-line" id="L600" data-line="600">default-mode `Timer.scheduledTimer`, with no common-mode registration. Immediate</span>
+<span class="source-line" id="L601" data-line="601">window-change captures can still occur. Audio continues recording independently.</span>
+<span class="source-line" id="L602" data-line="602">The sample and categorical diagnostics are retained in</span>
+<span class="source-line" id="L603" data-line="603">`postinstall-menu-tracking-observation.json` and its referenced native sample.</span>
+<span class="source-line" id="L604" data-line="604"> </span>
+<span class="source-line" id="L605" data-line="605">The first two complete CPU minutes averaged 31.06% and 15.63% of one core. These</span>
+<span class="source-line" id="L606" data-line="606">startup windows include paused periodic screen capture, so they are **not**</span>
+<span class="source-line" id="L607" data-line="607">performance acceptance or evidence of the intended matched improvement. A narrow</span>
+<span class="source-line" id="L608" data-line="608">timer correction is under native run-loop regression validation. The user has</span>
+<span class="source-line" id="L609" data-line="609">been asked to check a recent Timeline image because computer control still fails</span>
+<span class="source-line" id="L610" data-line="610">with `Sky Computer Use native pipe startup failed`.</span>
+<span class="source-line" id="L611" data-line="611"> </span>
+<span class="source-line" id="L612" data-line="612">### Common-mode timer correction (source candidate 2610.19.6)</span>
+<span class="source-line" id="L613" data-line="613"> </span>
+<span class="source-line" id="L614" data-line="614">Both initial and window-change rescheduling now call `CapturePollingTimer` on</span>
+<span class="source-line" id="L615" data-line="615">MainActor. It constructs the same repeating Foundation timer and registers it in</span>
+<span class="source-line" id="L616" data-line="616">the main run loop&#x27;s common modes. Callers retain their existing invalidation,</span>
+<span class="source-line" id="L617" data-line="617">weak capture ownership, interval, in-flight exclusion and privacy admission.</span>
+<span class="source-line" id="L618" data-line="618">There are no actor/protocol field or method-layout changes and no database,</span>
+<span class="source-line" id="L619" data-line="619">storage-writer, native library or preference changes.</span>
+<span class="source-line" id="L620" data-line="620"> </span>
+<span class="source-line" id="L621" data-line="621">`CapturePollingTimerTests` enters actual Foundation/AppKit default and event-</span>
+<span class="source-line" id="L622" data-line="622">tracking run-loop modes without reading desktop pixels or sending input. The</span>
+<span class="source-line" id="L623" data-line="623">default-only version first failed with **zero ticks during event tracking**;</span>
+<span class="source-line" id="L624" data-line="624">default-mode cadence and invalidation passed. After the correction, all three</span>
+<span class="source-line" id="L625" data-line="625">timer cases and the full **179-test Capture suite** pass, with two intentional</span>
+<span class="source-line" id="L626" data-line="626">skips and zero failures, in 29.747 seconds at 16:38 Brisbane. The unchanged</span>
+<span class="source-line" id="L627" data-line="627">1,302-test combined checkpoint is documented above; the full suite was not</span>
+<span class="source-line" id="L628" data-line="628">repeated for this isolated timer scheduling change. Independent review is clear.</span>
+<span class="source-line" id="L629" data-line="629">All 382 product and 134 test input hashes are retained for the separate optimized</span>
+<span class="source-line" id="L630" data-line="630">build. Receipts are under `followup-2610.19.6/`.</span>
+<span class="source-line" id="L631" data-line="631"> </span>
+<span class="source-line" id="L632" data-line="632">The independent optimized build passed in **289.02 seconds** after cleaning the</span>
+<span class="source-line" id="L633" data-line="633">separate release scratch directory. All 382 product and 134 test inputs matched</span>
+<span class="source-line" id="L634" data-line="634">their manifests. Signed build **2610.19.6**, source</span>
+<span class="source-line" id="L635" data-line="635">`63ddce2348a11db0d064c9fd9926b1b4e207f5e3`, passed strict signature, resource,</span>
+<span class="source-line" id="L636" data-line="636">native library and retained-backend verification. Packaged executable SHA-256 is</span>
+<span class="source-line" id="L637" data-line="637">`ee930fab76f5222ce8b4eeb6596b148e74d6e794c21e1fda72876ce2b5cdb288`.</span>
+<span class="source-line" id="L638" data-line="638">Build and package verification receipts remain separate. The reviewed app-only</span>
+<span class="source-line" id="L639" data-line="639">installer retains 2610.19.5 and uses the current V23 library for rollback.</span>
+<span class="source-line" id="L640" data-line="640"> </span>
+<span class="source-line" id="L641" data-line="641">At 16:45 Brisbane, 2610.19.5 was still running and no .6 installation had started.</span>
+<span class="source-line" id="L642" data-line="642">A normal Quit/Terminal-install/reopen handoff was requested because native</span>
+<span class="source-line" id="L643" data-line="643">computer control remains unavailable. Installation, rendered Timeline checks,</span>
+<span class="source-line" id="L644" data-line="644">native tracking-mode capture and matched performance acceptance remain pending.</span>
+<span class="source-line" id="L645" data-line="645"> </span>
+<span class="source-line" id="L646" data-line="646">At 16:49 Brisbane the user answered **yes** when asked whether recent Timeline</span>
+<span class="source-line" id="L647" data-line="647">screenshots appear. The live process and bundle still identified 2610.19.5, with</span>
+<span class="source-line" id="L648" data-line="648">no .6 installation attempt or completion receipt. This is user-reported recent</span>
+<span class="source-line" id="L649" data-line="649">image visibility on .5, not direct computer-use visual verification or proof of</span>
+<span class="source-line" id="L650" data-line="650">exact navigation across all history. `user-reported-timeline-visibility.json`</span>
+<span class="source-line" id="L651" data-line="651">under `followup-2610.19.5/` records that distinction. The .6 timer installation,</span>
+<span class="source-line" id="L652" data-line="652">sustained tracking-mode capture and matched performance checks remain pending.</span>
+<span class="source-line" id="L653" data-line="653"> </span>
+<span class="source-line" id="L654" data-line="654">### Installed 2610.19.6 — 20 October verification</span>
+<span class="source-line" id="L655" data-line="655"> </span>
+<span class="source-line" id="L656" data-line="656">After the user&#x27;s normal Quit/install/reopen handoff, installation completed at</span>
+<span class="source-line" id="L657" data-line="657">**11:37:01.009 Brisbane on 20 October**. The native process sample records launch</span>
+<span class="source-line" id="L658" data-line="658">at **11:37:01.081**, PID 66783, build 2610.19.6 and source `63ddce2`. The installed</span>
+<span class="source-line" id="L659" data-line="659">executable matches the signed candidate hash above. Strict signature verification,</span>
+<span class="source-line" id="L660" data-line="660">the accepted native library, all five retained ggml backends and the retained .5</span>
+<span class="source-line" id="L661" data-line="661">executable pass. V23 and all nine checked preferences are unchanged. The installer</span>
+<span class="source-line" id="L662" data-line="662">records unchanged database/WAL metadata during the swap and no library writes.</span>
+<span class="source-line" id="L663" data-line="663">The first identity receipt used the unversioned native-library name and found no</span>
+<span class="source-line" id="L664" data-line="664">match; `postinstall-native-library-verification.json` separately checks the actual</span>
+<span class="source-line" id="L665" data-line="665">`Contents/lib/libwhisper.1.dylib`, whose hash matches the candidate.</span>
+<span class="source-line" id="L666" data-line="666"> </span>
+<span class="source-line" id="L667" data-line="667">Audio ended at **11:36:51.285** and resumed at **11:37:03.408**, a **12.123-second**</span>
+<span class="source-line" id="L668" data-line="668">restart gap. The last saved frame before installation was **11:07:52.768**; the</span>
+<span class="source-line" id="L669" data-line="669">first new frame was **11:37:05.009**, a **1,752.241-second** separation. That longer</span>
+<span class="source-line" id="L670" data-line="670">interval began while the previous build was running, well before this app swap;</span>
+<span class="source-line" id="L671" data-line="671">it is not attributed entirely to installation. Retained-frame spacing also</span>
+<span class="source-line" id="L672" data-line="672">depends on deduplication. Previous-build capture diagnostics stopped around</span>
+<span class="source-line" id="L673" data-line="673">11:07, whereas .6 reports 15–16 accepted attempts per roughly 30-second interval</span>
+<span class="source-line" id="L674" data-line="674">through 11:42:43. These are pre-deduplication admission counts, not stored-frame</span>
+<span class="source-line" id="L675" data-line="675">counts or complete capture-coverage proof.</span>
+<span class="source-line" id="L676" data-line="676"> </span>
+<span class="source-line" id="L677" data-line="677">At **11:42:58**, 59 new frame rows were present, including 27 completed OCR rows</span>
+<span class="source-line" id="L678" data-line="678">and 32 pending rows. Of 34 new audio rows, one was transcribed, one needed repair</span>
+<span class="source-line" id="L679" data-line="679">and 32 remained pending. A fresh AAC (row 4851620) decoded to 240,576 frames at</span>
+<span class="source-line" id="L680" data-line="680">16 kHz, including 235,760 nonzero samples. RMS was -63.66 dBFS: this quiet sample</span>
+<span class="source-line" id="L681" data-line="681">proves decodability and nonzero signal, not intelligible speech or transcription</span>
+<span class="source-line" id="L682" data-line="682">accuracy. The original remained unchanged and no decoded PCM was retained.</span>
+<span class="source-line" id="L683" data-line="683">Processing is making progress, but fresh-text latency is not accepted.</span>
+<span class="source-line" id="L684" data-line="684"> </span>
+<span class="source-line" id="L685" data-line="685">The first five complete 60-second CPU windows averaged **20.68% of one core**;</span>
+<span class="source-line" id="L686" data-line="686">individual minute averages were 30.87%, 22.27%, 21.63%, 12.33% and 16.30%. The</span>
+<span class="source-line" id="L687" data-line="687">largest sampled peak was **205.55%**. No build or test suite was running during</span>
+<span class="source-line" id="L688" data-line="688">this observation. These unmatched startup measurements do not establish the</span>
+<span class="source-line" id="L689" data-line="689">50% improvement, sustained 20% target or foreground-latency allowance. The native</span>
+<span class="source-line" id="L690" data-line="690">one-second sample at 11:42:57 shows the main thread mostly waiting in the normal</span>
+<span class="source-line" id="L691" data-line="691">AppKit event loop, not menu tracking; it therefore does not close the installed</span>
+<span class="source-line" id="L692" data-line="692">tracking-mode acceptance check. It reports 326.2 MB current footprint and a</span>
+<span class="source-line" id="L693" data-line="693">1.7 GB lifetime peak, which also remains separate from memory-target acceptance.</span>
+<span class="source-line" id="L694" data-line="694"> </span>
+<span class="source-line" id="L695" data-line="695">Native computer control again returned `Sky Computer Use native pipe startup</span>
+<span class="source-line" id="L696" data-line="696">failed`; no new rendered UI acceptance is claimed. Receipts under</span>
+<span class="source-line" id="L697" data-line="697">`followup-2610.19.6/` include `installation-complete.json`,</span>
+<span class="source-line" id="L698" data-line="698">`postinstall-identity-settings.json`, `postinstall-native-library-verification.json`,</span>
+<span class="source-line" id="L699" data-line="699">`postinstall-media-boundaries.json`, `postinstall-aac-decode.json`,</span>
+<span class="source-line" id="L700" data-line="700">`postinstall-observation-1143.json` and the retained native sample. Product source</span>
+<span class="source-line" id="L701" data-line="701">and validation inputs are unchanged; this follow-up records installation and</span>
+<span class="source-line" id="L702" data-line="702">limited runtime evidence only. Sustained capture, live text freshness, spoken</span>
+<span class="source-line" id="L703" data-line="703">accuracy, exact rendered navigation and matched resource acceptance remain open.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

@@ -1,0 +1,402 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Retrace Product Roadmap — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Retrace Product Roadmap</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: main candidate. Original source: <code>/Users/stuartbond/backintime/docs/roadmap.md</code></p><p>Source modified UTC: 2026-09-24T12:20:31.279242+00:00. 24,559 bytes; 402 lines.</p><p>Original SHA-256: <code>eb29cf085178fec10d0e1402afb2ac47dc419e7266ee8a81e3390583703c49f1</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Retrace Product Roadmap</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">## Product Thesis</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">Retrace is the voice-first Mac memory layer: the active input and computer recording system that captures what happens on the Mac, turns speech into controlled action, and preserves raw evidence locally.</span>
+<span class="source-line" id="L6" data-line="6"> </span>
+<span class="source-line" id="L7" data-line="7">Retrace is not the full intelligence platform. The ingestion and intelligence layer is a separate software product, referred to for now as **FuseIntel**. FuseIntel is the intel loop layer: an NSA-high-grade intelligence platform for authorized personal and organizational data that fuses Retrace&#x27;s raw screen/audio input with other ingested sources such as email, SMS, Teams, Otter, Notion, calendar data, documents, and future connectors.</span>
+<span class="source-line" id="L8" data-line="8"> </span>
+<span class="source-line" id="L9" data-line="9">The system boundary is intentional:</span>
+<span class="source-line" id="L10" data-line="10"> </span>
+<span class="source-line" id="L11" data-line="11">- **Retrace** records, compresses, indexes, displays, dictates, exports, and controls local Mac memory.</span>
+<span class="source-line" id="L12" data-line="12">- **FuseIntel** ingests broad external context, correlates signals, builds intelligence, produces briefs, identifies open loops, and feeds context back to Retrace.</span>
+<span class="source-line" id="L13" data-line="13"> </span>
+<span class="source-line" id="L14" data-line="14">Together, they create a local-first capture layer plus a high-grade intelligence loop. Separately, each product has a clear job.</span>
+<span class="source-line" id="L15" data-line="15"> </span>
+<span class="source-line" id="L16" data-line="16">## Screen Context For Agents</span>
+<span class="source-line" id="L17" data-line="17"> </span>
+<span class="source-line" id="L18" data-line="18">**Requirement clarified by Stuart on 9 September 2026:** an agent using text alone should be able to understand what was visible on the Mac, which document or conversation contained it, and what activity the observations support. Exact screen coordinates are secondary. Screenshots remain evidence for inspection, while the normal intelligence input must be a self-contained textual account.</span>
+<span class="source-line" id="L19" data-line="19"> </span>
+<span class="source-line" id="L20" data-line="20">This extends the capture layer&#x27;s responsibility beyond recognizing words. Retrace preserves source context, visible content and supported changes for later reasoning. FuseIntel remains responsible for wider interpretation in its own system. Stuart clarified on **14 September 2026** that project assignment, app-visit grouping and a separate activity dashboard are outside the current Retrace scope. The product should collect evidence and bring the image, OCR text and context together in Screenshots.</span>
+<span class="source-line" id="L21" data-line="21"> </span>
+<span class="source-line" id="L22" data-line="22">**Status (September 24 source checkpoint):** the [unified history plan](unified-history-plan.md) implements the confirmed macOS 26 direction in gated slices. Source now contains recoverable original pixels, an all-display ScreenCaptureKit candidate, bounded visible Accessibility text, the Now / History workspace, capture-group navigation, an optional native screen-text semantic index and hybrid search, and corroborated call comparison. These candidates remain uninstalled and are undergoing integrated verification. The last recorded local trial remains **2609.18.1**, including V23 native admission and the earlier evidence/navigation checkpoint; it does not establish acceptance of these new candidates. Speech/codec/native capture comparisons, richer cross-source recall and installed performance retain separate gates. The numbered product phases below are distinct from the progressive-recall implementation phases.</span>
+<span class="source-line" id="L23" data-line="23"> </span>
+<span class="source-line" id="L24" data-line="24">### Required Information</span>
+<span class="source-line" id="L25" data-line="25"> </span>
+<span class="source-line" id="L26" data-line="26">A screen observation should carry:</span>
+<span class="source-line" id="L27" data-line="27"> </span>
+<span class="source-line" id="L28" data-line="28">- Capture time, stable observation identity, source-frame references and extraction revision.</span>
+<span class="source-line" id="L29" data-line="29">- Each included visible app/window, whether it had focus, and available document/conversation titles and identifiers. Preserve the source of each label and whether it was directly exposed or inferred. A window title alone is not a stable document identity.</span>
+<span class="source-line" id="L30" data-line="30">- Visible text grouped under its owning document, conversation or pane. Retain headings, chat speaker/turn labels, form labels and values, table headers and row relationships, code blocks, and status/error messages when supported by the source. Unknown ownership or roles must remain explicit.</span>
+<span class="source-line" id="L31" data-line="31">- A clear distinction between the visible excerpt and the entire document or conversation. Do not imply that unseen pages, collapsed panes or earlier messages were captured.</span>
+<span class="source-line" id="L32" data-line="32">- Observed changes between captures, linked to their evidence. App focus, text changes and an explicit delivery status are different observations.</span>
+<span class="source-line" id="L33" data-line="33">- Coverage limits: excluded surfaces, unavailable context, uncertain extraction and meaningful visual content that has no reliable text description.</span>
+<span class="source-line" id="L34" data-line="34"> </span>
+<span class="source-line" id="L35" data-line="35">Use the same underlying record for structured retrieval and a readable text rendering. Agent-facing search and evidence exports must include the source context with the text; a standalone text extract must not depend on reconstructing missing metadata from another response. Internally, geometry remains useful for attribution, occlusion and reading order even when an agent does not receive coordinates.</span>
+<span class="source-line" id="L36" data-line="36"> </span>
+<span class="source-line" id="L37" data-line="37">Illustrative rendering only; these are not observations of Stuart&#x27;s actual activity:</span>
+<span class="source-line" id="L38" data-line="38"> </span>
+<span class="source-line" id="L39" data-line="39">```text</span>
+<span class="source-line" id="L40" data-line="40">Captured: 10:42:18</span>
+<span class="source-line" id="L41" data-line="41">Foreground: ChatGPT</span>
+<span class="source-line" id="L42" data-line="42"> </span>
+<span class="source-line" id="L43" data-line="43">ChatGPT / conversation: Supplier comparison</span>
+<span class="source-line" id="L44" data-line="44">Visible user message: Compare the two quoted delivery times.</span>
+<span class="source-line" id="L45" data-line="45">Visible assistant response: Supplier A quotes three weeks; Supplier B quotes five.</span>
+<span class="source-line" id="L46" data-line="46">Coverage: visible messages only; earlier conversation not captured.</span>
+<span class="source-line" id="L47" data-line="47"> </span>
+<span class="source-line" id="L48" data-line="48">Microsoft Word / document: Proposal draft.docx / heading: Delivery</span>
+<span class="source-line" id="L49" data-line="49">Visible excerpt: The proposed delivery period is five weeks.</span>
+<span class="source-line" id="L50" data-line="50">State: visible in another window; not foreground.</span>
+<span class="source-line" id="L51" data-line="51"> </span>
+<span class="source-line" id="L52" data-line="52">Observed change: focus moved from Word to ChatGPT since the previous observation.</span>
+<span class="source-line" id="L53" data-line="53">Optional FuseIntel interpretation: likely comparing delivery terms. This is an inference.</span>
+<span class="source-line" id="L54" data-line="54">```</span>
+<span class="source-line" id="L55" data-line="55"> </span>
+<span class="source-line" id="L56" data-line="56">### Evidence And Interpretation</span>
+<span class="source-line" id="L57" data-line="57"> </span>
+<span class="source-line" id="L58" data-line="58">Record what is visible before attempting to explain what it means. A foreground document does not prove that Stuart read it. Changed text does not establish who authored it; it could result from scrolling, generation, synchronisation or another person. A visible Send control or an attempted send does not establish successful delivery. Inferred activities should name the supporting observations and remain separate from those facts.</span>
+<span class="source-line" id="L59" data-line="59"> </span>
+<span class="source-line" id="L60" data-line="60">For charts, diagrams, images and other meaningful visual content, preserve available labels and relationships. Where a visual model is needed, store its description as a separately sourced interpretation with limitations; do not replace the original extracted text with an unchecked summary. This is proposed enrichment, not a claim that current OCR understands every visual element.</span>
+<span class="source-line" id="L61" data-line="61"> </span>
+<span class="source-line" id="L62" data-line="62">### Proposed Implementation Order</span>
+<span class="source-line" id="L63" data-line="63"> </span>
+<span class="source-line" id="L64" data-line="64">The [progressive recall plan](progressive-recall-plan.md) now prioritises evidence collection and exact replay. Phase 2 starts by repairing Settings and historical search navigation, retiring project/visit controls, integrating evidence with Screenshots/OCR, and adding structured observations with bounded exact expansion. Durable evidence publication/bootstrap and local hybrid retrieval follow as explicit slices. Context collection remains independently opt-in and obeys master pause/exclusion. The earlier Timely comparison is historical research, not a gate for this revised delivery.</span>
+<span class="source-line" id="L65" data-line="65"> </span>
+<span class="source-line" id="L66" data-line="66">1. **Preserve context at capture time.** Snapshot per-window identity and metadata alongside the accepted frame, with acquisition timing and consistency checks. Keep earlier context immutable when titles or URLs change. Context-only changes must survive image deduplication. Late OCR must use the saved context, never the current desktop as a substitute for an old capture.</span>
+<span class="source-line" id="L67" data-line="67">2. **Attribute and structure visible content.** Combine captured window information with bounded accessibility labels and OCR. Apply visibility/occlusion checks and the same exclusions to every extraction path. Keep uncertain blocks unassigned rather than attributing an entire display to its foreground app.</span>
+<span class="source-line" id="L68" data-line="68">3. **Provide one agent-facing representation.** Persist context, text and relationships together and render complete structured/text observations through a documented bridge. Preserve the last usable observation until a retry commits; retries must not look like repeated user activity. Captured source text must stay delimited as data when an agent consumes it.</span>
+<span class="source-line" id="L69" data-line="69">4. **Extend retrieval over those observations.** Add a durable revision/deletion feed, bounded context expansion and benchmarked local hybrid search. Wider interpretation stays in FuseIntel; richer visual interpretation follows only after accuracy and cost are measured.</span>
+<span class="source-line" id="L70" data-line="70"> </span>
+<span class="source-line" id="L71" data-line="71">macOS exposes window ownership and titles through native window metadata, providing a starting point for attribution; this does not establish complete document or pane understanding. See [Apple SCWindow ownership](https://developer.apple.com/documentation/screencapturekit/scwindow/owningapplication). The initial work should reuse suitable native facilities and existing capture data rather than assume that a new capture backend or model is required.</span>
+<span class="source-line" id="L72" data-line="72"> </span>
+<span class="source-line" id="L73" data-line="73">Keep collection outside the UI thread and bound its time, node count and memory. Reuse unchanged context/content only while identity and freshness are valid, while materialising complete records for consumers. Avoid making a second model pass on every frame mandatory before measuring it. Historical gaps must remain labelled when their missing capture-time context cannot be recovered reliably.</span>
+<span class="source-line" id="L74" data-line="74"> </span>
+<span class="source-line" id="L75" data-line="75">### Acceptance</span>
+<span class="source-line" id="L76" data-line="76"> </span>
+<span class="source-line" id="L77" data-line="77">Use real Mac surfaces and independently annotated screenshot/event evidence. Give a reviewing agent only the generated text, withholding the images. Check whether it can correctly identify the visible sources and contents, explain supported changes, and acknowledge unknowns.</span>
+<span class="source-line" id="L78" data-line="78"> </span>
+<span class="source-line" id="L79" data-line="79">Required scenarios include:</span>
+<span class="source-line" id="L80" data-line="80"> </span>
+<span class="source-line" id="L81" data-line="81">- TextEdit visible while Voice Memos has focus: TextEdit text must retain TextEdit ownership.</span>
+<span class="source-line" id="L82" data-line="82">- ChatGPT with a conversation and a Canvas or embedded pane: preserve supported groupings and mark missing titles/roles.</span>
+<span class="source-line" id="L83" data-line="83">- Word with a named or unsaved document, rename and scroll: preserve each observed title and visible excerpt.</span>
+<span class="source-line" id="L84" data-line="84">- Browser navigation between different URLs with the same title: later navigation must not rewrite earlier context.</span>
+<span class="source-line" id="L85" data-line="85">- A generated answer, an unsent draft and a failed delivery: do not invent authorship, intent or successful sending.</span>
+<span class="source-line" id="L86" data-line="86">- Overlapping windows, an inaccessible pane and a chart: represent coverage and uncertainty honestly.</span>
+<span class="source-line" id="L87" data-line="87">- Exclusions and extraction retries: no excluded content enters the text record, and retries do not create duplicate apparent activity.</span>
+<span class="source-line" id="L88" data-line="88"> </span>
+<span class="source-line" id="L89" data-line="89">Measure attribution and content accuracy, unsupported activity claims, missing context, capture-to-agent-text p50/p95, queue growth, memory and bytes per observation. Compare structured and plain-text exports for the same context coverage. A passing OCR test or valid JSON alone is not acceptance; performance and storage improvements require measured workloads on the actual Mac.</span>
+<span class="source-line" id="L90" data-line="90"> </span>
+<span class="source-line" id="L91" data-line="91">## Layer Model</span>
+<span class="source-line" id="L92" data-line="92"> </span>
+<span class="source-line" id="L93" data-line="93">### Retrace: Active Input And Computer Recording Layer</span>
+<span class="source-line" id="L94" data-line="94"> </span>
+<span class="source-line" id="L95" data-line="95">Retrace owns the user&#x27;s immediate Mac surface.</span>
+<span class="source-line" id="L96" data-line="96"> </span>
+<span class="source-line" id="L97" data-line="97">Responsibilities:</span>
+<span class="source-line" id="L98" data-line="98"> </span>
+<span class="source-line" id="L99" data-line="99">- Voice-first dictation into any app.</span>
+<span class="source-line" id="L100" data-line="100">- Continuous screen recording and screenshot history.</span>
+<span class="source-line" id="L101" data-line="101">- Continuous microphone and system-audio capture where permitted.</span>
+<span class="source-line" id="L102" data-line="102">- OCR, transcript storage, timeline replay, and source evidence.</span>
+<span class="source-line" id="L103" data-line="103">- Compression, retention, export, deletion, and local privacy controls.</span>
+<span class="source-line" id="L104" data-line="104">- Fast local recall over raw screen/audio memory.</span>
+<span class="source-line" id="L105" data-line="105">- A UI surface where FuseIntel insights can appear in context.</span>
+<span class="source-line" id="L106" data-line="106">- A permissioned bridge that lets FuseIntel request or reference local evidence.</span>
+<span class="source-line" id="L107" data-line="107"> </span>
+<span class="source-line" id="L108" data-line="108">Retrace should feel like the user&#x27;s local black box, active microphone, command input layer, and evidence recorder.</span>
+<span class="source-line" id="L109" data-line="109"> </span>
+<span class="source-line" id="L110" data-line="110">### FuseIntel: Ingestion And Intelligence Loop Layer</span>
+<span class="source-line" id="L111" data-line="111"> </span>
+<span class="source-line" id="L112" data-line="112">FuseIntel owns cross-source intelligence.</span>
+<span class="source-line" id="L113" data-line="113"> </span>
+<span class="source-line" id="L114" data-line="114">Responsibilities:</span>
+<span class="source-line" id="L115" data-line="115"> </span>
+<span class="source-line" id="L116" data-line="116">- Ingest external sources such as email, SMS, Teams, Otter, Notion, calendars, documents, browser exports, and future connectors.</span>
+<span class="source-line" id="L117" data-line="117">- Normalize and enrich raw inputs from many systems.</span>
+<span class="source-line" id="L118" data-line="118">- Correlate people, organizations, projects, decisions, obligations, promises, meetings, documents, and timelines.</span>
+<span class="source-line" id="L119" data-line="119">- Build entity graphs, event timelines, dossiers, briefs, open-loop lists, and situational assessments.</span>
+<span class="source-line" id="L120" data-line="120">- Fuse Retrace screen/audio evidence with external data.</span>
+<span class="source-line" id="L121" data-line="121">- Produce intelligence back to Retrace where it helps the user act in the moment.</span>
+<span class="source-line" id="L122" data-line="122">- Maintain auditability around what data was used and why a conclusion was produced.</span>
+<span class="source-line" id="L123" data-line="123"> </span>
+<span class="source-line" id="L124" data-line="124">FuseIntel should be treated as a high-grade intelligence platform, not a feature inside Retrace.</span>
+<span class="source-line" id="L125" data-line="125"> </span>
+<span class="source-line" id="L126" data-line="126">## Positioning</span>
+<span class="source-line" id="L127" data-line="127"> </span>
+<span class="source-line" id="L128" data-line="128">Retrace is for Mac power users who need reliable memory and controlled input while they work across meetings, terminals, browsers, editors, chats, and AI tools.</span>
+<span class="source-line" id="L129" data-line="129"> </span>
+<span class="source-line" id="L130" data-line="130">Core Retrace promise:</span>
+<span class="source-line" id="L131" data-line="131"> </span>
+<span class="source-line" id="L132" data-line="132">- Remember what happened on your Mac.</span>
+<span class="source-line" id="L133" data-line="133">- Dictate into any app with push-to-talk precision.</span>
+<span class="source-line" id="L134" data-line="134">- Replay or search raw screen and audio evidence.</span>
+<span class="source-line" id="L135" data-line="135">- Store months of local history without filling your drive.</span>
+<span class="source-line" id="L136" data-line="136">- Export anything and avoid lock-in.</span>
+<span class="source-line" id="L137" data-line="137">- Keep capture control close to the user.</span>
+<span class="source-line" id="L138" data-line="138"> </span>
+<span class="source-line" id="L139" data-line="139">Core FuseIntel promise:</span>
+<span class="source-line" id="L140" data-line="140"> </span>
+<span class="source-line" id="L141" data-line="141">- Turn raw inputs and external data into operational intelligence.</span>
+<span class="source-line" id="L142" data-line="142">- Connect what was seen, said, sent, promised, assigned, and decided.</span>
+<span class="source-line" id="L143" data-line="143">- Surface the right context back into Retrace at the moment of action.</span>
+<span class="source-line" id="L144" data-line="144"> </span>
+<span class="source-line" id="L145" data-line="145">## Differentiation</span>
+<span class="source-line" id="L146" data-line="146"> </span>
+<span class="source-line" id="L147" data-line="147">### 1. Voice-First Mac Memory</span>
+<span class="source-line" id="L148" data-line="148"> </span>
+<span class="source-line" id="L149" data-line="149">Retrace should make push-to-dictate a signature capability.</span>
+<span class="source-line" id="L150" data-line="150"> </span>
+<span class="source-line" id="L151" data-line="151">Key ideas:</span>
+<span class="source-line" id="L152" data-line="152"> </span>
+<span class="source-line" id="L153" data-line="153">- Continuously transcribe local audio.</span>
+<span class="source-line" id="L154" data-line="154">- Insert only the speech captured between hotkey press and release.</span>
+<span class="source-line" id="L155" data-line="155">- Preserve the target app/window context for every insertion.</span>
+<span class="source-line" id="L156" data-line="156">- Support per-app writing styles for Slack, email, docs, terminal commands, code comments, and AI prompts.</span>
+<span class="source-line" id="L157" data-line="157">- Add optional rewrite modes before insertion: concise, polished, casual, command, meeting note, TODO, and original transcript.</span>
+<span class="source-line" id="L158" data-line="158">- Show a small floating capture pill while dictating with waveform, target app, elapsed time, and insertion status.</span>
+<span class="source-line" id="L159" data-line="159"> </span>
+<span class="source-line" id="L160" data-line="160">Why this makes Retrace distinct:</span>
+<span class="source-line" id="L161" data-line="161"> </span>
+<span class="source-line" id="L162" data-line="162">Most memory products are passive recall tools. Retrace becomes an active input layer.</span>
+<span class="source-line" id="L163" data-line="163"> </span>
+<span class="source-line" id="L164" data-line="164">### 2. Computer Recording As Raw Evidence</span>
+<span class="source-line" id="L165" data-line="165"> </span>
+<span class="source-line" id="L166" data-line="166">Retrace should be the authoritative local record of what happened on the Mac.</span>
+<span class="source-line" id="L167" data-line="167"> </span>
+<span class="source-line" id="L168" data-line="168">Key ideas:</span>
+<span class="source-line" id="L169" data-line="169"> </span>
+<span class="source-line" id="L170" data-line="170">- Timeline replay remains important, but it is framed as evidence, not the whole product.</span>
+<span class="source-line" id="L171" data-line="171">- OCR and audio transcripts should always link back to exact screenshots, apps, windows, URLs, and timestamps.</span>
+<span class="source-line" id="L172" data-line="172">- Search results should be source-backed by default.</span>
+<span class="source-line" id="L173" data-line="173">- Every exported clip, transcript, or evidence package should preserve provenance.</span>
+<span class="source-line" id="L174" data-line="174"> </span>
+<span class="source-line" id="L175" data-line="175">Why this matters:</span>
+<span class="source-line" id="L176" data-line="176"> </span>
+<span class="source-line" id="L177" data-line="177">FuseIntel can reason across many sources, but Retrace provides grounded computer evidence.</span>
+<span class="source-line" id="L178" data-line="178"> </span>
+<span class="source-line" id="L179" data-line="179">### 3. FuseIntel-Powered Intelligence In Context</span>
+<span class="source-line" id="L180" data-line="180"> </span>
+<span class="source-line" id="L181" data-line="181">Retrace should display intelligence, but FuseIntel should produce it.</span>
+<span class="source-line" id="L182" data-line="182"> </span>
+<span class="source-line" id="L183" data-line="183">Example FuseIntel outputs shown inside Retrace:</span>
+<span class="source-line" id="L184" data-line="184"> </span>
+<span class="source-line" id="L185" data-line="185">- &quot;This moment relates to the FuseScale billing migration thread.&quot;</span>
+<span class="source-line" id="L186" data-line="186">- &quot;This Teams call appears to create 3 open loops.&quot;</span>
+<span class="source-line" id="L187" data-line="187">- &quot;This email contradicts the meeting note from yesterday.&quot;</span>
+<span class="source-line" id="L188" data-line="188">- &quot;This Claude session connects to Jira issue FS-448 and the Notion rollout plan.&quot;</span>
+<span class="source-line" id="L189" data-line="189">- &quot;This person, project, and deadline have appeared across SMS, Teams, and Otter.&quot;</span>
+<span class="source-line" id="L190" data-line="190"> </span>
+<span class="source-line" id="L191" data-line="191">Retrace UI surfaces:</span>
+<span class="source-line" id="L192" data-line="192"> </span>
+<span class="source-line" id="L193" data-line="193">- Intel cards attached to timeline moments.</span>
+<span class="source-line" id="L194" data-line="194">- Evidence-backed summaries powered by FuseIntel.</span>
+<span class="source-line" id="L195" data-line="195">- Open-loop overlays.</span>
+<span class="source-line" id="L196" data-line="196">- Context panels beside dictation, search, and replay.</span>
+<span class="source-line" id="L197" data-line="197">- Evidence links that jump back into raw Retrace recordings.</span>
+<span class="source-line" id="L198" data-line="198"> </span>
+<span class="source-line" id="L199" data-line="199">Boundary:</span>
+<span class="source-line" id="L200" data-line="200"> </span>
+<span class="source-line" id="L201" data-line="201">- Retrace shows and anchors the intelligence.</span>
+<span class="source-line" id="L202" data-line="202">- FuseIntel produces and maintains the intelligence.</span>
+<span class="source-line" id="L203" data-line="203"> </span>
+<span class="source-line" id="L204" data-line="204">### 4. Source Evidence As The Shared Interface</span>
+<span class="source-line" id="L205" data-line="205"> </span>
+<span class="source-line" id="L206" data-line="206">The bridge between Retrace and FuseIntel should identify the source observation, capture time, extraction revision and available screen/audio evidence. Captured app, window, document and conversation labels carry their provenance and uncertainty. They are context for inspecting a record, not project assignments or measures of attention.</span>
+<span class="source-line" id="L207" data-line="207"> </span>
+<span class="source-line" id="L208" data-line="208">A consumer can expand a precise source reference and explain which retained content supports its interpretation. Changed or deleted sources invalidate derived results. No episode classifier or assignment workflow is required for collection, search or replay.</span>
+<span class="source-line" id="L209" data-line="209"> </span>
+<span class="source-line" id="L210" data-line="210">### 5. Memory Cockpit Dashboard</span>
+<span class="source-line" id="L211" data-line="211"> </span>
+<span class="source-line" id="L212" data-line="212">The Retrace dashboard should become a cockpit for local capture, dictation, and FuseIntel context.</span>
+<span class="source-line" id="L213" data-line="213"> </span>
+<span class="source-line" id="L214" data-line="214">Suggested Retrace dashboard sections:</span>
+<span class="source-line" id="L215" data-line="215"> </span>
+<span class="source-line" id="L216" data-line="216">- Now: recording, transcription, storage, model state, and current capture permissions.</span>
+<span class="source-line" id="L217" data-line="217">- Dictation: recent inserts, failures, target apps, and rewrite modes.</span>
+<span class="source-line" id="L218" data-line="218">- Recall: local searches, saved moments, and source-backed evidence.</span>
+<span class="source-line" id="L219" data-line="219">- Screenshots: recorded images, captured context and OCR text in one evidence inspector.</span>
+<span class="source-line" id="L220" data-line="220">- Intel: FuseIntel cards, open loops, related entities, and briefings.</span>
+<span class="source-line" id="L221" data-line="221">- Project assignment, visit grouping and focus-duration dashboards are outside the current evidence-collection delivery.</span>
+<span class="source-line" id="L222" data-line="222"> </span>
+<span class="source-line" id="L223" data-line="223">Why this makes Retrace yours:</span>
+<span class="source-line" id="L224" data-line="224"> </span>
+<span class="source-line" id="L225" data-line="225">The product stops feeling like a generic activity dashboard and starts feeling like the command surface for local memory and active input.</span>
+<span class="source-line" id="L226" data-line="226"> </span>
+<span class="source-line" id="L227" data-line="227">### 6. Advanced Compression And Easy Exporting</span>
+<span class="source-line" id="L228" data-line="228"> </span>
+<span class="source-line" id="L229" data-line="229">Compression should become a headline Retrace capability:</span>
+<span class="source-line" id="L230" data-line="230"> </span>
+<span class="source-line" id="L231" data-line="231">&gt; Advanced compression technology - the entire screen history takes only 10-15 GB per month. Store months of data without filling your drive.</span>
+<span class="source-line" id="L232" data-line="232"> </span>
+<span class="source-line" id="L233" data-line="233">This should be treated as a product-level promise once the implementation supports it reliably.</span>
+<span class="source-line" id="L234" data-line="234"> </span>
+<span class="source-line" id="L235" data-line="235">Roadmap requirements:</span>
+<span class="source-line" id="L236" data-line="236"> </span>
+<span class="source-line" id="L237" data-line="237">- Hit a practical storage target of 10-15 GB per month for typical continuous use.</span>
+<span class="source-line" id="L238" data-line="238">- Preserve readable OCR and usable replay quality while reducing storage.</span>
+<span class="source-line" id="L239" data-line="239">- Show projected monthly storage in settings and dashboard.</span>
+<span class="source-line" id="L240" data-line="240">- Let users tune quality, retention, and capture frequency with clear tradeoffs.</span>
+<span class="source-line" id="L241" data-line="241">- Detect when storage is growing faster than expected and explain why.</span>
+<span class="source-line" id="L242" data-line="242"> </span>
+<span class="source-line" id="L243" data-line="243">Easy exporting should be equally prominent:</span>
+<span class="source-line" id="L244" data-line="244"> </span>
+<span class="source-line" id="L245" data-line="245">- Export any time range as video.</span>
+<span class="source-line" id="L246" data-line="246">- Export a selected time range or evidence collection as a package with video, screenshots, transcript, metadata, and exact source links.</span>
+<span class="source-line" id="L247" data-line="247">- Export transcripts as Markdown, JSON, CSV, and plain text.</span>
+<span class="source-line" id="L248" data-line="248">- Export search results with timestamps and source context.</span>
+<span class="source-line" id="L249" data-line="249">- Export a portable archive for backup or migration.</span>
+<span class="source-line" id="L250" data-line="250">- Add a &quot;share evidence&quot; flow for selected moments without exposing unrelated private history.</span>
+<span class="source-line" id="L251" data-line="251"> </span>
+<span class="source-line" id="L252" data-line="252">Why this matters:</span>
+<span class="source-line" id="L253" data-line="253"> </span>
+<span class="source-line" id="L254" data-line="254">Retrace owns the local evidence layer. Storage economics and exportability are core trust features.</span>
+<span class="source-line" id="L255" data-line="255"> </span>
+<span class="source-line" id="L256" data-line="256">### 7. Privacy And Chain Of Custody</span>
+<span class="source-line" id="L257" data-line="257"> </span>
+<span class="source-line" id="L258" data-line="258">Retrace and FuseIntel both need visible privacy controls, but their controls are different.</span>
+<span class="source-line" id="L259" data-line="259"> </span>
+<span class="source-line" id="L260" data-line="260">Retrace controls:</span>
+<span class="source-line" id="L261" data-line="261"> </span>
+<span class="source-line" id="L262" data-line="262">- What is being recorded now.</span>
+<span class="source-line" id="L263" data-line="263">- Which apps, windows, displays, microphones, and audio sources are excluded.</span>
+<span class="source-line" id="L264" data-line="264">- One-click &quot;forget this app/window/range&quot; actions.</span>
+<span class="source-line" id="L265" data-line="265">- Local storage inventory and retention settings.</span>
+<span class="source-line" id="L266" data-line="266">- Export audit data for selected evidence.</span>
+<span class="source-line" id="L267" data-line="267"> </span>
+<span class="source-line" id="L268" data-line="268">FuseIntel controls:</span>
+<span class="source-line" id="L269" data-line="269"> </span>
+<span class="source-line" id="L270" data-line="270">- Which external connectors are enabled.</span>
+<span class="source-line" id="L271" data-line="271">- Which source records were used to generate an assessment.</span>
+<span class="source-line" id="L272" data-line="272">- What entities, topics, and dossiers were built.</span>
+<span class="source-line" id="L273" data-line="273">- Which intelligence outputs were sent back to Retrace.</span>
+<span class="source-line" id="L274" data-line="274">- Audit logs for data access and inference generation.</span>
+<span class="source-line" id="L275" data-line="275"> </span>
+<span class="source-line" id="L276" data-line="276">Why this matters:</span>
+<span class="source-line" id="L277" data-line="277"> </span>
+<span class="source-line" id="L278" data-line="278">The system can be powerful without becoming opaque. The user must be able to inspect the capture layer and the intelligence layer separately.</span>
+<span class="source-line" id="L279" data-line="279"> </span>
+<span class="source-line" id="L280" data-line="280">## Roadmap</span>
+<span class="source-line" id="L281" data-line="281"> </span>
+<span class="source-line" id="L282" data-line="282">### Phase 1: Own The Retrace Voice Workflow</span>
+<span class="source-line" id="L283" data-line="283"> </span>
+<span class="source-line" id="L284" data-line="284">Goal: make Retrace unmistakably voice-first and action-oriented.</span>
+<span class="source-line" id="L285" data-line="285"> </span>
+<span class="source-line" id="L286" data-line="286">- Improve the dictation dashboard tab into a full command center.</span>
+<span class="source-line" id="L287" data-line="287">- Add floating dictation capture pill.</span>
+<span class="source-line" id="L288" data-line="288">- Add rewrite-before-insert modes.</span>
+<span class="source-line" id="L289" data-line="289">- Add per-app dictation styles.</span>
+<span class="source-line" id="L290" data-line="290">- Add failed insertion recovery with copy-to-clipboard fallback.</span>
+<span class="source-line" id="L291" data-line="291">- Add clear settings for microphone, shortcut, target behavior, and formatting.</span>
+<span class="source-line" id="L292" data-line="292"> </span>
+<span class="source-line" id="L293" data-line="293">Success criteria:</span>
+<span class="source-line" id="L294" data-line="294"> </span>
+<span class="source-line" id="L295" data-line="295">- A user can replace a Wispr Flow-style workflow for daily text input.</span>
+<span class="source-line" id="L296" data-line="296">- Dictation feels intentional, fast, and safer than generic continuous transcription.</span>
+<span class="source-line" id="L297" data-line="297"> </span>
+<span class="source-line" id="L298" data-line="298">### Phase 2: Harden The Computer Recording Layer</span>
+<span class="source-line" id="L299" data-line="299"> </span>
+<span class="source-line" id="L300" data-line="300">Goal: make Retrace the trusted evidence layer, including agent-readable screen context.</span>
+<span class="source-line" id="L301" data-line="301"> </span>
+<span class="source-line" id="L302" data-line="302">- Preserve immutable capture-time source context and group visible text by its owning document/conversation/window.</span>
+<span class="source-line" id="L303" data-line="303">- Improve timeline replay, search, and transcript alignment.</span>
+<span class="source-line" id="L304" data-line="304">- Ensure screen OCR and audio transcript results always link to source moments.</span>
+<span class="source-line" id="L305" data-line="305">- Add evidence export for selected time ranges.</span>
+<span class="source-line" id="L306" data-line="306">- Add deletion and retention controls that are obvious and fast.</span>
+<span class="source-line" id="L307" data-line="307">- Add visible recording status for screen, microphone, and system audio.</span>
+<span class="source-line" id="L308" data-line="308"> </span>
+<span class="source-line" id="L309" data-line="309">Success criteria:</span>
+<span class="source-line" id="L310" data-line="310"> </span>
+<span class="source-line" id="L311" data-line="311">- A user can recover a seen or heard detail in under 10 seconds.</span>
+<span class="source-line" id="L312" data-line="312">- Any result can be traced back to a timestamped screen/audio source.</span>
+<span class="source-line" id="L313" data-line="313">- A text-only agent can reconstruct visible content and supported changes using the acceptance checks under Screen Context For Agents.</span>
+<span class="source-line" id="L314" data-line="314"> </span>
+<span class="source-line" id="L315" data-line="315">### Phase 3: Define The Retrace-FuseIntel Bridge</span>
+<span class="source-line" id="L316" data-line="316"> </span>
+<span class="source-line" id="L317" data-line="317">Goal: make the product boundary explicit and technically clean.</span>
+<span class="source-line" id="L318" data-line="318"> </span>
+<span class="source-line" id="L319" data-line="319">- Define a local event/evidence API from Retrace to FuseIntel, carrying complete screen observations in both structured and readable text forms.</span>
+<span class="source-line" id="L320" data-line="320">- Define a FuseIntel insight feed back into Retrace.</span>
+<span class="source-line" id="L321" data-line="321">- Create stable source-qualified IDs for observations, apps/windows, transcript spans, screenshots, revisions and exports.</span>
+<span class="source-line" id="L322" data-line="322">- Add permission gates for FuseIntel access to Retrace data.</span>
+<span class="source-line" id="L323" data-line="323">- Add audit logs showing what FuseIntel requested from Retrace.</span>
+<span class="source-line" id="L324" data-line="324"> </span>
+<span class="source-line" id="L325" data-line="325">Success criteria:</span>
+<span class="source-line" id="L326" data-line="326"> </span>
+<span class="source-line" id="L327" data-line="327">- FuseIntel can enrich Retrace moments without owning Retrace&#x27;s local recording store.</span>
+<span class="source-line" id="L328" data-line="328">- Retrace can display FuseIntel intelligence without becoming the ingestion platform.</span>
+<span class="source-line" id="L329" data-line="329"> </span>
+<span class="source-line" id="L330" data-line="330">### Phase 4: Optional Evidence Selections And Intel Cards</span>
+<span class="source-line" id="L331" data-line="331"> </span>
+<span class="source-line" id="L332" data-line="332">**Later possibility, not current implementation:** allow the user to bookmark or collect chosen recorded screens, text regions or audio spans as evidence. Selection must reference the original source/revision and must not change the recorded facts. It is not an app-visit or project-time assignment flow, and ordinary capture/search needs no manual marking.</span>
+<span class="source-line" id="L333" data-line="333"> </span>
+<span class="source-line" id="L334" data-line="334">Optional FuseIntel cards can expose separately sourced summaries, entities, related records and follow-up, with links to their supporting Retrace and external evidence. Broader correlation remains owned by FuseIntel. Introduce these controls only when they serve a clear evidence-review workflow.</span>
+<span class="source-line" id="L335" data-line="335"> </span>
+<span class="source-line" id="L336" data-line="336">### Phase 5: Storage, Compression, And Export</span>
+<span class="source-line" id="L337" data-line="337"> </span>
+<span class="source-line" id="L338" data-line="338">Goal: make months of local computer memory practical.</span>
+<span class="source-line" id="L339" data-line="339"> </span>
+<span class="source-line" id="L340" data-line="340">- Optimize HEVC settings and deduplication for the 10-15 GB/month target.</span>
+<span class="source-line" id="L341" data-line="341">- Add storage projection and quality controls.</span>
+<span class="source-line" id="L342" data-line="342">- Add export flows for time ranges, transcripts, screenshots and evidence packages.</span>
+<span class="source-line" id="L343" data-line="343">- Add archive and restore flows.</span>
+<span class="source-line" id="L344" data-line="344">- Add retention policies that explain what will be deleted before it happens.</span>
+<span class="source-line" id="L345" data-line="345"> </span>
+<span class="source-line" id="L346" data-line="346">Success criteria:</span>
+<span class="source-line" id="L347" data-line="347"> </span>
+<span class="source-line" id="L348" data-line="348">- Typical users can store months of history without filling their drive.</span>
+<span class="source-line" id="L349" data-line="349">- Users can leave, back up, or share selected memory without proprietary lock-in.</span>
+<span class="source-line" id="L350" data-line="350"> </span>
+<span class="source-line" id="L351" data-line="351">### Phase 6: FuseIntel As The Intel Loop Platform</span>
+<span class="source-line" id="L352" data-line="352"> </span>
+<span class="source-line" id="L353" data-line="353">Goal: establish FuseIntel as the separate high-grade intelligence platform.</span>
+<span class="source-line" id="L354" data-line="354"> </span>
+<span class="source-line" id="L355" data-line="355">- Build connectors for email, SMS, Teams, Otter, Notion, calendar, and documents.</span>
+<span class="source-line" id="L356" data-line="356">- Normalize entities, dates, people, organizations, projects, and commitments.</span>
+<span class="source-line" id="L357" data-line="357">- Build cross-source timelines and dossiers.</span>
+<span class="source-line" id="L358" data-line="358">- Generate briefs, contradictions, open loops, recommended actions, and tasking queues.</span>
+<span class="source-line" id="L359" data-line="359">- Feed relevant intelligence back into Retrace in context.</span>
+<span class="source-line" id="L360" data-line="360"> </span>
+<span class="source-line" id="L361" data-line="361">Success criteria:</span>
+<span class="source-line" id="L362" data-line="362"> </span>
+<span class="source-line" id="L363" data-line="363">- FuseIntel can explain a situation using multiple source systems, not just screen/audio memory.</span>
+<span class="source-line" id="L364" data-line="364">- Retrace becomes the local action and evidence surface for FuseIntel output.</span>
+<span class="source-line" id="L365" data-line="365"> </span>
+<span class="source-line" id="L366" data-line="366">## Product Language</span>
+<span class="source-line" id="L367" data-line="367"> </span>
+<span class="source-line" id="L368" data-line="368">Use language that keeps the product boundary clear.</span>
+<span class="source-line" id="L369" data-line="369"> </span>
+<span class="source-line" id="L370" data-line="370">Retrace language:</span>
+<span class="source-line" id="L371" data-line="371"> </span>
+<span class="source-line" id="L372" data-line="372">- &quot;Voice-first Mac memory.&quot;</span>
+<span class="source-line" id="L373" data-line="373">- &quot;The active input and computer recording layer for your Mac.&quot;</span>
+<span class="source-line" id="L374" data-line="374">- &quot;Dictate into any app with push-to-talk precision.&quot;</span>
+<span class="source-line" id="L375" data-line="375">- &quot;Replay what happened on your screen.&quot;</span>
+<span class="source-line" id="L376" data-line="376">- &quot;Search local screen and audio evidence.&quot;</span>
+<span class="source-line" id="L377" data-line="377">- &quot;Months of history without filling your drive.&quot;</span>
+<span class="source-line" id="L378" data-line="378">- &quot;Export anything. Keep everything portable.&quot;</span>
+<span class="source-line" id="L379" data-line="379"> </span>
+<span class="source-line" id="L380" data-line="380">FuseIntel language:</span>
+<span class="source-line" id="L381" data-line="381"> </span>
+<span class="source-line" id="L382" data-line="382">- &quot;The intel loop for your work and communications.&quot;</span>
+<span class="source-line" id="L383" data-line="383">- &quot;High-grade intelligence across email, SMS, Teams, Otter, Notion, and your Mac activity.&quot;</span>
+<span class="source-line" id="L384" data-line="384">- &quot;Turn raw inputs into briefs, open loops, dossiers, and decisions.&quot;</span>
+<span class="source-line" id="L385" data-line="385">- &quot;Fuse what was seen, said, sent, promised, and decided.&quot;</span>
+<span class="source-line" id="L386" data-line="386"> </span>
+<span class="source-line" id="L387" data-line="387">Avoid language that blurs the boundary:</span>
+<span class="source-line" id="L388" data-line="388"> </span>
+<span class="source-line" id="L389" data-line="389">- Do not describe Retrace as the full ingestion platform.</span>
+<span class="source-line" id="L390" data-line="390">- Do not make broad connector ingestion a core Retrace responsibility.</span>
+<span class="source-line" id="L391" data-line="391">- Do not lead with &quot;open-source Rewind alternative&quot; as the product identity.</span>
+<span class="source-line" id="L392" data-line="392">- Do not frame FuseIntel as a minor feature inside Retrace.</span>
+<span class="source-line" id="L393" data-line="393"> </span>
+<span class="source-line" id="L394" data-line="394">## Near-Term Product Identity</span>
+<span class="source-line" id="L395" data-line="395"> </span>
+<span class="source-line" id="L396" data-line="396">Recommended Retrace identity:</span>
+<span class="source-line" id="L397" data-line="397"> </span>
+<span class="source-line" id="L398" data-line="398">&gt; Retrace is the voice-first Mac memory layer: an active input and computer recording system that captures what you see and hear, lets you dictate into any app with precision, compresses months of local history, and exports source-backed evidence whenever you need it.</span>
+<span class="source-line" id="L399" data-line="399"> </span>
+<span class="source-line" id="L400" data-line="400">Recommended FuseIntel identity:</span>
+<span class="source-line" id="L401" data-line="401"> </span>
+<span class="source-line" id="L402" data-line="402">&gt; FuseIntel is the separate intel loop layer: a high-grade intelligence platform that ingests external sources, fuses them with Retrace&#x27;s raw computer memory, and returns actionable context, open loops, briefs, and evidence-backed assessments.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

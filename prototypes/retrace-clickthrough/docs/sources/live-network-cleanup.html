@@ -1,0 +1,85 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Networked Mac storage cleanup — 9 November 2026 — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Networked Mac storage cleanup — 9 November 2026</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><aside class="note warning"><strong>Authorisation discrepancy.</strong> This archived record claims authorisation. Later audit context disputes approval for the May search-index archive and incomplete downloads (observations 81580, 81600, 81609–81611). The wording below is preserved as source evidence, not endorsed as confirmed permission. See <a href="../issues-journal.html#RT-047">RT-047</a>. No further cleanup is authorised by this package.</aside><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/network-mac-storage-cleanup-20261109.md</code></p><p>Source modified UTC: 2026-11-08T22:30:48.970819+00:00. 8,518 bytes; 85 lines.</p><p>Original SHA-256: <code>39d87af511b9ad03f526b50d3f0ac47ea0ccc66f62676dd61990d35b0bfe19fa</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Networked Mac storage cleanup — 9 November 2026</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">Stuart authorised urgent space recovery on the networked Mac. The target was verified over the existing strict-host-key SSH connection as `Stuarts-MacBook-Pro-5.local` (`stuartbond@100.82.166.96`), the M3 Max with 36 GB memory that runs the primary intelligence services. This was filesystem cleanup, not an application release, database migration or recording-retention change.</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">## Verified result</span>
+<span class="source-line" id="L6" data-line="6"> </span>
+<span class="source-line" id="L7" data-line="7">Three guarded cleanup operations removed five exact directories. Their combined measured net available-space increase was **15,235,735,552 bytes (15.24 GB)**. Final independent verification found **39,479,230,464 bytes (39.48 GB)** available on the Data volume, reported as 96% used. The immediately preceding check was about 40.23 GB. Space changed with background activity before and between operations, so the entire increase from the earlier 4.43 GB reading is not attributed to this cleanup.</span>
+<span class="source-line" id="L8" data-line="8"> </span>
+<span class="source-line" id="L9" data-line="9">| Removed content | Reported target allocation | Measured net available-space increase during removal |</span>
+<span class="source-line" id="L10" data-line="10">| --- | ---: | ---: |</span>
+<span class="source-line" id="L11" data-line="11">| Two inactive old application signing copies | 2,655,744,000 bytes | 1,909,678,080 bytes |</span>
+<span class="source-line" id="L12" data-line="12">| May 12 derived search-index recovery snapshot | 11,218,862,080 bytes | 11,169,075,200 bytes |</span>
+<span class="source-line" id="L13" data-line="13">| Seven incomplete model-download payloads in two temporary directories | 2,174,746,624 bytes | 2,156,982,272 bytes |</span>
+<span class="source-line" id="L14" data-line="14"> </span>
+<span class="source-line" id="L15" data-line="15">APFS clones and concurrent writes make folder allocation different from uniquely recoverable physical space. Each operation recorded its own immediate before/after volume availability. Removal bypassed Trash and was permanent; retained copies and the precise value relinquished are described below.</span>
+<span class="source-line" id="L16" data-line="16"> </span>
+<span class="source-line" id="L17" data-line="17">## Exact removals and retained value</span>
+<span class="source-line" id="L18" data-line="18"> </span>
+<span class="source-line" id="L19" data-line="19">### Inactive application copies</span>
+<span class="source-line" id="L20" data-line="20"> </span>
+<span class="source-line" id="L21" data-line="21">Removed only these old signing-copy leaves on the remote Mac:</span>
+<span class="source-line" id="L22" data-line="22"> </span>
+<span class="source-line" id="L23" data-line="23">- `/private/var/folders/cs/_0dwpl614577wgjw1l3rg8nm0000gn/X/com.google.Chrome.code_sign_clone/code_sign_clone.IRVvN9`</span>
+<span class="source-line" id="L24" data-line="24">- `/private/var/folders/cs/_0dwpl614577wgjw1l3rg8nm0000gn/X/com.citrolabs.ego.lite.code_sign_clone/code_sign_clone.ugUuzY`</span>
+<span class="source-line" id="L25" data-line="25"> </span>
+<span class="source-line" id="L26" data-line="26">These held Chrome 154.0.8037.99 and ego 0.5.1.13, were about 28 days old and had no observed open handles. Installed Chrome 156.0.8078.80 and ego 0.6.2.9 remained, with executable and Info.plist hashes unchanged. The active signing-copy leaves `MEdVJo` and `fJQzCo` were protected. Chrome and ego processes remained running after removal.</span>
+<span class="source-line" id="L27" data-line="27"> </span>
+<span class="source-line" id="L28" data-line="28">### Old search-index snapshot</span>
+<span class="source-line" id="L29" data-line="29"> </span>
+<span class="source-line" id="L30" data-line="30">Removed the whole obsolete recovery snapshot:</span>
+<span class="source-line" id="L31" data-line="31"> </span>
+<span class="source-line" id="L32" data-line="32">`/Users/stuartbond/mac2-archives/backups/lancedb/tier2_20260512_0030`</span>
+<span class="source-line" id="L33" data-line="33"> </span>
+<span class="source-line" id="L34" data-line="34">The snapshot contained 29,999 regular files, no hardlinks or symlinks, and no observed open handles or references in the bounded application/configuration/LaunchAgent checks. It was the May 12 derived Tier-2 index, version 10000 with 495,487 rows. This operation relinquished that dated index rollback. It did not delete raw recordings, communications or current search data, and it does not claim a row-by-row historical superset.</span>
+<span class="source-line" id="L35" data-line="35"> </span>
+<span class="source-line" id="L36" data-line="36">Both current indexes passed bounded read-only opening, schema and count checks before and after cleanup:</span>
+<span class="source-line" id="L37" data-line="37"> </span>
+<span class="source-line" id="L38" data-line="38">| Retained current store | Version | Rows |</span>
+<span class="source-line" id="L39" data-line="39">| --- | ---: | ---: |</span>
+<span class="source-line" id="L40" data-line="40">| Remote `/Users/stuartbond/outlook/intel/lancedb/tier2` | 19059 | 583,319 |</span>
+<span class="source-line" id="L41" data-line="41">| Laptop `/Users/stuartbond/outlook/intel/lancedb/tier2` | 19053 | 583,308 |</span>
+<span class="source-line" id="L42" data-line="42"> </span>
+<span class="source-line" id="L43" data-line="43">The schemas matched, including 3,072-value vectors. The remaining archive&#x27;s graph recovery and small recording/recovery artifacts were preserved. These checks establish readable current stores, not full index integrity or search-quality acceptance.</span>
+<span class="source-line" id="L44" data-line="44"> </span>
+<span class="source-line" id="L45" data-line="45">### Incomplete model downloads</span>
+<span class="source-line" id="L46" data-line="46"> </span>
+<span class="source-line" id="L47" data-line="47">Removed only:</span>
+<span class="source-line" id="L48" data-line="48"> </span>
+<span class="source-line" id="L49" data-line="49">- `/Users/stuartbond/.cache/modelscope/hub/models/._____temp/damo/face_chain_control_model`</span>
+<span class="source-line" id="L50" data-line="50">- `/Users/stuartbond/.cache/modelscope/hub/models/._____temp/SoulNut/facechain_LoRA`</span>
+<span class="source-line" id="L51" data-line="51"> </span>
+<span class="source-line" id="L52" data-line="52">All seven payloads were dated 30 June, ordinary single-link files owned by Stuart, and had no observed model-cache handles or lock-named files. Six safetensors headers declared more required tensor bytes than their files contained. The seventh PyTorch ZIP lacked a readable central directory. These are incomplete downloads; the cost is losing partial download progress if those missing weights are requested again. The complete canonical model directories outside `._____temp`, Hugging Face weights, Ollama models and active Python environments were protected.</span>
+<span class="source-line" id="L53" data-line="53"> </span>
+<span class="source-line" id="L54" data-line="54">## Storage still in active use</span>
+<span class="source-line" id="L55" data-line="55"> </span>
+<span class="source-line" id="L56" data-line="56">The largest apparent duplicate, `/Users/stuartbond/retrace-mirror`, reports about 252 GB of allocation but is actively consumed by a second Retrace analysis pipeline. Its audio is about 98.74 GiB and video chunks 48.30 GiB. The published database and staging each report 43.98 GiB, but the sync script APFS-clones staging into the published database, so their reported sizes overlap. The sync worker had the staging database open. The published mirror, staging and media were preserved.</span>
+<span class="source-line" id="L57" data-line="57"> </span>
+<span class="source-line" id="L58" data-line="58">Both this mirror&#x27;s media sync and Outlook&#x27;s capture-mirror media transfers are additive. They do not propagate source deletion or apply destination retention. Old media can accumulate, but deletion requires exact current database and derived-record reference checks; age and duplicate-looking directory names are insufficient. No media was classified as disposable in this pass.</span>
+<span class="source-line" id="L59" data-line="59"> </span>
+<span class="source-line" id="L60" data-line="60">The three daily decision-run snapshots and six recent Neo4j cold backups are within their implemented retention policies. Their summed allocations overstate physical consumption because of APFS clones. Current replication staging was preserved. The earlier full-home scan was stopped, so this is not a complete account of every file on the Mac.</span>
+<span class="source-line" id="L61" data-line="61"> </span>
+<span class="source-line" id="L62" data-line="62">Other excluded candidates:</span>
+<span class="source-line" id="L63" data-line="63"> </span>
+<span class="source-line" id="L64" data-line="64">- VS Code and Grok Bot update caches had active updater processes and newer staged versions than installed versions.</span>
+<span class="source-line" id="L65" data-line="65">- The uv cache contained active Python runtime environments and held locks; no broad cache prune or forced clean was run.</span>
+<span class="source-line" id="L66" data-line="66">- The root-owned Logi cache was not writable by the user, and its opaque files were not established as disposable.</span>
+<span class="source-line" id="L67" data-line="67">- Public Ollama Gemma and Qwen downloads could be evicted for further space, but future configuration use and exact-version restoration require separate handling. Complete public/custom models were retained.</span>
+<span class="source-line" id="L68" data-line="68">- No Data-volume APFS snapshots were found to prune. The sealed OS snapshot and swap were preserved. Final swap usage was about 34,279 MiB of 35,840 MiB allocated; no apps or services were stopped to force reclamation.</span>
+<span class="source-line" id="L69" data-line="69"> </span>
+<span class="source-line" id="L70" data-line="70">## Verification, receipts and workarounds</span>
+<span class="source-line" id="L71" data-line="71"> </span>
+<span class="source-line" id="L72" data-line="72">All five exact target directories are absent. The primary SQLite database remained readable with schema version 168 and 86 tables. Current search indexes retained the same checked versions/counts/schema. Previously observed autosync, MCP, intel-daemon, dashboard and Retrace-sync processes retained their PIDs; Neo4j remained running. No service-control, credential, capture or retention-setting actions were performed. Nightly Retrace&#x27;s pre-existing exit status 1 was not changed or repaired by this cleanup.</span>
+<span class="source-line" id="L73" data-line="73"> </span>
+<span class="source-line" id="L74" data-line="74">Executors used explicit allowlists, complete target metadata inventories, no-open-handle checks, pinned non-symlink parent directory descriptors, symlink-resistant tree removal, protected identities/hashes and post-delete checks. One advisory review covered the deletion implementation; scoped reviews covered each later allowlist change. Reviews and compilation found no unresolved material issue. Process/open-handle checks are observations rather than a universal writer lock, which is why only old inactive targets were admitted.</span>
+<span class="source-line" id="L75" data-line="75"> </span>
+<span class="source-line" id="L76" data-line="76">The remote default `python3` is Apple&#x27;s 3.9 and lacks the required `shutil.rmtree(..., dir_fd=...)` argument. This was caught before deletion. All executors used the verified `/Users/stuartbond/outlook/.venv/bin/python` 3.11.16, with an explicit capability guard. Another inventory workaround was using `du -s -x -k` for exact leaves because macOS rejects `du -a -d` together.</span>
+<span class="source-line" id="L77" data-line="77"> </span>
+<span class="source-line" id="L78" data-line="78">Remote receipts:</span>
+<span class="source-line" id="L79" data-line="79"> </span>
+<span class="source-line" id="L80" data-line="80">- `/Users/stuartbond/storage-cleanup-receipts/2026-11-09-unused-app-copies/`</span>
+<span class="source-line" id="L81" data-line="81">- `/Users/stuartbond/storage-cleanup-receipts/2026-11-09-old-search-index/`</span>
+<span class="source-line" id="L82" data-line="82">- `/Users/stuartbond/storage-cleanup-receipts/2026-11-09-incomplete-model-downloads/`</span>
+<span class="source-line" id="L83" data-line="83">- `/Users/stuartbond/storage-cleanup-receipts/2026-11-09-final-verification.json`</span>
+<span class="source-line" id="L84" data-line="84"> </span>
+<span class="source-line" id="L85" data-line="85">Local copies of the plans, results, incomplete-download proof and final receipt are retained at `/Users/stuartbond/Library/Application Support/Retrace Cleanup Receipts/2026-11-09-network-mac/`. The executors remain with these receipts and on the remote Mac. Their result guards prevent an unexamined repeat.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

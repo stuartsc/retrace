@@ -1,0 +1,283 @@
+{
+  "package": "Retrace standalone click-through and project record",
+  "packaged_on": "2026-11-11",
+  "entry": "index.html",
+  "app": "app.html",
+  "source_provenance": "docs/sources/provenance.json",
+  "runtime": "Local HTML/CSS/classic JavaScript; file://; no outside dependencies; sample data only",
+  "source_state": "The source workspaces contain uncommitted candidates. Individual documentary sources are pinned by byte hashes; source is not installed acceptance.",
+  "manifest_scope": "All package files except this self-referential manifest",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "bytes": 1118,
+      "sha256": "ce10e97513029b0d5a141f2218515769b14b7bd7dd1ef5733def3209f1cb983c"
+    },
+    {
+      "path": "README.md",
+      "bytes": 4122,
+      "sha256": "2de3ee5598262cd0685af1c1f34dcb9f5e3cd817b32498619a8bee62c7b7f1c5"
+    },
+    {
+      "path": "app.html",
+      "bytes": 1133,
+      "sha256": "8b44d35423b85ba582d5309b2b6cadb25f973493557a64c72916af5ad9ea43ee"
+    },
+    {
+      "path": "assets/app.css",
+      "bytes": 22151,
+      "sha256": "ee29681ee06774c58f02b8b99ec077c5b50b6f8b76a0ee2004b0b1eb4ab888aa"
+    },
+    {
+      "path": "assets/app.js",
+      "bytes": 56632,
+      "sha256": "de2528d81df8f1609565f34117918d109c29c99d37e70a2b8981a6de681e4f8f"
+    },
+    {
+      "path": "assets/settings.css",
+      "bytes": 9215,
+      "sha256": "406ff7f7a61a04a773c6cce66d052e6e6a2a6859206270e3700b8fd86f68038f"
+    },
+    {
+      "path": "assets/settings.js",
+      "bytes": 45744,
+      "sha256": "041440334b99c0d7c5ff388a2826937c08052d9136413556426d6041163187e6"
+    },
+    {
+      "path": "docs/browser-checks.json",
+      "bytes": 2888,
+      "sha256": "96776c3fd16d39bd2cd285fcb8090ab6161a0a59ca3a0b7417e28bc89e31bbc1"
+    },
+    {
+      "path": "docs/docs.css",
+      "bytes": 4226,
+      "sha256": "5413293f6b63bfc3d0e7b0b4dba96767e5299bf323ae73f8a4f6bc9ec0842f4d"
+    },
+    {
+      "path": "docs/docs.js",
+      "bytes": 1750,
+      "sha256": "599b8478ddb6b038d996c3c5b6af77f4299816b10a4dad28708ee999160b6930"
+    },
+    {
+      "path": "docs/document-browser-checks.json",
+      "bytes": 1154,
+      "sha256": "6edd3535170a1ed426013fc19d03b3a774b4d931230e921a434101e90f02a412"
+    },
+    {
+      "path": "docs/full-spec.html",
+      "bytes": 53831,
+      "sha256": "86576f6ccd0e5df3f86daec0809dc6a83bdcde612501cc3fd334b983534a0a72"
+    },
+    {
+      "path": "docs/full-spec.md",
+      "bytes": 46839,
+      "sha256": "513fb85edfdc48b485107e817c1bcd3b96dc760bf9b3f51a61c02d8bee3b796f"
+    },
+    {
+      "path": "docs/issues-journal.html",
+      "bytes": 104230,
+      "sha256": "cf66d7d1f0b62003d708521f094fcd72e3973c648d895b2552f48c4ff1eef5bc"
+    },
+    {
+      "path": "docs/issues-journal.md",
+      "bytes": 78166,
+      "sha256": "04a5860af60659d8ef79cfa59c6a7770bdfcec2aad1e57536ae4a4a09960505a"
+    },
+    {
+      "path": "docs/package-checks.json",
+      "bytes": 2488,
+      "sha256": "debf1b6c228b7f3ba963ee05116f0d999c708f450ae38369bef6405d911bf6ae"
+    },
+    {
+      "path": "docs/portable-browser-checks.json",
+      "bytes": 2865,
+      "sha256": "6c4781585a05c4df04d02b59282e3cf03e86eeedf65397438ce1eaba1c3f2a79"
+    },
+    {
+      "path": "docs/session-log.html",
+      "bytes": 5982,
+      "sha256": "f91d7ffd541b092818d96420c9c1fd2abd5dc5188c1545129d6662e6c88bcdc1"
+    },
+    {
+      "path": "docs/session-log.md",
+      "bytes": 5259,
+      "sha256": "fa808ad5c778d2b38e2b6e47a87ffa66180422a079c1c8d067e26bc51a709ad0"
+    },
+    {
+      "path": "docs/sources/index.html",
+      "bytes": 7792,
+      "sha256": "d59c7774803816a0cf686366536d62ea637e24f1e81ba7b58ad4934b9a2063d0"
+    },
+    {
+      "path": "docs/sources/live-audio-freshness.html",
+      "bytes": 20294,
+      "sha256": "b45139aeba10cb19177da3797530b256e54f5d718efd040f44ed29e59d1228b6"
+    },
+    {
+      "path": "docs/sources/live-audio-visibility.html",
+      "bytes": 18319,
+      "sha256": "a9be76e81ca3c4a5c0e9b13549a5841929e58d1e41a019b8612cb8ee82c2aa27"
+    },
+    {
+      "path": "docs/sources/live-capture-validation.html",
+      "bytes": 81776,
+      "sha256": "c294d0157d9c30869dd16ceee082e4581c325da0f7dbcabd0432315ffd280b2e"
+    },
+    {
+      "path": "docs/sources/live-changelog.html",
+      "bytes": 98977,
+      "sha256": "96e92af84554760d4b7fe2da70943260dc18c2378175f9430e87fad30b4fd38c"
+    },
+    {
+      "path": "docs/sources/live-companion.html",
+      "bytes": 22715,
+      "sha256": "b06f81cc1f9a5612ca180e7c1a665a6402e9979daa0644ea7797bf0848156650"
+    },
+    {
+      "path": "docs/sources/live-cpu.html",
+      "bytes": 20778,
+      "sha256": "67989afd68230d8fb587531cc4c44788d8352f9d5cfb30d085d82d0b7a312e8c"
+    },
+    {
+      "path": "docs/sources/live-data-access.html",
+      "bytes": 34181,
+      "sha256": "8c96e4f399e48c39f2a9a4ad07f9ab82f0f9665fea9d7e87a6d81eb0891edcde"
+    },
+    {
+      "path": "docs/sources/live-guide.html",
+      "bytes": 23256,
+      "sha256": "7ecb285677bba4a66b2d49cdcea349a1061d592e61da2284191d1fea9d98c3ab"
+    },
+    {
+      "path": "docs/sources/live-markers.html",
+      "bytes": 132975,
+      "sha256": "0c525b510aa03c9f119e83cb51739575599e805c955b90a861e464bcc2345980"
+    },
+    {
+      "path": "docs/sources/live-mcp.html",
+      "bytes": 17693,
+      "sha256": "22203907af7df7fc08a30c301382008cb56f78148c92fc9b7ab63f603016cd81"
+    },
+    {
+      "path": "docs/sources/live-microphone.html",
+      "bytes": 22821,
+      "sha256": "1b6ee3e84c0bcb005e1409a94c0654abfd25e7d69d87d2a519baad0f18a61b44"
+    },
+    {
+      "path": "docs/sources/live-network-cleanup.html",
+      "bytes": 15560,
+      "sha256": "f4a9212bf875450a9c1de2e9d1026e7acf1d0f3e71d2d99c264b88298f2d1f23"
+    },
+    {
+      "path": "docs/sources/live-recall-validation.html",
+      "bytes": 221677,
+      "sha256": "6c0cd34f8f074d6e63ec0dc84a033bd6642c837d7cd82bf65e33482835ac9e20"
+    },
+    {
+      "path": "docs/sources/live-recovery.html",
+      "bytes": 88768,
+      "sha256": "fb801be2cb357474367083c98ec4ca5741c0518916b2d58d63a7ada0b01c39ed"
+    },
+    {
+      "path": "docs/sources/live-storage-audit.html",
+      "bytes": 21344,
+      "sha256": "7bd2d80be503b907554aaedaa22c09a407c5a77dc2be83d1fdcfac397dac9cf4"
+    },
+    {
+      "path": "docs/sources/live-storage-efficiency.html",
+      "bytes": 21153,
+      "sha256": "c3417c2876ffa29cfe5d13b6db23009327de53003b5e3cf9ef5ce87702eed15f"
+    },
+    {
+      "path": "docs/sources/main-capture-quality.html",
+      "bytes": 34038,
+      "sha256": "fb696380f799d3523c5278959fb7878bab1ff3adb26b27e5345ff3aec8590cf8"
+    },
+    {
+      "path": "docs/sources/main-data-access.html",
+      "bytes": 32497,
+      "sha256": "b73242f64ca302feefa74133fa6fe343a51f0aeb7e346422aa572a090c1fd3a6"
+    },
+    {
+      "path": "docs/sources/main-performance.html",
+      "bytes": 16428,
+      "sha256": "7ee8bef80e28378a9591dfd4d98c066015f814f1ac1e80267765ed620e6c1923"
+    },
+    {
+      "path": "docs/sources/main-recall-plan.html",
+      "bytes": 81683,
+      "sha256": "6a2bf9b52b021bafe13810626f9f6aec288dcc686db3627be186e81a55c68b5a"
+    },
+    {
+      "path": "docs/sources/main-recall-validation.html",
+      "bytes": 227570,
+      "sha256": "a2073817852a6b82985e104a4082eeeb66fc079f7b14c62e8209849c8c36a809"
+    },
+    {
+      "path": "docs/sources/main-responsiveness.html",
+      "bytes": 53564,
+      "sha256": "fd3a82776728306111ff89b1e30727fd3e64f9ab691ca1592750c06ffc9ede0b"
+    },
+    {
+      "path": "docs/sources/main-roadmap.html",
+      "bytes": 50030,
+      "sha256": "0ede6434460f22102e3fe8202035dd5d545d42ba62a63e74227c1224d10c18cf"
+    },
+    {
+      "path": "docs/sources/main-unified-history.html",
+      "bytes": 63185,
+      "sha256": "a52b23f0870e6e599be0a5b7f31f9a3c0302f26854803b530d2d244291774296"
+    },
+    {
+      "path": "docs/sources/provenance.json",
+      "bytes": 15429,
+      "sha256": "7dd69c85a26d7f5188658c70f892719debd53a58451ed484cb0fe38c809eddaa"
+    },
+    {
+      "path": "docs/validation.html",
+      "bytes": 4836,
+      "sha256": "64a9a3e324363e55c6dcf70123cd0e984b83ce47ed8bd3326a94a0a782e17f05"
+    },
+    {
+      "path": "docs/validation.md",
+      "bytes": 3897,
+      "sha256": "2796f2650b24536f72cdddcb496ee9d138ce4ab3a6526e611ff0552d9faf0e64"
+    },
+    {
+      "path": "index.html",
+      "bytes": 6039,
+      "sha256": "7b1865e9451f4b73a61659c0853fa053b1358b722999a68f10c1233919c84a69"
+    },
+    {
+      "path": "output/playwright/directory.png",
+      "bytes": 140190,
+      "sha256": "b56d483fb36abf872250facb70de539d0af3105b1bcf81037e2a50168f756cb9"
+    },
+    {
+      "path": "output/playwright/issues-journal.png",
+      "bytes": 220629,
+      "sha256": "1ef8085a7b51c87c12f1728ce7e5a62889c81e8fc3033784824d6763b39cbd90"
+    },
+    {
+      "path": "output/playwright/live-desktop.png",
+      "bytes": 172053,
+      "sha256": "982a2537b863031a1c68bd838482e80202e6cfd7662331d42e7bd3dec890eb7b"
+    },
+    {
+      "path": "output/playwright/live-mobile.png",
+      "bytes": 96727,
+      "sha256": "97bba7861ebad443ac38f9f2f8e429bd6e319af0a763f4bc60434908b143ebd6"
+    },
+    {
+      "path": "output/playwright/live-tablet.png",
+      "bytes": 113574,
+      "sha256": "f027cac41572975346e0d726b9a40581e5af87db24b3b2b57cc26f9e22460766"
+    },
+    {
+      "path": "output/playwright/monitor-desktop.png",
+      "bytes": 106809,
+      "sha256": "fc306cab6a9cf0a1b5814258e1cc21d1db399739e101a4e1d097fe3919bbab13"
+    }
+  ],
+  "total_file_bytes_excluding_manifest": 2759050
+}

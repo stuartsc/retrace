@@ -1,0 +1,125 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Retrace Live user guide — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Retrace Live user guide</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/live-context-user-guide.md</code></p><p>Source modified UTC: 2026-10-21T23:43:24.541350+00:00. 14,347 bytes; 125 lines.</p><p>Original SHA-256: <code>978fb2f0e55a6576a3cf5cea00d7d17556c0ad58e3ebafd7ba62e09dba0c7f15</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Retrace Live user guide</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">**Last updated: 22 October 2026, 06:14 Brisbane.** Build **2610.22.5** is installed and recording into the preserved V23 library. An installed **Load older** check added 78 recordings without a timeout, retained the reading position and clearly reported incomplete earlier coverage. Pending-only keyboard reading, Return to live and resize/tab privacy checks also pass within the observed scope. See the [delivery ledger](live-context-markers-plan.md) for evidence, retained failures and restart gaps.</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">The installed source passed **1,699 tests, 20 explicit skips, zero failures**, a separate optimized build and native fixtures. These results and the installed checks do not establish exhaustive history coverage or complete performance acceptance.</span>
+<span class="source-line" id="L6" data-line="6"> </span>
+<span class="source-line" id="L7" data-line="7">Live checks retained evidence before revealing it again. On .5, new arrivals left the reading position pinned, and compact Screen hid transcript accessibility content. Voice markers are off, native MCP is disabled and the companion remains unconfigured until explicitly set up.</span>
+<span class="source-line" id="L8" data-line="8"> </span>
+<span class="source-line" id="L9" data-line="9">## Read a moment in context</span>
+<span class="source-line" id="L10" data-line="10"> </span>
+<span class="source-line" id="L11" data-line="11">Open **Live** to review saved speech alongside the screens recorded during it. The initial wide layout gives the transcript 60% of the space and screen context 40%; drag the divider to resize them. Below 900 points of available workspace width, use the **Transcript** and **Screen** tabs.</span>
+<span class="source-line" id="L12" data-line="12"> </span>
+<span class="source-line" id="L13" data-line="13">The newest transcripts appear at the top. Scroll down to load older recordings automatically, continuing across days. New arrivals do not move your place while you are reading history; **Return to live** returns to the newest entry. Available speaker turns and saved recordings whose text is still being prepared remain visible. The calendar beside Search offers optional date filters for search; these do not restrict ordinary browsing. The status strip reports recording, loaded text, voice recognition and available speaker/companion status; unavailable text does not imply that audio was lost.</span>
+<span class="source-line" id="L14" data-line="14"> </span>
+<span class="source-line" id="L15" data-line="15">Select a turn or recording to inspect screens from its interval. Select a screen thumbnail, then use **Screenshot** or **Text** to inspect the image and available OCR. Application/window labels describe the foreground window at capture time; they do not establish which window owns every OCR region. Screen association with speech uses the recording&#x27;s approximate wall clock. Exact audio references retain their original sample ranges.</span>
+<span class="source-line" id="L16" data-line="16"> </span>
+<span class="source-line" id="L17" data-line="17">Use a row&#x27;s playback control to listen to its retained recording or speaker turn. A spoken marker offers **Play phrase**, or **Play enclosing speech** when recognition supplied only an approximate enclosing span. Missing audio or screen coverage is reported explicitly. Retrace does not substitute a nearby screenshot for a missing one, and audio-only moments can open without a screen.</span>
+<span class="source-line" id="L18" data-line="18"> </span>
+<span class="source-line" id="L19" data-line="19">Scrolling down or selecting evidence stops following new content. **Return to live** resumes at the newest saved material. Older pages load automatically near the bottom. Empty partial pages continue while the loading footer is visible; a coverage notice remains until the reader reaches the end. Reading history does not start transcription or playback.</span>
+<span class="source-line" id="L20" data-line="20"> </span>
+<span class="source-line" id="L21" data-line="21">## Search and copy selected evidence</span>
+<span class="source-line" id="L22" data-line="22"> </span>
+<span class="source-line" id="L23" data-line="23">Enter text in **Search this interval** and press Return. Search covers available transcripts, speaker labels, OCR, application/window titles, notes, markers and their context ranges. Sources page independently: inspect **Search coverage** and use **Load more results** before interpreting a partial page as the full answer.</span>
+<span class="source-line" id="L24" data-line="24"> </span>
+<span class="source-line" id="L25" data-line="25">To hand context to another assistant:</span>
+<span class="source-line" id="L26" data-line="26"> </span>
+<span class="source-line" id="L27" data-line="27">1. Select the turn, recording or screen you want, or select the **Include** boxes beside search results.</span>
+<span class="source-line" id="L28" data-line="28">2. Choose **Copy context**.</span>
+<span class="source-line" id="L29" data-line="29">3. Review **Copy recorded context**, including timestamps, source references, speaker status, timing uncertainty and coverage notices. Add a **Question to include (optional)** if useful.</span>
+<span class="source-line" id="L30" data-line="30">4. Choose **Copy**, then paste into the destination you select.</span>
+<span class="source-line" id="L31" data-line="31"> </span>
+<span class="source-line" id="L32" data-line="32">The preview can include only loaded and permitted evidence. Omitted or incomplete material stays labelled in the copied text. If evidence changes while the preview is open, Retrace requests a fresh preview. Copying does not send anything to an assistant or execute instructions found in the recording.</span>
+<span class="source-line" id="L33" data-line="33"> </span>
+<span class="source-line" id="L34" data-line="34">## Mark now and revisit a marker</span>
+<span class="source-line" id="L35" data-line="35"> </span>
+<span class="source-line" id="L36" data-line="36">**Mark now** saves the current time, including while you are reviewing older material. It does not mark the timestamp of an older selected row. A manual marker does not imply that a screenshot or transcript exists at that instant.</span>
+<span class="source-line" id="L37" data-line="37"> </span>
+<span class="source-line" id="L38" data-line="38">Open the list button beside **Mark now** to see **Marked moments**. Search titles, notes and phrases; search applies to the loaded page, so use **Older** and **Newer** to continue. **Open** shows the marker and its context. The pencil edits its title and your note while preserving the original phrase, recording time and verbatim recognition. The trash control removes a marker and offers **Undo**.</span>
+<span class="source-line" id="L39" data-line="39"> </span>
+<span class="source-line" id="L40" data-line="40">## Set up a spoken marker</span>
+<span class="source-line" id="L41" data-line="41"> </span>
+<span class="source-line" id="L42" data-line="42">Choose **Voice markers** in Live&#x27;s status strip, or open **Settings → Audio → Voice marker rules**. New rules are disabled until you enable them.</span>
+<span class="source-line" id="L43" data-line="43"> </span>
+<span class="source-line" id="L44" data-line="44">| Field | Example |</span>
+<span class="source-line" id="L45" data-line="45">|---|---|</span>
+<span class="source-line" id="L46" data-line="46">| Phrase | Purple banana |</span>
+<span class="source-line" id="L47" data-line="47">| Marker name | Remember this context |</span>
+<span class="source-line" id="L48" data-line="48">| Meaning | Preserve this moment and the relevant explanation |</span>
+<span class="source-line" id="L49" data-line="49">| Aliases | Remember this moment, save this context |</span>
+<span class="source-line" id="L50" data-line="50"> </span>
+<span class="source-line" id="L51" data-line="51">Enter aliases as explicit alternatives separated by commas. Select **Add disabled rule**, review the rule, then enable its switch. The supported action is marking the timeline; the meaning is explanatory text, not an executable command.</span>
+<span class="source-line" id="L52" data-line="52"> </span>
+<span class="source-line" id="L53" data-line="53">Recognition uses the existing microphone recording stream. It matches complete configured phrases and aliases with case/punctuation normalization. Similar meaning alone does not trigger a rule. System audio and OCR do not activate voice markers. Recording must be active with microphone audio available; disabling every rule stops the listener. Enabling rules does not scan historical recordings.</span>
+<span class="source-line" id="L54" data-line="54"> </span>
+<span class="source-line" id="L55" data-line="55">If needed, choose **Prepare speech recognition** to download Apple&#x27;s on-device recognition assets. **Play a sound after a voice marker is saved** is optional and off by default. The visual acknowledgement appears after the marker has been saved; **Provisional phrase** means recognition may still change, while **Confirmed phrase** means the match has settled. Confirmation does not make an approximate timestamp exact. A later correction can leave a marker labelled **Recognition withdrawn**.</span>
+<span class="source-line" id="L56" data-line="56"> </span>
+<span class="source-line" id="L57" data-line="57">Use **Undo** on the acknowledgement to remove an unwanted marker, or use **Mark now** when recognition is unavailable. The original phrase span remains distinct from when recognition detected it and when the marker was saved. Two separate utterances can create two markers; repeated delivery of the same occurrence is deduplicated.</span>
+<span class="source-line" id="L58" data-line="58"> </span>
+<span class="source-line" id="L59" data-line="59">| Status | What it means |</span>
+<span class="source-line" id="L60" data-line="60">|---|---|</span>
+<span class="source-line" id="L61" data-line="61">| Voice markers listening | Enabled rules are receiving microphone speech. |</span>
+<span class="source-line" id="L62" data-line="62">| Waiting for microphone | An enabled rule is waiting for the existing recording stream. |</span>
+<span class="source-line" id="L63" data-line="63">| Voice recognition assets unavailable | Prepare the on-device assets before relying on recognition. |</span>
+<span class="source-line" id="L64" data-line="64">| Voice marker input interrupted | Some recognition input was lost; recording continues independently. |</span>
+<span class="source-line" id="L65" data-line="65">| Voice markers paused for system load | Recognition has yielded to resource pressure. |</span>
+<span class="source-line" id="L66" data-line="66">| Voice markers paused for playback | Retrace suppresses recognition during its playback to prevent retriggering. |</span>
+<span class="source-line" id="L67" data-line="67">| Voice marker save failed | No successful save is implied; use the manual fallback. |</span>
+<span class="source-line" id="L68" data-line="68"> </span>
+<span class="source-line" id="L69" data-line="69">## Review and correct a marker&#x27;s context</span>
+<span class="source-line" id="L70" data-line="70"> </span>
+<span class="source-line" id="L71" data-line="71">A phrase is the marker&#x27;s anchor. Its context can contain several separate intervals, including material much earlier or later; no fixed before/after duration defines it.</span>
+<span class="source-line" id="L72" data-line="72"> </span>
+<span class="source-line" id="L73" data-line="73">In the marker window, choose **Add a context range**, set **From** and **To**, explain why the interval belongs, and select **Save range**. **Review** opens a range&#x27;s saved transcript and screens. **Edit / pin** lets you adjust a range and select **Pin this range**. Manual edits and pinned ranges are preserved when automatic proposals change.</span>
+<span class="source-line" id="L74" data-line="74"> </span>
+<span class="source-line" id="L75" data-line="75">Companion suggestions are proposals to review, not a guarantee that every relevant passage was found. Your note remains separate from a source-derived explanation. A pinned proposal still depends on its source: if supporting evidence becomes unavailable or is deleted, Retrace withholds that inherited material rather than treating pinning as permanent access. Spoken tasks remain recorded context; Retrace does not execute them.</span>
+<span class="source-line" id="L76" data-line="76"> </span>
+<span class="source-line" id="L77" data-line="77">## Connect the private companion</span>
+<span class="source-line" id="L78" data-line="78"> </span>
+<span class="source-line" id="L79" data-line="79">Under **Settings → Audio → Private companion**, enter the private endpoint and its companion access token, then choose **Connect**. The current private service address is:</span>
+<span class="source-line" id="L80" data-line="80"> </span>
+<span class="source-line" id="L81" data-line="81">`https://stuarts-macbook-pro.tail7a4fcb.ts.net/retrace-companion`</span>
+<span class="source-line" id="L82" data-line="82"> </span>
+<span class="source-line" id="L83" data-line="83">Connecting permits recorded audio and supporting text to be sent to that private Mac for speaker enrichment and context suggestions. The token is kept in macOS Keychain. A configured endpoint is not proof that it is reachable or that enrichment has completed; check Live&#x27;s status. **Disconnect** stops the connection. Local first-pass recordings remain readable during an outage, and completed enrichment retains its original first-pass text for comparison.</span>
+<span class="source-line" id="L84" data-line="84"> </span>
+<span class="source-line" id="L85" data-line="85">**Speaker labels** lets you review available enrichment. Anonymous labels belong to one recording: “Speaker 1” in another recording is a different identity. **Name** saves your correction; **Undo name** removes it. Automatic identity suggestions remain unconfirmed. Automatic application of known names is not enabled because the required held-out precision has not been established.</span>
+<span class="source-line" id="L86" data-line="86"> </span>
+<span class="source-line" id="L87" data-line="87">## Give an MCP client access</span>
+<span class="source-line" id="L88" data-line="88"> </span>
+<span class="source-line" id="L89" data-line="89">The Retrace endpoint is separate from Outlook&#x27;s read-only MCP service:</span>
+<span class="source-line" id="L90" data-line="90"> </span>
+<span class="source-line" id="L91" data-line="91">`https://stuarts-macbook-pro.tail7a4fcb.ts.net/retrace-mcp`</span>
+<span class="source-line" id="L92" data-line="92"> </span>
+<span class="source-line" id="L93" data-line="93">Open **Settings → Advanced → Local MCP access**:</span>
+<span class="source-line" id="L94" data-line="94"> </span>
+<span class="source-line" id="L95" data-line="95">1. Enter a **Client name**, select its permissions and choose an expiry. For a reader, choose only the relevant read permissions and **Discover supported commands**.</span>
+<span class="source-line" id="L96" data-line="96">2. Select **Create client token**. Save the once-shown token in that client.</span>
+<span class="source-line" id="L97" data-line="97">3. Turn on **Enable local MCP access**. Creating a client alone does not enable the listener.</span>
+<span class="source-line" id="L98" data-line="98">4. Have the client discover the current tools before making requests. The list reflects both implemented operations and that client&#x27;s grants.</span>
+<span class="source-line" id="L99" data-line="99"> </span>
+<span class="source-line" id="L100" data-line="100">Use **Revoke** to remove one client&#x27;s access, or disable local MCP access to stop the listener. Read grants do not imply permission to change recording, play audio, edit rules or delete material. No client is granted access automatically.</span>
+<span class="source-line" id="L101" data-line="101"> </span>
+<span class="source-line" id="L102" data-line="102">| Capability area | Implemented operations |</span>
+<span class="source-line" id="L103" data-line="103">|---|---|</span>
+<span class="source-line" id="L104" data-line="104">| Evidence and context | Paged interval search, native timeline/screenshots/OCR, transcripts, speaker turns, exact references and formatted context. |</span>
+<span class="source-line" id="L105" data-line="105">| Markers and rules | Create, read, edit, remove/restore markers; review/revise/pin ranges; read/save voice rules. |</span>
+<span class="source-line" id="L106" data-line="106">| Annotations | Supported native tags/comments and speaker corrections, with source and revision checks. |</span>
+<span class="source-line" id="L107" data-line="107">| Foreground actions | Open an exact screen, marker, transcript or speaker turn; play retained marker/turn audio or stop playback. |</span>
+<span class="source-line" id="L108" data-line="108">| Recording and settings | Read/control recording; supported capture and audio settings; supported source configuration. |</span>
+<span class="source-line" id="L109" data-line="109">| Processing and operations | Health/backlog, cached CPU/storage reports, OCR or pending-transcription repair, processing override, search-index rebuild, database maintenance, reviewed bounded retention, and job status/cancellation. |</span>
+<span class="source-line" id="L110" data-line="110"> </span>
+<span class="source-line" id="L111" data-line="111">The client receives context text to present or copy; an MCP context request does not change the Mac&#x27;s clipboard. Imported Rewind evidence is not exposed through this native evidence endpoint. OS permissions, current exclusions and source availability still apply. Screenshots retain their original size and are returned in checked chunks when needed.</span>
+<span class="source-line" id="L112" data-line="112"> </span>
+<span class="source-line" id="L113" data-line="113">For reliable commands, the client must keep the same request UUID and arguments when retrying. A successful historical receipt does not give fresh access to its old evidence. An **indeterminate** result means a reserved operation&#x27;s outcome could not be established; it is not silently executed again. Revision conflicts require a fresh read. Destructive operations require a concrete preview and confirmation bound to that preview; expired or changed previews must be refreshed.</span>
+<span class="source-line" id="L114" data-line="114"> </span>
+<span class="source-line" id="L115" data-line="115">Long operations return a job ID. Inspect progress and cancellation through the same client; cancellation can report partial effects. If the laptop or required foreground UI is unavailable, the operation reports unavailable. Commands are not queued for execution after the laptop reconnects. Cached operational reports include observation times or an unavailable/incomplete state.</span>
+<span class="source-line" id="L116" data-line="116"> </span>
+<span class="source-line" id="L117" data-line="117">## Current limits and verification</span>
+<span class="source-line" id="L118" data-line="118"> </span>
+<span class="source-line" id="L119" data-line="119">Retrace has no arbitrary SQL, filesystem or shell interface. The unfinished importer and other unimplemented operations are absent from its capability manifest. MCP cannot play arbitrary paths or infer precise PCM playback from legacy transcript timestamps. Reviewed retention currently preserves audio and defers existing video-file deletion; it reports no reclaimed file bytes for that deferred work. Companion suggestions can still miss relevant context.</span>
+<span class="source-line" id="L120" data-line="120"> </span>
+<span class="source-line" id="L121" data-line="121">Installed .5 has demonstrated an older-history page loading without timeout, stable reading and keyboard/layout/privacy behavior. Earlier coverage can remain incomplete, and an unchanged page does not prove cursor progress. An earlier native sequence failure remains recorded alongside the unchanged-binary rerun that passed with longer observation intervals.</span>
+<span class="source-line" id="L122" data-line="122"> </span>
+<span class="source-line" id="L123" data-line="123">The final recording check was at **4:20 after launch**, with new screens and audio saved; Live was left **Following live**. Long-run paging memory, complete installed MCP/companion acceptance, context-proposal quality, physical microphone acknowledgement p95, matched CPU/foreground latency and sleep/wake/device checks remain open. No live MCP grant or companion connection has been created; voice markers remain off. The three-second acknowledgement and five-percentage-point additional CPU figures are targets, not established performance.</span>
+<span class="source-line" id="L124" data-line="124"> </span>
+<span class="source-line" id="L125" data-line="125">See the [delivery and acceptance ledger](live-context-markers-plan.md), [data-access reference](DATA_ACCESS.md), [MCP protocol/deployment reference](../scripts/retrace_mcp/README.md) and [companion operations reference](../scripts/retrace_companion/README.md) for technical detail.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

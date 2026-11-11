@@ -1,0 +1,139 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saved audio visibility repair — 3 October 2026 — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Saved audio visibility repair — 3 October 2026</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/audio-recording-visibility-repair.md</code></p><p>Source modified UTC: 2026-10-21T09:43:34.849450+00:00. 8,585 bytes; 139 lines.</p><p>Original SHA-256: <code>0177371ec650049f4444ddb4a0874e5a61a6432959656ef7a45d6ee36f6de179</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Saved audio visibility repair — 3 October 2026</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">## Observed problem</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">The installed 2610.1.1 app continues saving microphone AAC batches, while the</span>
+<span class="source-line" id="L6" data-line="6">timeline&#x27;s Audio Transcript panel reports no recordings. The panel&#x27;s initial</span>
+<span class="source-line" id="L7" data-line="7">and refresh reads both use `getTranscriptions` with its default</span>
+<span class="source-line" id="L8" data-line="8">`includeActivityRows: false`, which excludes pending rows with empty text.</span>
+<span class="source-line" id="L9" data-line="9">The CPU repair made deferred transcription normal without updating this panel.</span>
+<span class="source-line" id="L10" data-line="10"> </span>
+<span class="source-line" id="L11" data-line="11">The user confirmed both Timeline and Live were affected. Installed UI inspection</span>
+<span class="source-line" id="L12" data-line="12">showed Live displaying older readable speech blocks while fresh recordings were</span>
+<span class="source-line" id="L13" data-line="13">absent. Live&#x27;s status read already included pending rows, but its status panel</span>
+<span class="source-line" id="L14" data-line="14">was not inserted into the active view, and its presentation mapping discarded</span>
+<span class="source-line" id="L15" data-line="15">the recorded media path. This is a second display path, separate from the</span>
+<span class="source-line" id="L16" data-line="16">Timeline query omission.</span>
+<span class="source-line" id="L17" data-line="17"> </span>
+<span class="source-line" id="L18" data-line="18">Read-only checks on 3 October confirmed new pending rows and files advancing</span>
+<span class="source-line" id="L19" data-line="19">every ten seconds. A sampled file passed native `afinfo` inspection with</span>
+<span class="source-line" id="L20" data-line="20">240,085 valid frames at 16 kHz (15.005313 seconds), plus separately reported</span>
+<span class="source-line" id="L21" data-line="21">encoder priming/remainder. It decoded successfully and contained a signal.</span>
+<span class="source-line" id="L22" data-line="22">This is a sampled-file check, not an audit of all historical recordings or</span>
+<span class="source-line" id="L23" data-line="23">proof of speech content. The installed capture configuration records the</span>
+<span class="source-line" id="L24" data-line="24">microphone; system-audio capture is disabled by its existing default.</span>
+<span class="source-line" id="L25" data-line="25"> </span>
+<span class="source-line" id="L26" data-line="26">The transcription backlog is a separate freshness problem. Some older work</span>
+<span class="source-line" id="L27" data-line="27">has completed: rows inserted since the 1 October installation included sixteen</span>
+<span class="source-line" id="L28" data-line="28">transcribed rows and two needing review at the follow-up check. The latest</span>
+<span class="source-line" id="L29" data-line="29">transcribed write was on 3 October at 02:49 AEST for a June recording.</span>
+<span class="source-line" id="L30" data-line="30">Recordings from 2–3 October remained pending. The queue selects oldest pending</span>
+<span class="source-line" id="L31" data-line="31">audio first; the current UI reported waiting for the Mac to be less busy.</span>
+<span class="source-line" id="L32" data-line="32">These observations do not establish which admission condition dominated</span>
+<span class="source-line" id="L33" data-line="33">overnight. No global processing override or power setting was changed.</span>
+<span class="source-line" id="L34" data-line="34"> </span>
+<span class="source-line" id="L35" data-line="35">## Repair scope</span>
+<span class="source-line" id="L36" data-line="36"> </span>
+<span class="source-line" id="L37" data-line="37">The repair is isolated in `/Users/stuartbond/backintime-hotfix-cpu-guard`.</span>
+<span class="source-line" id="L38" data-line="38">The audio panel loads saved pending/activity rows through one shared bounded</span>
+<span class="source-line" id="L39" data-line="39">reader, keeps their original playback references and reports pending text.</span>
+<span class="source-line" id="L40" data-line="40">It refreshes a visible stationary selection without automatically playing,</span>
+<span class="source-line" id="L41" data-line="41">transcribing, changing stored evidence or raising the window. Initial-open</span>
+<span class="source-line" id="L42" data-line="42">and refresh lifetimes reject cancelled or replaced selections. Large loaded</span>
+<span class="source-line" id="L43" data-line="43">ranges disclose omitted rows.</span>
+<span class="source-line" id="L44" data-line="44"> </span>
+<span class="source-line" id="L45" data-line="45">The Live extension adds a bounded recent saved-recordings section with explicit</span>
+<span class="source-line" id="L46" data-line="46">playback and pending-text labels. Its reader/player lifetime follows visibility;</span>
+<span class="source-line" id="L47" data-line="47">completed transcript history remains separate and historical labels include the</span>
+<span class="source-line" id="L48" data-line="48">date so older speech cannot appear current merely because the time of day matches.</span>
+<span class="source-line" id="L49" data-line="49">The Live read examines twelve newest audio entries plus one overflow sentinel,</span>
+<span class="source-line" id="L50" data-line="50">shows entries with retained media paths, and discloses that limited scope. It</span>
+<span class="source-line" id="L51" data-line="51">refreshes every eight seconds only while the Live section is visible. Cancelled</span>
+<span class="source-line" id="L52" data-line="52">reads stay owned until completion before a replacement read can start.</span>
+<span class="source-line" id="L53" data-line="53"> </span>
+<span class="source-line" id="L54" data-line="54">## Verification and delivery</span>
+<span class="source-line" id="L55" data-line="55"> </span>
+<span class="source-line" id="L56" data-line="56">The final focused debug run passed **94 tests, zero failures or skips**: seven</span>
+<span class="source-line" id="L57" data-line="57">Live saved-recordings regressions, 68 existing dashboard presentation checks,</span>
+<span class="source-line" id="L58" data-line="58">nine transcript cursor/presentation checks and ten Timeline visibility/lifetime</span>
+<span class="source-line" id="L59" data-line="59">regressions. Tests use real private SQLite and a byte-pinned authored AAC through</span>
+<span class="source-line" id="L60" data-line="60">the native reader and muted player. They cover pending text, exact playback</span>
+<span class="source-line" id="L61" data-line="61">ranges, unchanged stored bytes, completed-text refresh, deletion, mixed pages,</span>
+<span class="source-line" id="L62" data-line="62">bounded reads, cancellation, close/reopen and replaced providers. Opening either</span>
+<span class="source-line" id="L63" data-line="63">surface starts no transcription or playback. Independent source review is clear</span>
+<span class="source-line" id="L64" data-line="64">after reproducing and fixing delayed-open, cancelled-read ownership and partial-</span>
+<span class="source-line" id="L65" data-line="65">page disclosure issues. The sleep API guard and `git diff --check` pass.</span>
+<span class="source-line" id="L66" data-line="66"> </span>
+<span class="source-line" id="L67" data-line="67">A later, test-only native rendering probe is explicitly opt-in with</span>
+<span class="source-line" id="L68" data-line="68">`RETRACE_TEST_NATIVE_AUDIO_VIEW=1`. It mounts the real Live component in a</span>
+<span class="source-line" id="L69" data-line="69">nonactivating offscreen panel and attempts to read its date/status and press its</span>
+<span class="source-line" id="L70" data-line="70">native accessibility Play control. In this execution session the fixture exposed</span>
+<span class="source-line" id="L71" data-line="71">only hosting/graphics/focus proxy nodes, with no usable authored controls.</span>
+<span class="source-line" id="L72" data-line="72">The failure is retained in `live-native-view-offscreen.log`; **rendered UI and</span>
+<span class="source-line" id="L73" data-line="73">native control acceptance are not established**. An unopened-panel attempt and</span>
+<span class="source-line" id="L74" data-line="74">an initial test-helper compile error are also retained. The default opt-in guard</span>
+<span class="source-line" id="L75" data-line="75">compiled and passed with one intentional skip, zero failures. No product source</span>
+<span class="source-line" id="L76" data-line="76">changed after the 94 passing checks or optimized compilation. This extra probe</span>
+<span class="source-line" id="L77" data-line="77">is not counted as another passing behavioral test.</span>
+<span class="source-line" id="L78" data-line="78"> </span>
+<span class="source-line" id="L79" data-line="79">Reproduction in the isolated hotfix worktree:</span>
+<span class="source-line" id="L80" data-line="80"> </span>
+<span class="source-line" id="L81" data-line="81">```sh</span>
+<span class="source-line" id="L82" data-line="82">DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \</span>
+<span class="source-line" id="L83" data-line="83">RETRACE_TEST_DISABLE_FILE_LOGGING=1 \</span>
+<span class="source-line" id="L84" data-line="84">RETRACE_AUDIO_VISIBILITY_FIXTURE_AAC=/Users/stuartbond/backintime/docs/fixtures/unified-history/speech/fixtures/au-names-padded.m4a \</span>
+<span class="source-line" id="L85" data-line="85">/usr/bin/nice -n 15 swift test -j 2 --enable-code-coverage \</span>
+<span class="source-line" id="L86" data-line="86">  --filter &#x27;RetraceTests.DashboardSavedRecordingsTests|RetraceTests.DashboardVoiceLayoutTests|RetraceTests.TranscriptRecordingVisibilityTests|RetraceTests.TranscriptCursorPolicyTests&#x27;</span>
+<span class="source-line" id="L87" data-line="87">```</span>
+<span class="source-line" id="L88" data-line="88"> </span>
+<span class="source-line" id="L89" data-line="89">The fixture SHA-256 is</span>
+<span class="source-line" id="L90" data-line="90">`12d984dc71bad6e5bacab2f8fceb4423911a46e7ae5a23c9c1c41c349f8830dd`.</span>
+<span class="source-line" id="L91" data-line="91">The override is explicit and byte-checked; without it the new test fixtures use</span>
+<span class="source-line" id="L92" data-line="92">the production AAC writer.</span>
+<span class="source-line" id="L93" data-line="93"> </span>
+<span class="source-line" id="L94" data-line="94">The optimized product build passed in **393.37 seconds**, at nice priority 15</span>
+<span class="source-line" id="L95" data-line="95">and two build jobs. This is an incremental rebuild using the separately clean</span>
+<span class="source-line" id="L96" data-line="96">1 October optimized cache; the change is confined to UI and changes no Shared</span>
+<span class="source-line" id="L97" data-line="97">or module protocol layouts. The prior executable and all fifteen resource files</span>
+<span class="source-line" id="L98" data-line="98">were preserved before cache reuse. The new unbundled executable is retained in</span>
+<span class="source-line" id="L99" data-line="99">`Verified unbundled release/`, with SHA-256</span>
+<span class="source-line" id="L100" data-line="100">`b4a5717355e8a3317cb0cf6f6f1054579e313f3d70293cdf8f0b170ea2b89d85`.</span>
+<span class="source-line" id="L101" data-line="101">All fifteen resource files match the prior release. Product source hashes match</span>
+<span class="source-line" id="L102" data-line="102">the independently reviewed freeze. This establishes compilation, not signing,</span>
+<span class="source-line" id="L103" data-line="103">installation or the broader performance target.</span>
+<span class="source-line" id="L104" data-line="104"> </span>
+<span class="source-line" id="L105" data-line="105">An optimized build of the Timeline-only scope was deliberately interrupted</span>
+<span class="source-line" id="L106" data-line="106">when the user&#x27;s clarification added Live; its exit-130 receipt is retained as</span>
+<span class="source-line" id="L107" data-line="107">`release-timeline-only-superseded.log`, not a passing build result.</span>
+<span class="source-line" id="L108" data-line="108"> </span>
+<span class="source-line" id="L109" data-line="109">The current command environment cannot create AAC through the unchanged</span>
+<span class="source-line" id="L110" data-line="110">production writer: both the new fixture setup and an untouched playback</span>
+<span class="source-line" id="L111" data-line="111">control fail with AVFoundation error 1718449215. The explicitly supplied</span>
+<span class="source-line" id="L112" data-line="112">authored AAC fixture preserves the native decoding/playback check without</span>
+<span class="source-line" id="L113" data-line="113">silently treating the writer as passing. A broader `Transcript` filter matched</span>
+<span class="source-line" id="L114" data-line="114">82 tests across multiple modules, with two skips and twelve failures involving</span>
+<span class="source-line" id="L115" data-line="115">AAC fixture writing, native Speech metadata and processing backpressure. Only</span>
+<span class="source-line" id="L116" data-line="116">the AAC writer failure was separately reproduced in the untouched control;</span>
+<span class="source-line" id="L117" data-line="117">that broad run is not an all-green or fully explained baseline receipt.</span>
+<span class="source-line" id="L118" data-line="118"> </span>
+<span class="source-line" id="L119" data-line="119">**Not installed.** The running app remains 2610.1.1. This execution session</span>
+<span class="source-line" id="L120" data-line="120">finds no signing identity in the configured login or system keychains and</span>
+<span class="source-line" id="L121" data-line="121">cannot validate the installed bundle&#x27;s signature. Its executable SHA-256 and</span>
+<span class="source-line" id="L122" data-line="122">Info.plist still match the retained, previously verified 1 October candidate;</span>
+<span class="source-line" id="L123" data-line="123">no bundle alteration is inferred from the unavailable signing check.</span>
+<span class="source-line" id="L124" data-line="124">Computer Use denied the Terminal application for safety reasons, so that</span>
+<span class="source-line" id="L125" data-line="125">fallback cannot perform a signing check. A native signing/verification session</span>
+<span class="source-line" id="L126" data-line="126">is required before replacement. Recording has been left running.</span>
+<span class="source-line" id="L127" data-line="127"> </span>
+<span class="source-line" id="L128" data-line="128">Private diagnosis receipts are under</span>
+<span class="source-line" id="L129" data-line="129">`~/Library/Application Support/Retrace Candidates/2026-10-03-audio-visibility/`.</span>
+<span class="source-line" id="L130" data-line="130">Test receipts originate under `/tmp/retrace-audio-visibility-20261003/` and are</span>
+<span class="source-line" id="L131" data-line="131">retained in that private delivery directory. Reviewed packaging/installation</span>
+<span class="source-line" id="L132" data-line="132">helpers are prepared there, but syntax/static review is not native execution</span>
+<span class="source-line" id="L133" data-line="133">or installation acceptance. The larger, dirty V24–V32 workspace was not</span>
+<span class="source-line" id="L134" data-line="134">installed or overwritten by this repair; integrating this UI fix with its</span>
+<span class="source-line" id="L135" data-line="135">separate exact-media playback contracts remains a distinct source task.</span>
+<span class="source-line" id="L136" data-line="136">`NATIVE-DELIVERY.md` in the private delivery directory contains pinned commands</span>
+<span class="source-line" id="L137" data-line="137">for a signing-capable Mac session. Packaging, normal Quit, guarded replacement,</span>
+<span class="source-line" id="L138" data-line="138">recording restart and installed UI acceptance are separate steps; source/build</span>
+<span class="source-line" id="L139" data-line="139">success does not authorize a claim that the repair is already running.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

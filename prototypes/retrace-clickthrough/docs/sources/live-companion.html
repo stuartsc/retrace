@@ -1,0 +1,168 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Private Retrace companion candidate — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Private Retrace companion candidate</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/scripts/retrace_companion/README.md</code></p><p>Source modified UTC: 2026-10-21T14:08:08.746852+00:00. 11,311 bytes; 168 lines.</p><p>Original SHA-256: <code>cd2f8e4565a1848dcbe746b265cc73b6a07792c2f3e392f2864d63d22437d703</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Private Retrace companion candidate</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">This source candidate adds a durable transport and one model-owning worker to the</span>
+<span class="source-line" id="L4" data-line="4">existing explicit audio worker. Private receiver/worker release `dc82049b…` was</span>
+<span class="source-line" id="L5" data-line="5">deployed on 21 October with the `/retrace-companion` Tailscale route. Authentication</span>
+<span class="source-line" id="L6" data-line="6">and routing passed with an empty queue. The first simultaneous startup exposed a</span>
+<span class="source-line" id="L7" data-line="7">database initialization race; the source repair below is newer than that release.</span>
+<span class="source-line" id="L8" data-line="8">The installed laptop app has not been connected. Outlook&#x27;s service, voice enrollment</span>
+<span class="source-line" id="L9" data-line="9">library, database and MCP route are unchanged. The delivery ledger is maintained in</span>
+<span class="source-line" id="L10" data-line="10">[`docs/live-context-markers-plan.md`](../../docs/live-context-markers-plan.md).</span>
+<span class="source-line" id="L11" data-line="11"> </span>
+<span class="source-line" id="L12" data-line="12">The App publishes only explicit native evidence supplied by its current-policy</span>
+<span class="source-line" id="L13" data-line="13">reader. There is no history scanner, cloud provider, arbitrary path endpoint,</span>
+<span class="source-line" id="L14" data-line="14">remote command execution, automatic model download, or automatic speaker naming.</span>
+<span class="source-line" id="L15" data-line="15"> </span>
+<span class="source-line" id="L16" data-line="16">## Delivery and inference</span>
+<span class="source-line" id="L17" data-line="17"> </span>
+<span class="source-line" id="L18" data-line="18">- The App&#x27;s private outbox retains exact request bytes, media objects, results,</span>
+<span class="source-line" id="L19" data-line="19">  import receipts and acknowledgements. SHA-256 identifies immutable requests and</span>
+<span class="source-line" id="L20" data-line="20">  objects. Construction performs no I/O. A process lock excludes another owner.</span>
+<span class="source-line" id="L21" data-line="21">- The laptop sender admits at most 256 active jobs in its separate private</span>
+<span class="source-line" id="L22" data-line="22">  `delivery.db`; completed/invalidated wire requests, results and receipts remain</span>
+<span class="source-line" id="L23" data-line="23">  immutable history. Indexed source-start keysets retain a fixed import watermark.</span>
+<span class="source-line" id="L24" data-line="24">  Source sample coverage uses exact UUID/continuity/sample bounds and a bounded VM</span>
+<span class="source-line" id="L25" data-line="25">  budget. Pending jobs rotate through bounded passes so fresh failures cannot</span>
+<span class="source-line" id="L26" data-line="26">  indefinitely starve older ready results. A one-time migration retains legacy</span>
+<span class="source-line" id="L27" data-line="27">  files and exact bytes; offline readers open only published catalogs, without a</span>
+<span class="source-line" id="L28" data-line="28">  network worker or competing spool lock.</span>
+<span class="source-line" id="L29" data-line="29">- Context-sidecar V4 records explicit enable epochs. Only newly registered microphone</span>
+<span class="source-line" id="L30" data-line="30">  manifests during an active epoch become eligible. Indexed reconciliation recovers</span>
+<span class="source-line" id="L31" data-line="31">  missed callbacks, delayed first-pass text and queue pressure; it never enrolls</span>
+<span class="source-line" id="L32" data-line="32">  pre-enable history. Original first-pass rows remain exact, revalidated proofs.</span>
+<span class="source-line" id="L33" data-line="33">  Every uncovered PCM fragment publishes in one group transaction, preserving the</span>
+<span class="source-line" id="L34" data-line="34">  full first-pass scope and exact AAC offsets. Reused overlap coverage retains job</span>
+<span class="source-line" id="L35" data-line="35">  dependencies; revoked proofs cannot justify an all-covered result.</span>
+<span class="source-line" id="L36" data-line="36">- The transport accepts bounded bearer-authenticated requests. Its default listener</span>
+<span class="source-line" id="L37" data-line="37">  is `127.0.0.1:9013` on the primary spare Mac. The Swift client permits HTTPS or</span>
+<span class="source-line" id="L38" data-line="38">  loopback HTTP through an explicitly configured private tunnel and refuses</span>
+<span class="source-line" id="L39" data-line="39">  redirects. Its credential is independent of native MCP client grants.</span>
+<span class="source-line" id="L40" data-line="40">- The receiver uses a private SQLite ledger (`application_id`, schema version 2),</span>
+<span class="source-line" id="L41" data-line="41">  FULL synchronous commits, immutable result files and exact result-digest acks.</span>
+<span class="source-line" id="L42" data-line="42">  A retry never overwrites conflicting data. A durable result left between file</span>
+<span class="source-line" id="L43" data-line="43">  publication and the ledger commit is reused after restart.</span>
+<span class="source-line" id="L44" data-line="44">- Initialization validates metadata and migrates within one transaction. A private</span>
+<span class="source-line" id="L45" data-line="45">  process lock serializes first creation, with a one-second monotonic wait limit;</span>
+<span class="source-line" id="L46" data-line="46">  a stalled owner cannot leave HTTP handlers or shutdown waiting indefinitely.</span>
+<span class="source-line" id="L47" data-line="47">  The laptop spool publishes mode-0700 directories and single-link immutable files</span>
+<span class="source-line" id="L48" data-line="48">  atomically, so concurrent offline readers do not observe intermediate permissions.</span>
+<span class="source-line" id="L49" data-line="49">- One process lock admits inference. The queue selects the freshest eligible job;</span>
+<span class="source-line" id="L50" data-line="50">  failed jobs retain a categorical reason and a 30-second retry delay. Audio jobs</span>
+<span class="source-line" id="L51" data-line="51">  reuse immutable results when only first-pass text changes. Original first-pass</span>
+<span class="source-line" id="L52" data-line="52">  text stays in the App request and its hash binds every enhancement.</span>
+<span class="source-line" id="L53" data-line="53">- Microphone jobs are bounded to 60 seconds of exact UUID generation/continuity</span>
+<span class="source-line" id="L54" data-line="54">  samples at 16 kHz. Verified AAC objects and their sample offsets remain separate</span>
+<span class="source-line" id="L55" data-line="55">  from approximate wall-clock placement. Producers must choose exact source ranges;</span>
+<span class="source-line" id="L56" data-line="56">  overlapping AAC files are alternatives, not proof of distinct speech.</span>
+<span class="source-line" id="L57" data-line="57">- Context input is at most 256 source-qualified items from one paginated native</span>
+<span class="source-line" id="L58" data-line="58">  snapshot. Pinned local BGE embeddings shortlist at most 32 candidates per query;</span>
+<span class="source-line" id="L59" data-line="59">  the local BGE reranker first selects direct supports at relevance &gt;= 0.5. Up to</span>
+<span class="source-line" id="L60" data-line="60">  four highest-ranked direct excerpts then act as evidence-link queries over that</span>
+<span class="source-line" id="L61" data-line="61">  same snapshot. A suggested two-hop support must meet 0.5 on both edges; newly</span>
+<span class="source-line" id="L62" data-line="62">  suggested material never becomes another query. Repeated seed text is ranked</span>
+<span class="source-line" id="L63" data-line="63">  once. This bounded expansion can recover an earlier reason for a later decision</span>
+<span class="source-line" id="L64" data-line="64">  without recursively collecting unrelated material or imposing a time window.</span>
+<span class="source-line" id="L65" data-line="65">- Context output retains direct supports first and at most 16 exact intervals in</span>
+<span class="source-line" id="L66" data-line="66">  total. Its method reports the direct and suggested two-hop counts. A two-hop</span>
+<span class="source-line" id="L67" data-line="67">  score is the weaker edge along its strongest admitted path, not a probability,</span>
+<span class="source-line" id="L68" data-line="68">  confidence calibration, or proof that the excerpt is necessary. The worst case</span>
+<span class="source-line" id="L69" data-line="69">  is five query embeddings and 160 reranker pairs; the corpus is embedded once per</span>
+<span class="source-line" id="L70" data-line="70">  proposal and its vectors are not cached across jobs. A full direct result or no</span>
+<span class="source-line" id="L71" data-line="71">  direct support skips expansion. Model token limits may bound ranking text; the</span>
+<span class="source-line" id="L72" data-line="72">  complete supplied excerpt is retained. All choices remain reviewable proposals.</span>
+<span class="source-line" id="L73" data-line="73">- Every proposal preserves the original explanation, snapshot/marker revisions,</span>
+<span class="source-line" id="L74" data-line="74">  source IDs, exact references and developing/incomplete flags. Range IDs remain</span>
+<span class="source-line" id="L75" data-line="75">  stable for the same marker/support pair. App imports check marker and range</span>
+<span class="source-line" id="L76" data-line="76">  revisions inside SQLite and preserve manual/pinned ownership.</span>
+<span class="source-line" id="L77" data-line="77">- The receiver admits at most 256 active jobs. After an exact result acknowledgement,</span>
+<span class="source-line" id="L78" data-line="78">  it durably archives the original request and compacts its indexed delivery row.</span>
+<span class="source-line" id="L79" data-line="79">  Historical request/result bytes, first-pass references and inference results stay</span>
+<span class="source-line" id="L80" data-line="80">  available; retrying an acknowledged ID cannot enqueue another inference.</span>
+<span class="source-line" id="L81" data-line="81">- Staged AAC has a 1 GiB/4096-object quota. Only copies created by this receiver are</span>
+<span class="source-line" id="L82" data-line="82">  collected, after durable acknowledgement and an indexed check that no active job</span>
+<span class="source-line" id="L83" data-line="83">  references their SHA. Original recordings remain on the laptop. A publication</span>
+<span class="source-line" id="L84" data-line="84">  racing collection fails before admitting the new job and can reupload canonical</span>
+<span class="source-line" id="L85" data-line="85">  bytes. Interrupted collection is idempotent. Unknown files are never deleted.</span>
+<span class="source-line" id="L86" data-line="86">- Requests remain bounded to 768 KiB, results to 2 MiB and media objects to 16 MiB.</span>
+<span class="source-line" id="L87" data-line="87">  New writes require 256 MiB free space plus their payload size. Historical text,</span>
+<span class="source-line" id="L88" data-line="88">  result and receipt storage grows with retained history; the free-space check</span>
+<span class="source-line" id="L89" data-line="89">  reports pressure instead of silently deleting historical results. The laptop&#x27;s</span>
+<span class="source-line" id="L90" data-line="90">  sender now uses `delivery.db` with the same active/history separation; its Swift</span>
+<span class="source-line" id="L91" data-line="91">  runtime validation is pending the coordinated source build.</span>
+<span class="source-line" id="L92" data-line="92"> </span>
+<span class="source-line" id="L93" data-line="93">Known names remain suggestions. No held-out calibration receipt establishes 98%</span>
+<span class="source-line" id="L94" data-line="94">precision for the reused Outlook matcher, so its labels remain `Speaker …`,</span>
+<span class="source-line" id="L95" data-line="95">`Unknown speaker`, or `Overlapping voices`; candidate names are separate fields.</span>
+<span class="source-line" id="L96" data-line="96">The importer rejects a known name smuggled into the anonymous label or a result</span>
+<span class="source-line" id="L97" data-line="97">that asserts `automaticNamesCalibrated: true`.</span>
+<span class="source-line" id="L98" data-line="98"> </span>
+<span class="source-line" id="L99" data-line="99">## Manual host commands</span>
+<span class="source-line" id="L100" data-line="100"> </span>
+<span class="source-line" id="L101" data-line="101">Use the already installed primary-Mac Outlook environment. `runtime-pins.json`</span>
+<span class="source-line" id="L102" data-line="102">records the package versions and model snapshot/file hashes observed read-only on</span>
+<span class="source-line" id="L103" data-line="103">21 October 2026. Model loading uses verified local paths, `local_files_only=True`,</span>
+<span class="source-line" id="L104" data-line="104">`trust_remote_code=False`, and offline environment flags. It never uses Outlook&#x27;s</span>
+<span class="source-line" id="L105" data-line="105">generic embedding selector, which can select a cloud provider.</span>
+<span class="source-line" id="L106" data-line="106"> </span>
+<span class="source-line" id="L107" data-line="107">```sh</span>
+<span class="source-line" id="L108" data-line="108"># Supply RETRACE_COMPANION_TOKEN securely in the launch environment; do not put</span>
+<span class="source-line" id="L109" data-line="109"># the token in a command argument, source file, log, or MCP configuration.</span>
+<span class="source-line" id="L110" data-line="110">PYTHONPATH=scripts /Users/stuartbond/outlook/.venv/bin/python -m retrace_companion \</span>
+<span class="source-line" id="L111" data-line="111">  serve --root /private/retrace-companion</span>
+<span class="source-line" id="L112" data-line="112"> </span>
+<span class="source-line" id="L113" data-line="113"># A separate explicitly owned process performs inference. --once performs one pass.</span>
+<span class="source-line" id="L114" data-line="114">PYTHONPATH=scripts /Users/stuartbond/outlook/.venv/bin/python -m retrace_companion \</span>
+<span class="source-line" id="L115" data-line="115">  worker --root /private/retrace-companion --outlook /Users/stuartbond/outlook</span>
+<span class="source-line" id="L116" data-line="116">```</span>
+<span class="source-line" id="L117" data-line="117"> </span>
+<span class="source-line" id="L118" data-line="118">The deployed instance uses owned LaunchAgents; stopping the worker process</span>
+<span class="source-line" id="L119" data-line="119">ends its model work. App shutdown cancels and joins its local HTTP/import work;</span>
+<span class="source-line" id="L120" data-line="120">it does not revoke already durably accepted remote jobs. Running a manual command</span>
+<span class="source-line" id="L121" data-line="121">does not install a launch service, route, credential or laptop App setting. Preserve</span>
+<span class="source-line" id="L122" data-line="122">existing Outlook `9011/mcp` and native MCP `9012/retrace-mcp`</span>
+<span class="source-line" id="L123" data-line="123">routes when updating the deployment. The laptop&#x27;s native command bridge also</span>
+<span class="source-line" id="L124" data-line="124">uses 9013 on a different host and is not this service.</span>
+<span class="source-line" id="L125" data-line="125"> </span>
+<span class="source-line" id="L126" data-line="126">## App integration contract</span>
+<span class="source-line" id="L127" data-line="127"> </span>
+<span class="source-line" id="L128" data-line="128">`CompanionEnrichmentService` requires the canonical native store UUID, a private</span>
+<span class="source-line" id="L129" data-line="129">root, a transport, an awaited current-policy/exact-reference revalidator, and an</span>
+<span class="source-line" id="L130" data-line="130">idempotent importer. Import callbacks must use `result.jobID` for replay because</span>
+<span class="source-line" id="L131" data-line="131">a process crash can follow their durable write before the local receipt. The</span>
+<span class="source-line" id="L132" data-line="132">included context importer is idempotent for unchanged proposed ranges, uses</span>
+<span class="source-line" id="L133" data-line="133">optimistic source revalidation and transactional marker/range revision checks,</span>
+<span class="source-line" id="L134" data-line="134">and never overwrites user-owned ranges. Presentation calls `retainedResult`,</span>
+<span class="source-line" id="L135" data-line="135">which revalidates again; a durable result is not a lasting disclosure permission.</span>
+<span class="source-line" id="L136" data-line="136"> </span>
+<span class="source-line" id="L137" data-line="137">The App coordinator must explicitly own configuration, publication admission,</span>
+<span class="source-line" id="L138" data-line="138">current-policy evidence pages, speaker presentation and a bounded synchronization</span>
+<span class="source-line" id="L139" data-line="139">schedule. This transport source alone does not make installed Live cards update.</span>
+<span class="source-line" id="L140" data-line="140">When offline, requests remain in the outbox and first-pass transcripts remain</span>
+<span class="source-line" id="L141" data-line="141">available. A failed context import cannot alter recording or canonical transcripts.</span>
+<span class="source-line" id="L142" data-line="142"> </span>
+<span class="source-line" id="L143" data-line="143">## Verification</span>
+<span class="source-line" id="L144" data-line="144"> </span>
+<span class="source-line" id="L145" data-line="145">```sh</span>
+<span class="source-line" id="L146" data-line="146">PYTHONPATH=scripts /Users/stuartbond/outlook/.venv/bin/python \</span>
+<span class="source-line" id="L147" data-line="147">  -m unittest discover -s scripts/retrace_companion/tests -v</span>
+<span class="source-line" id="L148" data-line="148">PYTHONPATH=scripts /Users/stuartbond/outlook/.venv/bin/python \</span>
+<span class="source-line" id="L149" data-line="149">  -m unittest discover -s scripts/audio_worker/tests -v</span>
+<span class="source-line" id="L150" data-line="150">ruff check scripts/retrace_companion scripts/audio_worker</span>
+<span class="source-line" id="L151" data-line="151">ruff format --check scripts/retrace_companion scripts/audio_worker</span>
+<span class="source-line" id="L152" data-line="152">```</span>
+<span class="source-line" id="L153" data-line="153"> </span>
+<span class="source-line" id="L154" data-line="154">At the context-expansion checkpoint, 39 companion tests pass, including nine</span>
+<span class="source-line" id="L155" data-line="155">selection/budget/invalid-score regressions with authored ranker outputs. The</span>
+<span class="source-line" id="L156" data-line="156">unchanged four-case native corpus previously selected 9 of 13 expected supports</span>
+<span class="source-line" id="L157" data-line="157">with direct-only ranking; the new two-hop implementation still requires a separate</span>
+<span class="source-line" id="L158" data-line="158">native relevance run against that frozen oracle. The previous separate</span>
+<span class="source-line" id="L159" data-line="159">audio-worker checkpoint passed 16 tests. They use</span>
+<span class="source-line" id="L160" data-line="160">private SQLite/files, a real loopback HTTP exchange and authored relevance scores;</span>
+<span class="source-line" id="L161" data-line="161">the audio suite decodes real AAC fixtures. Archive, acknowledgement and collection</span>
+<span class="source-line" id="L162" data-line="162">tests cover interrupted publication, active shared media references, low free space,</span>
+<span class="source-line" id="L163" data-line="163">canonical-file preservation and durable replay. They establish delivery and validation</span>
+<span class="source-line" id="L164" data-line="164">boundaries, not native BGE relevance, human speaker precision, long-running model</span>
+<span class="source-line" id="L165" data-line="165">memory, energy, installed UI, or complete App integration. Deployed networking has</span>
+<span class="source-line" id="L166" data-line="166">separate receipts; authored real-model acceptance is tracked independently in the ledger.</span>
+<span class="source-line" id="L167" data-line="167">Swift tests are coordinated separately by the root agent and must be recorded</span>
+<span class="source-line" id="L168" data-line="168">only after their build/test receipt exists.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

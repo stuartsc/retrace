@@ -1,0 +1,122 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Retrace performance measurement and promotion — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Retrace performance measurement and promotion</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: main candidate. Original source: <code>/Users/stuartbond/backintime/docs/performance-measurement.md</code></p><p>Source modified UTC: 2026-09-30T10:24:33.219285+00:00. 7,771 bytes; 122 lines.</p><p>Original SHA-256: <code>aeacf3317803aab0856331460217205a7b65503cb7ae3c7293877834884aec02</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Retrace performance measurement and promotion</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">Status: developer scorecard and comparison tooling implemented; representative</span>
+<span class="source-line" id="L4" data-line="4">installed acceptance remains required. No targets are claimed met by this document.</span>
+<span class="source-line" id="L5" data-line="5">The installed application, source candidate, native fixtures and runner self-test</span>
+<span class="source-line" id="L6" data-line="6">are different evidence scopes.</span>
+<span class="source-line" id="L7" data-line="7"> </span>
+<span class="source-line" id="L8" data-line="8">The scorecard command and complete versioned input contract are documented in</span>
+<span class="source-line" id="L9" data-line="9">[`scripts/performance_benchmark/README.md`](../scripts/performance_benchmark/README.md).</span>
+<span class="source-line" id="L10" data-line="10">The runner is offline and does not inspect the production library. It imports</span>
+<span class="source-line" id="L11" data-line="11">existing native OCR, Whisper/Speech, codec, cancellation and retrieval exports as</span>
+<span class="source-line" id="L12" data-line="12">explicitly scoped evidence. Only three or more independent complete matched</span>
+<span class="source-line" id="L13" data-line="13">representative runs can pass a promotion comparison.</span>
+<span class="source-line" id="L14" data-line="14"> </span>
+<span class="source-line" id="L15" data-line="15">## Four dimensions, with recording health as a prerequisite</span>
+<span class="source-line" id="L16" data-line="16"> </span>
+<span class="source-line" id="L17" data-line="17">| Dimension | Required measurements |</span>
+<span class="source-line" id="L18" data-line="18">| --- | --- |</span>
+<span class="source-line" id="L19" data-line="19">| Quality | OCR CER, speech WER, literal critical tokens, exact screen/audio navigation, timestamp correctness |</span>
+<span class="source-line" id="L20" data-line="20">| Speed | Capture-to-search, keyword/results-display and foreground p95; cancellation, archive encoding/decoding and seek p95; completed work/backlog recovery |</span>
+<span class="source-line" id="L21" data-line="21">| Cost | Actual process CPU-seconds per observed recorded hour and per query; measured peak memory; retained archive bytes/hour; full index/model footprint; measured energy only when available |</span>
+<span class="source-line" id="L22" data-line="22">| Intelligence | Macro Recall@1/3/5, MRR, exact source correctness and unsupported-result rate on frozen temporal/paraphrase/cross-source queries |</span>
+<span class="source-line" id="L23" data-line="23"> </span>
+<span class="source-line" id="L24" data-line="24">Before measuring improvements, verify screen and audio progress independently.</span>
+<span class="source-line" id="L25" data-line="25">Stopped audio, excluded captures, hidden gaps, missing metric samples, low-disk</span>
+<span class="source-line" id="L26" data-line="26">interruptions or an increasing backlog cannot become a CPU/storage win. Count all</span>
+<span class="source-line" id="L27" data-line="27">capture attempts and every foreground, cancellation, encoding, decoding and seek</span>
+<span class="source-line" id="L28" data-line="28">attempt. Pin their denominators and leave unfinished latency observations explicitly</span>
+<span class="source-line" id="L29" data-line="29">unavailable.</span>
+<span class="source-line" id="L30" data-line="30">Do not recategorize slow first-pass work as historical work and remove it from the</span>
+<span class="source-line" id="L31" data-line="31">freshness denominator.</span>
+<span class="source-line" id="L32" data-line="32"> </span>
+<span class="source-line" id="L33" data-line="33">Process CPU uses monotonic deltas of user+system CPU time, with 100% representing</span>
+<span class="source-line" id="L34" data-line="34">one logical core. Load average is a supplementary pressure signal, not CPU usage.</span>
+<span class="source-line" id="L35" data-line="35">Async job wall time is not CPU attribution; overlapping work needs whole-process</span>
+<span class="source-line" id="L36" data-line="36">accounting, explicitly scoped isolated measurements and an unattributed remainder.</span>
+<span class="source-line" id="L37" data-line="37">Shared Apple Speech helpers and whole-system energy must be measured separately.</span>
+<span class="source-line" id="L38" data-line="38">Unmeasured energy stays unavailable and never becomes zero or inferred savings.</span>
+<span class="source-line" id="L39" data-line="39"> </span>
+<span class="source-line" id="L40" data-line="40">Storage comparisons use the same recorded duration, corpus, container overhead,</span>
+<span class="source-line" id="L41" data-line="41">index/reference requirements and codec workload. Logical bytes, allocated bytes,</span>
+<span class="source-line" id="L42" data-line="42">APFS clone totals, free disk space and actual reclaimed bytes are different values.</span>
+<span class="source-line" id="L43" data-line="43">Compare original-spool pressure separately from retained archive growth.</span>
+<span class="source-line" id="L44" data-line="44"> </span>
+<span class="source-line" id="L45" data-line="45">## Before a performance-sensitive change</span>
+<span class="source-line" id="L46" data-line="46"> </span>
+<span class="source-line" id="L47" data-line="47">Freeze the workload, reviewed corpus/oracles, relevant source/resources, model</span>
+<span class="source-line" id="L48" data-line="48">artifacts, configuration, device/OS, power mode and cold/warm state. The same</span>
+<span class="source-line" id="L49" data-line="49">conditions apply to baseline and candidate, with only the declared treatment</span>
+<span class="source-line" id="L50" data-line="50">changed. Preserve failed runs and raw fixtures. If a corpus oracle needs correction,</span>
+<span class="source-line" id="L51" data-line="51">create a separately frozen version before scoring candidates.</span>
+<span class="source-line" id="L52" data-line="52"> </span>
+<span class="source-line" id="L53" data-line="53">Attach the affected benchmark receipt to the change:</span>
+<span class="source-line" id="L54" data-line="54"> </span>
+<span class="source-line" id="L55" data-line="55">- Capture, OCR or compression: exact pixel/media checks, critical text and CER,</span>
+<span class="source-line" id="L56" data-line="56">  capture-to-search, capture coverage, CPU and retained bytes on the same scenes.</span>
+<span class="source-line" id="L57" data-line="57">- Speech or audio storage: names/numbers/quiet speech/overlap, WER and critical</span>
+<span class="source-line" id="L58" data-line="58">  tokens, timing/playback, native AAC decode and frame/sample continuity.</span>
+<span class="source-line" id="L59" data-line="59">- Search or intelligence: literal identifiers first, complete scoped queries,</span>
+<span class="source-line" id="L60" data-line="60">  Recall@K/MRR, source revalidation, keyword and visible-results p95.</span>
+<span class="source-line" id="L61" data-line="61">- Scheduling, lifecycle or monitoring: CPU accounting, active/idle paired loads,</span>
+<span class="source-line" id="L62" data-line="62">  resumed input/cancellation, no starvation, sleep/wake and shutdown/restart.</span>
+<span class="source-line" id="L63" data-line="63">- UI changes: foreground latency with search/timeline navigation and settings</span>
+<span class="source-line" id="L64" data-line="64">  storage validation; collector overhead belongs in the measured workload.</span>
+<span class="source-line" id="L65" data-line="65"> </span>
+<span class="source-line" id="L66" data-line="66">Existing native fixtures are reused through read-only import adapters. The small</span>
+<span class="source-line" id="L67" data-line="67">OCR and speech fixtures do not establish representative storage, foreground</span>
+<span class="source-line" id="L68" data-line="68">responsiveness or installed performance. The eight-screen recall v1 Q11 ambiguity</span>
+<span class="source-line" id="L69" data-line="69">remains explicitly documented. A successful build or ordinary skipped native test</span>
+<span class="source-line" id="L70" data-line="70">does not supply a missing measurement.</span>
+<span class="source-line" id="L71" data-line="71"> </span>
+<span class="source-line" id="L72" data-line="72">## Before promotion</span>
+<span class="source-line" id="L73" data-line="73"> </span>
+<span class="source-line" id="L74" data-line="74">Run the full scorecard with real Vision, AAC, SQLite, native screen capture and</span>
+<span class="source-line" id="L75" data-line="75">archive decoding. Include dense native text, tiny/coloured text, digit/negation</span>
+<span class="source-line" id="L76" data-line="76">changes, scrolling/static screens, photographs/video, multiple displays,</span>
+<span class="source-line" id="L77" data-line="77">Australian speech and overlap. Include explicit lifecycle evidence for</span>
+<span class="source-line" id="L78" data-line="78">sleep/wake, restart, exclusions, low disk, deletion during reading, failed writes</span>
+<span class="source-line" id="L79" data-line="79">and shutdown with pending work. Use a healthy baseline; investigate capture</span>
+<span class="source-line" id="L80" data-line="80">stoppages before claiming an improvement.</span>
+<span class="source-line" id="L81" data-line="81"> </span>
+<span class="source-line" id="L82" data-line="82">For a CPU-governor promotion, require at least 50% lower active-use CPU-seconds per</span>
+<span class="source-line" id="L83" data-line="83">recorded hour, with every matched run passing. Report progress toward the existing</span>
+<span class="source-line" id="L84" data-line="84">20%-of-one-core soft target separately. For a codec promotion, require at least</span>
+<span class="source-line" id="L85" data-line="85">20% fewer retained bytes on the identical workload. In both cases require no</span>
+<span class="source-line" id="L86" data-line="86">critical-token, exact-navigation or source errors; no CER/WER/recall regression;</span>
+<span class="source-line" id="L87" data-line="87">no hidden gaps or growing backlog; foreground p95 within 10% of baseline; and no</span>
+<span class="source-line" id="L88" data-line="88">material archive/timing regression. The comparison uses a 10% ceiling for measured</span>
+<span class="source-line" id="L89" data-line="89">archive encoding/decoding/seeking, cancellation, query CPU and peak memory.</span>
+<span class="source-line" id="L90" data-line="90">Unrelated CPU/storage growth and paired measured whole-system energy also have a</span>
+<span class="source-line" id="L91" data-line="91">10% ceiling; a CPU win cannot conceal a storage regression or vice versa. Initial</span>
+<span class="source-line" id="L92" data-line="92">backlog count and age must match, and receipts cannot be reused across both sides.</span>
+<span class="source-line" id="L93" data-line="93"> </span>
+<span class="source-line" id="L94" data-line="94">Normal-load capture-to-search p95 must be at most 10 seconds, warm keyword search</span>
+<span class="source-line" id="L95" data-line="95">p95 below 100 ms, and visible-result p95 at most 250 ms. Complete-work rate must</span>
+<span class="source-line" id="L96" data-line="96">retain at least 90% of the matched baseline while pending count/age do not grow.</span>
+<span class="source-line" id="L97" data-line="97">Run at least three independent repetitions; every pair must pass. Report first-run</span>
+<span class="source-line" id="L98" data-line="98">pass, any-pass-in-three and all-three stability separately. A good average or best</span>
+<span class="source-line" id="L99" data-line="99">attempt is insufficient. Mixed/missing hardware, OS, model, corpus, workload or</span>
+<span class="source-line" id="L100" data-line="100">configuration identities make a result non-comparable, not a pass.</span>
+<span class="source-line" id="L101" data-line="101"> </span>
+<span class="source-line" id="L102" data-line="102">Native XCTest/Instruments measurements remain an independent verification of CPU</span>
+<span class="source-line" id="L103" data-line="103">and elapsed time. Whole-system energy and helper-process memory require their own</span>
+<span class="source-line" id="L104" data-line="104">explicit receipts. The Python self-test verifies orchestration and thresholds;</span>
+<span class="source-line" id="L105" data-line="105">it cannot establish these native results. Command-runner SIGINT/SIGTERM regression</span>
+<span class="source-line" id="L106" data-line="106">tests use actual child/descendant processes and require owned-group termination,</span>
+<span class="source-line" id="L107" data-line="107">leader reaping and an interrupted receipt before return; this proves runner</span>
+<span class="source-line" id="L108" data-line="108">lifecycle behavior only.</span>
+<span class="source-line" id="L109" data-line="109"> </span>
+<span class="source-line" id="L110" data-line="110">After protocol/actor changes, perform a clean debug validation and a separate</span>
+<span class="source-line" id="L111" data-line="111">clean optimized build. Keep source verification, installed build identity,</span>
+<span class="source-line" id="L112" data-line="112">controlled rollout and actual user acceptance as distinct receipts. A scorecard</span>
+<span class="source-line" id="L113" data-line="113">passing its declared gates does not authorize installation or establish acceptance.</span>
+<span class="source-line" id="L114" data-line="114">No bulk history recompression or automatic history deletion is introduced here.</span>
+<span class="source-line" id="L115" data-line="115"> </span>
+<span class="source-line" id="L116" data-line="116">## Retention and review</span>
+<span class="source-line" id="L117" data-line="117"> </span>
+<span class="source-line" id="L118" data-line="118">Production monitoring should retain bounded, content-free aggregates for 30 days;</span>
+<span class="source-line" id="L119" data-line="119">source text/audio does not belong in metrics. Frozen benchmark reports, artifact</span>
+<span class="source-line" id="L120" data-line="120">hashes and raw native receipts belong with the release evidence and are not</span>
+<span class="source-line" id="L121" data-line="121">subject to that diagnostic retention window. Compare the four dimensions directly,</span>
+<span class="source-line" id="L122" data-line="122">without one combined score that conceals a quality or recording regression.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

@@ -1,0 +1,114 @@
+{
+  "date_utc": "2026-11-11T02:48:11.180610+00:00",
+  "html_files": 31,
+  "local_links_and_resources_checked": 489,
+  "dynamic_anchor": "app.html#main verified in browser",
+  "issues": [],
+  "symlinks": [],
+  "source_hashes": [
+    {
+      "source": "main-roadmap",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-unified-history",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-responsiveness",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-capture-quality",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-recall-plan",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-recall-validation",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-performance",
+      "sha256_matches": true
+    },
+    {
+      "source": "main-data-access",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-guide",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-markers",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-audio-visibility",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-audio-freshness",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-microphone",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-cpu",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-recovery",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-storage-audit",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-storage-efficiency",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-network-cleanup",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-recall-validation",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-capture-validation",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-data-access",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-changelog",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-mcp",
+      "sha256_matches": true
+    },
+    {
+      "source": "live-companion",
+      "sha256_matches": true
+    }
+  ],
+  "script_checks": [
+    "assets/app.js: node --check passed",
+    "assets/settings.js: node --check passed",
+    "docs/docs.js: node --check passed"
+  ],
+  "review": "One advisory pass; identified issues corrected and browser-verified",
+  "runtime_dependencies": "None outside this directory",
+  "scope": "Static package and browser simulation; native app untouched"
+}

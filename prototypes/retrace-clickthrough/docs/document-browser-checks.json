@@ -1,0 +1,30 @@
+{
+  "date": "2026-11-11T02:47:04.962Z",
+  "base": "/Users/stuartbond/backintime/prototypes/retrace-clickthrough",
+  "offline": true,
+  "checks": [
+    "Directory links app/spec/journal/sources",
+    "Journal includes 50 incidents",
+    "Silence search narrows journal",
+    "Audio subsystem filter returns eight entries",
+    "Clear restores full journal",
+    "Empty results explicit",
+    "Status filter narrows journal",
+    "Full spec has 25 sections",
+    "Supporting records index opens",
+    "Dynamic main anchor exists",
+    "Speaker correction does not rename other recordings",
+    "Search-only date filter matches selected day",
+    "Date search does not restrict Live browsing",
+    "Phone documentation readable: index.html",
+    "Phone documentation readable: docs/full-spec.html",
+    "Phone documentation readable: docs/issues-journal.html",
+    "Phone documentation readable: docs/sources/index.html",
+    "Phone documentation readable: docs/session-log.html",
+    "Phone documentation readable: docs/validation.html",
+    "No document browser errors",
+    "No document external requests"
+  ],
+  "errors": [],
+  "externalRequests": []
+}

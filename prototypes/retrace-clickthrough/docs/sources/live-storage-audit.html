@@ -1,0 +1,114 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Disk-space audit — 2 November 2026 — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Disk-space audit — 2 November 2026</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/storage-audit-20261102.md</code></p><p>Source modified UTC: 2026-11-02T09:10:33.597492+00:00. 13,090 bytes; 114 lines.</p><p>Original SHA-256: <code>b2878eeb3dad456c763c9efdece242824966d0ca3a93091d1c0bbfb82c2628c3</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Disk-space audit — 2 November 2026</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">The initial read-only audit was followed by Stuart&#x27;s explicit instruction to safely delete the four identified older backups. That deletion completed at 17:20 Brisbane on 2 November. Stuart subsequently said &quot;continue&quot; after the recommended 13 GB rebuildable-file shortlist; that cleanup completed at 19:09. No application settings were changed. The unfinished transcript-scrolling repair still needs a fresh build, validation and installation.</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">## Completed rebuildable-file cleanup — 19:09 Brisbane</span>
+<span class="source-line" id="L6" data-line="6"> </span>
+<span class="source-line" id="L7" data-line="7">- Removed exactly the recommended 24 directories: nine Retrace `.build` trees, five old release-build trees, two npm cache trees, two Puppeteer download trees and six old Playwright browser trees. The exact paths remain listed below for the audit trail; they are now absent.</span>
+<span class="source-line" id="L8" data-line="8">- Fresh independent checks found no matching open handles, referencing processes or installed-command symlinks into the cache targets. All build dependency checkouts were clean, with no active Swift/Xcode build. A final open-file/process check passed at 19:08:22.</span>
+<span class="source-line" id="L9" data-line="9">- One advisory code review approved the narrow cleanup executor with no material findings. It enforced the literal target allowlist, pinned non-symlink parent directories, rechecked target identities, used symlink-resistant deletion, and saved partial progress before every removal.</span>
+<span class="source-line" id="L10" data-line="10">- Execution ran from 19:08:58 to 19:09:19. Available disk space increased from **27,047,993,344 bytes** to **39,434,104,832 bytes**: **12,386,111,488 bytes (12.39 GB) net gain**.</span>
+<span class="source-line" id="L11" data-line="11">- Independent verification at 19:09:59 confirmed all 24 targets absent, all seven protected identities unchanged, and the source worktrees present with their project files and Git metadata. Available space was then **39,429,160,960 bytes (39.43 GB)**.</span>
+<span class="source-line" id="L12" data-line="12">- The installed executable&#x27;s full SHA-256 was unchanged. The live database retained its identity and remained readable. The retained backup&#x27;s identity, size, modification time and sampled-page digest were unchanged. Retrace remained running as PID 2289; no restart was performed.</span>
+<span class="source-line" id="L13" data-line="13">- The live recording library, newest backup/recovery app, current Playwright version, running uv tools and simulator files were preserved. No simulator cache/runtime or personal documents were deleted. Development dependencies and removed test-browser versions may need downloads/recompilation when next used.</span>
+<span class="source-line" id="L14" data-line="14">- Plan, preflight, reviewed executor, per-target results and verification are saved in `/Users/stuartbond/Library/Application Support/Retrace Cleanup Receipts/2026-11-02-rebuildable/`. This cleanup does not authorise any further deletion.</span>
+<span class="source-line" id="L15" data-line="15"> </span>
+<span class="source-line" id="L16" data-line="16">## Completed cleanup</span>
+<span class="source-line" id="L17" data-line="17"> </span>
+<span class="source-line" id="L18" data-line="18">- Permanently removed exactly the four database-only backup directories listed below: four SQLite databases and two empty WAL files. No development caches, application files or live recording files were deleted.</span>
+<span class="source-line" id="L19" data-line="19">- Fresh checks confirmed the exact directory/file identities, regular files without symlinks, valid SQLite headers, empty backup WAL files and no open target handles. Deletion used pinned directory handles and checked file identities; no recursive wildcard deletion was used.</span>
+<span class="source-line" id="L20" data-line="20">- Retained the newest V23 backup and signed recovery app. The retained backup&#x27;s inode, size, modification time and sampled first/last-page digest were unchanged after deletion; its store identity matched the live database both before and after. This is not a full database integrity scan.</span>
+<span class="source-line" id="L21" data-line="21">- Verified all four target directories are absent, current audio/chunks/context directories remain present, and the live database still opens read-only. Retrace remained running as PID 2289 throughout; no application restart was performed.</span>
+<span class="source-line" id="L22" data-line="22">- Available space immediately before deletion was 23,802,011,648 bytes and immediately after was 24,602,902,528 bytes: **800,890,880 bytes (0.80 GB) net increase**. A separate check at 17:20:45 reported 24,472,444,928 bytes available (24.47 GB).</span>
+<span class="source-line" id="L23" data-line="23">- Available space fluctuated substantially while the Mac was active: about 3.66 GB at the first execution-turn check and 1.36 GB at plan capture, then 23.80 GB before the first deletion. Do not attribute that earlier change to this cleanup. The approximately 162 GB reported file allocation did not translate into equivalent reclaimed space; APFS shared allocations and concurrent system activity limit attribution.</span>
+<span class="source-line" id="L24" data-line="24">- Exact plan, per-file deletion result and post-delete verification are retained in `/Users/stuartbond/Library/Application Support/Retrace Cleanup Receipts/2026-11-02-backups/`. The retained backup and other recovery receipts remain in their original locations.</span>
+<span class="source-line" id="L25" data-line="25"> </span>
+<span class="source-line" id="L26" data-line="26">## Initial audit state (before cleanup)</span>
+<span class="source-line" id="L27" data-line="27"> </span>
+<span class="source-line" id="L28" data-line="28">- APFS Data volume: 97% full; approximately 30 GiB (32 GB) available.</span>
+<span class="source-line" id="L29" data-line="29">- Current native library: `/Users/stuartbond/Library/Application Support/Retrace`, approximately 150 GiB allocated. No custom storage location is configured. Preserve this entire library, including database, audio, screen chunks and journals.</span>
+<span class="source-line" id="L30" data-line="30">- Installed app remains 2610.22.5. No Retrace process or Swift build was found during this audit.</span>
+<span class="source-line" id="L31" data-line="31">- `Retrace Backups` is empty. `Retrace Candidates` reports approximately 195.14 GiB allocated.</span>
+<span class="source-line" id="L32" data-line="32">- The October 22 temporary scrolling-repair handoff and build receipts no longer exist. Source survives in the live-context worktree; tests and installation must be freshly verified before claiming that repair delivered.</span>
+<span class="source-line" id="L33" data-line="33"> </span>
+<span class="source-line" id="L34" data-line="34">## Old restore copies removed after authorisation</span>
+<span class="source-line" id="L35" data-line="35"> </span>
+<span class="source-line" id="L36" data-line="36">These were standalone database backups, separate from the live library. The corresponding older restoration points have now been removed.</span>
+<span class="source-line" id="L37" data-line="37"> </span>
+<span class="source-line" id="L38" data-line="38">| Folder under `~/Library/Application Support/Retrace Candidates/` | Allocated size |</span>
+<span class="source-line" id="L39" data-line="39">| --- | ---: |</span>
+<span class="source-line" id="L40" data-line="40">| `2026-10-06-microphone-routing/Database before microphone routing repair` | 31.01 GiB |</span>
+<span class="source-line" id="L41" data-line="41">| `2026-10-19-recovery/Database before recovery repair` | 39.83 GiB |</span>
+<span class="source-line" id="L42" data-line="42">| `2026-10-19-recovery/followup-2610.19.2/Database before recovery repair` | 39.84 GiB |</span>
+<span class="source-line" id="L43" data-line="43">| `2026-10-19-recovery/followup-2610.19.3/Database before recovery repair` | 39.88 GiB |</span>
+<span class="source-line" id="L44" data-line="44"> </span>
+<span class="source-line" id="L45" data-line="45">Total: approximately 150.56 GiB (162 GB). Retain the newer `2026-10-19-recovery/followup-2610.19.4/Database before recovery repair` (39.90 GiB), the signed `followup-2610.19.6/Retrace 2610.19.6 candidate.app`, and the small receipts, source patches and installation records. Do not remove the whole Candidates directory.</span>
+<span class="source-line" id="L46" data-line="46"> </span>
+<span class="source-line" id="L47" data-line="47">Checks: valid SQLite headers and declared lengths on all five snapshots; empty optional WAL files; existing receipts identify quiescent database-only backups and successful installs. The retained newest snapshot opens read-only, reports V23 and matches the live database&#x27;s evidence-store identity. Its recovery app passes strict deep signature verification. No open candidate/backup handles were observed. A full database integrity scan was not performed.</span>
+<span class="source-line" id="L48" data-line="48"> </span>
+<span class="source-line" id="L49" data-line="49">## Rebuildable development files</span>
+<span class="source-line" id="L50" data-line="50"> </span>
+<span class="source-line" id="L51" data-line="51">Nine `.build` folders total 4,947,408 KiB (4.72 GiB / 5.07 GB):</span>
+<span class="source-line" id="L52" data-line="52"> </span>
+<span class="source-line" id="L53" data-line="53">- `/Users/stuartbond/backintime-live-context/.build` — 1.50 GiB</span>
+<span class="source-line" id="L54" data-line="54">- `/Users/stuartbond/backintime-timeline-recovery/.build` — 1.25 GiB</span>
+<span class="source-line" id="L55" data-line="55">- `/Users/stuartbond/backintime-recovery/.build` — 1.25 GiB</span>
+<span class="source-line" id="L56" data-line="56">- `/Users/stuartbond/backintime/.build`</span>
+<span class="source-line" id="L57" data-line="57">- `/Users/stuartbond/backintime-hotfix-masked-history/.build`</span>
+<span class="source-line" id="L58" data-line="58">- `/Users/stuartbond/backintime-hotfix-audio-freshness/.build`</span>
+<span class="source-line" id="L59" data-line="59">- `/Users/stuartbond/backintime-hotfix-microphone-routing/.build`</span>
+<span class="source-line" id="L60" data-line="60">- `/Users/stuartbond/backintime-hotfix-cpu-guard/.build`</span>
+<span class="source-line" id="L61" data-line="61">- `/Users/stuartbond/backintime/.claude/worktrees/agent-a26cbf51/.build`</span>
+<span class="source-line" id="L62" data-line="62"> </span>
+<span class="source-line" id="L63" data-line="63">These cache roots are not symlinks. Their dependency checkouts are clean, and no active builds or open files under them were found. They can be regenerated; deletion requires subsequent dependency downloads and compilation. Preserve the source worktrees themselves: main and live-context contain extensive uncommitted work.</span>
+<span class="source-line" id="L64" data-line="64"> </span>
+<span class="source-line" id="L65" data-line="65">## Measurement limits</span>
+<span class="source-line" id="L66" data-line="66"> </span>
+<span class="source-line" id="L67" data-line="67">Allocated file totals do not establish unique reclaimable APFS blocks. Measure volume free space after any authorised deletion. No Time Machine local snapshots were listed. Downloads occupy approximately 17.4 GiB and accessible user caches approximately 8.2 GiB, but neither was approved for blanket deletion; protected cache folders and Trash could not be inspected.</span>
+<span class="source-line" id="L68" data-line="68"> </span>
+<span class="source-line" id="L69" data-line="69">At the end of the first backup cleanup, build caches and the retained recovery set were still in place. The later authorisation and bounded rebuildable-file cleanup are recorded above. Other candidate files and the retained recovery set remain preserved.</span>
+<span class="source-line" id="L70" data-line="70"> </span>
+<span class="source-line" id="L71" data-line="71">## Follow-up: further cleanup candidates</span>
+<span class="source-line" id="L72" data-line="72"> </span>
+<span class="source-line" id="L73" data-line="73">Stuart asked what else was safe to remove after the backup cleanup. This follow-up began as a read-only audit. At that checkpoint, `df` reported 25,754,316 KiB available (26.37 GB). The recommended 24 targets were subsequently removed after his &quot;continue&quot; instruction; see the completed-cleanup section above. Simulator options remain unexecuted.</span>
+<span class="source-line" id="L74" data-line="74"> </span>
+<span class="source-line" id="L75" data-line="75">### Rebuildable targets subsequently removed: approximately 12.94 GB reported allocation</span>
+<span class="source-line" id="L76" data-line="76"> </span>
+<span class="source-line" id="L77" data-line="77">The nine `.build` folders listed above now report 5,066,145,792 bytes. Five older release-build trees add 3,105,800,192 bytes, giving **8.17 GB** total:</span>
+<span class="source-line" id="L78" data-line="78"> </span>
+<span class="source-line" id="L79" data-line="79">- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-09-29-masked-history/release`</span>
+<span class="source-line" id="L80" data-line="80">- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-01-cpu-guard/release`</span>
+<span class="source-line" id="L81" data-line="81">- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-06-microphone-routing/release`</span>
+<span class="source-line" id="L82" data-line="82">- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-06-audio-freshness/release`</span>
+<span class="source-line" id="L83" data-line="83">- `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-10-19-recovery/Release build`</span>
+<span class="source-line" id="L84" data-line="84"> </span>
+<span class="source-line" id="L85" data-line="85">All 14 roots are real directories, dependency checkouts are clean, and no active Swift/Xcode build or visible open target files were found. Installed Retrace loads its Whisper, ggml and Sparkle dependencies from its application bundle. Removing these build trees requires recompilation/downloads for later development, not changes to the running app or recording library. Preserve the enclosing source, app and receipt directories.</span>
+<span class="source-line" id="L86" data-line="86"> </span>
+<span class="source-line" id="L87" data-line="87">Unused package and automation-browser downloads add approximately **4.77 GB**:</span>
+<span class="source-line" id="L88" data-line="88"> </span>
+<span class="source-line" id="L89" data-line="89">| Exact path | Reported allocation |</span>
+<span class="source-line" id="L90" data-line="90">| --- | ---: |</span>
+<span class="source-line" id="L91" data-line="91">| `/Users/stuartbond/.npm/_cacache` | 1.067 GB |</span>
+<span class="source-line" id="L92" data-line="92">| `/Users/stuartbond/.npm/_npx` | 0.698 GB |</span>
+<span class="source-line" id="L93" data-line="93">| `/Users/stuartbond/.cache/puppeteer` | 0.598 GB |</span>
+<span class="source-line" id="L94" data-line="94">| `/Users/stuartbond/.cache/puppeteer-fusecall` | 0.725 GB |</span>
+<span class="source-line" id="L95" data-line="95">| Six older Playwright folders below | 1.684 GB combined |</span>
+<span class="source-line" id="L96" data-line="96"> </span>
+<span class="source-line" id="L97" data-line="97">The six Playwright folders under `/Users/stuartbond/Library/Caches/ms-playwright/` are `chromium-1208`, `chromium-1228`, `chromium-1234`, `chromium_headless_shell-1208`, `chromium_headless_shell-1228` and `chromium_headless_shell-1234`. No matching open handles or process arguments were found. Removing these makes packages reinstall; automation using those browser versions may require its browser installation command again. Retain the current browser versions and recheck activity immediately before deletion.</span>
+<span class="source-line" id="L98" data-line="98"> </span>
+<span class="source-line" id="L99" data-line="99">### Additional candidates requiring more care</span>
+<span class="source-line" id="L100" data-line="100"> </span>
+<span class="source-line" id="L101" data-line="101">- Generated simulator cache `/Library/Developer/CoreSimulator/Caches/dyld/25B78`: **7.86 GB**. Simulator devices are shut down and no visible payload handles were found. This is root-owned (0755); before removal, an administrator must stop simulator services and check root-owned handles, which this audit could not fully inspect. Cache regeneration is required on subsequent use. Preserve simulator device data.</span>
+<span class="source-line" id="L102" data-line="102">- Optional installed iOS simulator runtimes: **17.38 GB** allocated across iOS 18.3.1 and 26.2. `simctl` reports both deletable. Remove through runtime management, not the mounted `Volumes` or `Cryptex` paths. Removing one disables tests on that iOS version until it is downloaded again. Mounted directory totals duplicate these backing images and must not be added again.</span>
+<span class="source-line" id="L103" data-line="103"> </span>
+<span class="source-line" id="L104" data-line="104">### Exclusions and low-value targets</span>
+<span class="source-line" id="L105" data-line="105"> </span>
+<span class="source-line" id="L106" data-line="106">- Preserve live tool runtimes: a Python process runs directly from `.cache/uv/archive-v0/1kKEB3y3ciLztAjnH1jTN`. Do not clear `.cache/uv` wholesale.</span>
+<span class="source-line" id="L107" data-line="107">- VS Code&#x27;s updater, Codex caches, Chrome caches and the latest Playwright Chromium have current process/handle use. Leave them in place during this session.</span>
+<span class="source-line" id="L108" data-line="108">- Preserve HuggingFace models, Codex runtimes, `.claude/projects`, `.codex/sessions`, Claude virtual machines, and application profiles. Their size does not make them disposable cache.</span>
+<span class="source-line" id="L109" data-line="109">- Docker occupies approximately 25 GB, but its local engine is stopped and the storage query could not inspect unused images/volumes. Do not delete its backing disk or volumes without an application-level audit.</span>
+<span class="source-line" id="L110" data-line="110">- Downloads contains only 29.74 MB of installer DMGs. Larger Downloads folders contain documents, recordings or unverified archives; do not clear Downloads as a whole.</span>
+<span class="source-line" id="L111" data-line="111">- A 2.14 GB `Retrace/logs/cpu_process_usage.jsonl` diagnostic file exists, but its producer and unique validation value were not established. It is not part of the recommended deletion set.</span>
+<span class="source-line" id="L112" data-line="112">- Xcode DerivedData is empty; Time Machine reports no local snapshots. Device-backup storage remains permission-restricted.</span>
+<span class="source-line" id="L113" data-line="113"> </span>
+<span class="source-line" id="L114" data-line="114">These are allocated-file totals, not promised free-space gains. Measure actual free space around any subsequent authorised cleanup.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

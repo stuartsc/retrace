@@ -1,0 +1,221 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Retrace — Data Capture &amp; Access Reference — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Retrace — Data Capture &amp; Access Reference</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/DATA_ACCESS.md</code></p><p>Source modified UTC: 2026-10-21T14:19:40.828621+00:00. 19,399 bytes; 221 lines.</p><p>Original SHA-256: <code>275dd4e0a80fcaf8fc8ff0c271c4bfe4e96482bbe46a6621731e07c38b54324c</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Retrace — Data Capture &amp; Access Reference</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">This document describes what Retrace records, its storage layout and the boundaries for supported external access.</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">**Current boundary — 22 October 2026:** the installed recovery app is **0.7.6 (2610.19.6)**, source `63ddce2`, with the native recording library at **V23**. See the [recovery ledger](recovery-20261019.md) for its installation and scoped verification. The historical V21/V22/V23 descriptions below explain schema contracts; they do not establish active model work, external disclosure permission or completed performance acceptance. Inspect the selected database&#x27;s schema before using a query; imported sources can have older schemas.</span>
+<span class="source-line" id="L6" data-line="6"> </span>
+<span class="source-line" id="L7" data-line="7">The **Live context candidate is not yet installed**. It preserves that V23 recording schema and adds a separate **context database at schema V5**, under `&lt;active storage root&gt;/context/context.db`, for rules, markers, context ranges, corrections and related state. Companion delivery and command receipts also remain separate from the recording database. Creating a marker references existing evidence; it does not duplicate the recording. The wider V24–V32 workspace is a different candidate.</span>
+<span class="source-line" id="L8" data-line="8"> </span>
+<span class="source-line" id="L9" data-line="9">For candidate external access, use the typed, per-client-granted **Retrace MCP** operations rather than treating these diagnostic SQL examples as a disclosure API. The dedicated private `/retrace-mcp` gateway leaves Outlook&#x27;s MCP contract separate; the App rechecks current grants, exclusions, source identity and revisions. Connecting the optional private companion separately permits selected recorded audio and supporting text to reach that configured private endpoint. Neither service grants access automatically, and a deployed gateway alone does not establish installed App integration.</span>
+<span class="source-line" id="L10" data-line="10"> </span>
+<span class="source-line" id="L11" data-line="11">Read the [Live user guide](live-context-user-guide.md) for controls and current limits, the [Live delivery ledger](live-context-markers-plan.md) for implementation/installation/acceptance state, the [MCP reference](../scripts/retrace_mcp/README.md) for supported commands, and the [companion reference](../scripts/retrace_companion/README.md) for its transport and storage. The [progressive recall validation ledger](progressive-recall-validation.md) retains earlier schema-specific evidence.</span>
+<span class="source-line" id="L12" data-line="12"> </span>
+<span class="source-line" id="L13" data-line="13">## What the app records</span>
+<span class="source-line" id="L14" data-line="14"> </span>
+<span class="source-line" id="L15" data-line="15">### 1. Screen captures (every 2 seconds)</span>
+<span class="source-line" id="L16" data-line="16">- **Source**: `CGWindowListCreateImage` (not ScreenCaptureKit)</span>
+<span class="source-line" id="L17" data-line="17">- **Frame dedup**: ~95% filtered by perceptual hash before storage</span>
+<span class="source-line" id="L18" data-line="18">- **Storage**: HEVC-encoded MP4 files at `~/Library/Application Support/Retrace/chunks/YYYYMM/DD/&lt;storageID&gt;`; native files have no extension</span>
+<span class="source-line" id="L19" data-line="19">- **Metadata per frame**: app bundle ID, window title, browser URL (when applicable)</span>
+<span class="source-line" id="L20" data-line="20">- **OCR text**: extracted via Apple Vision; native V18+ stores region text with bounding boxes in `node`, and searchable document text in FTS5</span>
+<span class="source-line" id="L21" data-line="21"> </span>
+<span class="source-line" id="L22" data-line="22">### 2. Microphone audio (continuous)</span>
+<span class="source-line" id="L23" data-line="23">- **Source**: `AVCaptureSession` (mic is shared — other apps can use it simultaneously)</span>
+<span class="source-line" id="L24" data-line="24">- **Raw batches**: 30-second chunks as `batch_*.m4a` files</span>
+<span class="source-line" id="L25" data-line="25">- **Sentence clips**: per-sentence cuts as `sentence_*.m4a` files (variable length)</span>
+<span class="source-line" id="L26" data-line="26">- **Storage path**: `~/Library/Application Support/Retrace/audio/YYYY/MM/DD/`</span>
+<span class="source-line" id="L27" data-line="27">- **Transcription**: whisper.cpp with 3-pass refinement pipeline (pass 1 = small/greedy, pass 2 = turbo/beam, pass 3 = contextual with neighboring batch text as `initial_prompt`)</span>
+<span class="source-line" id="L28" data-line="28"> </span>
+<span class="source-line" id="L29" data-line="29">### 3. Metadata / derived data</span>
+<span class="source-line" id="L30" data-line="30">- **App usage stats** per bundle ID, per day (in `daily_metrics`)</span>
+<span class="source-line" id="L31" data-line="31">- **Segment boundaries** (when foreground app/window changes)</span>
+<span class="source-line" id="L32" data-line="32">- **Tags**, comments, recording sessions</span>
+<span class="source-line" id="L33" data-line="33"> </span>
+<span class="source-line" id="L34" data-line="34">---</span>
+<span class="source-line" id="L35" data-line="35"> </span>
+<span class="source-line" id="L36" data-line="36">## Where everything lives</span>
+<span class="source-line" id="L37" data-line="37"> </span>
+<span class="source-line" id="L38" data-line="38">| Data | Path |</span>
+<span class="source-line" id="L39" data-line="39">|------|------|</span>
+<span class="source-line" id="L40" data-line="40">| Database | `~/Library/Application Support/Retrace/retrace.db` (SQLite, FTS5-indexed, NOT encrypted by default) |</span>
+<span class="source-line" id="L41" data-line="41">| SQLite sidecars | Adjacent `retrace.db-wal` and `retrace.db-shm`, and `retrace.db-journal` if present |</span>
+<span class="source-line" id="L42" data-line="42">| Video files | `~/Library/Application Support/Retrace/chunks/YYYYMM/DD/&lt;storageID&gt;` — extensionless HEVC MP4 files |</span>
+<span class="source-line" id="L43" data-line="43">| Audio files | `~/Library/Application Support/Retrace/audio/YYYY/MM/DD/` — AAC `.m4a` |</span>
+<span class="source-line" id="L44" data-line="44">| Capture recovery journals | `~/Library/Application Support/Retrace/wal/`, including `active_segment_*` directories and quarantine |</span>
+<span class="source-line" id="L45" data-line="45">| Preferences | `~/Library/Preferences/io.retrace.app.plist` (use a defaults export for a retained settings copy) |</span>
+<span class="source-line" id="L46" data-line="46">| Logs | `~/Library/Logs/Retrace/retrace.log` (tail with `tail -f` for live events) |</span>
+<span class="source-line" id="L47" data-line="47"> </span>
+<span class="source-line" id="L48" data-line="48">These are default native paths. `customRetraceDBLocation` in the `io.retrace.app` preferences can select another root. Resolve the active root before accessing files. Rewind sources use a separate root, by default `~/Library/Application Support/com.memoryvault.MemoryVault`, and remain read-only.</span>
+<span class="source-line" id="L49" data-line="49"> </span>
+<span class="source-line" id="L50" data-line="50">---</span>
+<span class="source-line" id="L51" data-line="51"> </span>
+<span class="source-line" id="L52" data-line="52">## Key tables (read-only SQL access)</span>
+<span class="source-line" id="L53" data-line="53"> </span>
+<span class="source-line" id="L54" data-line="54">### `frame`</span>
+<span class="source-line" id="L55" data-line="55">One row per captured screenshot.</span>
+<span class="source-line" id="L56" data-line="56">```</span>
+<span class="source-line" id="L57" data-line="57">id, createdAt (unix ms), segmentId, videoId, videoFrameIndex, encodingStatus, processingStatus</span>
+<span class="source-line" id="L58" data-line="58">```</span>
+<span class="source-line" id="L59" data-line="59">Join to `video` for file path, to `segment` for app/window context.</span>
+<span class="source-line" id="L60" data-line="60"> </span>
+<span class="source-line" id="L61" data-line="61">### `segment`</span>
+<span class="source-line" id="L62" data-line="62">Groups of frames sharing the same foreground app + window.</span>
+<span class="source-line" id="L63" data-line="63">```</span>
+<span class="source-line" id="L64" data-line="64">id, bundleID, windowName, browserUrl, startDate, endDate, type</span>
+<span class="source-line" id="L65" data-line="65">```</span>
+<span class="source-line" id="L66" data-line="66">Note: column names are `startDate` / `endDate` (not `startTime` / `endTime`). Values are unix milliseconds.</span>
+<span class="source-line" id="L67" data-line="67"> </span>
+<span class="source-line" id="L68" data-line="68">### `video`</span>
+<span class="source-line" id="L69" data-line="69">File metadata for HEVC segments.</span>
+<span class="source-line" id="L70" data-line="70">```</span>
+<span class="source-line" id="L71" data-line="71">id, path (relative to the native storage root), frameRate, width, height, frameCount, processingState</span>
+<span class="source-line" id="L72" data-line="72">```</span>
+<span class="source-line" id="L73" data-line="73">Native `path` already includes `chunks/` and names the media file itself. `processingState = 0` means finalized; `1` means still being written. `videoFrameIndex / frameRate` is a requested sample time, not proof that a decoder returned that sample. The exact-evidence encoded path requires finalized media with matching source/file identity, returned timestamp and dimensions. Native unfinalized captures can instead use an exact journal mapping with verified frame identity, timestamp, dimensions and display. Neither path permits an unavailable or neighbouring image to be substituted.</span>
+<span class="source-line" id="L74" data-line="74"> </span>
+<span class="source-line" id="L75" data-line="75">### `node`</span>
+<span class="source-line" id="L76" data-line="76">OCR regions per frame. Native migration V18 added nullable `text`; new OCR writes preserve each region&#x27;s text directly. Older rows can still have null text and offset-based references into a document&#x27;s current FTS content.</span>
+<span class="source-line" id="L77" data-line="77">```</span>
+<span class="source-line" id="L78" data-line="78">id, frameId, nodeOrder, textOffset, textLength, leftX, topY, width, height, windowIndex, text</span>
+<span class="source-line" id="L79" data-line="79">```</span>
+<span class="source-line" id="L80" data-line="80">Columns are `leftX` / `topY` (not `x` / `y`). There is no `confidence` column on `node`. Check `PRAGMA table_info(node)` before selecting `text` from an imported or pre-V18 source.</span>
+<span class="source-line" id="L81" data-line="81"> </span>
+<span class="source-line" id="L82" data-line="82">Read retained region text on a native V18+ source:</span>
+<span class="source-line" id="L83" data-line="83">```sql</span>
+<span class="source-line" id="L84" data-line="84">SELECT n.id, n.leftX, n.topY, n.width, n.height, n.text</span>
+<span class="source-line" id="L85" data-line="85">FROM node n</span>
+<span class="source-line" id="L86" data-line="86">WHERE n.frameId = ?</span>
+<span class="source-line" id="L87" data-line="87">ORDER BY n.nodeOrder;</span>
+<span class="source-line" id="L88" data-line="88">```</span>
+<span class="source-line" id="L89" data-line="89">Null region text is a legacy limitation. The app&#x27;s compatibility reader joins through `doc_segment.docid` to `searchRanking_content`, combines its `c0` and `c1` text and applies bounded Swift string offsets. A generic SQLite `substr(searchRanking.text, ...)` is not equivalent for all legacy text or Unicode. Current nodes and mutable FTS content do not identify a retained historical extraction revision or establish verified highlights.</span>
+<span class="source-line" id="L90" data-line="90"> </span>
+<span class="source-line" id="L91" data-line="91">### `doc_segment`</span>
+<span class="source-line" id="L92" data-line="92">Link table between FTS5 docs and frames/segments.</span>
+<span class="source-line" id="L93" data-line="93">```</span>
+<span class="source-line" id="L94" data-line="94">docid, segmentId, frameId</span>
+<span class="source-line" id="L95" data-line="95">```</span>
+<span class="source-line" id="L96" data-line="96">Use this to map a `searchRanking.rowid` (= `docid`) back to the frame/segment it was indexed from.</span>
+<span class="source-line" id="L97" data-line="97"> </span>
+<span class="source-line" id="L98" data-line="98">### `searchRanking` (FTS5 virtual table)</span>
+<span class="source-line" id="L99" data-line="99">Screen/document full-text index. Columns: `text`, `otherText`, `title`. Use `MATCH` for search. `rowid` joins to `doc_segment.docid`. Native audio transcription uses the separate `audio_captures_fts` index.</span>
+<span class="source-line" id="L100" data-line="100"> </span>
+<span class="source-line" id="L101" data-line="101">### `audio_captures`</span>
+<span class="source-line" id="L102" data-line="102">Audio transcription records.</span>
+<span class="source-line" id="L103" data-line="103">```</span>
+<span class="source-line" id="L104" data-line="104">id, session_id, text, start_time (unix ms), end_time (unix ms), source,</span>
+<span class="source-line" id="L105" data-line="105">confidence, audio_path, audio_size, created_at (unix ms),</span>
+<span class="source-line" id="L106" data-line="106">transcription_pass (1/2/3), batch_audio_path, pipeline_version</span>
+<span class="source-line" id="L107" data-line="107">```</span>
+<span class="source-line" id="L108" data-line="108">Legacy observations include `word` (per-word alignments) and `microphone` / `microphone_XXXX` (sentence-level, with the suffix identifying a batch). `source != &#x27;word&#x27;` excludes those word alignments; verify the selected source&#x27;s current values before assuming every remaining row is a sentence. Filtering `text NOT IN (&#x27;&#x27;, &#x27;[silence]&#x27;, &#x27;[hallucination]&#x27;, &#x27;[decode_error]&#x27;)` excludes these known placeholders; it does not verify transcription accuracy.</span>
+<span class="source-line" id="L109" data-line="109"> </span>
+<span class="source-line" id="L110" data-line="110">**`session_id` caveat:** An undated legacy observation found NULL in **493,914 of 493,914 rows**. This is not a current count or evidence about every capture path. Do not assume the field is populated. Time-gap or shared-`batch_audio_path` grouping can aid navigation, but must be labelled as derived grouping, not an observed recording session or proof of continuous activity.</span>
+<span class="source-line" id="L111" data-line="111"> </span>
+<span class="source-line" id="L112" data-line="112">### `audio_captures_fts` (FTS5)</span>
+<span class="source-line" id="L113" data-line="113">Full-text search over audio text.</span>
+<span class="source-line" id="L114" data-line="114"> </span>
+<span class="source-line" id="L115" data-line="115">### V21 progressive recall</span>
+<span class="source-line" id="L116" data-line="116"> </span>
+<span class="source-line" id="L117" data-line="117">V21 adds activity events, correction/feed receipts, source/store identities and immutable screen/extraction snapshots. In-process `ProgressiveRecallService` resolves source-qualified `EvidenceRef` values with current permission, exclusion, deletion and source checks. A search selection must retain its original immutable reference or selection proof; a numeric frame ID and current source are insufficient. Legacy materialization remains labelled as legacy, and unverified geometry must not produce highlights. These APIs do not establish an external agent disclosure endpoint or permission to export captured content.</span>
+<span class="source-line" id="L118" data-line="118"> </span>
+<span class="source-line" id="L119" data-line="119">The durable `recall_search_revision` fence tracks search-affecting transactions. Ordinary-table triggers are persisted. FTS-content triggers are **TEMP triggers**, installed separately on the supported native `DatabaseManager` and `FTSManager` writer connections; they are not persisted on FTS shadow tables, preserving defensive-reader compatibility. Arbitrary external native SQL writers do not receive those hooks and are outside the revision-fence contract. Do not use direct writes to maintain or repair this schema.</span>
+<span class="source-line" id="L120" data-line="120"> </span>
+<span class="source-line" id="L121" data-line="121">### V22 native screen feed</span>
+<span class="source-line" id="L122" data-line="122"> </span>
+<span class="source-line" id="L123" data-line="123">The separate screen feed covers already-materialized native observations. It does not enumerate all legacy frames or monitor external imported stores. `screen_evidence_feed` contains source-qualified reference/state events; `screen_evidence_feed_state` retains the stable feed identity, durable head and compaction floor. `screen_evidence_source_state` preserves the current revision, ordered availability/redaction facts and absorbing tombstones. These tables do not copy OCR, URLs or titles.</span>
+<span class="source-line" id="L124" data-line="124"> </span>
+<span class="source-line" id="L125" data-line="125">Use `ScreenEvidenceFeedStoreProtocol` through the local-only service for maintenance. Begin/resume a leased consumer, then advance bounded pages chosen by the canonical writer. Bootstrap records a boundary and maximum materialized frame ID, scans current state in short keyset pages, then replays intervening events. The transaction records applied-event identities and separate lexical/vector work before advancing the checkpoint; there is no arbitrary acknowledgement API. Expired or gapped consumers require a new bootstrap generation. Compaction retains the history needed by unexpired cursors. The initial contract allows 32 registered consumer IDs; reuse an existing ID after expiry. Page limits are 1–200 records, compaction limits 1–1,000 events, and leases last at most seven days.</span>
+<span class="source-line" id="L126" data-line="126"> </span>
+<span class="source-line" id="L127" data-line="127">Work contains only identity/state and is blocked, invalidated or deleted; it is never ready. A consumed event or retained extraction is not a ready lexical/vector index, a disclosure grant or a verified media file. No automatic consumer or model is enabled. V23 adds a separate unpublished-artifact boundary below; typed index publication remains future work. Continue using exact resolution for currently permitted evidence access. Do not mutate feed, cursor, work or applied-event tables through direct SQL.</span>
+<span class="source-line" id="L128" data-line="128"> </span>
+<span class="source-line" id="L129" data-line="129">### V23 native admission</span>
+<span class="source-line" id="L130" data-line="130"> </span>
+<span class="source-line" id="L131" data-line="131">`ScreenEvidenceAdmissionStoreProtocol` requires a fresh live owning session and an active policy epoch. A persisted active row is insufficient to recreate authority. Capture owns the serialized configuration boundary, with App installing its policy bridge after database initialization. Policy changes close admission before configuration application; old claims cannot revive when settings return to earlier values. Ordinary recording pause retains historical policy authority; service shutdown ends it.</span>
+<span class="source-line" id="L132" data-line="132"> </span>
+<span class="source-line" id="L133" data-line="133">The local-only `ProgressiveRecallService` endpoints claim exact native input pages and stage bounded opaque bytes. `screen_evidence_admission_state` holds constant-size policy and metadata fences; `screen_evidence_derivation` holds authoritative claims and their optional artifact/checksum/receipt together. Source/consumer/policy checks are repeated transactionally. A staged receipt is neither semantic validation nor index readiness. Imported derived work and agent access are denied. Do not read these BLOBs as an alternative to the checked service API or mutate admission/source tables directly.</span>
+<span class="source-line" id="L134" data-line="134"> </span>
+<span class="source-line" id="L135" data-line="135">Limits are 256 attempt/receipt rows, 256 KiB per artifact, 16 MiB aggregate artifact bytes and 100 rows per cleanup call. Execution lasts at most 30 seconds under wall and monotonic checks; retained completed results may outlive execution for at most 24 hours only while their consumer and all current fences hold. Source deletion also deletes its staged bytes. V23 guards retained native payloads and tracks app/title/URL/relinking changes, including changes back to earlier values. Concurrent older binaries owning configuration and arbitrary database-file replacement need a separate compatibility design; old source-writer shapes alone do not grant policy authority.</span>
+<span class="source-line" id="L136" data-line="136"> </span>
+<span class="source-line" id="L137" data-line="137">---</span>
+<span class="source-line" id="L138" data-line="138"> </span>
+<span class="source-line" id="L139" data-line="139">## Common access patterns</span>
+<span class="source-line" id="L140" data-line="140"> </span>
+<span class="source-line" id="L141" data-line="141">### Find all frames in a time range</span>
+<span class="source-line" id="L142" data-line="142">```sql</span>
+<span class="source-line" id="L143" data-line="143">SELECT f.id, f.createdAt, s.bundleID, s.windowName, s.browserUrl,</span>
+<span class="source-line" id="L144" data-line="144">       v.path, f.videoFrameIndex, v.frameRate</span>
+<span class="source-line" id="L145" data-line="145">FROM frame f</span>
+<span class="source-line" id="L146" data-line="146">JOIN segment s ON f.segmentId = s.id</span>
+<span class="source-line" id="L147" data-line="147">LEFT JOIN video v ON f.videoId = v.id</span>
+<span class="source-line" id="L148" data-line="148">WHERE f.createdAt BETWEEN ? AND ?</span>
+<span class="source-line" id="L149" data-line="149">ORDER BY f.createdAt;</span>
+<span class="source-line" id="L150" data-line="150">```</span>
+<span class="source-line" id="L151" data-line="151">Resolve native `video.path` against the verified storage root. A direct decoder seek is useful for diagnostics, but the exact-evidence checks described above are required before presenting it as the selected historical screen. The candidate&#x27;s search/evidence flow also rechecks the original selection proof and current privacy rules.</span>
+<span class="source-line" id="L152" data-line="152"> </span>
+<span class="source-line" id="L153" data-line="153">### Find OCR text on screen at a timestamp</span>
+<span class="source-line" id="L154" data-line="154">```sql</span>
+<span class="source-line" id="L155" data-line="155">SELECT n.text,</span>
+<span class="source-line" id="L156" data-line="156">       n.leftX, n.topY, n.width, n.height</span>
+<span class="source-line" id="L157" data-line="157">FROM node n</span>
+<span class="source-line" id="L158" data-line="158">JOIN frame f         ON n.frameId   = f.id</span>
+<span class="source-line" id="L159" data-line="159">WHERE f.createdAt = ?</span>
+<span class="source-line" id="L160" data-line="160">ORDER BY n.nodeOrder;</span>
+<span class="source-line" id="L161" data-line="161">```</span>
+<span class="source-line" id="L162" data-line="162">This reads current native V18+ node text; nulls do not prove that no text was captured. Use the retained evidence revision when exact historical text or highlights are required.</span>
+<span class="source-line" id="L163" data-line="163"> </span>
+<span class="source-line" id="L164" data-line="164">### Search screen and audio indexes separately</span>
+<span class="source-line" id="L165" data-line="165">```sql</span>
+<span class="source-line" id="L166" data-line="166">-- Screen OCR (searchRanking has no frameId column — join via doc_segment)</span>
+<span class="source-line" id="L167" data-line="167">SELECT ds.frameId, sr.text</span>
+<span class="source-line" id="L168" data-line="168">FROM searchRanking sr</span>
+<span class="source-line" id="L169" data-line="169">JOIN doc_segment ds ON ds.docid = sr.rowid</span>
+<span class="source-line" id="L170" data-line="170">WHERE sr.text MATCH &#x27;invoice&#x27;;</span>
+<span class="source-line" id="L171" data-line="171">-- Audio</span>
+<span class="source-line" id="L172" data-line="172">SELECT ac.id, ac.text, ac.start_time</span>
+<span class="source-line" id="L173" data-line="173">FROM audio_captures_fts</span>
+<span class="source-line" id="L174" data-line="174">JOIN audio_captures ac ON ac.id = audio_captures_fts.rowid</span>
+<span class="source-line" id="L175" data-line="175">WHERE audio_captures_fts MATCH &#x27;meeting&#x27;;</span>
+<span class="source-line" id="L176" data-line="176">```</span>
+<span class="source-line" id="L177" data-line="177"> </span>
+<span class="source-line" id="L178" data-line="178">### Get clean transcript for a time range</span>
+<span class="source-line" id="L179" data-line="179">```sql</span>
+<span class="source-line" id="L180" data-line="180">SELECT datetime(start_time/1000, &#x27;unixepoch&#x27;, &#x27;localtime&#x27;) AS t, text</span>
+<span class="source-line" id="L181" data-line="181">FROM audio_captures</span>
+<span class="source-line" id="L182" data-line="182">WHERE source != &#x27;word&#x27;</span>
+<span class="source-line" id="L183" data-line="183">  AND text NOT IN (&#x27;&#x27;, &#x27;[silence]&#x27;, &#x27;[hallucination]&#x27;, &#x27;[decode_error]&#x27;)</span>
+<span class="source-line" id="L184" data-line="184">  AND start_time BETWEEN ? AND ?</span>
+<span class="source-line" id="L185" data-line="185">ORDER BY start_time;</span>
+<span class="source-line" id="L186" data-line="186">```</span>
+<span class="source-line" id="L187" data-line="187"> </span>
+<span class="source-line" id="L188" data-line="188">### Get app usage for a day</span>
+<span class="source-line" id="L189" data-line="189">```sql</span>
+<span class="source-line" id="L190" data-line="190">SELECT bundleID, SUM(endDate - startDate) AS ms_in_app</span>
+<span class="source-line" id="L191" data-line="191">FROM segment</span>
+<span class="source-line" id="L192" data-line="192">WHERE startDate BETWEEN ? AND ?</span>
+<span class="source-line" id="L193" data-line="193">GROUP BY bundleID</span>
+<span class="source-line" id="L194" data-line="194">ORDER BY ms_in_app DESC;</span>
+<span class="source-line" id="L195" data-line="195">```</span>
+<span class="source-line" id="L196" data-line="196"> </span>
+<span class="source-line" id="L197" data-line="197">---</span>
+<span class="source-line" id="L198" data-line="198"> </span>
+<span class="source-line" id="L199" data-line="199">## Safety notes for the agent</span>
+<span class="source-line" id="L200" data-line="200"> </span>
+<span class="source-line" id="L201" data-line="201">- **Use bounded read-only access** while the app runs: open the exact selected database with `mode=ro`, enable `query_only`, use indexed constraints and retain source identity. Read-only SQL does not itself enforce the app&#x27;s disclosure/privacy policy, and a read-only connection can update the shared-memory WAL index. Zero SQL changes does not mean zero filesystem changes. Do not use `immutable=1` on a changing live database or bypass SQLite&#x27;s locking/security configuration.</span>
+<span class="source-line" id="L202" data-line="202">- **Use supported app operations for mutations.** Before an authorized offline recovery or installation snapshot, stop recording through the app, allow capture/audio finalization, then Quit and verify the exact app process has exited and no other writer holds the library. Quit or a successful checkpoint log alone does not establish that every pending write was flushed. Do not use broad process-name kills or pause the recorder with `SIGSTOP` as a snapshot method.</span>
+<span class="source-line" id="L203" data-line="203">- **Retain a coherent recovery set.** With all durable-data writers stopped, preserve the native database, any retained SQLite `-wal`/`-journal`, `chunks/`, `audio/`, capture `wal/` and other durable files, alongside the signed app and preferences. The SQLite `retrace.db-shm` file is a regenerable coordination index with no database content: omit it from a new recovery/validation copy and let SQLite rebuild it there; do not remove it from a live library. Still reject database, WAL, journal or media changes during the copy. [SQLite WAL file documentation](https://www.sqlite.org/walformat.html#the_wal_index_or_shm_file)</span>
+<span class="source-line" id="L204" data-line="204">- **Keep capture journals with their database and media.** They contain `frames.bin`, `frame_id_map.bin`, metadata and sometimes recovery progress; startup recovery can consume them. An online SQLite backup does not include these journals or media. Validate a separate recovery copy before first candidate launch, and never overlay an older DB onto newer sidecars/journals. Restoring persisted data also reverts post-snapshot captures; preserve that later library separately.</span>
+<span class="source-line" id="L205" data-line="205">- **Don&#x27;t delete retained audio files independently of their references.** Refinement re-reads `batch_*.m4a`; sentence files can still be referenced. Use supported retention/deletion paths.</span>
+<span class="source-line" id="L206" data-line="206">- **Legacy frame, segment and audio timestamps are unix milliseconds.** Divide by 1000 before using `datetime(..., &#x27;unixepoch&#x27;)`. V21 activity observation/persistence columns use Unix seconds as `REAL`; inspect each table&#x27;s schema and writer.</span>
+<span class="source-line" id="L207" data-line="207">- **Native `video.path` is relative to the storage root**, already including `chunks/`; the final component is an extensionless media file.</span>
+<span class="source-line" id="L208" data-line="208">- **Audio paths in `audio_path` are relative** to the storage root (`~/Library/Application Support/Retrace/`).</span>
+<span class="source-line" id="L209" data-line="209"> </span>
+<span class="source-line" id="L210" data-line="210">---</span>
+<span class="source-line" id="L211" data-line="211"> </span>
+<span class="source-line" id="L212" data-line="212">## Schema gotchas</span>
+<span class="source-line" id="L213" data-line="213"> </span>
+<span class="source-line" id="L214" data-line="214">Things that caught the first ingester author out — verify against live `.schema` output before trusting any prose above.</span>
+<span class="source-line" id="L215" data-line="215"> </span>
+<span class="source-line" id="L216" data-line="216">- **`node` geometry columns are `leftX` / `topY`**, not `x` / `y`.</span>
+<span class="source-line" id="L217" data-line="217">- **Native V18+ `node` has nullable `text`, but no `confidence` column.** Imported/pre-V18 schemas can differ. Prefer retained region text; offset-only legacy reconstruction is not verified historical geometry.</span>
+<span class="source-line" id="L218" data-line="218">- **`segment` uses `startDate` / `endDate`**, not `startTime` / `endTime`. Values are still unix milliseconds.</span>
+<span class="source-line" id="L219" data-line="219">- **`searchRanking` has no `frameId` column.** It&#x27;s an FTS5 virtual table with `(text, otherText, title)`. Map back to frames via `doc_segment` (`docid` = `searchRanking.rowid`).</span>
+<span class="source-line" id="L220" data-line="220">- **`audio_captures.session_id` may be absent.** The 493,914-row all-NULL count above is an undated legacy observation, not a refreshed library measurement. Any time-gap/batch grouping is derived, not an observed session.</span>
+<span class="source-line" id="L221" data-line="221">- **`audio_captures.source` values** in that legacy observation included `word`, `microphone` and `microphone_XXXX`. Verify source-specific values; excluding `word` alone does not prove the remaining rows&#x27; granularity.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>

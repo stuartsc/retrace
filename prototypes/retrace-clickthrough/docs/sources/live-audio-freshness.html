@@ -1,0 +1,157 @@
+<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recent audio transcription repair — archived record</title><link rel="stylesheet" href="../docs.css"></head><body><header><nav aria-label="Documentation"><a href="../../index.html">Package home</a><a href="../../app.html">App prototype</a><a href="../full-spec.html">Full specification</a><a href="../issues-journal.html">Issues journal</a><a href="index.html">All supporting records</a></nav></header><main><span class="badge">Archived project record</span><h1>Recent audio transcription repair</h1><p class="lead">Complete selected source text, captured 11 November 2026. Historical statements retain their original dates and limits.</p><details><summary>Provenance and reading notes</summary><p>Workspace: recovery and Live context. Original source: <code>/Users/stuartbond/backintime-live-context/docs/audio-transcription-freshness-repair.md</code></p><p>Source modified UTC: 2026-10-21T09:43:34.850986+00:00. 9,538 bytes; 157 lines.</p><p>Original SHA-256: <code>c08ac1471c48f10452dd2227643beb43aa6a831ea1930f68f2ebbcf064fa6cd6</code></p><p>Paths, commands, URLs and Markdown references below are archived text, not active links or dependencies. External receipts, models, source files and private media mentioned by the original are not bundled unless listed in the supporting index. A source's old installed status is not the current baseline; see the consolidated specification.</p></details><pre class="source-text"><span class="source-line" id="L1" data-line="1"># Recent audio transcription repair</span>
+<span class="source-line" id="L2" data-line="2"> </span>
+<span class="source-line" id="L3" data-line="3">## Observed failure — 6 October 2026</span>
+<span class="source-line" id="L4" data-line="4"> </span>
+<span class="source-line" id="L5" data-line="5">At 14:07 AEST the installed app remained **0.7.6 (2610.1.1)**, source</span>
+<span class="source-line" id="L6" data-line="6">`f1551beee4ee2e64a4e2642aec7c8c99e315b8c9`, with executable SHA-256</span>
+<span class="source-line" id="L7" data-line="7">`fe0fe21736e62842d26b54606fd02413a3b0acf702057cbc0e00ae1364d93c90`.</span>
+<span class="source-line" id="L8" data-line="8">The native library remained V23. The 3 October saved-recordings display repair</span>
+<span class="source-line" id="L9" data-line="9">had not been installed.</span>
+<span class="source-line" id="L10" data-line="10"> </span>
+<span class="source-line" id="L11" data-line="11">Read-only checks found 7,662 microphone recording rows from the preceding</span>
+<span class="source-line" id="L12" data-line="12">24 hours, all pending. The eight newest referenced files existed and matched</span>
+<span class="source-line" id="L13" data-line="13">their recorded sizes. At 14:10 the later count was 7,680. One newly saved file</span>
+<span class="source-line" id="L14" data-line="14">passed native `afinfo` inspection (240,086 valid frames at 16 kHz, 15.005375</span>
+<span class="source-line" id="L15" data-line="15">seconds, with priming and remainder reported separately) and decoded through</span>
+<span class="source-line" id="L16" data-line="16">ffmpeg with a nonzero signal. This is a sampled-file check, not a speech-quality</span>
+<span class="source-line" id="L17" data-line="17">or complete-history audit. No recording, setting or history row was modified.</span>
+<span class="source-line" id="L18" data-line="18"> </span>
+<span class="source-line" id="L19" data-line="19">Text preparation was making some progress on old recordings: new transcript</span>
+<span class="source-line" id="L20" data-line="20">rows written at 13:15–13:16 on 6 October belonged to audio recorded on</span>
+<span class="source-line" id="L21" data-line="21">3 September. The latest recording timestamp with a `transcribed` row was</span>
+<span class="source-line" id="L22" data-line="22">1 October at 17:43:17 AEST. Those are different clocks; recent database writes</span>
+<span class="source-line" id="L23" data-line="23">do not imply fresh captured speech is being transcribed.</span>
+<span class="source-line" id="L24" data-line="24"> </span>
+<span class="source-line" id="L25" data-line="25">The governed first-pass worker requested one row from</span>
+<span class="source-line" id="L26" data-line="26">`getUntranscribedBatches(limit: 1)`, which orders all pending and repair work</span>
+<span class="source-line" id="L27" data-line="27">oldest first. Quiet-time admission therefore spent its available budget on</span>
+<span class="source-line" id="L28" data-line="28">historical audio before reaching current recordings. The installed Timeline</span>
+<span class="source-line" id="L29" data-line="29">also filters empty pending rows, and Live omits its saved-recordings panel.</span>
+<span class="source-line" id="L30" data-line="30">These are separate scheduling and presentation defects. The prior display</span>
+<span class="source-line" id="L31" data-line="31">repair alone does not repair queue freshness.</span>
+<span class="source-line" id="L32" data-line="32"> </span>
+<span class="source-line" id="L33" data-line="33">The installed System Monitor reported recording with text preparation waiting</span>
+<span class="source-line" id="L34" data-line="34">for the Mac to be less busy. Its CPU monitor is active; these observations do</span>
+<span class="source-line" id="L35" data-line="35">not establish a matched performance result or the 20% active-use target.</span>
+<span class="source-line" id="L36" data-line="36"> </span>
+<span class="source-line" id="L37" data-line="37">## Narrow source repair</span>
+<span class="source-line" id="L38" data-line="38"> </span>
+<span class="source-line" id="L39" data-line="39">Work is isolated in `/Users/stuartbond/backintime-hotfix-audio-freshness`, based</span>
+<span class="source-line" id="L40" data-line="40">on display-repair commit `1ff32f446e6a2d5af5a0d6a0af7b1b515a0f6e47`.</span>
+<span class="source-line" id="L41" data-line="41">The original display candidate and its clean source worktree remain available.</span>
+<span class="source-line" id="L42" data-line="42">The combined queue/display candidate is the preferred next delivery; do not run</span>
+<span class="source-line" id="L43" data-line="43">the older display-only installer in parallel with it.</span>
+<span class="source-line" id="L44" data-line="44"> </span>
+<span class="source-line" id="L45" data-line="45">The implemented governed queue policy prefers the newest first-pass pending</span>
+<span class="source-line" id="L46" data-line="46">recording within the inclusive last 24 hours. After three recent attempts it</span>
+<span class="source-line" id="L47" data-line="47">selects the oldest retained pending/repair recording, preserving historical</span>
+<span class="source-line" id="L48" data-line="48">progress. An attempt that fails or is cancelled still consumes its scheduling</span>
+<span class="source-line" id="L49" data-line="49">slot so a failed old recording cannot monopolize every subsequent admission.</span>
+<span class="source-line" id="L50" data-line="50">No recent candidate means falling back to oldest work immediately.</span>
+<span class="source-line" id="L51" data-line="51"> </span>
+<span class="source-line" id="L52" data-line="52">This changes ordering after admission. It does not start inference during</span>
+<span class="source-line" id="L53" data-line="53">active use, relax CPU/pressure limits, change Whisper threads, enable system</span>
+<span class="source-line" id="L54" data-line="54">audio, alter codecs, rewrite history, or change explicit manual backfill.</span>
+<span class="source-line" id="L55" data-line="55">Saved media remains durable; existing exact completion, cancellation and</span>
+<span class="source-line" id="L56" data-line="56">deletion checks continue to govern publication. The rolling horizon is a</span>
+<span class="source-line" id="L57" data-line="57">priority hint, not a deadline or promise of real-time transcription.</span>
+<span class="source-line" id="L58" data-line="58"> </span>
+<span class="source-line" id="L59" data-line="59">## Validation and installation</span>
+<span class="source-line" id="L60" data-line="60"> </span>
+<span class="source-line" id="L61" data-line="61">The first native AAC worker fixture failed during PCM decoding with AVFAudio</span>
+<span class="source-line" id="L62" data-line="62">error 1718449215 before reaching queue assertions. A separate unchanged-decoder</span>
+<span class="source-line" id="L63" data-line="63">control opened both authored fixtures: the AAC PCM read failed, while the</span>
+<span class="source-line" id="L64" data-line="64">bundled authored WAV read all 171,707 frames. Ordinary worker regressions use</span>
+<span class="source-line" id="L65" data-line="65">that real WAV through the unchanged production decoder with honest `.wav`</span>
+<span class="source-line" id="L66" data-line="66">paths. The explicit AAC override remains a failing native check in this command</span>
+<span class="source-line" id="L67" data-line="67">session; it is not silently skipped or treated as successful AAC acceptance.</span>
+<span class="source-line" id="L68" data-line="68"> </span>
+<span class="source-line" id="L69" data-line="69">The subsequent meaningful RED run executed 20 tests with 32 expected assertion</span>
+<span class="source-line" id="L70" data-line="70">failures and no unexpected failures. It reproduced oldest-first selection ahead</span>
+<span class="source-line" id="L71" data-line="71">of new recordings through actual native WAV decoding and canonical SQLite</span>
+<span class="source-line" id="L72" data-line="72">completion. Its 20,000-row SQL fixture recorded 260,056 virtual-machine steps</span>
+<span class="source-line" id="L73" data-line="73">and temporary ordering for the prior lookup. The implementation now uses</span>
+<span class="source-line" id="L74" data-line="74">separate status-indexed single-row queries and compares the two oldest status</span>
+<span class="source-line" id="L75" data-line="75">candidates by their exact integer timestamp and ID. Result size is bounded;</span>
+<span class="source-line" id="L76" data-line="76">residual batch-path filtering can still inspect more than one index entry.</span>
+<span class="source-line" id="L77" data-line="77"> </span>
+<span class="source-line" id="L78" data-line="78">A separate read-only check of the new query shapes against the live V23 store</span>
+<span class="source-line" id="L79" data-line="79">selected a 6 October 14:26 recording for the recent lane and a 3 September</span>
+<span class="source-line" id="L80" data-line="80">recording for the oldest lane. All three selectors used the existing status/time</span>
+<span class="source-line" id="L81" data-line="81">index without a temporary sort and completed in under 1 ms in that one sample.</span>
+<span class="source-line" id="L82" data-line="82">That was Python SQLite 3.51.0, not the App worker or a matched performance test.</span>
+<span class="source-line" id="L83" data-line="83"> </span>
+<span class="source-line" id="L84" data-line="84">After `swift package clean`, the focused debug run passed 152 tests, with one</span>
+<span class="source-line" id="L85" data-line="85">intentional opt-in native-view skip and zero failures (153 selected). This covers</span>
+<span class="source-line" id="L86" data-line="86">the new SQLite/worker cases, exact pending commits, governor/resource regressions</span>
+<span class="source-line" id="L87" data-line="87">and prior saved-audio presentation checks. Two final test-only additions then</span>
+<span class="source-line" id="L88" data-line="88">passed in the 22-case query/worker selection: complete timed words and canonical</span>
+<span class="source-line" id="L89" data-line="89">media ranges across reverse overlapping recent windows and an old-lane hop;</span>
+<span class="source-line" id="L90" data-line="90">and joined shutdown while cancelled native inference retains a cleanup tail.</span>
+<span class="source-line" id="L91" data-line="91">Neither controlled inference output nor the WAV decoder establishes Whisper</span>
+<span class="source-line" id="L92" data-line="92">recognition accuracy or native AAC worker acceptance.</span>
+<span class="source-line" id="L93" data-line="93"> </span>
+<span class="source-line" id="L94" data-line="94">The 20,000-row fixture uses 31 SQLite VM steps for recent selection and 25 for</span>
+<span class="source-line" id="L95" data-line="95">each oldest-status query (81 across all three), without a temporary sort. This</span>
+<span class="source-line" id="L96" data-line="96">is a query-shape regression, not a whole-library or end-user latency claim.</span>
+<span class="source-line" id="L97" data-line="97"> </span>
+<span class="source-line" id="L98" data-line="98">A separate empty-scratch optimized product build passed at 14:40 AEST in</span>
+<span class="source-line" id="L99" data-line="99">365.04 seconds with two build jobs at reduced priority. All 378 pinned product</span>
+<span class="source-line" id="L100" data-line="100">inputs matched before and after compilation. The preserved unbundled executable</span>
+<span class="source-line" id="L101" data-line="101">SHA-256 is `f6c12cf4e41361060263f3c523a9ce82d16cdabbbb2654df3a1fe2e4a2628290`.</span>
+<span class="source-line" id="L102" data-line="102">Independent product/test review found no remaining issues. Source checks,</span>
+<span class="source-line" id="L103" data-line="103">native signing, installation and installed acceptance remain separate.</span>
+<span class="source-line" id="L104" data-line="104"> </span>
+<span class="source-line" id="L105" data-line="105">The Codex command session again reported zero valid signing identities and</span>
+<span class="source-line" id="L106" data-line="106">failed strict verification of the existing app. The user confirmed that their</span>
+<span class="source-line" id="L107" data-line="107">normal Terminal lists a valid identity and completed packaging there. The</span>
+<span class="source-line" id="L108" data-line="108">combined **2610.6.1** candidate includes the display and queue ordering repairs;</span>
+<span class="source-line" id="L109" data-line="109">all 39 compiled payload sections match the reviewed executable. No signature</span>
+<span class="source-line" id="L110" data-line="110">check was bypassed.</span>
+<span class="source-line" id="L111" data-line="111"> </span>
+<span class="source-line" id="L112" data-line="112">The reviewed private delivery helpers retain the old app and quiescent database</span>
+<span class="source-line" id="L113" data-line="113">before installation. The installer verifies the bundle actually moved before</span>
+<span class="source-line" id="L114" data-line="114">placing the candidate and never overwrites an app that another installer has</span>
+<span class="source-line" id="L115" data-line="115">placed at the destination. Five private native-filesystem swap cases pass; their</span>
+<span class="source-line" id="L116" data-line="116">verification boundary is controlled and does not establish native signing or</span>
+<span class="source-line" id="L117" data-line="117">full installation acceptance. Abrupt process termination and initial move</span>
+<span class="source-line" id="L118" data-line="118">bookkeeping are outside the caught verification/staging recovery guarantee.</span>
+<span class="source-line" id="L119" data-line="119"> </span>
+<span class="source-line" id="L120" data-line="120">## Installed local trial — 6 October, 23:19 AEST</span>
+<span class="source-line" id="L121" data-line="121"> </span>
+<span class="source-line" id="L122" data-line="122">The user&#x27;s first normal-Terminal install stopped at `writer_present`: an</span>
+<span class="source-line" id="L123" data-line="123">independent SSH-origin `sqlite3_rsync` process still held the database/WAL open.</span>
+<span class="source-line" id="L124" data-line="124">Retrace had quit correctly. That copy was left intact, the old app was reopened,</span>
+<span class="source-line" id="L125" data-line="125">and installation was retried after the copy completed. This first quit/reopen</span>
+<span class="source-line" id="L126" data-line="126">left **232.927 seconds** between saved audio ranges.</span>
+<span class="source-line" id="L127" data-line="127"> </span>
+<span class="source-line" id="L128" data-line="128">The retry passed native verification and retained both the old app and a</span>
+<span class="source-line" id="L129" data-line="129">quiescent database rollback copy. The installed executable hash is</span>
+<span class="source-line" id="L130" data-line="130">`460f9aa4a52be94d1f857f5197f42c5faa1a83c82c618bee9d43a666fedc0c62`,</span>
+<span class="source-line" id="L131" data-line="131">build **2610.6.1**, source `50778412480d6ba98651a1904edb617fb59418bf`.</span>
+<span class="source-line" id="L132" data-line="132">The installer made no library writes. Post-launch reads confirm V23 and the</span>
+<span class="source-line" id="L133" data-line="133">same persisted recording, context and exclusion settings. The command-session</span>
+<span class="source-line" id="L134" data-line="134">`defaults` view omitted these native-domain keys; the user&#x27;s persisted plist</span>
+<span class="source-line" id="L135" data-line="135">was checked directly instead. The successful installation&#x27;s quit/reopen gap</span>
+<span class="source-line" id="L136" data-line="136">was **210.012 seconds**, from 23:16:13.447 to 23:19:43.459.</span>
+<span class="source-line" id="L137" data-line="137"> </span>
+<span class="source-line" id="L138" data-line="138">The native app opened the Studio Display microphone at 23:19:43.217. New AACs</span>
+<span class="source-line" id="L139" data-line="139">contain nonzero PCM. Fresh pending recordings at 23:22 are visible in Live and</span>
+<span class="source-line" id="L140" data-line="140">Timeline. Explicit Play reached the playing/pause state in both surfaces;</span>
+<span class="source-line" id="L141" data-line="141">Timeline pause reached Resume, and closing the player ended the check.</span>
+<span class="source-line" id="L142" data-line="142"> </span>
+<span class="source-line" id="L143" data-line="143">A brief explicit Process now check ran the installed AAC decoder and CPU</span>
+<span class="source-line" id="L144" data-line="144">Whisper path, completing a fresh 23:26:53 recording as `probable_silence` with</span>
+<span class="source-line" id="L145" data-line="145">empty text. The override was cancelled, and the UI returned to waiting for</span>
+<span class="source-line" id="L146" data-line="146">lower load. This proves recent native queue progress without inventing text;</span>
+<span class="source-line" id="L147" data-line="147">it does not prove new spoken-phrase publication or recognition accuracy. The</span>
+<span class="source-line" id="L148" data-line="148">earlier local spoken-test recognition and microphone-routing diagnosis are</span>
+<span class="source-line" id="L149" data-line="149">recorded separately in the [microphone ledger](microphone-input-repair.md).</span>
+<span class="source-line" id="L150" data-line="150"> </span>
+<span class="source-line" id="L151" data-line="151">The wider dirty V24–V32 workspace remains untouched and uninstalled. Physical</span>
+<span class="source-line" id="L152" data-line="152">input-switch acceptance, matched CPU/latency, longer catch-up throughput and</span>
+<span class="source-line" id="L153" data-line="153">the 20% CPU target remain open. `installed-acceptance-20261006.json` preserves</span>
+<span class="source-line" id="L154" data-line="154">the bounded checks and these limits beside the native installation receipts.</span>
+<span class="source-line" id="L155" data-line="155"> </span>
+<span class="source-line" id="L156" data-line="156">Content-free diagnostic receipts are retained under</span>
+<span class="source-line" id="L157" data-line="157">`~/Library/Application Support/Retrace Candidates/2026-10-06-audio-freshness/`.</span></pre><p class="doc-footer"><a href="index.html">Return to supporting records</a></p></main></body></html>
