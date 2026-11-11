@@ -16,9 +16,41 @@ struct RecordingShutdownFailure: Error {
 /// Serializes device startup and teardown without blocking a thread. A replacement
 /// start cannot acquire devices until cancelled startup has finished its rollback.
 actor RecordingLifecycle {
+    /// AudioCaptureProtocol finishes its local output even when the native
+    /// device reports a stop error. Join accepted PCM before returning that
+    /// diagnostic; cancelling the consumer here would discard queued samples.
+    nonisolated static func stopCapturedAudio(
+        stopSource: @escaping @Sendable () async throws -> Void,
+        finishInput: @escaping @Sendable () async -> Void
+    ) async -> (any Error)? {
+        var stopError: (any Error)?
+        do { try await stopSource() }
+        catch { stopError = error }
+        await finishInput()
+        return stopError
+    }
+
     nonisolated static func cancelAndJoin(_ tasks: [Task<Void, Never>]) async {
         for task in tasks { task.cancel() }
         for task in tasks { await task.value }
+    }
+
+    /// Caller has stopped/joined Capture and finished its output stream. Audio
+    /// can cancel immediately; the bounded screen queue must reach WAL or a
+    /// durable terminal outcome before a replacement recording can start.
+    nonisolated static func finishCaptureAndCancelAudio(capture: Task<Void, Never>?, audio: Task<Void, Never>?) async {
+        audio?.cancel()
+        await capture?.value
+        await audio?.value
+    }
+
+    /// Producer shutdown has already joined and finished both streams. Cancel
+    /// only inference; queued captured PCM and the App bridge must reach storage.
+    nonisolated static func finishCapturedStreams(capture: Task<Void, Never>?, audio: Task<Void, Never>?,
+        finishAudioInput: @escaping @Sendable () async -> Void) async {
+        await finishAudioInput()
+        await capture?.value
+        await audio?.value
     }
 
     private var startTask: Task<Void, Error>?

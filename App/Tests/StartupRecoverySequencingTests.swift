@@ -322,14 +322,22 @@ final class OrphanVideoFinalizationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = StorageManager(storageRoot: root)
         try await storage.initialize(config: StorageConfig(storageRootPath: root.path))
+        try await storage.configureOriginalStore(storeID: database.originalStoreID())
         let writer = try await storage.createSegmentWriter()
         let path = await writer.relativePath
         let now = Date()
         let id = try await coordinator.insertLiveVideoSegment(VideoSegment(
             id: VideoSegmentID(value: 0), startTime: now, endTime: now, frameCount: 0,
             fileSizeBytes: 0, relativePath: path, width: 64, height: 64))
-        try await writer.appendFrame(CapturedFrame(imageData: Data(repeating: 90, count: 64 * 64 * 4),
+        try await writer.appendFrame(CapturedFrame(timestamp: now, imageData: Data(repeating: 90, count: 64 * 64 * 4),
             width: 64, height: 64, bytesPerRow: 256))
+        let originalID = await writer.segmentID
+        let segmentID = try await database.insertSegment(bundleID: "com.test.finished-writer",
+            startDate: now, endDate: now, windowName: nil, browserUrl: nil, type: 0)
+        let frameID = try await database.insertCapturedFrame(FrameReference(id: .init(value: 0), timestamp: now,
+            segmentID: .init(value: segmentID), videoID: .init(value: id), frameIndexInSegment: 0,
+            metadata: FrameMetadata(appBundleID: "com.test.finished-writer")),
+            originalVideoPathID: originalID)
         try await database.executeFinalizationFailureSQL("CREATE TRIGGER fail_video_finish BEFORE UPDATE OF processingState ON video WHEN NEW.id=\(id) BEGIN SELECT RAISE(ABORT, 'injected finalization failure'); END")
         do {
             try await coordinator.finalizeLiveVideoWriter(writer, videoDBID: id, frameCount: 1)
@@ -337,14 +345,20 @@ final class OrphanVideoFinalizationTests: XCTestCase {
         } catch { }
         let wal = await storage.getWALManager()
         let sessions = try await wal.listActiveSessions()
-        XCTAssertTrue(sessions.isEmpty, "The successful encoder finalization already removed its raw journal")
+        XCTAssertEqual(sessions.map(\.videoID), [originalID],
+                       "Encoder completion cannot destroy originals before database publication and OCR")
         try await database.executeFinalizationFailureSQL("DROP TRIGGER fail_video_finish")
         let repaired = try await coordinator.finalizeOrphanedVideoSnapshot {
             try await wal.listActiveSessions()
         }
-        XCTAssertEqual(repaired, 1, "An idle finalized writer must not retain a live ownership reservation")
-        let remaining = try await database.getAllUnfinalisedVideos()
-        XCTAssertFalse(remaining.contains { $0.id == id })
+        XCTAssertEqual(repaired, 0, "A retained source must not be blindly finalized from placeholder metadata")
+        let recovery = RecoveryManager(walManager: wal, storage: storage, database: database)
+        await recovery.setFrameEnqueueCallback { _ in }
+        let result = try await recovery.recoverAll()
+        XCTAssertEqual(result.sessionsRecovered, 1)
+        let restored = try await database.getFrameWithVideoInfoByID(id: FrameID(value: frameID))
+        XCTAssertEqual(restored?.videoInfo?.isVideoFinalized, true)
+        XCTAssertEqual(restored?.frame.timestamp.timeIntervalSince1970 ?? 0, now.timeIntervalSince1970, accuracy: 0.001)
     }
 
     func testOrphanSweepNeverFinalizesVideoInsertedAfterCandidateSnapshot() async throws {

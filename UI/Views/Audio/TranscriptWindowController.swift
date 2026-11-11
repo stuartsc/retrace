@@ -84,8 +84,7 @@ public class TranscriptWindowController: NSObject {
         revealTask?.cancel()
         self.coordinator = coordinator
         playback = TranscriptAudioPlayback(resolve: { request in
-            let root = await coordinator.getAudioStorageDirectory()
-            return try await TranscriptAudioFileResolver.resolve(request: request, storageRoot: root)
+            try await TranscriptAudioFileResolver.resolve(request: request, coordinator: coordinator)
         }, onEvent: { event in
             Task {
                 try? await coordinator.recordMetricEvent(metricType: .audioTranscriptPlayback, metadata: event.metadata)

@@ -30,7 +30,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         bytesPerRow: Int,
         config: ProcessingConfig
     ) async throws -> [TextRegion] {
-        try Task.checkCancellation()
+        try BackgroundProcessingContext.checkCancellation()
         return try autoreleasepool {
             guard let image = createCGImage(from: imageData, width: width, height: height, bytesPerRow: bytesPerRow) else {
                 throw ProcessingError.imageConversionFailed
@@ -45,7 +45,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
             discovered = try discoverInNativeCrops(image, data: imageData, bytesPerRow: bytesPerRow,
                                                    initial: discovered, config: config)
 
-            try Task.checkCancellation()
+            try BackgroundProcessingContext.checkCancellation()
             return Self.readingOrder(discovered)
         }
     }
@@ -66,7 +66,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         var processedPixels: CGFloat = 0
         captureCrops: for y in stride(from: 0, to: image.height, by: 720) {
             for x in stride(from: 0, to: image.width, by: 1280) {
-                try Task.checkCancellation()
+                try BackgroundProcessingContext.checkCancellation()
                 guard inspected < 128, requests < 12 else { break captureCrops }
                 inspected += 1
                 let core = CGRect(x: x, y: y, width: 1280, height: 720).intersection(frame)
@@ -99,7 +99,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
             }
         }
         for strip in seams where strip.width * strip.height <= 1_750_000 {
-            try Task.checkCancellation()
+            try BackgroundProcessingContext.checkCancellation()
             // Tighten the horizontal crop to all observed fragments on this
             // line. A full-width mostly blank strip can defeat text detection.
             let fragments = observed.filter { strip.intersects($0.bounds) }
@@ -119,12 +119,12 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         // A local detector may omit a line that the full display recognized.
         // Preserve it unless the local observations provide a complete replacement.
         let retained = try initial.filter { original in
-            try Task.checkCancellation()
+            try BackgroundProcessingContext.checkCancellation()
             let candidates = local.filter { $0.bounds.intersects(original.bounds) }
             return !Self.refinementIsComplete(candidates, replacing: [original])
         }
         local = try local.filter { candidate in
-            try Task.checkCancellation()
+            try BackgroundProcessingContext.checkCancellation()
             return !retained.contains { $0.bounds.intersects(candidate.bounds) }
         }
         return local.count + retained.count <= Self.maxNativeObservations ? local + retained : initial
@@ -210,7 +210,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
 
     /// Read one image, mapping Vision's normalized coordinates into original pixels.
     private func recognize(_ image: CGImage, in bounds: CGRect, config: ProcessingConfig) throws -> [TextRegion] {
-        try Task.checkCancellation()
+        try BackgroundProcessingContext.checkCancellation()
         let scale = Self.calculateOCRScaleFactor(width: image.width, height: image.height, config: config)
         let input = scale < 1 ? (downscaleImage(image, scale: scale) ?? image) : image
         let request = VNRecognizeTextRequest()
@@ -220,7 +220,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         request.preferBackgroundProcessing = config.preferBackgroundProcessing
         do { try VNImageRequestHandler(cgImage: input, options: [:]).perform([request]) }
         catch { throw ProcessingError.ocrFailed(underlying: error.localizedDescription) }
-        try Task.checkCancellation()
+        try BackgroundProcessingContext.checkCancellation()
         return (request.results ?? []).compactMap { observation in
             guard observation.confidence >= config.minimumConfidence,
                   let candidate = observation.topCandidates(1).first,
@@ -445,7 +445,7 @@ public final class VisionOCR: OCRProtocol, @unchecked Sendable {
         let ocrStartTime = Date()
         var newRegions: [TextRegion] = []
         for bounds in reOCRBounds {
-            try Task.checkCancellation()
+            try BackgroundProcessingContext.checkCancellation()
             newRegions += try await recognizeTextInRegion(
                 imageData: frame.imageData,
                 width: frame.width,

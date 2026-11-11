@@ -1,219 +1,192 @@
 import Foundation
-import AppKit
-import AVFoundation
 import Shared
 
-/// Detects when the user is in a video conference meeting
-/// Monitors active applications and microphone usage to determine meeting state
+/// Bounded local evidence comparison. App presence means possible, never active.
+/// One owned poll/read/handler chain is cancelled and joined on stop or restart.
 public actor MeetingDetector: MeetingDetectorProtocol {
+    struct Environment: Sendable {
+        let sample: @Sendable (Set<String>, Bool, MeetingApplicationIdentity?) async -> MeetingSample
+        let reset: @Sendable () async -> Void
+        let sleep: @Sendable () async throws -> Void
+        let date: @Sendable () -> Date
+        let uptime: @Sendable () -> TimeInterval
 
-    private var monitoredBundleIDs: Set<String> = []
-    private var isMonitoring = false
-    @MainActor private var checkTimer: Timer?
+        static func live(captureConfig: (@Sendable () async -> MeetingCapturePolicySnapshot?)?) -> Self {
+            let native = MeetingNativeObservationSource(captureConfig: captureConfig)
+            return Self(sample: { await native.sample(bundleIDs: $0, comparisonEnabled: $1, previous: $2) },
+                reset: { await native.reset() },
+                sleep: { try await Task.sleep(for: .seconds(2), clock: .continuous) },
+                date: { Date() }, uptime: { ProcessInfo.processInfo.systemUptime })
+        }
+    }
+
+    private let environment: Environment
+    private nonisolated let cache: MeetingStateCache
+    private var reducer = MeetingAssessmentReducer(sessionID: UUID())
     private var currentMeetingState: MeetingState = .notInMeeting
+    private var bundleIDs = Set<String>()
+    private var comparisonEnabled = false
+    private var monitoring = false
+    private var generation = UUID()
+    private var pollTask: Task<Void, Never>?
+    private var lifecycleTail: Task<Void, Never>?
+    private var lifecycleID = UUID()
+    private var speech: MeetingObservation?
+    private var legacyCallback: (@Sendable (MeetingState) -> Void)?
+    private var ownedCallback: (@Sendable (MeetingState) async -> Void)?
+    private var outcomeCallback: (@Sendable (MeetingDetectionOutcome) async -> Void)?
 
-    // Cached state for synchronous access (slightly stale but thread-safe)
-    nonisolated(unsafe) private var cachedMeetingState: MeetingState = .notInMeeting
-
-    // Callbacks for state changes
-    private var stateChangeCallback: (@Sendable (MeetingState) -> Void)?
-
-    public init() {}
-
-    /// Check if a meeting is currently active
-    public nonisolated func isMeetingActive() -> Bool {
-        // Note: This returns cached state that's updated by the monitoring loop
-        // For real-time accurate state, use getCurrentState() async method
-        return cachedMeetingState.isInMeeting
+    public init(captureConfig: (@Sendable () async -> MeetingCapturePolicySnapshot?)? = nil) {
+        environment = .live(captureConfig: captureConfig)
+        cache = MeetingStateCache(uptime: { ProcessInfo.processInfo.systemUptime })
     }
 
-    /// Get the detected meeting app bundle ID, if any
-    public nonisolated func getActiveMeetingApp() -> String? {
-        // Note: This returns cached state that's updated by the monitoring loop
-        // For real-time accurate state, use getCurrentState() async method
-        return cachedMeetingState.detectedApp
+    init(environment: Environment) {
+        self.environment = environment
+        cache = MeetingStateCache(uptime: environment.uptime)
     }
 
-    /// Start monitoring for meeting activity
-    public func startMonitoring(bundleIDs: Set<String>) {
-        guard !isMonitoring else { return }
+    public nonisolated func isMeetingActive() -> Bool { cache.isActive }
+    public nonisolated func getActiveMeetingApp() -> String? { cache.activeApplication }
 
-        self.monitoredBundleIDs = bundleIDs
-        self.isMonitoring = true
-
-        // Start periodic checks (every 2 seconds)
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            await self.setCheckTimer(Timer.scheduledTimer(
-                withTimeInterval: 2.0,
-                repeats: true
-            ) { [weak self] _ in
-                Task {
-                    await self?.checkMeetingStatus()
-                }
-            })
-        }
-
-        // Immediate check
-        Task {
-            await checkMeetingStatus()
-        }
+    public func startMonitoring(bundleIDs: Set<String>) async {
+        await serialize { detector in await detector.startOwned(bundleIDs: bundleIDs) }
     }
 
-    /// Stop monitoring
-    public func stopMonitoring() {
-        isMonitoring = false
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            await self.clearCheckTimer()
-        }
-        currentMeetingState = .notInMeeting
-        cachedMeetingState = .notInMeeting
+    public func stopMonitoring() async {
+        await serialize { detector in await detector.stopOwned() }
     }
 
-    /// Set callback for state changes
-    public func onStateChange(_ callback: @escaping @Sendable (MeetingState) -> Void) {
-        self.stateChangeCallback = callback
+    /// Independent comparison flag; does not grant audio consent or AX access.
+    public func setComparisonEnabled(_ enabled: Bool) async {
+        await serialize { detector in await detector.changeComparisonOwned(enabled) }
     }
 
-    /// Get current meeting state
+    /// Compatibility callback. New consumers use the awaited callback below.
+    public func onStateChange(_ callback: @escaping @Sendable (MeetingState) -> Void) { legacyCallback = callback }
+
+    /// The owner must not synchronously stop this detector from its own callback;
+    /// enqueue that lifecycle request after delivery, as with capture streams.
+    public func onStateChangeAsync(_ callback: @escaping @Sendable (MeetingState) async -> Void) { ownedCallback = callback }
+
+    /// Delivery is part of the owned poll chain and joined on stop/reconfigure.
+    /// As with onStateChangeAsync, the handler must not await its own lifecycle stop.
+    public func setOutcomeHandler(_ callback: (@Sendable (MeetingDetectionOutcome) async -> Void)?) { outcomeCallback = callback }
+
+    func comparisonIsEnabled() -> Bool { comparisonEnabled }
+
+    /// Called only for speech already produced under the existing recording
+    /// settings. It starts no audio source and does not assign global speech to
+    /// an application. Arrival must not refresh the original occurrence time.
+    public func observeSpeech(_ observation: MeetingObservation) {
+        guard monitoring, MeetingObservationAdmission.validSpeech(observation, now: environment.uptime(), date: environment.date()),
+              observation.id != speech?.id,
+              observation.audioOccurrence!.endedAt >= (speech?.audioOccurrence?.endedAt ?? .distantPast) else { return }
+        speech = observation
+    }
+
     public func getCurrentState() -> MeetingState {
+        if let assessment = currentMeetingState.assessment, !assessment.isFresh(at: environment.uptime()) {
+            let expired = reducer.expired(at: environment.date(), uptime: environment.uptime())
+            currentMeetingState = MeetingState(assessment: expired)
+            cache.set(currentMeetingState)
+        }
         return currentMeetingState
     }
 
-    // MARK: - MainActor Timer Helpers
-
-    @MainActor
-    private func setCheckTimer(_ timer: Timer) {
-        checkTimer = timer
+    private func serialize(_ operation: @escaping @Sendable (MeetingDetector) async -> Void) async {
+        let predecessor = lifecycleTail
+        let id = UUID()
+        let task = Task { [self] in
+            await predecessor?.value
+            await operation(self)
+        }
+        lifecycleID = id; lifecycleTail = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        if lifecycleID == id { lifecycleTail = nil }
     }
 
-    @MainActor
-    private func clearCheckTimer() {
-        checkTimer?.invalidate()
-        checkTimer = nil
-    }
-
-    // MARK: - Private Detection Logic
-
-    private func checkMeetingStatus() async {
-        let previousState = currentMeetingState
-        let newState = await detectMeetingState()
-
-        if newState.isInMeeting != previousState.isInMeeting ||
-           newState.detectedApp != previousState.detectedApp {
-            currentMeetingState = newState
-            cachedMeetingState = newState  // Update cached state
-            stateChangeCallback?(newState)
+    private func startOwned(bundleIDs: Set<String>) async {
+        guard !Task.isCancelled else { return }
+        if monitoring, self.bundleIDs == bundleIDs { return }
+        await stopOwned()
+        guard !Task.isCancelled else { return }
+        generation = UUID(); let token = generation
+        self.bundleIDs = bundleIDs
+        reducer = MeetingAssessmentReducer(sessionID: token)
+        speech = nil; monitoring = true
+        await publish(reducer.expired(at: environment.date(), uptime: environment.uptime(), reason: .noCorroboration))
+        guard !Task.isCancelled else { await stopOwned(); return }
+        pollTask = Task { [weak self] in
+            guard let self else { return }
+            await self.poll(token: token)
         }
     }
 
-    private func detectMeetingState() async -> MeetingState {
-        // Method 1: Check if monitored app is frontmost
-        if let frontmostApp = NSWorkspace.shared.frontmostApplication,
-           let bundleID = frontmostApp.bundleIdentifier,
-           monitoredBundleIDs.contains(bundleID) {
-
-            // Additional check: Is the app actually using the microphone?
-            if await isAppUsingMicrophone(bundleID: bundleID) {
-                return MeetingState(
-                    isInMeeting: true,
-                    detectedApp: bundleID,
-                    detectedAt: Date()
-                )
-            }
-        }
-
-        // Method 2: Check running applications
-        let runningApps = NSWorkspace.shared.runningApplications
-        for app in runningApps {
-            guard let bundleID = app.bundleIdentifier,
-                  monitoredBundleIDs.contains(bundleID),
-                  !app.isHidden else {
-                continue
-            }
-
-            // Check if this app is using the microphone
-            if await isAppUsingMicrophone(bundleID: bundleID) {
-                return MeetingState(
-                    isInMeeting: true,
-                    detectedApp: bundleID,
-                    detectedAt: Date()
-                )
-            }
-        }
-
-        return .notInMeeting
+    private func stopOwned() async {
+        guard monitoring || pollTask != nil else { return }
+        monitoring = false; generation = UUID()
+        let task = pollTask; pollTask = nil
+        task?.cancel()
+        await task?.value
+        await environment.reset()
+        speech = nil
+        await publish(reducer.expired(at: environment.date(), uptime: environment.uptime(), reason: .stopped))
     }
 
-    /// Check if an app is currently using the microphone
-    /// This uses macOS 14.0+ API to check microphone usage
-    private func isAppUsingMicrophone(bundleID: String) async -> Bool {
-        // On macOS 14.0+, we can check if an app is using the microphone
-        // by checking AVCaptureDevice authorization status and active sessions
+    private func changeComparisonOwned(_ enabled: Bool) async {
+        guard !Task.isCancelled, comparisonEnabled != enabled else { return }
+        let wasMonitoring = monitoring, savedBundleIDs = bundleIDs
+        await stopOwned()
+        comparisonEnabled = enabled
+        if wasMonitoring, !Task.isCancelled { await startOwned(bundleIDs: savedBundleIDs) }
+    }
 
-        // For now, we'll use a heuristic: if the app is active and visible,
-        // and it's a known meeting app, assume it might be in a meeting
-
-        // A more robust implementation would:
-        // 1. Check AVAudioSession (iOS-style API not available on macOS)
-        // 2. Monitor system audio device usage via CoreAudio
-        // 3. Use PrivateFrameworks (not recommended for App Store)
-
-        // Simple heuristic for MVP:
-        let runningApps = NSWorkspace.shared.runningApplications
-        if let app = runningApps.first(where: { $0.bundleIdentifier == bundleID }) {
-            // App is running and active (not hidden)
-            return app.isActive && !app.isHidden
+    private func poll(token: UUID) async {
+        while monitoring, generation == token, !Task.isCancelled {
+            let started = environment.uptime()
+            let sample = await environment.sample(bundleIDs, comparisonEnabled, reducer.terminationTarget)
+            guard monitoring, generation == token, !Task.isCancelled else { return }
+            let assessment = reducer.consume(sample, comparisonEnabled: comparisonEnabled, speech: speech)
+            let elapsed = (environment.uptime() - started) * 1_000
+            let boundedElapsed = elapsed.isFinite && elapsed >= 0 ? elapsed : 0
+            await publish(assessment, candidateCount: sample.candidateCount, controlsVisited: sample.controlsVisited,
+                          elapsedMilliseconds: boundedElapsed)
+            guard monitoring, generation == token, !Task.isCancelled else { return }
+            Log.recordLatency("capture.meeting_evidence", valueMs: boundedElapsed, category: .capture)
+            do { try await environment.sleep() } catch { return }
         }
+    }
 
-        return false
+    private func publish(_ assessment: MeetingAssessment, candidateCount: Int = 0, controlsVisited: Int = 0,
+                         elapsedMilliseconds: Double = 0) async {
+        let previous = currentMeetingState
+        let state = MeetingState(assessment: assessment)
+        currentMeetingState = state; cache.set(state)
+        // Await every freshness update so the audio privacy gate never relies
+        // on an unowned task from an earlier monitoring generation.
+        await ownedCallback?(state)
+        await outcomeCallback?(MeetingDetectionOutcome(phase: assessment.phase, comparisonEnabled: comparisonEnabled,
+            uncertainties: assessment.uncertainties, candidateCount: min(16, max(0, candidateCount)),
+            controlsVisited: min(128, max(0, controlsVisited)), elapsedMilliseconds: elapsedMilliseconds))
+        if previous.assessment?.phase != assessment.phase || previous.detectedApp != state.detectedApp ||
+            previous.assessment?.uncertainties != assessment.uncertainties { legacyCallback?(state) }
     }
 }
 
-// MARK: - Advanced Meeting Detection (macOS 14.0+)
-
-@available(macOS 14.0, *)
-extension MeetingDetector {
-
-    /// More accurate microphone usage detection using CoreAudio
-    /// This checks if any audio input device is currently in use
-    private func checkMicrophoneUsage() -> Bool {
-        // Query the default input device
-        var deviceID: AudioDeviceID = kAudioObjectUnknown
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0,
-            nil,
-            &propertySize,
-            &deviceID
-        )
-
-        guard status == noErr else { return false }
-
-        // Check if the device is running
-        propertyAddress.mSelector = kAudioDevicePropertyDeviceIsRunningSomewhere
-        var isRunning: UInt32 = 0
-        propertySize = UInt32(MemoryLayout<UInt32>.size)
-
-        let runningStatus = AudioObjectGetPropertyData(
-            deviceID,
-            &propertyAddress,
-            0,
-            nil,
-            &propertySize,
-            &isRunning
-        )
-
-        return runningStatus == noErr && isRunning != 0
+private final class MeetingStateCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private let uptime: @Sendable () -> TimeInterval
+    private var stored: MeetingState = .notInMeeting
+    init(uptime: @escaping @Sendable () -> TimeInterval) { self.uptime = uptime }
+    var value: MeetingState { lock.withLock { stored } }
+    var isActive: Bool {
+        let state = value
+        return state.isInMeeting && (state.assessment?.isFresh(at: uptime()) ?? false)
     }
+    var activeApplication: String? {
+        let state = value
+        return state.isInMeeting && (state.assessment?.isFresh(at: uptime()) ?? false) ? state.detectedApp : nil
+    }
+    func set(_ state: MeetingState) { lock.withLock { stored = state } }
 }

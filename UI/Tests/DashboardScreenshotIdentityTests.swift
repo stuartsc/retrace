@@ -129,10 +129,15 @@ final class DashboardScreenshotIdentityTests: XCTestCase {
         try await corruptNativeCaptureTime(with: selected.frame.timestamp.addingTimeInterval(20))
         let database = database!
         let refresher = DashboardSelectedFrameRefresher()
-        let result = try await refresher.refresh(selected, loadedStatus: nil,
-            loadFrame: { try await database.getFrameWithVideoInfoByID(id: $0) },
-            loadNodes: { _ in XCTFail("A different capture must not reach the OCR loader"); return [] })
-        XCTAssertNil(result, "Native row ID alone cannot establish the selected capture")
+        do {
+            _ = try await refresher.refresh(selected, loadedStatus: nil,
+                loadFrame: { try await database.getFrameWithVideoInfoByID(id: $0) },
+                loadNodes: { _ in XCTFail("A different capture must not reach the OCR loader"); return [] })
+            XCTFail("The canonical reader must reject the corrupted capture before presentation")
+        } catch DatabaseError.queryFailed(let query, let underlying) {
+            XCTAssertEqual(query, "progressive recall persistence")
+            XCTAssertEqual(underlying, "Captured frame identity conflicts with current frame")
+        }
     }
 
     func testListAdmissionRetriesRatherThanRelabelingHeldRowsFromAnotherStore() async throws {
@@ -211,16 +216,24 @@ final class DashboardScreenshotIdentityTests: XCTestCase {
         let (newer, _) = try await sourceRows()
         let newerFinished = expectation(description: "newer capture read completed independently")
         let second = Task {
-            let result = try await refresher.refresh(newer, loadedStatus: nil,
-                loadFrame: { try await database.getFrameWithVideoInfoByID(id: $0) }, loadNodes: { _ in [] })
-            newerFinished.fulfill()
-            return result
+            // Rejection is an independently completed read too. The canonical
+            // snapshot now refuses this deliberately corrupted timestamp before
+            // the UI's later comparison; it must not join the held old request.
+            defer { newerFinished.fulfill() }
+            return try await refresher.refresh(newer, loadedStatus: nil,
+                loadFrame: { try await database.getFrameWithVideoInfoByID(id: $0) },
+                loadNodes: { _ in XCTFail("Corrupted capture must not load OCR"); return [] })
         }
         await fulfillment(of: [newerFinished], timeout: 2)
         await gate.release()
         _ = try? await first.value
-        let result = try await second.value
-        XCTAssertEqual(result?.frame.frame.timestamp, newer.frame.timestamp)
+        do {
+            _ = try await second.value
+            XCTFail("Corrupted native row must not become a replacement screenshot")
+        } catch DatabaseError.queryFailed(let query, let underlying) {
+            XCTAssertEqual(query, "progressive recall persistence")
+            XCTAssertEqual(underlying, "Captured frame identity conflicts with current frame")
+        }
     }
 
     func testSourceQualifiedRefreshCannotChangeAnImportedSelectionOrItsOCRCache() async throws {

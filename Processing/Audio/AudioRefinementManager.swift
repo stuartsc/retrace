@@ -42,7 +42,12 @@ public actor AudioRefinementManager {
     private let transcriptionQueries: AudioTranscriptionQueries
     private let audioWriter: AudioSegmentWriter
     private let storageRoot: URL
+    private var mediaStore: (any AudioChunkMediaStoreProtocol)?
     private var isRunning = false
+    // Carry inspection progress across the App's bounded automatic/manual cycles.
+    // Restart begins another safe sweep; no legacy transcript is rewritten.
+    private var refinementCandidateCursor: Int64 = 0
+    private let candidateInspectionLimit = 256
 
     /// Check if pass-1 pipeline is active (set externally to yield GPU)
     private var isPass1Active: (@Sendable () async -> Bool)?
@@ -68,13 +73,17 @@ public actor AudioRefinementManager {
         transcriptionService: any TranscriptionProtocol,
         transcriptionQueries: AudioTranscriptionQueries,
         audioWriter: AudioSegmentWriter,
-        storageRoot: URL
+        storageRoot: URL,
+        mediaStore: (any AudioChunkMediaStoreProtocol)? = nil
     ) {
         self.transcriptionService = transcriptionService
         self.transcriptionQueries = transcriptionQueries
         self.audioWriter = audioWriter
         self.storageRoot = storageRoot
+        self.mediaStore = mediaStore
     }
+
+    public func setChunkMediaStore(_ store: (any AudioChunkMediaStoreProtocol)?) { mediaStore = store }
 
     /// Process all pass-1 transcriptions that can be refined
     public func processAllPendingRefinements(maxBatches: Int? = nil) async -> RefinementResult {
@@ -96,38 +105,44 @@ public actor AudioRefinementManager {
         var totalFailed = 0
         var totalSentences = 0
         var batchesInCycle = 0
+        var inspectedCandidates = 0
         var attemptedBatchPaths = Set<String>()
         var attemptedBatches = 0
 
-        while !Task.isCancelled {
+        while !Task.isCancelled && inspectedCandidates < candidateInspectionLimit {
             if let batchLimit, attemptedBatches >= batchLimit { break }
             if await yieldToPass1IfNeeded() {
                 continue
             }
             if Task.isCancelled { break }
 
-            let batchPaths: [String]
+            let candidates: [AudioRefinementInspection]
             do {
-                let fetchLimit = batchLimit.map { min(10, max($0 - attemptedBatches, 0)) } ?? 10
-                guard fetchLimit > 0 else { break }
-                let candidates = try await transcriptionQueries.getDistinctBatchPathsForRefinement(limit: fetchLimit)
-                batchPaths = candidates.filter { !attemptedBatchPaths.contains($0) }
+                candidates = try await transcriptionQueries.originalSourceRefinementPage(
+                    transcriptionPass: 1, afterRowID: refinementCandidateCursor,
+                    limit: min(10, candidateInspectionLimit - inspectedCandidates))
             } catch {
                 Log.error("[AudioRefinement] Failed to query refinement candidates: \(error)", category: .processing)
                 break
             }
 
-            guard !batchPaths.isEmpty else { break }
+            guard !candidates.isEmpty else {
+                refinementCandidateCursor = 0
+                break
+            }
 
-            for batchPath in batchPaths {
+            for candidate in candidates {
                 if Task.isCancelled { break }
                 if let batchLimit, attemptedBatches >= batchLimit { break }
                 if await yieldToPass1IfNeeded() { break }
                 if Task.isCancelled { break }
-                attemptedBatchPaths.insert(batchPath)
-                attemptedBatches += 1
+                refinementCandidateCursor = candidate.rowID
+                inspectedCandidates += 1
+                guard let batchPath = candidate.batchAudioPath,
+                      attemptedBatchPaths.insert(batchPath).inserted else { continue }
 
                 let result = await processSingleBatch(batchPath)
+                if Task.isCancelled { break }
                 switch result {
                 case .refined(let sentenceCount):
                     totalRefined += 1
@@ -135,13 +150,20 @@ public actor AudioRefinementManager {
                 case .silence(let reason):
                     totalSilence += 1
                     await retireBatchCandidate(batchPath, status: .refinementSkipped, reason: reason)
+                case .sourceUnavailable(let modelAttempted):
+                    totalFailed += 1
+                    // Inspect legacy gaps without consuming the model-work limit
+                    // or throttle. The persisted actor cursor prevents starvation.
+                    if !modelAttempted { continue }
                 case .failed(let reason):
                     totalFailed += 1
                     await retireBatchCandidate(batchPath, status: .refinementFailed, reason: reason)
                 }
 
+                attemptedBatches += 1
                 batchesInCycle += 1
-                if batchesInCycle >= batchesPerCycle {
+                if batchesInCycle >= batchesPerCycle,
+                   batchLimit.map({ attemptedBatches < $0 }) ?? true {
                     batchesInCycle = 0
                     Log.debug("[AudioRefinement] Yielding after \(batchesPerCycle) batches (\(totalRefined) refined so far)", category: .processing)
                     try? await Task.sleep(for: .milliseconds(Int64(yieldDuration * 1_000)), clock: .continuous)
@@ -164,29 +186,45 @@ public actor AudioRefinementManager {
 
     // MARK: - Private
 
-    private enum BatchResult {
+    private enum BatchResult: Sendable {
         case refined(sentenceCount: Int)
         case silence(reason: String)
         case failed(reason: String)
+        case sourceUnavailable(modelAttempted: Bool)
+    }
+
+    private func recordSourceFailure(_ failure: AudioOriginalSourceError) async {
+        do { try await transcriptionQueries.recordOriginalSourceFailure(failure, pass: 2) }
+        catch { Log.warning("[AudioRefinement] Original source outcome metric unavailable", category: .processing) }
     }
 
     private func processSingleBatch(_ batchPath: String) async -> BatchResult {
-        // 1. Resolve batch audio path
-        let fileURL = storageRoot.appendingPathComponent(batchPath)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            Log.warning("[AudioRefinement] Batch file missing; keeping pass-1 text for recall: \(batchPath)", category: .processing)
-            return .failed(reason: "missing_file")
-        }
-
-        // 2. Decode M4A → PCM
-        let decoded: AudioFileDecoder.DecodedAudio
+        let originalSource: AudioOriginalSourceReceipt
         do {
-            decoded = try AudioFileDecoder.decodeToPCM(fileURL: fileURL)
+            originalSource = try await transcriptionQueries.originalSourceReceipt(forBatchPath: batchPath)
         } catch {
-            Log.error("[AudioRefinement] Failed to decode \(batchPath): \(error)", category: .processing)
-            return .failed(reason: "decode_failed")
+            let failure = (error as? AudioOriginalSourceError) ?? .unavailable
+            await recordSourceFailure(failure)
+            let reason = failure.rawValue
+            Log.warning("[AudioRefinement] Original recording source unavailable: \(reason)", category: .processing)
+            return .sourceUnavailable(modelAttempted: false)
         }
 
+        do {
+            return try await AudioTranscriptionMedia.withInput(path: batchPath,
+                legacyStartTime: Self.parseTimestampFromBatchPath(batchPath), storageRoot: storageRoot,
+                queries: transcriptionQueries, mediaStore: mediaStore) { [self] input in
+                    await processLoadedBatch(batchPath, originalSource: originalSource, input: input)
+                }
+        } catch is CancellationError {
+            return .sourceUnavailable(modelAttempted: false)
+        } catch {
+            return .sourceUnavailable(modelAttempted: false)
+        }
+    }
+
+    private func processLoadedBatch(_ batchPath: String, originalSource: AudioOriginalSourceReceipt,
+        input: AudioTranscriptionInput) async -> BatchResult {
         // 3. Get previous batch text for initial_prompt (text context only — no audio prepend,
         // which caused jumbled output because whisper got confused by audio starting mid-sentence).
         let neighbor = try? await transcriptionQueries.getNeighborBatchText(forBatchPath: batchPath)
@@ -195,47 +233,50 @@ public actor AudioRefinementManager {
         // 4. Always attempt refinement. Do not delete pass-1 unless this pass succeeds.
         let decision: AudioTranscriptionDecision
         do {
+            try input.checkValidity()
             decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
-                audioData: decoded.data,
-                sampleRate: decoded.sampleRate,
+                audioData: input.data,
+                sampleRate: input.sampleRate,
                 channels: 1,
                 transcriptionService: transcriptionService,
                 wordLevel: true,
                 initialPrompt: promptText
             )
+            // A backend may return normally after cancellation, including an
+            // empty result. Never retire retained text on that cancelled result.
+            try input.checkValidity()
+        } catch is CancellationError {
+            await recordSourceFailure(.cancelled)
+            return .sourceUnavailable(modelAttempted: true)
+        } catch is AudioTranscriptionMediaError {
+            return .sourceUnavailable(modelAttempted: true)
         } catch {
             Log.error("[AudioRefinement] Transcription failed for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "transcription_failed")
         }
         let transcription = decision.transcription
 
-        let adjustedWords = transcription.words
-        let adjustedText = transcription.text
-
         // 5. Check for empty result. Keep pass-1 for recoverability.
         guard decision.shouldStoreText else {
             return .silence(reason: "no_storable_text")
         }
 
-        // 7. Segment into sentences (using adjusted words/text so overlap is trimmed)
+        let owned: (words: [TranscriptionWord], text: String)
+        do { owned = try input.ownedTranscript(transcription) }
+        catch { return .sourceUnavailable(modelAttempted: true) }
+
+        // Segment only words owned by this exact logical window.
         let sentences = SentenceSegmenter.segment(
-            words: adjustedWords,
-            fullText: adjustedText,
-            fallbackDuration: decoded.duration
+            words: owned.words,
+            fullText: owned.text,
+            fallbackDuration: input.duration
         )
 
         guard !sentences.isEmpty else {
             return .silence(reason: "empty_sentence_segments")
         }
 
-        // 8. Parse batch start time from filename (batch_<timestamp>_...)
-        let batchStartTime: Date
-        if let ts = Self.parseTimestampFromBatchPath(batchPath) {
-            batchStartTime = ts
-        } else {
-            Log.error("[AudioRefinement] Cannot parse timestamp from \(batchPath)", category: .processing)
-            return .failed(reason: "bad_batch_filename")
-        }
+        let batchStartTime = input.startTime
 
         // Refinement changes text, not source audio. Reuse the raw batch.
         let transcriptAudioPath = AudioStoragePolicy.canonicalTranscriptPath(
@@ -266,7 +307,7 @@ public actor AudioRefinementManager {
                 text: sentence.text,
                 startTime: batchStartTime.addingTimeInterval(sentence.startTime),
                 endTime: batchStartTime.addingTimeInterval(sentence.endTime),
-                source: .microphone,
+                source: originalSource.source,
                 confidence: sentence.confidence,
                 words: sentence.words,
                 audioPath: transcriptAudioPath,
@@ -283,12 +324,23 @@ public actor AudioRefinementManager {
             return .silence(reason: "empty_replacement_batch")
         }
 
-        // 11. Atomically insert pass-2 records and remove pass-1 replacements.
+        // 11. Revalidate the original recording source and atomically append pass-2; earlier passes remain retained.
         do {
+            try await input.validateForPublication(queries: transcriptionQueries, path: batchPath)
             try await transcriptionQueries.replacePass1RecordsForBatch(
                 batchAudioPath: batchPath,
-                with: transcriptionsBatch
+                with: transcriptionsBatch,
+                originalSource: originalSource
             )
+        } catch is CancellationError {
+            await recordSourceFailure(.cancelled)
+            return .sourceUnavailable(modelAttempted: true)
+        } catch let error as AudioOriginalSourceError {
+            await recordSourceFailure(error)
+            Log.warning("[AudioRefinement] Original recording source changed: \(error.rawValue)", category: .processing)
+            return .sourceUnavailable(modelAttempted: true)
+        } catch is AudioTranscriptionMediaError {
+            return .sourceUnavailable(modelAttempted: true)
         } catch {
             Log.error("[AudioRefinement] Failed to replace records for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "replace_failed")

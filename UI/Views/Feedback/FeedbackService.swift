@@ -693,30 +693,6 @@ public final class FeedbackService {
         }
     }
 
-    // MARK: - Screenshot
-
-    /// Capture current screen (main display)
-    public func captureScreenshot() -> Data? {
-        guard let screen = NSScreen.main else { return nil }
-
-        let rect = screen.frame
-        guard let image = CGWindowListCreateImage(
-            rect,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
-            .bestResolution
-        ) else { return nil }
-
-        let nsImage = NSImage(cgImage: image, size: rect.size)
-        guard let tiffData = nsImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            return nil
-        }
-
-        return pngData
-    }
-
     // MARK: - Export
 
     /// Export diagnostics as a shareable text file

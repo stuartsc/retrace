@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import CoreGraphics
 import AppKit
 import Shared
@@ -72,6 +73,314 @@ final class TimelineEvidenceSelectionTests: XCTestCase {
         let pixel = try Self.pixel(image, x: 20)
         XCTAssertGreaterThan(pixel[0], 240)
         XCTAssertLessThan(pixel[2], 10)
+    }
+
+    func testRevisionRefreshClearsDeletedPixelsAndRetainedTextWithoutChangingCitation() async throws {
+        for retainedOnly in [false, true] {
+            let frame = try await insertFrame()
+            let store = try await database.activityStoreID()
+            let stored = try await database.currentScreenEvidence(frameID: frame.id, storeID: store)
+            let ref = try XCTUnwrap(stored).ref
+            var client = EvidenceClient.live(service: service(ImageProbe(image: try Self.image())))
+            if retainedOnly { client.resolve = { _ in .unavailable(.recordingMissing) } }
+            let model = EvidenceViewModel(client: client)
+            await model.openEvidence(.screen(ref))
+            XCTAssertNotNil(model.selectedFrame)
+            try await database.deleteFrame(id: frame.id)
+            await model.refreshCurrentRevision()
+            XCTAssertNil(model.selectedFrame)
+            XCTAssertNil(model.retainedSnapshot)
+            XCTAssertEqual(model.evidenceReference, .screen(ref))
+            guard case .unavailable = model.resolution else { return XCTFail("Deleted pixels remained published") }
+        }
+    }
+
+    func testRevisionRefreshRechecksCurrentPrivacyForTheSameSQLiteCitation() async throws {
+        let frame = try await insertFrame()
+        let config = WorkspacePrivacyFixture()
+        let probe = ImageProbe(image: try Self.image())
+        let service = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { await config.value }, imageReader: { _ in await probe.read() })
+        let model = EvidenceViewModel(client: .live(service: service))
+        await model.openSearchResult(try await hit())
+        let reference = try XCTUnwrap(model.evidenceReference)
+        XCTAssertNotNil(model.selectedFrame)
+        await config.exclude("com.test.authored")
+        await model.refreshCurrentRevision()
+        XCTAssertNil(model.selectedFrame)
+        XCTAssertNil(model.retainedSnapshot)
+        XCTAssertEqual(model.evidenceReference, reference)
+        assertUnavailable(model, reason: .notPermitted)
+        await config.exclude(nil)
+        try await commit(frame, text: "contract refined after privacy changed", x: 200)
+        await model.openEvidence(reference)
+        XCTAssertEqual(EvidenceRef.screen(try screen(model).ref), reference)
+        XCTAssertTrue(try screen(model).text?.fullText.contains("47000") == true)
+    }
+
+    func testWorkspaceTapeKeepsAcquiredSourceProofWhenAReplacementReusesIDAndTime() async throws {
+        let first = try importedStore(text: "contract source Alpha")
+        let second = try importedStore(text: "contract source Beta")
+        await configure(first)
+        let old = try await hit(source: .rewind)
+        let sourceAdapter = adapter!
+        let service = service(ImageProbe(image: try Self.image()))
+        let generation = try await service.sourceGeneration(source: .rewind)
+        let frame = FrameReference(id: old.id, timestamp: old.timestamp, segmentID: old.segmentID,
+            videoID: old.videoID, frameIndexInSegment: old.frameIndex, metadata: old.metadata, source: .rewind)
+        let tape = TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2,
+            workspaceSourceGeneration: generation)
+        let oldSelection = try XCTUnwrap(tape.workspaceSelection)
+        let model = UnifiedWorkspaceModel(evidence: EvidenceViewModel(client: .live(service: service)), latest: {
+            try await DashboardScreenshotIdentityPolicy.readRows(sourceGeneration: {
+                try await service.sourceGeneration(source: $0)
+            }) { try await sourceAdapter.getMostRecentFramesWithVideoInfo(limit: 10) }
+        }, search: { _ in [] }, track: { _ in })
+        let timeline = isolatedTimeline(client: .live(service: service))
+        timeline.frames = [tape]
+        model.onSourceInvalidated = { timeline.invalidateWorkspaceTape() }
+        await configure(second)
+        model.sourceDidChange()
+        XCTAssertTrue(timeline.frames.isEmpty, "Source invalidation must clear the old tape synchronously")
+        await model.refresh()
+        await model.selectTimelineFrame(oldSelection)
+        assertUnavailable(model.evidence, reason: .sourceDisconnected)
+        XCTAssertNil(model.presentedReference)
+        XCTAssertNil(model.evidence.selectedFrame)
+        XCTAssertNil(model.evidence.retainedSnapshot)
+    }
+
+    func testWorkspaceSearchNeverPublishesCurrentlyExcludedSQLiteSnippets() async throws {
+        _ = try await insertFrame()
+        let sourceAdapter = adapter!
+        let raw = try await sourceAdapter.search(query: SearchQuery(text: "contract", limit: 10))
+        XCTAssertFalse(raw.results.isEmpty, "The real FTS index still contains the excluded source")
+        let config = WorkspacePrivacyFixture()
+        await config.exclude("com.test.authored")
+        let service = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { await config.value }, imageReader: { _ in
+                XCTFail("Snippet admission must not decode screenshots")
+                throw EvidenceUnavailableReason.recordingMissing
+            })
+        let model = UnifiedWorkspaceModel(evidence: EvidenceViewModel(client: .live(service: service)),
+            latest: { [] }, search: { query in
+                try await sourceAdapter.search(query: SearchQuery(text: query, limit: 10)).results
+            }, track: { _ in })
+        var published: [String] = []
+        let observation = model.$searchResults.sink { published += $0.map(\.snippet) }
+        await model.submitSearch("contract")
+        XCTAssertTrue(model.searchResults.isEmpty)
+        XCTAssertTrue(published.isEmpty, "Denied snippets must never be briefly published before filtering")
+        withExtendedLifetime(observation) {}
+    }
+
+    func testWorkspaceRefreshRevokesCachedDeletedAndExcludedSQLiteSearchResults() async throws {
+        for deletion in [false, true] {
+            let frame = try await insertFrame()
+            let sourceAdapter = adapter!
+            let config = WorkspacePrivacyFixture()
+            let probe = ImageProbe(image: try Self.image())
+            let service = ProgressiveRecallService(database: database, adapter: adapter,
+                configuration: { await config.value }, imageReader: { _ in await probe.read() })
+            let model = UnifiedWorkspaceModel(evidence: EvidenceViewModel(client: .live(service: service)),
+                latest: { [] }, search: { query in
+                    try await sourceAdapter.search(query: SearchQuery(text: query, limit: 10)).results
+                }, track: { _ in })
+            await model.submitSearch("contract")
+            XCTAssertFalse(model.searchResults.isEmpty)
+            let selected = try XCTUnwrap(model.searchResults.first { $0.id == frame.id })
+            XCTAssertNotNil(selected.evidenceRef)
+            if deletion { try await database.deleteFrame(id: frame.id) }
+            else { await config.exclude("com.test.authored") }
+            await model.refresh()
+            XCTAssertFalse(model.searchResults.contains { $0.sourceQualifiedID == selected.sourceQualifiedID })
+            if !deletion { XCTAssertTrue(model.searchResults.isEmpty) }
+            let reads = await probe.count
+            XCTAssertEqual(reads, 0, "Checking snippets uses exact retained text, not image decoding")
+            model.close()
+        }
+    }
+
+    func testWorkspacePrivacyChangeDuringSearchAdmissionCannotPublishHeldSnippet() async throws {
+        _ = try await insertFrame()
+        let sourceAdapter = adapter!
+        let config = WorkspacePrivacyFixture()
+        let probe = ImageProbe(image: try Self.image())
+        let service = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { await config.value }, imageReader: { _ in await probe.read() })
+        let entered = expectation(description: "Search proof held before final privacy check")
+        let gate = ResolutionGate(entered: entered)
+        var client = EvidenceClient.live(service: service)
+        let reference = client.reference
+        client.reference = { result in
+            let ref = try await reference(result)
+            await gate.wait()
+            return ref
+        }
+        let model = UnifiedWorkspaceModel(evidence: EvidenceViewModel(client: client), latest: { [] },
+            search: { query in try await sourceAdapter.search(query: SearchQuery(text: query, limit: 10)).results },
+            track: { _ in })
+        let pending = Task { await model.submitSearch("contract") }
+        await fulfillment(of: [entered], timeout: 5)
+        XCTAssertTrue(model.searchResults.isEmpty)
+        await config.exclude("com.test.authored")
+        await gate.release(); await pending.value
+        XCTAssertTrue(model.searchResults.isEmpty)
+    }
+
+    func testWorkspacePrivacyRefreshClearsThePreviouslyAdmittedTapeContext() async throws {
+        _ = try await insertFrame()
+        let config = WorkspacePrivacyFixture()
+        let probe = ImageProbe(image: try Self.image())
+        let service = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { await config.value }, imageReader: { _ in await probe.read() })
+        let timeline = isolatedTimeline(client: .live(service: service))
+        let model = UnifiedWorkspaceModel(evidence: timeline.evidence, latest: { [] }, search: { _ in [] }, track: { _ in })
+        model.onSelectionInvalidated = { timeline.invalidateWorkspaceTape() }
+        await model.select(try await hit())
+        await timeline.anchorWorkspaceEvidence()
+        XCTAssertFalse(timeline.frames.isEmpty)
+        await config.exclude("com.test.authored")
+        await model.refresh()
+        XCTAssertTrue(timeline.frames.isEmpty, "Excluded app/window tape context must disappear with the image")
+        XCTAssertNil(model.presentedReference)
+    }
+
+    func testWorkspaceNeighbourhoodAdmitsEverySQLiteFrameBeforePublishingContext() async throws {
+        let selected = try await insertFrame()
+        let excluded = try await insertFrame(bundleID: "com.test.excluded")
+        for frame in [selected, excluded] { try await database.markFrameReadable(frameID: frame.id.value) }
+        let config = WorkspacePrivacyFixture()
+        await config.exclude("com.test.excluded")
+        let probe = ImageProbe(image: try Self.image())
+        let service = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { await config.value }, imageReader: { _ in await probe.read() })
+        let timeline = isolatedTimeline(client: .live(service: service), workspace: true)
+        let sourceAdapter = adapter!
+        let entered = expectation(description: "Real neighbourhood rows held before publication")
+        let gate = ResolutionGate(entered: entered)
+        timeline.test_windowFetchHooks.getFramesWithVideoInfo = { from, to, limit, filters, _ in
+            let rows = try await sourceAdapter.getFramesWithVideoInfo(from: from, to: to, limit: limit, filters: filters)
+            XCTAssertTrue(rows.contains { $0.frame.id == excluded.id })
+            await gate.wait()
+            return rows
+        }
+        let generation = try await service.sourceGeneration(source: .native)
+        await timeline.evidence.openFrame(selected, expectedSourceGeneration: generation)
+        let pending = Task { await timeline.anchorWorkspaceEvidence() }
+        await fulfillment(of: [entered], timeout: 5)
+        try await database.deleteFrame(id: excluded.id)
+        await gate.release(); await pending.value
+        XCTAssertEqual(timeline.frames.map(\.frame.id), [selected.id])
+        XCTAssertFalse(timeline.frames.contains { $0.frame.metadata.appBundleID == "com.test.excluded" })
+        // A retained, currently excluded neighbour is also denied independently
+        // of the deletion race above.
+        let denied = try await insertFrame(bundleID: "com.test.excluded")
+        try await database.markFrameReadable(frameID: denied.id.value)
+        timeline.test_windowFetchHooks.getFramesWithVideoInfo = { from, to, limit, filters, _ in
+            try await sourceAdapter.getFramesWithVideoInfo(from: from, to: to, limit: limit, filters: filters)
+        }
+        await timeline.anchorWorkspaceEvidence()
+        XCTAssertEqual(timeline.frames.map(\.frame.id), [selected.id])
+    }
+
+    func testWorkspaceSearchBatchRejectsEarlierAdmittedResultChangedWhileLaterResultWaits() async throws {
+        for deletion in [false, true] {
+            let first = try await insertFrame(bundleID: "com.test.batch.first")
+            let second = try await insertFrame(bundleID: "com.test.batch.second")
+            let sourceAdapter = adapter!
+            let config = WorkspacePrivacyFixture()
+            let probe = WorkspaceBatchAdmissionProbe()
+            let image = try Self.image()
+            let service = ProgressiveRecallService(database: database, adapter: adapter,
+                configuration: { await config.value }, imageReader: { _ in image })
+            let entered = expectation(description: "Second result held after first was fully admitted")
+            let gate = ResolutionGate(entered: entered)
+            defer { Task { await gate.release() } }
+            var client = EvidenceClient.live(service: service)
+            let reference = client.reference
+            client.reference = { result in
+                let admitted = try await reference(result)
+                await probe.noteReference(result.id)
+                if result.id == second.id { await gate.wait() }
+                return admitted
+            }
+            let model = UnifiedWorkspaceModel(evidence: EvidenceViewModel(client: client), latest: { [] },
+                search: { query in
+                    let page = try await sourceAdapter.search(query: SearchQuery(text: query, limit: 100))
+                    let pair = page.results.filter { $0.id == first.id || $0.id == second.id }
+                        .sorted { $0.id.value < $1.id.value }
+                    XCTAssertEqual(pair.count, 2)
+                    return pair
+                }, track: { _ in })
+            var published: [FrameID] = []
+            let observation = model.$searchResults.sink { published += $0.map(\.id) }
+            let pending = Task { await model.submitSearch("contract") }
+            await fulfillment(of: [entered], timeout: 5)
+            let checks = await probe.referenceCount(first.id)
+            XCTAssertEqual(checks, 2, "A must pass both proof reads before B is suspended")
+            if deletion { try await database.deleteFrame(id: first.id) }
+            else { await config.exclude("com.test.batch.first") }
+            await gate.release(); await pending.value
+            XCTAssertTrue(model.searchResults.isEmpty, "A changed during B's check; the entire batch must be discarded")
+            XCTAssertTrue(published.isEmpty, "The stale batch must never briefly appear")
+            withExtendedLifetime(observation) {}
+            model.close()
+        }
+    }
+
+    func testWorkspaceTapeBatchRejectsEarlierNeighbourChangedBeforeFinalPublication() async throws {
+        for deletion in [false, true] {
+            for suspendFinalSelectedRead in [false, true] {
+                let selected = try await insertFrame(bundleID: "com.test.batch.selected")
+                let first = try await insertFrame(bundleID: "com.test.batch.first")
+                let second = try await insertFrame(bundleID: "com.test.batch.second")
+                for frame in [selected, first, second] { try await database.markFrameReadable(frameID: frame.id.value) }
+                let config = WorkspacePrivacyFixture()
+                let probe = WorkspaceBatchAdmissionProbe()
+                let image = try Self.image()
+                let service = ProgressiveRecallService(database: database, adapter: adapter,
+                    configuration: { await config.value }, imageReader: { _ in image })
+                let entered = expectation(description: suspendFinalSelectedRead
+                    ? "Final selected-frame read held after neighbours admitted" : "Second neighbour held after first admitted")
+                let gate = ResolutionGate(entered: entered)
+                defer { Task { await gate.release() } }
+                var client = EvidenceClient.live(service: service)
+                let retained = client.retainedScreen
+                client.retainedScreen = { reference in
+                    let snapshot = await retained(reference)
+                    let count = await probe.noteRetained(reference.frameID)
+                    if (suspendFinalSelectedRead && reference.frameID == selected.id && count == 2) ||
+                        (!suspendFinalSelectedRead && reference.frameID == second.id) { await gate.wait() }
+                    return snapshot
+                }
+                let timeline = isolatedTimeline(client: client, workspace: true)
+                let sourceAdapter = adapter!
+                timeline.test_windowFetchHooks.getFramesWithVideoInfo = { from, to, limit, filters, _ in
+                    let rows = try await sourceAdapter.getFramesWithVideoInfo(from: from, to: to, limit: limit, filters: filters)
+                    let batch = rows.filter { [selected.id, first.id, second.id].contains($0.frame.id) }
+                        .sorted { $0.frame.id.value < $1.frame.id.value }
+                    XCTAssertEqual(batch.count, 3)
+                    return batch
+                }
+                let generation = try await service.sourceGeneration(source: .native)
+                await timeline.evidence.openFrame(selected, expectedSourceGeneration: generation)
+                var published: [FrameID] = []
+                let observation = timeline.$frames.sink { published += $0.map(\.frame.id) }
+                let pending = Task { await timeline.anchorWorkspaceEvidence() }
+                await fulfillment(of: [entered], timeout: 5)
+                let firstChecks = await probe.retainedCount(first.id)
+                XCTAssertEqual(firstChecks, 1, "A must be admitted before the later suspension")
+                if deletion { try await database.deleteFrame(id: first.id) }
+                else { await config.exclude("com.test.batch.first") }
+                await gate.release(); await pending.value
+                XCTAssertEqual(timeline.frames.map(\.frame.id), [selected.id], "Only the independently admitted target may remain")
+                XCTAssertFalse(published.contains(first.id))
+                XCTAssertFalse(published.contains(second.id), "Discard the whole neighbour batch on a changed stamp")
+                withExtendedLifetime(observation) {}
+                timeline.handleTimelineClosed()
+            }
+        }
     }
 
     func testDuplicateInFlightRequestsJoinOneRealResolution() async throws {
@@ -611,9 +920,10 @@ final class TimelineEvidenceSelectionTests: XCTestCase {
         var closes = 0
     }
 
-    private func isolatedTimeline(client: EvidenceClient) -> SimpleTimelineViewModel {
+    private func isolatedTimeline(client: EvidenceClient, workspace: Bool = false) -> SimpleTimelineViewModel {
         SimpleTimelineViewModel(coordinator: AppCoordinator(), evidenceClient: client,
-            transientDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("unused-timeline-\(UUID())"))
+            transientDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("unused-timeline-\(UUID())"),
+            workspace: workspace)
     }
 
     private func service(_ probe: ImageProbe) -> ProgressiveRecallService {
@@ -621,9 +931,9 @@ final class TimelineEvidenceSelectionTests: XCTestCase {
             imageReader: { _ in await probe.read() })
     }
 
-    private func insertFrame() async throws -> FrameReference {
-        let metadata = FrameMetadata(appBundleID: "com.test.authored", appName: "Authored", windowName: "Contract")
-        let segment = try await database.insertSegment(bundleID: "com.test.authored", startDate: capturedAt,
+    private func insertFrame(bundleID: String = "com.test.authored") async throws -> FrameReference {
+        let metadata = FrameMetadata(appBundleID: bundleID, appName: "Authored", windowName: "Contract")
+        let segment = try await database.insertSegment(bundleID: bundleID, startDate: capturedAt,
             endDate: capturedAt, windowName: "Contract", browserUrl: nil, type: 0)
         let id = try await database.insertFrame(FrameReference(id: .init(value: 0), timestamp: capturedAt,
             segmentID: .init(value: segment), frameIndexInSegment: 0, metadata: metadata))
@@ -745,4 +1055,21 @@ final class TimelineEvidenceSelectionTests: XCTestCase {
         let pointer = try XCTUnwrap(CFDataGetBytePtr(data))
         return Array(UnsafeBufferPointer(start: pointer + x * 4, count: 4))
     }
+}
+
+private actor WorkspacePrivacyFixture {
+    private(set) var value = CaptureConfig()
+    func exclude(_ bundleID: String?) { value = CaptureConfig(excludedAppBundleIDs: Set(bundleID.map { [$0] } ?? [])) }
+}
+
+private actor WorkspaceBatchAdmissionProbe {
+    private var references: [FrameID: Int] = [:]
+    private var retained: [FrameID: Int] = [:]
+    func noteReference(_ id: FrameID) { references[id, default: 0] += 1 }
+    func referenceCount(_ id: FrameID) -> Int { references[id, default: 0] }
+    func noteRetained(_ id: FrameID) -> Int {
+        retained[id, default: 0] += 1
+        return retained[id, default: 0]
+    }
+    func retainedCount(_ id: FrameID) -> Int { retained[id, default: 0] }
 }

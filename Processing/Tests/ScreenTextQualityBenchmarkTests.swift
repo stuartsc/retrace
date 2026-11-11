@@ -1,5 +1,7 @@
 import Accelerate
 import CoreGraphics
+import Compression
+import CryptoKit
 import CoreText
 import Foundation
 import Darwin
@@ -11,6 +13,34 @@ import XCTest
 
 /// Opt-in, authored/offscreen comparisons. No personal screenshots or live store.
 final class ScreenTextQualityBenchmarkTests: XCTestCase {
+    func testAuthoredChangedTilesReplayCriticalChangesAndRejectWrongBaseOrTruncation() throws {
+        let first = try render(lines: ["Invoice ZX842619 total 47000.00", "Approval NOT GRANTED"],
+            font: "Menlo", size: 14, dark: false, coloured: false)
+        let changed = try render(lines: ["Invoice ZX842619 total 48000.00", "Approval GRANTED"],
+            font: "Menlo", size: 14, dark: false, coloured: false)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tile-replay-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var previous: Data?
+        for (index, frame) in [first, first, changed, first].enumerated() {
+            let patch = try AuthoredChangedTilePatch.make(previous: previous, current: frame.imageData,
+                width: frame.width, height: frame.height)
+            let encoded = try JSONEncoder().encode(patch)
+            let file = root.appendingPathComponent("\(index).json")
+            try encoded.write(to: file, options: .withoutOverwriting)
+            let reloaded = try JSONDecoder().decode(AuthoredChangedTilePatch.self, from: Data(contentsOf: file))
+            let decoded = try reloaded.replay(previous: previous)
+            XCTAssertEqual(decoded, frame.imageData, "Every pixel must survive digit/status changes and reversion")
+            if index == 1 { XCTAssertTrue(reloaded.tiles.isEmpty, "Unchanged pixels need no tile payload") }
+            if index == 2 {
+                XCTAssertThrowsError(try reloaded.replay(previous: changed.imageData), "Wrong base cannot yield a plausible wrong frame")
+                try Data(encoded.dropLast()).write(to: file)
+                XCTAssertThrowsError(try JSONDecoder().decode(AuthoredChangedTilePatch.self, from: Data(contentsOf: file)))
+            }
+            previous = decoded
+        }
+    }
+
     func testAuthoredScreenTextAndCompressionComparison() async throws {
         guard let path = ProcessInfo.processInfo.environment["RETRACE_OCR_QUALITY_EXPORT"] else {
             throw XCTSkip("Set RETRACE_OCR_QUALITY_EXPORT to run the authored quality/codec comparison")
@@ -83,7 +113,32 @@ final class ScreenTextQualityBenchmarkTests: XCTestCase {
             XCTAssertEqual(restored, source.imageData, "LZFSE must preserve every source byte")
             row["lzfse"] = ["rawBytes": source.imageData.count, "compressedBytes": lossless.count,
                 "compressMs": milliseconds(compressionTime), "decompressMs": milliseconds(decompressionTime)]
-            for quality: Float in [0.7, 0.9] {
+            let changedLines = lines.map { $0.replacingOccurrences(of: "47000.00", with: "48000.00")
+                .replacingOccurrences(of: "Approved on", with: "NOT approved on") }
+            let changed = try render(lines: changedLines, font: font, size: size, dark: dark, coloured: coloured)
+            var tilePrevious: Data?, tileBytes = 0, tileChangedCounts: [Int] = []
+            var tileEncodeMs: [Double] = [], tileDecodeMs: [Double] = []
+            let tileCPUStart = cpuMilliseconds()
+            for (index, image) in [source, source, changed, source].enumerated() {
+                let tileStart = ContinuousClock.now
+                let patch = try AuthoredChangedTilePatch.make(previous: tilePrevious, current: image.imageData,
+                    width: image.width, height: image.height)
+                let bytes = try JSONEncoder().encode(patch)
+                let file = root.appendingPathComponent("\(name)-tile-\(index).json")
+                try bytes.write(to: file, options: .withoutOverwriting)
+                tileEncodeMs.append(milliseconds(tileStart.duration(to: .now)))
+                tileBytes += bytes.count; tileChangedCounts.append(patch.tiles.count)
+                let readStart = ContinuousClock.now
+                let reopened = try JSONDecoder().decode(AuthoredChangedTilePatch.self, from: Data(contentsOf: file))
+                tilePrevious = try reopened.replay(previous: tilePrevious)
+                tileDecodeMs.append(milliseconds(readStart.duration(to: .now)))
+                XCTAssertEqual(tilePrevious, image.imageData)
+            }
+            row["lossless-changed-tiles-prototype"] = ["bytesForFourObservationsIncludingJSON": tileBytes,
+                "changedTiles": tileChangedCounts, "encodeAndWriteMs": tileEncodeMs,
+                "readAndDecodeMs": tileDecodeMs, "processCPUMilliseconds": cpuMilliseconds() - tileCPUStart,
+                "pattern": "base, unchanged, critical digit/status change, revert", "pixelExact": true]
+            for quality: Float in [0.5, 0.7, 0.9] {
                 let directory = root.appendingPathComponent("\(name)-\(quality)")
                 let storage = StorageManager(storageRoot: directory, encoderConfig: VideoEncoderConfig(quality: quality))
                 try await storage.initialize(config: StorageConfig(storageRootPath: directory.path))
@@ -110,7 +165,7 @@ final class ScreenTextQualityBenchmarkTests: XCTestCase {
         let report: [String: Any] = ["schema": 1, "authoredOnly": true,
             "baselineSource": "d1b367f", "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "legacyCharacterEdits": legacyErrors, "nativeCharacterEdits": nativeErrors,
-            "scope": "Four sparse authored 4K scenes; three OCR repetitions. Eight identical frames per codec sample. Not foreground latency, representative compression ratios or installed acceptance.",
+            "scope": "Four sparse authored 4K scenes; three OCR repetitions. Eight identical HEVC frames versus four changed-tile observations are separate workloads, not a codec winner comparison. Includes default 0.5 and candidate 0.7/0.9 HEVC; tile prototype requires a prior image and has no production index/recovery implementation. Not foreground latency, energy, representative compression ratios or installed acceptance.",
             "samples": samples]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output, options: .withoutOverwriting)
         XCTAssertLessThan(nativeErrors, legacyErrors, "Native pixels should improve the authored comparison; inspect per-scene regressions too")
@@ -341,4 +396,85 @@ private final class LegacyScaledOCRBaseline: OCRProtocol, @unchecked Sendable {
             intent: .defaultIntent
         )
     }
+}
+
+// Test/developer comparison only; never used as an archive reader or writer.
+// Each small tile is decoded into an exactly bounded buffer, then the complete
+// frame hash and prior-frame hash reject corruption, omissions and wrong bases.
+private struct AuthoredChangedTilePatch: Codable {
+    struct Tile: Codable { let index: Int; let bytes: Data }
+    let version: Int
+    let width: Int
+    let height: Int
+    let previousSHA256: String?
+    let currentSHA256: String
+    let tiles: [Tile]
+    private static let side = 128
+    private enum Invalid: Error { case dimensions, base, tile, checksum }
+
+    static func make(previous: Data?, current: Data, width: Int, height: Int) throws -> Self {
+        let size = try byteCount(width, height)
+        guard current.count == size, previous == nil || previous?.count == size else { throw Invalid.dimensions }
+        let columns = (width + side - 1) / side, rows = (height + side - 1) / side
+        var tiles: [Tile] = []
+        for index in 0..<(columns * rows) {
+            let new = tileBytes(current, index: index, width: width, height: height)
+            if let previous, tileBytes(previous, index: index, width: width, height: height) == new { continue }
+            tiles.append(Tile(index: index, bytes: try (new as NSData).compressed(using: .lzfse) as Data))
+        }
+        return Self(version: 1, width: width, height: height, previousSHA256: previous.map(hash),
+            currentSHA256: hash(current), tiles: tiles)
+    }
+
+    func replay(previous: Data?) throws -> Data {
+        let size = try Self.byteCount(width, height)
+        guard version == 1, previousSHA256 == previous.map(Self.hash),
+              previous == nil || previous?.count == size else { throw Invalid.base }
+        let columns = (width + Self.side - 1) / Self.side, rows = (height + Self.side - 1) / Self.side
+        let count = columns * rows
+        guard tiles.count <= count, Set(tiles.map(\.index)).count == tiles.count,
+              tiles.allSatisfy({ (0..<count).contains($0.index) }),
+              previous != nil || tiles.count == count else { throw Invalid.tile }
+        var result = previous ?? Data(count: size)
+        for tile in tiles {
+            let x = tile.index % columns * Self.side, y = tile.index / columns * Self.side
+            let tileWidth = min(Self.side, width - x), tileHeight = min(Self.side, height - y)
+            let rawSize = tileWidth * tileHeight * 4
+            guard !tile.bytes.isEmpty, tile.bytes.count <= rawSize + 1_024 else { throw Invalid.tile }
+            var restored = Data(count: rawSize)
+            let written = restored.withUnsafeMutableBytes { output in
+                tile.bytes.withUnsafeBytes { input in
+                    compression_decode_buffer(output.bindMemory(to: UInt8.self).baseAddress!, rawSize,
+                        input.bindMemory(to: UInt8.self).baseAddress!, input.count, nil, COMPRESSION_LZFSE)
+                }
+            }
+            guard written == rawSize else { throw Invalid.tile }
+            for row in 0..<tileHeight {
+                let destination = ((y + row) * width + x) * 4
+                let source = row * tileWidth * 4
+                result.replaceSubrange(destination..<(destination + tileWidth * 4),
+                    with: restored[source..<(source + tileWidth * 4)])
+            }
+        }
+        guard Self.hash(result) == currentSHA256 else { throw Invalid.checksum }
+        return result
+    }
+
+    private static func byteCount(_ width: Int, _ height: Int) throws -> Int {
+        guard (1...8_192).contains(width), (1...8_192).contains(height), width * height <= 67_108_864 else {
+            throw Invalid.dimensions
+        }
+        return width * height * 4
+    }
+    private static func tileBytes(_ data: Data, index: Int, width: Int, height: Int) -> Data {
+        let columns = (width + side - 1) / side, x = index % columns * side, y = index / columns * side
+        let tileWidth = min(side, width - x), tileHeight = min(side, height - y)
+        var result = Data(); result.reserveCapacity(tileWidth * tileHeight * 4)
+        for row in 0..<tileHeight {
+            let offset = ((y + row) * width + x) * 4
+            result.append(data[offset..<(offset + tileWidth * 4)])
+        }
+        return result
+    }
+    private static func hash(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
 }

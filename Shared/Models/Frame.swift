@@ -47,6 +47,12 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
     public let captureContext: ActivityContext?
     public let captureMonotonicTime: TimeInterval?
     public let activityIdentity: ActivityCaptureIdentity?
+    /// The complete capture-time privacy policy, represented without its rule
+    /// strings. Nil identifies legacy/unverified capture, never composition proof.
+    public let capturePolicySHA256: String?
+    public let pixelReceipt: CapturePixelReceipt?
+    public let captureText: CaptureTextObservation?
+    public let captureGroup: CaptureGroupFrameReceipt?
 
     public init(
         appBundleID: String? = nil,
@@ -57,7 +63,11 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
         displayID: UInt32 = 0,
         captureContext: ActivityContext? = nil,
         captureMonotonicTime: TimeInterval? = nil,
-        activityIdentity: ActivityCaptureIdentity? = nil
+        activityIdentity: ActivityCaptureIdentity? = nil,
+        capturePolicySHA256: String? = nil,
+        pixelReceipt: CapturePixelReceipt? = nil,
+        captureText: CaptureTextObservation? = nil,
+        captureGroup: CaptureGroupFrameReceipt? = nil
     ) {
         self.appBundleID = appBundleID
         self.appName = appName
@@ -67,14 +77,27 @@ public struct FrameMetadata: Codable, Sendable, Equatable {
         self.displayID = displayID
         self.captureContext = captureContext; self.captureMonotonicTime = captureMonotonicTime
         self.activityIdentity = activityIdentity
+        self.capturePolicySHA256 = capturePolicySHA256
+        self.pixelReceipt = pixelReceipt
+        self.captureText = captureText
+        self.captureGroup = captureGroup
     }
 
     public static let empty = FrameMetadata()
 
+    public func linkingCaptureGroup(_ receipt: CaptureGroupFrameReceipt?) -> FrameMetadata {
+        .init(appBundleID: appBundleID, appName: appName, windowName: windowName, browserURL: browserURL,
+              redactionReason: redactionReason, displayID: displayID, captureContext: captureContext,
+              captureMonotonicTime: captureMonotonicTime, activityIdentity: activityIdentity,
+              capturePolicySHA256: capturePolicySHA256, pixelReceipt: pixelReceipt, captureText: captureText,
+              captureGroup: receipt)
+    }
+
     public func linkingActivity(_ identity: ActivityCaptureIdentity?) -> FrameMetadata {
         .init(appBundleID: appBundleID, appName: appName, windowName: windowName, browserURL: browserURL,
               redactionReason: redactionReason, displayID: displayID, captureContext: captureContext,
-              captureMonotonicTime: captureMonotonicTime, activityIdentity: identity)
+              captureMonotonicTime: captureMonotonicTime, activityIdentity: identity,
+              capturePolicySHA256: capturePolicySHA256, pixelReceipt: pixelReceipt, captureText: captureText, captureGroup: captureGroup)
     }
 }
 

@@ -44,6 +44,11 @@ public actor FrameProcessingQueue {
     private let storage: StorageProtocol
     private let processing: ProcessingProtocol
     private let search: SearchProtocol
+    private let extractionCommitted: @Sendable () async -> Void
+    private let governor: (any BackgroundProcessingProtocol)?
+    private var consecutiveFreshAdmissions = 0
+    private var pendingAdmissions: [FrameProcessingLane: (id: UUID, task: Task<Void, Never>)] = [:]
+    private var readyAdmissions: [FrameProcessingLane: BackgroundProcessingPermit] = [:]
 
     private let config: ProcessingQueueConfig
     private var workers: [Task<Void, Never>] = []
@@ -108,13 +113,17 @@ public actor FrameProcessingQueue {
         storage: StorageProtocol,
         processing: ProcessingProtocol,
         search: SearchProtocol,
-        config: ProcessingQueueConfig = .default
+        config: ProcessingQueueConfig = .default,
+        extractionCommitted: @escaping @Sendable () async -> Void = {},
+        governor: (any BackgroundProcessingProtocol)? = nil
     ) {
         self.databaseManager = database
         self.storage = storage
         self.processing = processing
         self.search = search
         self.config = config
+        self.extractionCommitted = extractionCommitted
+        self.governor = governor
     }
 
     // MARK: - Power Configuration
@@ -260,6 +269,106 @@ public actor FrameProcessingQueue {
         return QueuedFrame(queueID: result.queueID, frameID: result.frameID, retryCount: result.retryCount)
     }
 
+    private func dequeueAdmitted() async throws -> (QueuedFrame, BackgroundProcessingPermit?)? {
+        guard let governor else { return try await dequeue().map { ($0, nil) } }
+        let available = try await databaseManager.pendingFrameProcessingLanes()
+        for lane in Array(pendingAdmissions.keys) where !available.contains(lane) {
+            let pending = pendingAdmissions.removeValue(forKey: lane)
+            pending?.task.cancel()
+            if let permit = readyAdmissions.removeValue(forKey: lane) {
+                permit.cancellation.cancel()
+                await governor.release(permit)
+            }
+            await pending?.task.value
+        }
+        let lanes: [FrameProcessingLane] = consecutiveFreshAdmissions >= 3
+            ? [.manual, .historical, .current] : [.manual, .current, .historical]
+        for lane in lanes where available.contains(lane) {
+            try Task.checkCancellation()
+            guard let permit = readyAdmissions.removeValue(forKey: lane) else {
+                if pendingAdmissions[lane] == nil {
+                    let id = UUID()
+                    let kind: BackgroundProcessingKind = lane == .current ? .freshOCR : .historicalOCR
+                    let task = Task { [weak self] in
+                        do {
+                            let permit = try await BackgroundProcessingContext.$explicitRequest.withValue(lane == .manual) {
+                                try await governor.acquire(kind)
+                            }
+                            guard let self else { await governor.release(permit); return }
+                            await self.receiveAdmission(permit, lane: lane, id: id)
+                        } catch {
+                            await self?.admissionFailed(lane: lane, id: id)
+                        }
+                    }
+                    pendingAdmissions[lane] = (id, task)
+                }
+                continue
+            }
+            let admitted = pendingAdmissions.removeValue(forKey: lane)
+            await admitted?.task.value
+            do {
+                try Task.checkCancellation()
+                guard !permit.cancellation.isCancelled else { throw CancellationError() }
+                guard let result = try await databaseManager.dequeueFrameForProcessing(lane: lane) else {
+                    await governor.release(permit)
+                    continue
+                }
+                currentQueueDepth = max(0, currentQueueDepth - 1)
+                if lane == .current { consecutiveFreshAdmissions = min(3, consecutiveFreshAdmissions + 1) }
+                if lane == .historical { consecutiveFreshAdmissions = 0 }
+                return (QueuedFrame(queueID: result.queueID, frameID: result.frameID,
+                                    retryCount: result.retryCount, lane: lane), permit)
+            } catch {
+                await governor.release(permit)
+                if error is CancellationError, !Task.isCancelled { continue }
+                throw error
+            }
+        }
+        return nil
+    }
+
+    private func receiveAdmission(_ permit: BackgroundProcessingPermit, lane: FrameProcessingLane, id: UUID) async {
+        guard isRunning, pendingAdmissions[lane]?.id == id, !Task.isCancelled else {
+            permit.cancellation.cancel()
+            await governor?.release(permit)
+            return
+        }
+        readyAdmissions[lane] = permit
+        await wakeSignal.notify()
+    }
+
+    private func admissionFailed(lane: FrameProcessingLane, id: UUID) async {
+        if pendingAdmissions[lane]?.id == id { pendingAdmissions.removeValue(forKey: lane) }
+        // A closed/full governor retries on the worker's bounded one-second
+        // cadence, never a failure-notify-retry loop that burns the CPU budget.
+    }
+
+    private func clearAdmissions() async {
+        let requests = Array(pendingAdmissions.values)
+        let permits = Array(readyAdmissions.values)
+        pendingAdmissions.removeAll(); readyAdmissions.removeAll()
+        requests.forEach { $0.task.cancel() }
+        for permit in permits {
+            permit.cancellation.cancel()
+            await governor?.release(permit)
+        }
+        for request in requests { await request.task.value }
+    }
+
+    private func processAdmittedFrame(_ frame: QueuedFrame, permit: BackgroundProcessingPermit?) async throws -> ProcessFrameResult {
+        do {
+            let result = try await BackgroundProcessingContext.$permit.withValue(permit) {
+                try BackgroundProcessingContext.checkCancellation()
+                return try await processFrame(frame)
+            }
+            if let permit { await governor?.release(permit) }
+            return result
+        } catch {
+            if let permit { await governor?.release(permit) }
+            throw error
+        }
+    }
+
     /// Get current queue depth
     public func getQueueDepth() async throws -> Int {
         return try await databaseManager.getProcessingQueueDepth()
@@ -312,6 +421,7 @@ public actor FrameProcessingQueue {
         workers.removeAll()
         await wakeSignal.notify()
         for worker in stoppingWorkers { await worker.value }
+        await clearAdmissions()
         memoryReportTask?.cancel()
         memoryReportTask = nil
 
@@ -329,6 +439,7 @@ public actor FrameProcessingQueue {
         while isRunning && !Task.isCancelled {
             // Check if OCR is disabled globally
             guard ocrEnabled else {
+                await clearAdmissions()
                 try? await Task.sleep(for: .nanoseconds(Int64(1_000_000_000)), clock: .continuous) // 1s poll when disabled
                 if Task.isCancelled { break }
                 continue
@@ -336,6 +447,7 @@ public actor FrameProcessingQueue {
 
             // Check if paused due to battery/low-power policy
             guard !isPausedForPowerState else {
+                await clearAdmissions()
                 try? await Task.sleep(for: .nanoseconds(Int64(2_000_000_000)), clock: .continuous) // 2s poll when paused by power policy
                 if Task.isCancelled { break }
                 continue
@@ -343,6 +455,7 @@ public actor FrameProcessingQueue {
 
             // Wait for database to be ready before attempting any operations
             guard await databaseManager.isReady() else {
+                await clearAdmissions()
                 // Log.debug("[Queue-DIAG] Worker \(id) waiting for database to be ready", category: .processing)
                 try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 500ms
                 if Task.isCancelled { break }
@@ -350,6 +463,7 @@ public actor FrameProcessingQueue {
             }
 
             if shouldBackOffForResidentMemory() {
+                await clearAdmissions()
                 try? await Task.sleep(for: .seconds(memoryBackoffSeconds), clock: .continuous)
                 if Task.isCancelled { break }
                 continue
@@ -358,7 +472,7 @@ public actor FrameProcessingQueue {
             do {
                 // Snapshot before the database await so an enqueue cannot be lost.
                 let generation = await wakeSignal.snapshot()
-                guard let queuedFrame = try await dequeue() else {
+                guard let (queuedFrame, permit) = try await dequeueAdmitted() else {
                     await wakeSignal.wait(after: generation, timeout: .seconds(1))
                     continue
                 }
@@ -369,8 +483,7 @@ public actor FrameProcessingQueue {
                 let startTime = Date()
                 let pacingStart = ContinuousClock.now
                 do {
-                    try Task.checkCancellation()
-                    let result = try await processFrame(queuedFrame)
+                    let result = try await processAdmittedFrame(queuedFrame, permit: permit)
 
                     // Handle deferred processing result
                     if case .deferredSourceNotReady = result {
@@ -378,7 +491,7 @@ public actor FrameProcessingQueue {
                         // The database expires automatic priority after 60 seconds
                         // of capture age, so old sources still join historical FIFO.
                         try await databaseManager.releaseFrameProcessingClaim(
-                            frameID: queuedFrame.frameID, priority: 10, retryCount: queuedFrame.retryCount
+                            frameID: queuedFrame.frameID, priority: queuedFrame.retryPriority, retryCount: queuedFrame.retryCount
                         )
                         currentQueueDepth += 1
                         try? await Task.sleep(for: .nanoseconds(Int64(500_000_000)), clock: .continuous) // 500ms before next attempt
@@ -399,9 +512,10 @@ public actor FrameProcessingQueue {
 
                 } catch is CancellationError {
                     try await databaseManager.releaseFrameProcessingClaim(
-                        frameID: queuedFrame.frameID, priority: 10, retryCount: queuedFrame.retryCount
+                        frameID: queuedFrame.frameID, priority: queuedFrame.retryPriority, retryCount: queuedFrame.retryCount
                     )
-                    break
+                    if Task.isCancelled { break }
+                    continue
                 } catch {
                     totalFailed += 1
                     relieveMallocPressure()
@@ -474,13 +588,21 @@ public actor FrameProcessingQueue {
         let capturedFrame: CapturedFrame
         let isVideoFinalized = frameWithInfo.videoInfo?.isVideoFinalized ?? true
         let storageRoot = await storage.getStorageDirectory()
-        let walFramesURL = storageRoot.appendingPathComponent("wal/active_segment_\(actualSegmentID.value)/frames.bin")
-        let hasWALSource = storage is StorageManager && FileManager.default.fileExists(atPath: walFramesURL.path)
-        var walFrame: CapturedFrame?
-        if hasWALSource || !isVideoFinalized {
-            walFrame = try await readFrameFromWAL(
-                frameID: frameID, segmentID: actualSegmentID, frameIndex: frameRef.frameIndexInSegment
-            )
+        // Recovery can move the archive into a new video while the original
+        // remains in its source WAL. Locate original pixels by verified frame
+        // identity, not the mutable archive path or an ordinal fallback.
+        let walFrame: CapturedFrame?
+        do {
+            walFrame = try await storage.readOriginalFrameForProcessing(
+                sourceStoreID: databaseManager.originalStoreID(), frame: frameRef,
+                expectedWidth: videoSegment.width, expectedHeight: videoSegment.height)
+        } catch let error as ExactFrameReadError {
+            switch error {
+            case .cancelled: throw CancellationError()
+            case .frameFinalising: return .deferredSourceNotReady
+            case .recordingMissing: throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
+            case .integrityFailure: throw FrameProcessingFailure.mediaUnavailable(.integrityFailure)
+            }
         }
         if let walFrame {
             capturedFrame = walFrame
@@ -514,7 +636,7 @@ public actor FrameProcessingQueue {
         }
 
         // The database already claimed the frame atomically when it was dequeued.
-        try Task.checkCancellation()
+        try BackgroundProcessingContext.checkCancellation()
 
         let tFrame = CFAbsoluteTimeGetCurrent()
 
@@ -523,7 +645,7 @@ public actor FrameProcessingQueue {
         let tOCR: CFAbsoluteTime
         do {
             let extractedText = try await processing.extractText(from: capturedFrame)
-            try Task.checkCancellation()
+            try BackgroundProcessingContext.checkCancellation()
             tOCR = CFAbsoluteTimeGetCurrent()
             // Search text, highlight regions and completion become visible together.
             _ = try await databaseManager.commitFrameOCR(
@@ -536,11 +658,17 @@ public actor FrameProcessingQueue {
             throw error
         }
         await recordOCRSourceMetric(source: pixelSource, outcome: "completed")
+        // This is a coalesced wake owned by the worker, not a detached per-frame
+        // inference. The optional derived index sees only durable extractions.
+        await extractionCommitted()
 
         let tDone = CFAbsoluteTimeGetCurrent()
         Log.recordLatency("ocr_frame_processing", valueMs: (tDone - t0) * 1000, category: .processing)
         // Separate the backlog from current capture latency; timestamps contain no screen text.
         let ageMs = max(0, Date().timeIntervalSince(frameRef.timestamp) * 1000)
+        // Keep the complete completion distribution; becoming late must not
+        // remove a first-pass observation from the freshness denominator.
+        Log.recordLatency("capture_to_search_all_completed", valueMs: ageMs, category: .processing)
         Log.recordLatency(ageMs < 60_000 ? "capture_to_search_recent" : "capture_to_search_backlog",
                           valueMs: ageMs, category: .processing)
         Log.info("[Queue-TIMING] Frame \(frameID): prep=\(String(format: "%.0f", (tPrep-t0)*1000))ms frame=\(String(format: "%.0f", (tFrame-tPrep)*1000))ms ocr=\(String(format: "%.0f", (tOCR-tFrame)*1000))ms index=\(String(format: "%.0f", (tDone-tOCR)*1000))ms total=\(String(format: "%.0f", (tDone-t0)*1000))ms size=\(capturedFrame.width)x\(capturedFrame.height)", category: .processing)
@@ -561,56 +689,6 @@ public actor FrameProcessingQueue {
             throw ProcessingError.invalidVideoPath(path: relativePath)
         }
         return VideoSegmentID(value: actualSegmentID)
-    }
-
-    /// Returns nil when WAL data is not ready yet and frame should be deferred.
-    private func readFrameFromWAL(frameID: Int64, segmentID: VideoSegmentID, frameIndex: Int) async throws -> CapturedFrame? {
-        guard let storageManager = storage as? StorageManager else {
-            throw StorageError.fileReadFailed(
-                path: "WAL(\(segmentID.value))",
-                underlying: "Storage manager does not expose WAL manager"
-            )
-        }
-
-        let walManager = await storageManager.getWALManager()
-        do {
-            return try await walManager.readFrame(
-                videoID: segmentID,
-                frameID: frameID,
-                fallbackFrameIndex: frameIndex
-            )
-        } catch {
-            if shouldDeferWALRead(error) {
-                Log.debug(
-                    "[Queue] Frame \(frameID) WAL source not ready (segment \(segmentID.value), index \(frameIndex)): \(error.localizedDescription)",
-                    category: .processing
-                )
-                return nil
-            }
-            throw error
-        }
-    }
-
-    private func shouldDeferWALRead(_ error: Error) -> Bool {
-        if let storageError = error as? StorageError {
-            switch storageError {
-            case .fileNotFound:
-                return true
-            case .fileReadFailed(_, let underlying):
-                let lower = underlying.lowercased()
-                return lower.contains("out of range")
-                    || lower.contains("incomplete")
-                    || lower.contains("empty")
-                    || lower.contains("cannot open") // WAL may disappear as finalization completes.
-            default:
-                return false
-            }
-        }
-
-        let lower = error.localizedDescription.lowercased()
-        return lower.contains("out of range")
-            || lower.contains("incomplete")
-            || lower.contains("empty")
     }
 
     // MARK: - Status Management
@@ -914,6 +992,8 @@ private struct QueuedFrame {
     let queueID: Int64
     let frameID: Int64
     let retryCount: Int
+    var lane: FrameProcessingLane? = nil
+    var retryPriority: Int { lane == .manual ? 75 : 10 }
 }
 
 private enum FrameProcessingFailure: Error, Sendable {

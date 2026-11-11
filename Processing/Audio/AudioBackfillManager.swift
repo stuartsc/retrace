@@ -12,6 +12,8 @@ public actor AudioBackfillManager {
     private let transcriptionQueries: AudioTranscriptionQueries
     private let audioWriter: AudioSegmentWriter
     private let storageRoot: URL
+    private var mediaStore: (any AudioChunkMediaStoreProtocol)?
+    private let governor: (any BackgroundProcessingProtocol)?
     private var isRunning = false
 
     public struct BackfillResult: Sendable {
@@ -25,13 +27,19 @@ public actor AudioBackfillManager {
         transcriptionService: any TranscriptionProtocol,
         transcriptionQueries: AudioTranscriptionQueries,
         audioWriter: AudioSegmentWriter,
-        storageRoot: URL
+        storageRoot: URL,
+        governor: (any BackgroundProcessingProtocol)? = nil,
+        mediaStore: (any AudioChunkMediaStoreProtocol)? = nil
     ) {
         self.transcriptionService = transcriptionService
         self.transcriptionQueries = transcriptionQueries
         self.audioWriter = audioWriter
         self.storageRoot = storageRoot
+        self.governor = governor
+        self.mediaStore = mediaStore
     }
+
+    public func setChunkMediaStore(_ store: (any AudioChunkMediaStoreProtocol)?) { mediaStore = store }
 
     /// Process all saved batch audio files that haven't been transcribed
     /// Returns a summary of what was processed
@@ -54,18 +62,19 @@ public actor AudioBackfillManager {
         var totalFailed = 0
         var totalSentences = 0
         var attemptedBatches = 0
+        var cursor: Int64 = 0
 
         // Process in pages of 10 to avoid loading too many at once
         let pageSize = 10
 
-        while true {
+        while !Task.isCancelled {
             if let batchLimit, attemptedBatches >= batchLimit { break }
             let fetchLimit = batchLimit.map { min(pageSize, max($0 - attemptedBatches, 0)) } ?? pageSize
             guard fetchLimit > 0 else { break }
 
             let batches: [UntranscribedBatch]
             do {
-                batches = try await transcriptionQueries.getUntranscribedBatches(limit: fetchLimit)
+                batches = try await transcriptionQueries.getUntranscribedBatches(limit: fetchLimit, afterID: cursor)
             } catch {
                 Log.error("[AudioBackfill] Failed to query untranscribed batches: \(error)", category: .processing)
                 break
@@ -77,8 +86,10 @@ public actor AudioBackfillManager {
 
             for batch in batches {
                 if let batchLimit, attemptedBatches >= batchLimit { break }
+                guard !Task.isCancelled else { break }
                 attemptedBatches += 1
-                let result = await processSingleBatch(batch)
+                cursor = batch.id
+                let result = await processGovernedBatch(batch)
                 switch result {
                 case .transcribed(let sentenceCount):
                     totalProcessed += 1
@@ -109,48 +120,67 @@ public actor AudioBackfillManager {
 
     // MARK: - Private
 
-    private enum BatchResult {
+    private enum BatchResult: Sendable {
         case transcribed(sentenceCount: Int)
         case silence
         case failed
     }
 
-    private func processSingleBatch(_ batch: UntranscribedBatch) async -> BatchResult {
-        // 1. Resolve audio path to full URL
-        let fileURL = storageRoot.appendingPathComponent(batch.audioPath)
-
-        // 2. Decode M4A → PCM
-        let decoded: AudioFileDecoder.DecodedAudio
+    private func processGovernedBatch(_ batch: UntranscribedBatch) async -> BatchResult {
+        guard let governor else { return await processSingleBatch(batch) }
         do {
-            decoded = try AudioFileDecoder.decodeToPCM(fileURL: fileURL)
+            let permit = try await governor.acquire(batch.probableSilenceHint ? .ambientSilence : .ambientSpeech)
+            let result = await withTaskCancellationHandler {
+                await BackgroundProcessingContext.$permit.withValue(permit) {
+                    await self.processSingleBatch(batch)
+                }
+            } onCancel: { permit.cancellation.cancel() }
+            await governor.release(permit)
+            return result
+        } catch { return .failed }
+    }
+
+    private func processSingleBatch(_ batch: UntranscribedBatch) async -> BatchResult {
+        let originalSource: AudioOriginalSourceReceipt
+        do {
+            try BackgroundProcessingContext.checkCancellation()
+            originalSource = try await transcriptionQueries.pendingFirstPassSource(rawBatchID: batch.id, path: batch.audioPath)
+        } catch { return .failed }
+        do {
+            return try await AudioTranscriptionMedia.withInput(path: batch.audioPath,
+                legacyStartTime: batch.startTime, storageRoot: storageRoot,
+                queries: transcriptionQueries, mediaStore: mediaStore) { [self] input in
+                    await processLoadedBatch(batch, originalSource: originalSource, input: input)
+                }
+        } catch is CancellationError {
+            return .failed
         } catch {
-            Log.error("[AudioBackfill] Failed to decode \(batch.audioPath): \(error)", category: .processing)
-            try? await transcriptionQueries.updateBatchOutcome(
-                id: batch.id,
-                text: "",
-                transcriptStatus: AudioTranscriptStatus.decodeFailed.rawValue,
-                detectedLanguage: nil,
-                audioVariant: AudioEnhancementVariant.raw.rawValue,
-                qualityFlags: "decode_error"
-            )
+            try? await transcriptionQueries.updateBatchOutcome(id: batch.id, text: "", transcriptStatus: "needs_repair",
+                detectedLanguage: nil, audioVariant: "raw", qualityFlags: "media_input_unavailable", originalSource: originalSource)
             return .failed
         }
+    }
 
+    private func processLoadedBatch(_ batch: UntranscribedBatch, originalSource: AudioOriginalSourceReceipt,
+        input: AudioTranscriptionInput) async -> BatchResult {
         // 3. Always transcribe; silence/junk is classified after the attempt.
         let decision: AudioTranscriptionDecision
         do {
             decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
-                audioData: decoded.data,
-                sampleRate: decoded.sampleRate,
+                audioData: input.data,
+                sampleRate: input.sampleRate,
                 channels: 1,
                 transcriptionService: transcriptionService,
                 wordLevel: true,
-                initialPrompt: nil
+                initialPrompt: nil,
+                profile: .liveFirstPass,
+                requireWordTimings: input.window != nil
             )
         } catch {
             Log.error("[AudioBackfill] Transcription failed for \(batch.audioPath): \(error)", category: .processing)
             return .failed
         }
+        do { try input.checkValidity() } catch { return .failed }
         let transcription = decision.transcription
 
         guard decision.shouldStoreText else {
@@ -160,16 +190,25 @@ public actor AudioBackfillManager {
                 transcriptStatus: decision.status.rawValue,
                 detectedLanguage: transcription.language,
                 audioVariant: decision.audioVariant.rawValue,
-                qualityFlags: Self.qualityFlags(decision)
+                qualityFlags: Self.qualityFlags(decision),
+                originalSource: originalSource
             )
             return .silence
         }
 
-        // 5. Segment into sentences
+        let owned: (words: [TranscriptionWord], text: String)
+        do { owned = try input.ownedTranscript(transcription) }
+        catch {
+            try? await transcriptionQueries.updateBatchOutcome(id: batch.id, text: "", transcriptStatus: "needs_repair",
+                detectedLanguage: transcription.language, audioVariant: "raw", qualityFlags: "exact_window_ownership_unavailable",
+                originalSource: originalSource)
+            return .failed
+        }
+        // 5. Segment only the current chunk's owned words.
         let sentences = SentenceSegmenter.segment(
-            words: transcription.words,
-            fullText: transcription.text,
-            fallbackDuration: decoded.duration
+            words: owned.words,
+            fullText: owned.text,
+            fallbackDuration: input.duration
         )
 
         guard !sentences.isEmpty else {
@@ -179,7 +218,8 @@ public actor AudioBackfillManager {
                 transcriptStatus: decision.status.rawValue,
                 detectedLanguage: transcription.language,
                 audioVariant: decision.audioVariant.rawValue,
-                qualityFlags: Self.qualityFlags(decision, appending: ["empty_sentences"])
+                qualityFlags: Self.qualityFlags(decision, appending: ["empty_sentences"]),
+                originalSource: originalSource
             )
             return .silence
         }
@@ -211,8 +251,8 @@ public actor AudioBackfillManager {
             transcriptionsBatch.append((
                 sessionID: nil,
                 text: sentence.text,
-                startTime: batch.startTime.addingTimeInterval(sentence.startTime),
-                endTime: batch.startTime.addingTimeInterval(sentence.endTime),
+                startTime: input.startTime.addingTimeInterval(sentence.startTime),
+                endTime: input.startTime.addingTimeInterval(sentence.endTime),
                 source: batch.source,
                 confidence: sentence.confidence,
                 words: sentence.words,
@@ -233,23 +273,18 @@ public actor AudioBackfillManager {
                 transcriptStatus: decision.status.rawValue,
                 detectedLanguage: transcription.language,
                 audioVariant: decision.audioVariant.rawValue,
-                qualityFlags: Self.qualityFlags(decision, appending: ["empty_transcription_batch"])
+                qualityFlags: Self.qualityFlags(decision, appending: ["empty_transcription_batch"]),
+                originalSource: originalSource
             )
             return .silence
         }
 
         do {
-            try await transcriptionQueries.insertTranscriptionsBatch(transcriptionsBatch)
+            try await input.validateForPublication(queries: transcriptionQueries, path: batch.audioPath)
+            try await transcriptionQueries.commitFirstPass(rawBatchID: batch.id, records: transcriptionsBatch, originalSource: originalSource)
         } catch {
             Log.error("[AudioBackfill] Failed to insert sentences for \(batch.audioPath): \(error)", category: .processing)
             return .failed
-        }
-
-        // 8. Delete the raw batch DB record (M4A file stays on disk)
-        do {
-            try await transcriptionQueries.deleteTranscription(id: batch.id)
-        } catch {
-            Log.error("[AudioBackfill] Failed to delete batch record \(batch.id): \(error)", category: .processing)
         }
 
         Log.debug("[AudioBackfill] Transcribed batch \(batch.id): \(sentences.count) sentences status=\(decision.status.rawValue) variant=\(decision.audioVariant.rawValue) language=\(transcription.language ?? "unknown") attempts=\(decision.attempts)", category: .processing)

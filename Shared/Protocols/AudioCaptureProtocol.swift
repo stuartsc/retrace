@@ -17,7 +17,9 @@ public protocol AudioCaptureProtocol: Actor {
     /// Start capturing audio
     func startCapture(config: AudioCaptureConfig) async throws
 
-    /// Stop capturing audio
+    /// Stop capturing audio, join local producers and finish the current output
+    /// stream before returning, including when reporting a native stop error.
+    /// Already yielded samples remain available to the consumer for draining.
     func stopCapture() async throws
 
     /// Whether capture is currently active
@@ -67,10 +69,10 @@ public protocol MeetingDetectorProtocol: Actor {
     nonisolated func getActiveMeetingApp() -> String?
 
     /// Start monitoring for meeting activity
-    func startMonitoring(bundleIDs: Set<String>)
+    func startMonitoring(bundleIDs: Set<String>) async
 
     /// Stop monitoring
-    func stopMonitoring()
+    func stopMonitoring() async
 }
 
 // MARK: - Audio Format Converter Protocol

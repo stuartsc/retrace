@@ -1,0 +1,98 @@
+{
+  "created_at": "2026-09-24T12:25:42.105046+00:00",
+  "description": "Private authored unplayed synthetic fixtures; no human recording, no ASR inference, no listening/phonetic validation. Controlled mixture uses the SAME Karen en_AU voice at two rates, not a distinct-speaker or diarization acceptance corpus.",
+  "os": "macOS 26.1 (25B78)",
+  "voice": "Karen en_AU, locally available; successful /usr/bin/say file-only synthesis",
+  "commands": [
+    [
+      "/usr/bin/say",
+      "-v",
+      "Karen",
+      "-r",
+      "150",
+      "-f",
+      "/tmp/retrace-unified-20260924/speech-comparison-draft/oracles/au-names.txt",
+      "-o",
+      "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/au-names.wav",
+      "--file-format=WAVE",
+      "--data-format=LEI16@16000"
+    ],
+    [
+      "/usr/bin/say",
+      "-v",
+      "Karen",
+      "-r",
+      "175",
+      "-f",
+      "/tmp/retrace-unified-20260924/speech-comparison-draft/oracles/overlap-track-b.txt",
+      "-o",
+      "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/overlap-track-b.wav",
+      "--file-format=WAVE",
+      "--data-format=LEI16@16000"
+    ]
+  ],
+  "silence": {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/silence.wav",
+    "frames": 128000,
+    "generation": "Exact zero-valued signed little-endian Int16 mono PCM in a WAVE container",
+    "reference": "/tmp/retrace-unified-20260924/speech-comparison-draft/oracles/silence.txt"
+  },
+  "padding": {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/au-names-padded.wav",
+    "source": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/au-names.wav",
+    "leading_silence_frames": 24000,
+    "trailing_silence_frames": 32000,
+    "reference": "/tmp/retrace-unified-20260924/speech-comparison-draft/oracles/au-names.txt",
+    "bounds_meaning": "Known padding only; no word onset/offset timing is fabricated."
+  },
+  "overlap": {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/overlap.wav",
+    "mix": "round(0.45 * trackA + 0.45 * trackB), absent samples zero; no clipping",
+    "maximum_absolute_sample_before_write": 17870,
+    "tracks": [
+      {
+        "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/au-names.wav",
+        "reference": "/tmp/retrace-unified-20260924/speech-comparison-draft/oracles/au-names.txt",
+        "start_frame": 0,
+        "end_frame": 190033,
+        "gain": 0.45
+      },
+      {
+        "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/overlap-track-b.wav",
+        "reference": "/tmp/retrace-unified-20260924/speech-comparison-draft/oracles/overlap-track-b.txt",
+        "start_frame": 32000,
+        "end_frame": 141531,
+        "gain": 0.45
+      }
+    ],
+    "overlap_frame_interval": [
+      32000,
+      141531
+    ],
+    "reference_order": "No single total word order is assumed. Existing harness must omit reference path for overlap. Per-track term/timing and overlap scoring needs a separate future evaluator."
+  },
+  "critical_tokens": {
+    "au-names": [
+      "Narelle",
+      "Price",
+      "Owen",
+      "Nguyen",
+      "Cedar",
+      "Brisbane",
+      "fifteen thousand",
+      "not fifty thousand",
+      "draft",
+      "Do not approve"
+    ],
+    "overlap-track-b": [
+      "Amelia",
+      "Clarke",
+      "Friday",
+      "Bendigo",
+      "pending",
+      "on hold"
+    ]
+  },
+  "number_scoring": "Written number vs numeric formatting changes are counted by current raw lexical WER; assess critical meaning separately, not by silently normalizing the oracle.",
+  "reproduction": "Use retained hashed WAV bytes for exact repetition. Re-running system voices may produce different audio."
+}

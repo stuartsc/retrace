@@ -1,0 +1,9 @@
+Native AudioFileOptimize diagnostic, authored AAC copies only.
+
+The local SDK describes optimization for append readiness; it does not promise minimum file size. All five M4As already reported isOptimized=1. Native read/write open returned kAudioFilePermissionsError (1886547263) despite ordinary filesystem update access succeeding. Native read-only open succeeded; an explicit AudioFileOptimize call returned the same permissions error. Fresh separate processes repeated this result for every file.
+
+No optimization was completed, and no storage saving is claimed. Total bytes remained 282663. Original and copied files remained byte-identical; AAC payload hashes, packet sizes/counts, magic cookies, valid/priming/remainder frames, track timing and decoded frames were unchanged. The separate before/after native decodes in this run were identical.
+
+Use optimization-comparison-final.json, summary.json and the per-file native-open-optimize logs as the final receipt. optimization-comparison.json preserves the first read/write-open failure run; its zero optimize status fields represent uncalled defaults and must not be treated as API success.
+
+The first 10-second candidate file contains ftyp28, moov1527, free23013 and mdat33372 byte boxes, with audio starting at byte24576. No boxes were edited. No application/source/SwiftPM/history change or codec/container promotion occurred.

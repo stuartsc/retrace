@@ -1,0 +1,18 @@
+{
+  "scope": "Diagnostic selected tests on clean build lineage after one exhaustive switch compatibility fix",
+  "startedUTC": "2026-09-24T14:42:10.984832+00:00",
+  "argv": [
+    "swift",
+    "test",
+    "--jobs",
+    "2",
+    "--disable-automatic-resolution",
+    "--filter",
+    "CaptureVisibleTextTests|AudioOriginalSourceTests|JobEventPersistenceTests|AudioHistoryOwnerTests|CrossSourceEvidenceResolutionTests|WorkspaceMixedEvidenceTests|WorkspaceAudioEvidenceTests"
+  ],
+  "sourceManifest": "cross-source-runtime-1-source.json",
+  "pid": 99658,
+  "exit": 1,
+  "endedUTC": "2026-09-24T14:50:29.533351+00:00",
+  "sourceUnchanged": true
+}

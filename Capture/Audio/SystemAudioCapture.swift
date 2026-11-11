@@ -188,8 +188,7 @@ final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecked Sendab
     private let stateLock = NSLock()
     private var isFinished = false
     private var wasMuted = false
-    private var pendingStart: Date?
-    private var lastOutputEnd: Date?
+    private var sampleClock = AudioCaptureSampleClock()
     private var reportedConversionFailure = false
 
     init(
@@ -220,26 +219,36 @@ final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecked Sendab
             if !wasMuted {
                 // Never carry retained samples across a recording-consent boundary.
                 formatConverter.reset()
-                pendingStart = nil
-                lastOutputEnd = nil
+                sampleClock.reset()
             }
             wasMuted = true
             return
         }
         wasMuted = false
-        if pendingStart == nil { pendingStart = receivedAt }
+        let packet: AudioNativePacketTiming
+        do { packet = try AudioNativePacketTiming(sampleBuffer) }
+        catch {
+            // No part of the rejected packet has entered the converter. Drain
+            // only previously accepted PCM on its existing clock before reset.
+            if let acceptedTail = try? formatConverter.finish() { emit(acceptedTail) }
+            resetAfterConversionFailure()
+            return
+        }
         do {
+            if !sampleClock.isContinuous(packet) {
+                // Drain accepted filter output on its old sample clock before a
+                // physical gap/format boundary. Privacy resets discard it instead.
+                emit(try formatConverter.finish())
+                sampleClock.begin(packet, receivedAt: receivedAt)
+            }
             let data = try formatConverter.convert(sampleBuffer: sampleBuffer)
-            emit(data, at: pendingStart ?? receivedAt)
+            sampleClock.consumed(packet)
+            emit(data)
             reportedConversionFailure = false
         } catch {
-            formatConverter.reset()
-            pendingStart = nil
-            lastOutputEnd = nil
-            if !reportedConversionFailure {
-                Log.warning("[SystemAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
-                reportedConversionFailure = true
-            }
+            // A failed conversion may have consumed part of the rejected packet;
+            // never publish its ambiguous filter tail or cross a privacy reset.
+            resetAfterConversionFailure()
         }
     }
 
@@ -249,10 +258,18 @@ final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecked Sendab
         muteState.set(muted)
         if muted {
             formatConverter.reset()
-            pendingStart = nil
-            lastOutputEnd = nil
+            sampleClock.reset()
         }
         wasMuted = muted
+    }
+
+    private func resetAfterConversionFailure() {
+        formatConverter.reset()
+        sampleClock.reset()
+        if !reportedConversionFailure {
+            Log.warning("[SystemAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
+            reportedConversionFailure = true
+        }
     }
 
     func finish() {
@@ -265,21 +282,21 @@ final class SystemAudioStreamOutput: NSObject, SCStreamOutput, @unchecked Sendab
             return
         }
         do {
-            emit(try formatConverter.finish(), at: lastOutputEnd ?? pendingStart ?? Date())
+            emit(try formatConverter.finish())
         } catch {
             Log.warning("[SystemAudioCapture] Could not drain final audio conversion samples", category: .capture)
         }
     }
 
-    private func emit(_ data: Data, at timestamp: Date) {
-        guard !data.isEmpty else { return }
+    private func emit(_ data: Data) {
+        guard !data.isEmpty,
+              let timestamp = sampleClock.timestampForOutput(frameCount: data.count / MemoryLayout<Int16>.size) else { return }
         let duration = Double(data.count) / Double(formatConverter.targetSampleRate * MemoryLayout<Int16>.size)
         continuation.yield(CapturedAudio(
             timestamp: timestamp, audioData: data, duration: duration, source: .system,
-            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels
+            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels,
+            continuityID: sampleClock.continuityID
         ))
-        lastOutputEnd = timestamp.addingTimeInterval(duration)
-        pendingStart = nil
     }
 }
 

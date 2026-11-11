@@ -4,10 +4,10 @@ import Foundation
 import VideoToolbox
 import Shared
 
-/// Hardware-accelerated HEVC encoder using AVAssetWriter for proper MP4/MOV container format.
+/// HEVC encoder using AVAssetWriter for proper MP4/MOV container format.
 /// This ensures frames can be seeked and read reliably with AVAssetImageGenerator.
 ///
-/// Hardware acceleration is verified at initialization and logged for monitoring.
+/// Availability and requested selection are reported separately; AVAssetWriter does not expose its VTSession.
 public actor HEVCEncoder {
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -15,7 +15,22 @@ public actor HEVCEncoder {
     private var isFinalized = false
     private var outputURL: URL?
     private var segmentStartTime: Date?
-    private var isUsingHardwareAcceleration = false
+    public enum HardwareSelection: String, Sendable {
+        case automatic, preferHardware, requireHardware, softwareOnly
+    }
+
+    public struct AccelerationStatus: Sendable {
+        public let selection: HardwareSelection
+        /// nil means the encoder inventory has not been queried or that query failed.
+        public let hardwareAvailable: Bool?
+        /// AVAssetWriter does not expose VTSessionCopyProperty; availability is not actual use.
+        public let actualHardwareUse: Bool?
+        /// Permission to fall back, not proof that software was selected.
+        public let softwareFallbackPermitted: Bool
+    }
+
+    private let hardwareSelection: HardwareSelection
+    private var hardwareAvailable: Bool?
 
     // Store initialization parameters for potential re-initialization if file is deleted
     private var initWidth: Int = 0
@@ -31,16 +46,32 @@ public actor HEVCEncoder {
     // This is updated when a fragment write is detected (file size increase > 1KB)
     private var flushedFrameCount: Int = 0
 
-    public init() {}
+    public init(selection: HardwareSelection = .automatic) {
+        self.hardwareSelection = selection
+    }
+
+    /// These supported VideoToolbox keys belong at the top level of AVVideoSettings,
+    /// beneath AVVideoEncoderSpecificationKey, never in compression properties.
+    static func encoderSpecification(for selection: HardwareSelection) -> [String: Any]? {
+        switch selection {
+        case .automatic: return nil // Preserve the existing platform choice.
+        case .preferHardware:
+            return [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true]
+        case .requireHardware:
+            return [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true]
+        case .softwareOnly:
+            return [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: false]
+        }
+    }
 
     /// Check if hardware encoding is available for the given codec
-    private static func isHardwareEncodingAvailable(for codecType: CMVideoCodecType) -> Bool {
+    private static func isHardwareEncodingAvailable(for codecType: CMVideoCodecType) -> Bool? {
         // Query VideoToolbox for hardware encoder support
         var encoderListOut: CFArray?
         let status = VTCopyVideoEncoderList(nil, &encoderListOut)
 
         guard status == noErr, let encoderList = encoderListOut as? [[String: Any]] else {
-            return false
+            return nil
         }
 
         // Look for hardware encoder matching our codec
@@ -80,21 +111,18 @@ public actor HEVCEncoder {
         let codecType: AVVideoCodecType = (config.codec == .h264) ? .h264 : .hevc
         let cmCodecType: CMVideoCodecType = (config.codec == .h264) ? kCMVideoCodecType_H264 : kCMVideoCodecType_HEVC
 
-        // Verify hardware encoding is available
-        let hardwareAvailable = Self.isHardwareEncodingAvailable(for: cmCodecType)
-        if !hardwareAvailable {
-            Log.warning("Hardware encoding not available for \(config.codec.rawValue), will use software fallback", category: .storage)
-        } else {
-            Log.info("Hardware encoding available for \(config.codec.rawValue)", category: .storage)
-        }
-        self.isUsingHardwareAcceleration = hardwareAvailable
+        // Inventory cannot prove which encoder this writer will select.
+        self.hardwareAvailable = Self.isHardwareEncodingAvailable(for: cmCodecType)
+        let availability = hardwareAvailable.map { $0 ? "available" : "unavailable" } ?? "unknown"
+        let fallback = hardwareSelection == .automatic || hardwareSelection == .preferHardware
+        Log.info("Video encoder hardware=\(availability), selection=\(hardwareSelection.rawValue), actualUse=unverified, softwareFallbackPermitted=\(fallback)", category: .storage)
 
         // Create AVAssetWriter with MP4 format
         let writer = try AVAssetWriter(url: outputURL, fileType: .mp4)
 
         // Video output settings
-        // Note: AVAssetWriter will automatically use hardware encoding if available
-        // We verify availability above but cannot force it through compressionProperties
+        // Automatic selection preserves existing behavior. Explicit requests use the
+        // supported top-level encoder specification rather than compressionProperties.
 
         // Use quality-based encoding (CRF-style) for consistent quality regardless of content complexity
         // AVVideoQualityKey: 0.0 = max compression (lowest quality), 1.0 = min compression (highest quality)
@@ -116,13 +144,16 @@ public actor HEVCEncoder {
             compressionProperties[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
         }
 
-        let videoSettings: [String: Any] = [
+        var videoSettings: [String: Any] = [
             AVVideoCodecKey: codecType,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: compressionProperties
         ]
 
+        if let specification = Self.encoderSpecification(for: hardwareSelection) {
+            videoSettings[AVVideoEncoderSpecificationKey] = specification
+        }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         // Live capture source: enable real-time mode to reduce deep internal buffering.
         input.expectsMediaDataInRealTime = true
@@ -323,7 +354,7 @@ public actor HEVCEncoder {
         videoInput = nil
         adaptor = nil
         isFinalized = false
-        isUsingHardwareAcceleration = false
+        hardwareAvailable = nil
         if let url = outputURL {
             try? FileManager.default.removeItem(at: url)
         }
@@ -331,9 +362,16 @@ public actor HEVCEncoder {
         segmentStartTime = nil
     }
 
-    /// Returns true if hardware acceleration is being used for encoding
+    public func accelerationStatus() -> AccelerationStatus {
+        AccelerationStatus(selection: hardwareSelection, hardwareAvailable: hardwareAvailable,
+            actualHardwareUse: nil,
+            softwareFallbackPermitted: hardwareSelection == .automatic || hardwareSelection == .preferHardware)
+    }
+
+    /// Compatibility predicate: false also means unverified, never proof of software use.
+    @available(*, deprecated, message: "Use accelerationStatus() to distinguish availability from verified use")
     public func isHardwareAccelerated() -> Bool {
-        return isUsingHardwareAcceleration
+        accelerationStatus().actualHardwareUse == true
     }
 
     /// Returns true if at least one fragment has been written to disk

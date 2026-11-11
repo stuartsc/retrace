@@ -220,6 +220,45 @@ public struct SearchSelectionToken: Codable, Sendable, Equatable {
     }
 }
 
+/// Factual retrieval signals only. The snippet is a retained source excerpt;
+/// these bases never imply an inferred decision or an answer unsupported by it.
+public struct SearchMatchExplanation: Codable, Equatable, Sendable {
+    public enum Basis: String, Codable, Sendable { case textMatch, semanticSimilarity, exactIdentifier }
+    public let bases: [Basis]
+    public let exactIdentifiers: [String]
+    public let supportingSpans: [SemanticRecallSpan]
+    public let semanticCosine: Double?
+    public init(bases: [Basis], exactIdentifiers: [String] = [],
+                supportingSpans: [SemanticRecallSpan] = [], semanticCosine: Double? = nil) {
+        self.bases = bases; self.exactIdentifiers = exactIdentifiers
+        self.supportingSpans = supportingSpans; self.semanticCosine = semanticCosine
+    }
+}
+
+/// The explicit moments route scans bounded candidates. Its semantic status is
+/// native-screen-text-only; it cannot claim indexed audio or imported history.
+public struct MomentSearchCoverage: Codable, Equatable, Sendable {
+    public enum Scope: String, Codable, Sendable { case nativeScreenText }
+    public let scope: Scope
+    public let nativeSemanticUsed: Bool
+    public let lexicalScanComplete: Bool
+    public let semanticScanComplete: Bool?
+    public let nativeIndexCaughtUp: Bool?
+    public let indexedObservations: Int
+    public let pendingObservations: Int
+    public let skippedObservations: Int
+    public let unavailableLexicalObservations: Int
+    public init(nativeSemanticUsed: Bool, lexicalScanComplete: Bool, semanticScanComplete: Bool?,
+                nativeIndexCaughtUp: Bool?, indexedObservations: Int, pendingObservations: Int,
+                skippedObservations: Int, unavailableLexicalObservations: Int) {
+        self.scope = .nativeScreenText; self.nativeSemanticUsed = nativeSemanticUsed
+        self.lexicalScanComplete = lexicalScanComplete; self.semanticScanComplete = semanticScanComplete
+        self.nativeIndexCaughtUp = nativeIndexCaughtUp; self.indexedObservations = indexedObservations
+        self.pendingObservations = pendingObservations; self.skippedObservations = skippedObservations
+        self.unavailableLexicalObservations = unavailableLexicalObservations
+    }
+}
+
 /// A single search result
 /// Rewind-compatible: links to both app segment (session context) and video (playback)
 public struct SearchResult: Codable, Sendable, Identifiable {
@@ -263,6 +302,7 @@ public struct SearchResult: Codable, Sendable, Identifiable {
     public let highlightNode: HighlightNode?
     public let evidenceRef: ScreenEvidenceRef?
     public let selectionToken: SearchSelectionToken?
+    public let matchExplanation: SearchMatchExplanation?
 
     /// View identity spans stores/sources and stays stable when an extraction is refined.
     public var sourceQualifiedID: String {
@@ -286,7 +326,8 @@ public struct SearchResult: Codable, Sendable, Identifiable {
         source: FrameSource = .native,
         highlightNode: HighlightNode? = nil,
         evidenceRef: ScreenEvidenceRef? = nil,
-        selectionToken: SearchSelectionToken? = nil
+        selectionToken: SearchSelectionToken? = nil,
+        matchExplanation: SearchMatchExplanation? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -303,6 +344,7 @@ public struct SearchResult: Codable, Sendable, Identifiable {
         self.highlightNode = highlightNode
         self.evidenceRef = evidenceRef
         self.selectionToken = selectionToken
+        self.matchExplanation = matchExplanation
     }
 }
 
@@ -313,19 +355,22 @@ public struct SearchResults: Codable, Sendable {
     public let totalCount: Int       // Total matches (may be > results.count due to limit)
     public let searchTimeMs: Int     // How long the search took
     public let nextCursor: SearchPageCursor?
+    public let momentCoverage: MomentSearchCoverage?
 
     public init(
         query: SearchQuery,
         results: [SearchResult],
         totalCount: Int,
         searchTimeMs: Int,
-        nextCursor: SearchPageCursor? = nil
+        nextCursor: SearchPageCursor? = nil,
+        momentCoverage: MomentSearchCoverage? = nil
     ) {
         self.query = query
         self.results = results
         self.totalCount = totalCount
         self.searchTimeMs = searchTimeMs
         self.nextCursor = nextCursor
+        self.momentCoverage = momentCoverage
     }
 
     public var isEmpty: Bool { results.isEmpty }

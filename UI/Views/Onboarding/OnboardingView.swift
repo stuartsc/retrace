@@ -2640,7 +2640,7 @@ public struct OnboardingView: View {
                 // On macOS 15+, when both permissions are granted, trigger the capture dialog
                 // This shows "Allow [App] to record screen & audio" dialog while still on permissions step
                 if hasScreenRecordingPermission && hasAccessibilityPermission && !hasTriggeredCaptureDialog {
-                    triggerMacOS15CaptureDialog()
+                    await triggerMacOS15CaptureDialog()
                 }
 
                 let previousRunningBundleIDs = automationPreflightRunningBundleIDs
@@ -2697,12 +2697,16 @@ public struct OnboardingView: View {
 
     /// Triggers a single screen capture to prompt the macOS 15+ "Allow to record screen & audio" dialog.
     /// This ensures the dialog appears on the permissions step rather than after moving to the next step.
-    private func triggerMacOS15CaptureDialog() {
+    private func triggerMacOS15CaptureDialog() async {
+        guard currentStep == 4, !Task.isCancelled, !hasTriggeredCaptureDialog else { return }
         hasTriggeredCaptureDialog = true
 
-        // A single CGDisplayCreateImage call is enough to trigger the system dialog on macOS 15+
-        // We don't need to use the result - we just need to make the API call
-        _ = CGDisplayCreateImage(CGMainDisplayID())
+        // Retain the existing one-shot permission exercise through the checked
+        // compatibility boundary. Native pixels are discarded and work stays off
+        // main; the OS decides whether another permission dialog is necessary.
+        let displayID = CGMainDisplayID()
+        _ = await TimelineLiveCapture.image(displayID: displayID,
+            bounds: CGDisplayBounds(displayID), belowWindowID: nil)
     }
 
     @MainActor

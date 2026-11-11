@@ -15,7 +15,9 @@ public actor DatabaseManager: DatabaseProtocol {
     private let databasePath: String
     private var isInitialized = false
     private var consecutivePriorityClaims = 0
+    var audioEvidenceReaderGeneration = UUID()
     var screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
+    var jobEventWriter: JobWriterSession?
     private(set) var screenEvidenceAdmissionClosing = false
     #if DEBUG
     private var forceCloseCheckpointForTesting = false
@@ -106,7 +108,8 @@ public actor DatabaseManager: DatabaseProtocol {
 
         // Offset AUTOINCREMENT to avoid collision with Rewind's frozen data
         Log.debug("[DatabaseManager] Setting AUTOINCREMENT offset...", category: .database)
-        try await offsetAutoincrementFromRewind()
+        // Private in-memory stores must not inspect the user's imported archive.
+        if !isInMemory { try await offsetAutoincrementFromRewind() }
         Log.debug("[DatabaseManager] AUTOINCREMENT offset complete", category: .database)
 
         isInitialized = true
@@ -120,11 +123,14 @@ public actor DatabaseManager: DatabaseProtocol {
             throw DatabaseError.connectionFailed(underlying: "Database close already in progress")
         }
         screenEvidenceAdmissionClosing = true
+        audioEvidenceReaderGeneration = UUID()
         // Reopening this same actor must mint a fresh capable owner. Close local
         // admission before checkpoint/close can suspend or fail.
         screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
+        jobEventWriter = nil
         defer {
             screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
+            jobEventWriter = nil
             screenEvidenceAdmissionClosing = false
         }
         guard let db = db else { return }
@@ -347,7 +353,9 @@ public actor DatabaseManager: DatabaseProtocol {
         guard let db = db else {
             throw DatabaseError.connectionFailed(underlying: "Database not initialized")
         }
-        return try FrameQueries.getByIDWithVideoInfo(db: db, id: id)
+        guard let result = try FrameQueries.getByIDWithVideoInfo(db: db, id: id) else { return nil }
+        return FrameWithVideoInfo(frame: try ScreenEvidenceSQL.hydrateCaptureIdentity(db, frame: result.frame),
+            videoInfo: result.videoInfo, processingStatus: result.processingStatus)
     }
 
     public func getFrames(appBundleID: String, limit: Int, offset: Int) async throws -> [FrameReference] {
@@ -2606,47 +2614,14 @@ public actor DatabaseManager: DatabaseProtocol {
 
     /// Claim atomically: manual work first, then three current captures per historical turn.
     /// Automatic priorities expire after 60 seconds; all historical work shares FIFO order.
-    public func dequeueFrameForProcessing() async throws -> (queueID: Int64, frameID: Int64, retryCount: Int)? {
+    public func dequeueFrameForProcessing(lane admittedLane: FrameProcessingLane? = nil) async throws -> (queueID: Int64, frameID: Int64, retryCount: Int)? {
         guard let db else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
-        enum Lane { case manual, current, historical }
+        typealias Lane = FrameProcessingLane
         let currentCutoff = Schema.dateToTimestamp(Date().addingTimeInterval(-60))
         let selected = try PipelineSQL.transaction(db) { () -> (Int64, Int64, Int, Lane)? in
             func candidate(_ lane: Lane) throws -> (Int64, Int64, Int, Lane)? {
-                let condition: String
-                let index: String
-                let order: String
-                let values: [PipelineSQL.Value]
-                switch lane {
-                case .manual:
-                    condition = "pq.priority > 10"
-                    index = "idx_processing_queue_priority"
-                    order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
-                    values = []
-                case .current:
-                    condition = "pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?"
-                    index = "idx_processing_queue_priority"
-                    order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
-                    values = [.integer(currentCutoff)]
-                case .historical:
-                    condition = """
-                        (pq.priority IS NULL OR pq.priority <= 0 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt < ?))
-                        AND NOT EXISTS (
-                            SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
-                            WHERE preferred.frameId=pq.frameId AND
-                                (preferred.priority > 10 OR (preferred.priority BETWEEN 1 AND 10 AND f.createdAt >= ?))
-                        )
-                        """
-                    index = "idx_processing_queue_enqueued"
-                    order = "pq.enqueuedAt ASC,pq.id ASC"
-                    values = [.integer(currentCutoff), .integer(currentCutoff)]
-                }
-                return try PipelineSQL.query(db, """
-                    SELECT pq.id,pq.frameId,pq.retryCount,pq.priority
-                    FROM processing_queue pq INDEXED BY \(index)
-                    CROSS JOIN frame f ON f.id=pq.frameId
-                    WHERE f.processingStatus=0 AND \(condition)
-                    ORDER BY \(order) LIMIT 1
-                    """, values) { (sqlite3_column_int64($0, 0), sqlite3_column_int64($0, 1), Int(sqlite3_column_int($0, 2)), lane) }.first
+                guard admittedLane == nil || admittedLane == lane else { return nil }
+                return try nextFrameProcessingCandidate(db: db, lane: lane, cutoff: currentCutoff)
             }
             // Manual requests retain precedence without consuming the current/history budget.
             var item = try candidate(.manual)
@@ -2666,6 +2641,55 @@ public actor DatabaseManager: DatabaseProtocol {
         case .historical: consecutivePriorityClaims = 0
         }
         return (selected.0, selected.1, selected.2)
+    }
+
+    /// Reads at most one indexed candidate per lane without claiming any frame.
+    /// Owners may register asynchronous demand while their worker remains free.
+    public func pendingFrameProcessingLanes() throws -> [FrameProcessingLane] {
+        let db = try requireRecallConnection()
+        let cutoff = Schema.dateToTimestamp(Date().addingTimeInterval(-60))
+        return try [.manual, .current, .historical].filter {
+            try nextFrameProcessingCandidate(db: db, lane: $0, cutoff: cutoff) != nil
+        }
+    }
+
+    private func nextFrameProcessingCandidate(db: OpaquePointer, lane: FrameProcessingLane,
+        cutoff: Int64) throws -> (Int64, Int64, Int, FrameProcessingLane)? {
+        let condition: String
+        let index: String
+        let order: String
+        let values: [PipelineSQL.Value]
+        switch lane {
+        case .manual:
+            condition = "pq.priority > 10"
+            index = "idx_processing_queue_priority"
+            order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
+            values = []
+        case .current:
+            condition = "pq.priority BETWEEN 1 AND 10 AND f.createdAt >= ?"
+            index = "idx_processing_queue_priority"
+            order = "pq.priority DESC,pq.enqueuedAt ASC,pq.id ASC"
+            values = [.integer(cutoff)]
+        case .historical:
+            condition = """
+                (pq.priority IS NULL OR pq.priority <= 0 OR (pq.priority BETWEEN 1 AND 10 AND f.createdAt < ?))
+                AND NOT EXISTS (
+                    SELECT 1 FROM processing_queue preferred INDEXED BY idx_processing_queue_frame_id
+                    WHERE preferred.frameId=pq.frameId AND
+                        (preferred.priority > 10 OR (preferred.priority BETWEEN 1 AND 10 AND f.createdAt >= ?))
+                )
+                """
+            index = "idx_processing_queue_enqueued"
+            order = "pq.enqueuedAt ASC,pq.id ASC"
+            values = [.integer(cutoff), .integer(cutoff)]
+        }
+        return try PipelineSQL.query(db, """
+            SELECT pq.id,pq.frameId,pq.retryCount,pq.priority
+            FROM processing_queue pq INDEXED BY \(index)
+            CROSS JOIN frame f ON f.id=pq.frameId
+            WHERE f.processingStatus=0 AND \(condition)
+            ORDER BY \(order) LIMIT 1
+            """, values) { (sqlite3_column_int64($0, 0), sqlite3_column_int64($0, 1), Int(sqlite3_column_int($0, 2)), lane) }.first
     }
 
     /// Get the current processing queue depth

@@ -42,6 +42,7 @@ public enum EvidenceRef: Hashable, Codable, Sendable {
     case activity(ActivityEvidenceRef)
     case screen(ScreenEvidenceRef)
     case audio(AudioEvidenceRef)
+    case job(JobEvidenceRef)
 
     public var deepLink: URL? {
         guard let data = try? JSONEncoder().encode(self) else { return nil }
@@ -101,6 +102,8 @@ public enum EvidenceUnavailableReason: String, Codable, Sendable, Error {
 
 public enum EvidenceResolution: Sendable {
     case activity(PersistedActivityEvent)
+    case job(JobEventSnapshot)
+    case audio(AudioEvidenceSnapshot)
     case screen(ScreenEvidenceSnapshot, image: CGImage)
     case unavailable(EvidenceUnavailableReason)
 }

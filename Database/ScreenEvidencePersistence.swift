@@ -177,6 +177,35 @@ enum ScreenEvidenceSQL {
         }.first
     }
 
+    /// The compatible frame/video tables do not have display/window identity
+    /// columns. Restore only immutable capture identity from the native snapshot;
+    /// retain current archive links and current privacy/filter metadata.
+    static func hydrateCaptureIdentity(_ db: OpaquePointer, frame: FrameReference) throws -> FrameReference {
+        guard frame.source == .native else { return frame }
+        let storeID = try RecallSQL.nativeStore(db)
+        let saved = try PipelineSQL.query(db,
+            "SELECT framePayload FROM screen_observation WHERE storeID=? AND frameID=? AND source='native'",
+            [.text(storeID.uuidString), .integer(frame.id.value)]) {
+                try RecallSQL.decode(FrameReference.self, RecallSQL.string($0, 0))
+            }.first
+        guard let saved else { return frame }
+        guard saved.id == frame.id, saved.source == .native,
+              Schema.dateToTimestamp(saved.timestamp) == Schema.dateToTimestamp(frame.timestamp) else {
+            throw RecallSQL.failure("Captured frame identity conflicts with current frame")
+        }
+        let current = frame.metadata
+        let metadata = FrameMetadata(appBundleID: current.appBundleID, appName: current.appName,
+            windowName: current.windowName, browserURL: current.browserURL, redactionReason: current.redactionReason,
+            displayID: saved.metadata.displayID, captureContext: saved.metadata.captureContext,
+            captureMonotonicTime: saved.metadata.captureMonotonicTime, activityIdentity: saved.metadata.activityIdentity,
+            capturePolicySHA256: saved.metadata.capturePolicySHA256,
+            pixelReceipt: saved.metadata.pixelReceipt, captureText: saved.metadata.captureText,
+            captureGroup: saved.metadata.captureGroup)
+        return FrameReference(id: frame.id, timestamp: frame.timestamp, segmentID: frame.segmentID,
+            videoID: frame.videoID, frameIndexInSegment: frame.frameIndexInSegment,
+            encodingStatus: frame.encodingStatus, metadata: metadata, source: frame.source)
+    }
+
     /// Earlier payloads may have used canonical String equality for an offset proof.
     /// Revalidate on read without rewriting the retained extraction or upgrading its provenance.
     static func decodeSnapshot(_ payload: String) throws -> ScreenEvidenceSnapshot {
@@ -225,6 +254,17 @@ enum ScreenEvidenceSQL {
     static func append(_ db: OpaquePointer, frame: FrameReference, storeID: UUID, observationID: UUID, revision: Int64,
                        width: Int, height: Int, text: ExtractedText?, legacy: Bool,
                        provenance: EvidenceExtractionProvenance? = nil) throws -> ScreenEvidenceSnapshot {
+        if frame.metadata.captureText != nil || frame.metadata.pixelReceipt != nil || frame.metadata.captureGroup != nil {
+            guard frame.source == .native, !legacy else {
+                throw RecallSQL.failure("Direct capture metadata requires a native capture observation")
+            }
+            do {
+                try frame.metadata.validatedCaptureText(frameWidth: width, frameHeight: height,
+                                                         timestamp: frame.timestamp)
+            } catch {
+                throw RecallSQL.failure("Direct capture text does not match its retained pixels")
+            }
+        }
         let ref = ScreenEvidenceRef(storeID: storeID, source: frame.source, observationID: observationID,
                                     frameID: frame.id, extractionRevision: revision)
         let verified = !legacy && coherent(text, frameID: frame.id, width: width, height: height)

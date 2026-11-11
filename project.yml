@@ -2,13 +2,13 @@ name: Retrace
 options:
   bundleIdPrefix: io.retrace
   deploymentTarget:
-    macOS: "13.0"
-  xcodeVersion: "16.0"
+    macOS: "26.0"
+  xcodeVersion: "26.0"
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
   configs:
     Debug:
       SWIFT_COMPILATION_MODE: incremental
@@ -114,6 +114,26 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: io.retrace.Storage
 
+  CaptureLegacyBridge:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Capture/LegacyBridge
+        excludes:
+          - include
+      - path: Capture/LegacyBridge/include
+        headerVisibility: public
+    dependencies:
+      - sdk: CoreGraphics.framework
+      - sdk: CoreFoundation.framework
+    settings:
+      base:
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.retrace.CaptureLegacyBridge
+
   Capture:
     type: framework
     platform: macOS
@@ -121,11 +141,13 @@ targets:
       - path: Capture
         excludes:
           - Tests
+          - LegacyBridge
           - README.md
           - AGENTS.md
           - PROGRESS.md
     dependencies:
       - target: Shared
+      - target: CaptureLegacyBridge
     settings:
       base:
         CODE_SIGNING_REQUIRED: NO
@@ -163,9 +185,13 @@ targets:
         excludes:
           - Tests
           - VectorSearchTODO
+          - Resources
           - README.md
           - AGENTS.md
           - PROGRESS.md
+      - path: Search/Resources/MiniLM
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: Shared
     settings:
@@ -205,6 +231,7 @@ targets:
           - README.md
     dependencies:
       - target: Shared
+      - target: CaptureLegacyBridge
       - target: Database
       - target: Storage
       - target: Capture

@@ -24,7 +24,7 @@ public let CURRENT_PIPELINE_VERSION: Int = 9
 /// Owner: DATABASE agent
 public actor AudioTranscriptionQueries {
 
-    private let db: OpaquePointer
+    let db: OpaquePointer
 
     public init(db: OpaquePointer) {
         self.db = db
@@ -46,6 +46,281 @@ public actor AudioTranscriptionQueries {
         audioVariant: String,
         qualityFlags: String?
     )
+
+    // MARK: - Original recording source (source identity only)
+
+    /// Returns the source attested by the original raw insertion, never by a
+    /// refinement row or a reset pass number. Legacy adoption is raw-row-only.
+    public func originalSourceReceipt(forBatchPath path: String) throws -> AudioOriginalSourceReceipt {
+        try withOriginalSourceTransaction { try loadOriginalSourceReceipt(path: path) }
+    }
+
+    /// Revalidate a queued first-pass candidate after admission, before decoding or inference.
+    /// Original lineage intentionally survives retirement, but pending work must not.
+    public func pendingFirstPassSource(rawBatchID: Int64, path: String) throws -> AudioOriginalSourceReceipt {
+        try withOriginalSourceTransaction(honorsCancellation: true) {
+            let receipt = try loadOriginalSourceReceipt(path: path)
+            let rows = try originalSourceRows("""
+                SELECT 1 FROM audio_captures c JOIN audio_original_source o ON o.rawRowID=c.id
+                WHERE c.id=? AND c.audio_path=? AND c.batch_audio_path IS NULL
+                  AND c.transcript_status IN ('pending','needs_repair')
+                  AND o.recordingID=? AND o.rawRetired=0 AND o.state='active'
+                  AND NOT EXISTS(SELECT 1 FROM audio_captures t WHERE t.batch_audio_path=c.audio_path)
+                """, values: [.integer(rawBatchID), .text(path), .text(receipt.recordingID)]) {
+                    sqlite3_column_int($0, 0)
+                }
+            guard rows.count == 1 else { throw AudioOriginalSourceError.changed }
+            return receipt
+        }
+    }
+
+    /// Internal processing transition. Explicit deletion must continue to use
+    /// deleteTranscription/deleteTranscriptions so the lineage is invalidated.
+    public func retireRawBatchAfterTranscription(id: Int64) throws {
+        try withOriginalSourceTransaction {
+            let row = try originalSourceRows("SELECT audio_path FROM audio_captures WHERE id=? AND batch_audio_path IS NULL AND audio_size>0",
+                values: [.integer(id)]) { Self.originalSourceString($0, 0) }.first
+            guard let path = row else { throw AudioOriginalSourceError.unavailable }
+            let receipt = try loadOriginalSourceReceipt(path: path)
+            let matching = try originalSourceRows("""
+                SELECT 1 FROM audio_captures WHERE batch_audio_path=? AND transcription_pass=1
+                  AND source=? AND text!='' LIMIT 1
+                """, values: [.text(path), .text(receipt.source.rawValue)]) { sqlite3_column_int($0, 0) }.first
+            guard matching != nil else { throw AudioOriginalSourceError.unavailable }
+            try originalSourceExecute("UPDATE audio_original_source SET rawRetired=1,generation=generation+1 WHERE recordingID=? AND rawRowID=? AND rawRetired=0 AND state='active'",
+                values: [.text(receipt.recordingID), .integer(id)])
+            guard sqlite3_changes(db) == 1 else { throw AudioOriginalSourceError.changed }
+            try originalSourceExecute("DELETE FROM audio_captures WHERE id=? AND audio_size>0 AND batch_audio_path IS NULL", values: [.integer(id)])
+            guard sqlite3_changes(db) == 1 else { throw AudioOriginalSourceError.changed }
+            try DailyMetricsQueries.recordEvent(db: db, metricType: .audioOriginalSource, metadata: "{\"outcome\":\"retired\"}")
+        }
+    }
+
+    /// First-pass publication and placeholder retirement share one source-guarded transaction.
+    @discardableResult
+    public func commitFirstPass(rawBatchID: Int64, records: [TranscriptionBatchRecord],
+                               originalSource receipt: AudioOriginalSourceReceipt) throws -> [Int64] {
+        guard !records.isEmpty, records.count <= 512,
+              records.allSatisfy({ $0.transcriptionPass == 1 && $0.source == receipt.source &&
+                  $0.batchAudioPath == receipt.batchAudioPath && !$0.text.isEmpty &&
+                  $0.text.utf8.count <= 65_536 && $0.endTime > $0.startTime &&
+                  $0.startTime.timeIntervalSince1970.isFinite && $0.endTime.timeIntervalSince1970.isFinite &&
+                  abs($0.startTime.timeIntervalSince1970) < 9_000_000_000_000 &&
+                  abs($0.endTime.timeIntervalSince1970) < 9_000_000_000_000 }) else {
+            throw AudioOriginalSourceError.invalidInput
+        }
+        return try withOriginalSourceTransaction(honorsCancellation: true) {
+            guard try loadOriginalSourceReceipt(path: receipt.batchAudioPath) == receipt else {
+                throw AudioOriginalSourceError.changed
+            }
+            let raw = try originalSourceRows("SELECT id FROM audio_captures WHERE id=? AND audio_path=? AND batch_audio_path IS NULL AND transcript_status IN ('pending','needs_repair')",
+                values: [.integer(rawBatchID), .text(receipt.batchAudioPath)]) { sqlite3_column_int64($0, 0) }
+            let existing = try originalSourceRows("SELECT 1 FROM audio_captures WHERE batch_audio_path=? LIMIT 1",
+                values: [.text(receipt.batchAudioPath)]) { sqlite3_column_int($0, 0) }
+            guard raw.count == 1, existing.isEmpty else { throw AudioOriginalSourceError.changed }
+            try validateRegisteredAudioRecords(records, path: receipt.batchAudioPath)
+            var ids: [Int64] = []
+            for row in records {
+                ids.append(try insertTranscription(sessionID: row.sessionID, text: row.text,
+                    startTime: row.startTime, endTime: row.endTime, source: row.source,
+                    confidence: row.confidence, words: row.words, audioPath: row.audioPath,
+                    transcriptionPass: 1, batchAudioPath: row.batchAudioPath,
+                    transcriptStatus: row.transcriptStatus, detectedLanguage: row.detectedLanguage,
+                    audioVariant: row.audioVariant, qualityFlags: row.qualityFlags))
+            }
+            try originalSourceExecute("UPDATE audio_original_source SET rawRetired=1,generation=generation+1 WHERE recordingID=? AND rawRowID=? AND rawRetired=0 AND state='active'",
+                values: [.text(receipt.recordingID), .integer(rawBatchID)])
+            guard sqlite3_changes(db) == 1 else { throw AudioOriginalSourceError.changed }
+            try originalSourceExecute("DELETE FROM audio_captures WHERE id=?", values: [.integer(rawBatchID)])
+            guard sqlite3_changes(db) == 1 else { throw AudioOriginalSourceError.changed }
+            return ids
+        }
+    }
+
+    @discardableResult
+    public func replacePass1RecordsForBatch(batchAudioPath: String,
+        with transcriptions: [TranscriptionBatchRecord], originalSource: AudioOriginalSourceReceipt) throws -> [Int64] {
+        try insertSourceGuardedRecords(path: batchAudioPath, records: transcriptions, pass: 2, receipt: originalSource)
+    }
+
+    @discardableResult
+    public func replacePass2RecordsForBatch(batchAudioPath: String,
+        with transcriptions: [TranscriptionBatchRecord], originalSource: AudioOriginalSourceReceipt) throws -> [Int64] {
+        try insertSourceGuardedRecords(path: batchAudioPath, records: transcriptions, pass: 3, receipt: originalSource)
+    }
+
+    private func insertSourceGuardedRecords(path: String, records: [TranscriptionBatchRecord], pass: Int,
+        receipt: AudioOriginalSourceReceipt) throws -> [Int64] {
+        try Task.checkCancellation()
+        guard !records.isEmpty, records.count <= 256, path == receipt.batchAudioPath,
+              records.allSatisfy({ row in
+                  row.batchAudioPath == path && row.source == receipt.source && row.transcriptionPass == pass
+                    && !row.text.isEmpty && row.text.utf8.count <= 65_536
+                    && row.startTime.timeIntervalSince1970.isFinite && row.endTime.timeIntervalSince1970.isFinite
+                    && abs(row.startTime.timeIntervalSince1970) < 9_000_000_000_000
+                    && abs(row.endTime.timeIntervalSince1970) < 9_000_000_000_000 && row.endTime > row.startTime
+              }), records.reduce(0, { $0 + $1.text.utf8.count }) <= 1_048_576 else {
+            throw AudioOriginalSourceError.invalidInput
+        }
+        return try withOriginalSourceTransaction(honorsCancellation: true) {
+            let current: AudioOriginalSourceReceipt
+            do { current = try loadOriginalSourceReceipt(path: path) }
+            catch { throw AudioOriginalSourceError.changed }
+            guard current == receipt else { throw AudioOriginalSourceError.changed }
+            let latest = try originalSourceRows("SELECT MAX(transcription_pass) FROM audio_captures WHERE batch_audio_path=? AND source!='word'",
+                values: [.text(path)]) { sqlite3_column_int($0, 0) }.first
+            guard latest == Int32(pass - 1) else { throw AudioOriginalSourceError.changed }
+            try validateRegisteredAudioRecords(records, path: path)
+            var ids: [Int64] = []
+            for row in records {
+                ids.append(try insertTranscription(sessionID: row.sessionID, text: row.text,
+                    startTime: row.startTime, endTime: row.endTime, source: row.source,
+                    confidence: row.confidence, words: row.words, audioPath: row.audioPath,
+                    transcriptionPass: row.transcriptionPass, batchAudioPath: row.batchAudioPath,
+                    transcriptStatus: row.transcriptStatus, detectedLanguage: row.detectedLanguage,
+                    audioVariant: row.audioVariant, qualityFlags: row.qualityFlags))
+            }
+            try DailyMetricsQueries.recordEvent(db: db, metricType: .audioOriginalSource, metadata: "{\"outcome\":\"published\",\"pass\":\(pass)}")
+            return ids
+        }
+    }
+
+    /// Called synchronously through the existing actor at the actual failed
+    /// refinement boundary. Metrics never grant source authority or launch tasks.
+    public func recordOriginalSourceFailure(_ failure: AudioOriginalSourceError, pass: Int) throws {
+        guard pass == 2 || pass == 3 else { throw AudioOriginalSourceError.invalidInput }
+        try withOriginalSourceTransaction {
+            let metadata = "{\"outcome\":\"\(failure.rawValue)\",\"pass\":\(pass)}"
+            try DailyMetricsQueries.recordEvent(db: db, metricType: .audioOriginalSource, metadata: metadata)
+        }
+    }
+
+    /// SQLite's connection mutex is recursive in serialized/FULLMUTEX mode.
+    /// No await or external callback is allowed while it is held. The explicit
+    /// autocommit check refuses to join or roll back another actor's transaction.
+    /// This brackets only the new source operations, not every legacy query.
+    func withOriginalSourceTransaction<T>(honorsCancellation: Bool = false,
+        _ body: () throws -> T) throws -> T {
+        guard let mutex = sqlite3_db_mutex(db) else { throw AudioOriginalSourceError.connectionUnsupported }
+        guard sqlite3_mutex_try(mutex) == SQLITE_OK else { throw AudioOriginalSourceError.connectionBusy }
+        defer { sqlite3_mutex_leave(mutex) }
+        guard sqlite3_get_autocommit(db) != 0 else { throw AudioOriginalSourceError.connectionBusy }
+        if honorsCancellation { try BackgroundProcessingContext.checkCancellation() }
+        try executeStatement("BEGIN IMMEDIATE TRANSACTION")
+        do {
+            let result = try body()
+            if honorsCancellation { try BackgroundProcessingContext.checkCancellation() }
+            try executeStatement("COMMIT")
+            return result
+        } catch {
+            try? executeStatement("ROLLBACK")
+            throw error
+        }
+    }
+
+    func loadOriginalSourceReceipt(path: String) throws -> AudioOriginalSourceReceipt {
+        guard !path.isEmpty, path.utf8.count <= 4_096, !path.contains("\0") else { throw AudioOriginalSourceError.invalidInput }
+        let deleted = try originalSourceRows("SELECT 1 FROM audio_original_source_tombstone WHERE batchAudioPath=?",
+            values: [.text(path)]) { sqlite3_column_int($0, 0) }.first
+        guard deleted == nil else { throw AudioOriginalSourceError.unavailable }
+        let storeIDs = try originalSourceRows("SELECT storeID FROM evidence_store WHERE source='native' LIMIT 2") {
+            Self.originalSourceString($0, 0)
+        }
+        guard storeIDs.count == 1, UUID(uuidString: storeIDs[0]) != nil else { throw AudioOriginalSourceError.unavailable }
+        let storeID = storeIDs[0]
+        let exists = try originalSourceRows("SELECT 1 FROM audio_original_source WHERE batchAudioPath=?", values: [.text(path)]) {
+            sqlite3_column_int($0, 0)
+        }.first
+        if exists == nil {
+            // Only insertRawBatch supplies audio_size; sentence/refinement rows
+            // cannot become original proof through pass demotion/version restamp.
+            // The partial path index bounds this lookup; two rows are ambiguity.
+            let raw = try originalSourceRows("""
+                SELECT id,source,start_time,end_time,audio_size,transcription_pass
+                FROM audio_captures INDEXED BY audio_original_source_legacy_raw
+                WHERE audio_path=? AND batch_audio_path IS NULL ORDER BY id LIMIT 2
+                """, values: [.text(path)]) {
+                    (sqlite3_column_int64($0, 0), Self.originalSourceString($0, 1), sqlite3_column_int64($0, 2),
+                     sqlite3_column_int64($0, 3), sqlite3_column_int64($0, 4), sqlite3_column_int($0, 5))
+                }
+            guard raw.count == 1 else { throw raw.isEmpty ? AudioOriginalSourceError.unavailable : .conflicting }
+            let item = raw[0]
+            guard let source = AudioSource(rawValue: item.1), source != .unknown,
+                  item.3 > item.2, item.4 > 0, item.5 == 1 else { throw AudioOriginalSourceError.unavailable }
+            try originalSourceExecute("""
+                INSERT INTO audio_original_source(recordingID,storeID,batchAudioPath,rawRowID,source,startedAt,endedAt,audioSize)
+                VALUES(?,?,?,?,?,?,?,?)
+                """, values: [.text(UUID().uuidString), .text(storeID), .text(path), .integer(item.0),
+                              .text(source.rawValue), .integer(item.2), .integer(item.3), .integer(item.4)])
+            try DailyMetricsQueries.recordEvent(db: db, metricType: .audioOriginalSource, metadata: "{\"outcome\":\"legacyAdopted\"}")
+        }
+        let rows = try originalSourceRows("""
+            SELECT recordingID,storeID,source,generation,state,rawRowID,startedAt,endedAt,audioSize,rawRetired
+            FROM audio_original_source WHERE batchAudioPath=?
+            """, values: [.text(path)]) {
+                (Self.originalSourceString($0, 0), Self.originalSourceString($0, 1), Self.originalSourceString($0, 2),
+                 sqlite3_column_int64($0, 3), Self.originalSourceString($0, 4), sqlite3_column_int64($0, 5),
+                 sqlite3_column_int64($0, 6), sqlite3_column_int64($0, 7), sqlite3_column_int64($0, 8), sqlite3_column_int($0, 9))
+            }
+        guard let row = rows.first, row.1 == storeID, row.4 == "active", row.3 > 0,
+              UUID(uuidString: row.0) != nil, let source = AudioSource(rawValue: row.2), source != .unknown else {
+            throw AudioOriginalSourceError.unavailable
+        }
+        if row.9 == 0 {
+            let raw = try originalSourceRows("""
+                SELECT 1 FROM audio_captures WHERE id=? AND audio_path=? AND batch_audio_path IS NULL
+                  AND source=? AND start_time=? AND end_time=? AND audio_size=? AND transcription_pass=1
+                """, values: [.integer(row.5), .text(path), .text(source.rawValue), .integer(row.6), .integer(row.7), .integer(row.8)]) {
+                    sqlite3_column_int($0, 0)
+                }.first
+            guard raw != nil else { throw AudioOriginalSourceError.unavailable }
+        }
+        let candidates = try originalSourceRows("""
+            SELECT source FROM audio_captures WHERE batch_audio_path=? AND transcription_pass=1
+              AND source!='word' ORDER BY start_time LIMIT 513
+            """, values: [.text(path)]) { Self.originalSourceString($0, 0) }
+        guard candidates.count <= 512 else { throw AudioOriginalSourceError.capacityExceeded }
+        guard candidates.allSatisfy({ $0 == source.rawValue }) else { throw AudioOriginalSourceError.conflicting }
+        if AudioChunkMediaSQL.isManifestIdentity(path) {
+            _ = try AudioChunkMediaSQL.window(db, path: path)
+        }
+        return AudioOriginalSourceReceipt(source: source, recordingID: row.0, storeID: storeID,
+            batchAudioPath: path, generation: row.3)
+    }
+
+    private enum OriginalSourceValue { case text(String), integer(Int64) }
+
+    private func originalSourceRows<T>(_ sql: String, values: [OriginalSourceValue] = [],
+        row: (OpaquePointer) throws -> T) throws -> [T] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw DatabaseError.queryPreparationFailed("Original audio source statement unavailable")
+        }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() {
+            let result: Int32
+            switch value {
+            case .text(let text): result = sqlite3_bind_text(statement, Int32(index + 1), text, -1, SQLITE_TRANSIENT)
+            case .integer(let integer): result = sqlite3_bind_int64(statement, Int32(index + 1), integer)
+            }
+            guard result == SQLITE_OK else { throw DatabaseError.queryExecutionFailed("Original audio source bind failed") }
+        }
+        var rows: [T] = []
+        while true {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return rows }
+            guard status == SQLITE_ROW else { throw DatabaseError.queryExecutionFailed("Original audio source operation failed") }
+            rows.append(try row(statement))
+        }
+    }
+
+    private func originalSourceExecute(_ sql: String, values: [OriginalSourceValue] = []) throws {
+        let _: [Int] = try originalSourceRows(sql, values: values) { _ in 0 }
+    }
+
+    private static func originalSourceString(_ row: OpaquePointer, _ column: Int32) -> String {
+        sqlite3_column_text(row, column).map { String(cString: $0) } ?? ""
+    }
 
     // MARK: - Insert Transcription
 
@@ -301,13 +576,21 @@ public actor AudioTranscriptionQueries {
         endTime: Date,
         source: AudioSource,
         audioPath: String,
-        audioSize: Int64
+        audioSize: Int64,
+        probableSilenceHint: Bool = false
     ) throws -> Int64 {
+        guard !AudioChunkMediaSQL.isManifestIdentity(audioPath) else { throw AudioOriginalSourceError.invalidInput }
+        return try insertRawAudioRecord(startTime: startTime, endTime: endTime, source: source,
+            audioPath: audioPath, audioSize: audioSize, probableSilenceHint: probableSilenceHint)
+    }
+
+    func insertRawAudioRecord(startTime: Date, endTime: Date, source: AudioSource,
+        audioPath: String, audioSize: Int64, probableSilenceHint: Bool) throws -> Int64 {
         let sql = """
             INSERT INTO audio_captures (
                 session_id, text, start_time, end_time, source, confidence, audio_path,
-                audio_size, transcription_pass, pipeline_version, transcript_status, audio_variant
-            ) VALUES (NULL, '', ?, ?, ?, NULL, ?, ?, 1, ?, 'pending', 'raw');
+                audio_size, transcription_pass, pipeline_version, transcript_status, audio_variant, quality_flags
+            ) VALUES (NULL, '', ?, ?, ?, NULL, ?, ?, 1, ?, 'pending', 'raw', ?);
             """
 
         var stmt: OpaquePointer?
@@ -322,6 +605,10 @@ public actor AudioTranscriptionQueries {
         sqlite3_bind_text(stmt, 4, audioPath, -1, SQLITE_TRANSIENT)
         sqlite3_bind_int64(stmt, 5, audioSize)
         sqlite3_bind_int(stmt, 6, Int32(CURRENT_PIPELINE_VERSION))
+
+        if probableSilenceHint {
+            sqlite3_bind_text(stmt, 7, "capture_probable_silence", -1, SQLITE_TRANSIENT)
+        } else { sqlite3_bind_null(stmt, 7) }
 
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
@@ -415,7 +702,11 @@ public actor AudioTranscriptionQueries {
                 detectedLanguage: detectedLanguage,
                 audioVariant: audioVariant,
                 qualityFlags: qualityFlags,
-                transcriptionPass: transcriptionPass
+                transcriptionPass: transcriptionPass,
+                evidenceReference: try exactAudioReference(id: id, text: text, startTime: startTime,
+                    endTime: endTime, source: sourceRaw, confidence: confidence,
+                    audioPath: audioPath, batchAudioPath: batchAudioPath, transcriptStatus: transcriptStatus,
+                    detectedLanguage: detectedLanguage, audioVariant: audioVariant, transcriptionPass: transcriptionPass)
             ))
         }
 
@@ -504,7 +795,11 @@ public actor AudioTranscriptionQueries {
                 detectedLanguage: detectedLanguage,
                 audioVariant: audioVariant,
                 qualityFlags: qualityFlags,
-                transcriptionPass: transcriptionPass
+                transcriptionPass: transcriptionPass,
+                evidenceReference: try exactAudioReference(id: id, text: text, startTime: startTime,
+                    endTime: endTime, source: sourceRaw, confidence: confidence,
+                    audioPath: audioPath, batchAudioPath: batchAudioPath, transcriptStatus: transcriptStatus,
+                    detectedLanguage: detectedLanguage, audioVariant: audioVariant, transcriptionPass: transcriptionPass)
             ))
         }
 
@@ -565,7 +860,11 @@ public actor AudioTranscriptionQueries {
                 detectedLanguage: detectedLanguage,
                 audioVariant: audioVariant,
                 qualityFlags: qualityFlags,
-                transcriptionPass: transcriptionPass
+                transcriptionPass: transcriptionPass,
+                evidenceReference: try exactAudioReference(id: id, text: text, startTime: startTime,
+                    endTime: endTime, source: sourceRaw, confidence: confidence,
+                    audioPath: audioPath, batchAudioPath: batchAudioPath, transcriptStatus: transcriptStatus,
+                    detectedLanguage: detectedLanguage, audioVariant: audioVariant, transcriptionPass: transcriptionPass)
             ))
         }
 
@@ -639,8 +938,22 @@ public actor AudioTranscriptionQueries {
         transcriptStatus: String,
         detectedLanguage: String?,
         audioVariant: String,
-        qualityFlags: String?
+        qualityFlags: String?,
+        originalSource receipt: AudioOriginalSourceReceipt? = nil
     ) throws {
+        if let receipt {
+            try withOriginalSourceTransaction(honorsCancellation: true) {
+                guard try loadOriginalSourceReceipt(path: receipt.batchAudioPath) == receipt else {
+                    throw AudioOriginalSourceError.changed
+                }
+                let rows = try originalSourceRows("SELECT 1 FROM audio_captures WHERE id=? AND audio_path=? AND batch_audio_path IS NULL AND transcript_status IN ('pending','needs_repair')",
+                    values: [.integer(id), .text(receipt.batchAudioPath)]) { sqlite3_column_int($0, 0) }
+                guard rows.count == 1 else { throw AudioOriginalSourceError.changed }
+                try updateBatchOutcome(id: id, text: text, transcriptStatus: transcriptStatus,
+                    detectedLanguage: detectedLanguage, audioVariant: audioVariant, qualityFlags: qualityFlags)
+            }
+            return
+        }
         let sql = """
             UPDATE audio_captures
             SET text = ?,
@@ -681,18 +994,23 @@ public actor AudioTranscriptionQueries {
 
     // MARK: - Backfill Queries
 
-    /// Get raw batch records that haven't been transcribed yet
-    /// These have text="" and a batch audio file path
-    public func getUntranscribedBatches(limit: Int = 50) throws -> [UntranscribedBatch] {
-        let sql = """
-            SELECT id, start_time, end_time, source, audio_path, audio_size
-            FROM audio_captures
+    static let pendingRawSQL = """
+            SELECT id, start_time, end_time, source, audio_path, audio_size, quality_flags
+            FROM audio_captures INDEXED BY audio_pending_raw_id
             WHERE audio_path IS NOT NULL
-            AND audio_path LIKE '%batch_%'
+            AND (audio_path LIKE '%batch_%' OR EXISTS(
+                SELECT 1 FROM audio_media_window w WHERE w.relativePath=audio_captures.audio_path
+                  AND w.kind='chunkWindowV1' AND w.state='active'))
             AND transcript_status IN ('pending', 'needs_repair')
-            ORDER BY start_time ASC
+            AND batch_audio_path IS NULL AND audio_size>0 AND id>?
+            ORDER BY id ASC
             LIMIT ?;
             """
+
+    /// Get raw batch records that haven't been transcribed yet
+    /// These have text="" and a batch audio file path
+    public func getUntranscribedBatches(limit: Int = 50, afterID: Int64 = 0) throws -> [UntranscribedBatch] {
+        let sql = Self.pendingRawSQL
 
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -700,7 +1018,8 @@ public actor AudioTranscriptionQueries {
         }
         defer { sqlite3_finalize(stmt) }
 
-        sqlite3_bind_int(stmt, 1, Int32(limit))
+        sqlite3_bind_int64(stmt, 1, afterID)
+        sqlite3_bind_int(stmt, 2, Int32(min(max(limit, 1), 128)))
 
         var results: [UntranscribedBatch] = []
 
@@ -718,7 +1037,8 @@ public actor AudioTranscriptionQueries {
                 endTime: endTime,
                 source: AudioSource(rawValue: sourceRaw) ?? .microphone,
                 audioPath: audioPath,
-                audioSize: audioSize
+                audioSize: audioSize,
+                probableSilenceHint: Self.originalSourceString(stmt!, 6) == "capture_probable_silence"
             ))
         }
 
@@ -730,8 +1050,11 @@ public actor AudioTranscriptionQueries {
         let sql = """
             SELECT COUNT(*) FROM audio_captures
             WHERE audio_path IS NOT NULL
-            AND audio_path LIKE '%batch_%'
-            AND transcript_status IN ('pending', 'needs_repair');
+            AND (audio_path LIKE '%batch_%' OR EXISTS(
+                SELECT 1 FROM audio_media_window w WHERE w.relativePath=audio_captures.audio_path
+                  AND w.kind='chunkWindowV1' AND w.state='active'))
+            AND transcript_status IN ('pending', 'needs_repair')
+            AND batch_audio_path IS NULL AND audio_size>0;
             """
 
         var stmt: OpaquePointer?
@@ -765,7 +1088,9 @@ public actor AudioTranscriptionQueries {
                 WHERE start_time >= ?
                 AND end_time <= ?
                 AND audio_path IS NOT NULL
-                AND audio_path LIKE '%batch_%'
+                AND (audio_path LIKE '%batch_%' OR EXISTS(
+                SELECT 1 FROM audio_media_window w WHERE w.relativePath=audio_captures.audio_path
+                  AND w.kind='chunkWindowV1' AND w.state='active'))
                 AND source != 'word'
                 AND (
                     text IN ('[silence]', '[hallucination]')
@@ -847,6 +1172,51 @@ public actor AudioTranscriptionQueries {
         }
         return paths
     }
+
+    /// An indexed row seek bounds actual inspection before eligibility checks.
+    /// Ineligible rows still return an ID so callers advance through sparse gaps.
+    /// Managers deduplicate paths within a bounded cycle; this grants no source proof.
+    public func originalSourceRefinementPage(transcriptionPass: Int,
+        afterRowID: Int64, limit: Int = 10) throws -> [AudioRefinementInspection] {
+        guard transcriptionPass == 1 || transcriptionPass == 2,
+              afterRowID >= 0, (0...256).contains(limit) else {
+            throw AudioOriginalSourceError.invalidInput
+        }
+        guard limit > 0 else { return [] }
+        try Task.checkCancellation()
+        return try originalSourceRows(Self.originalSourceRefinementSQL,
+            values: [.integer(Int64(transcriptionPass)), .integer(afterRowID), .integer(Int64(limit))]) {
+                AudioRefinementInspection(rowID: sqlite3_column_int64($0, 0),
+                    batchAudioPath: sqlite3_column_type($0, 1) == SQLITE_NULL ? nil : Self.originalSourceString($0, 1))
+            }
+    }
+
+    static let originalSourceRefinementSQL = """
+        SELECT candidate.id, CASE WHEN
+          candidate.batch_audio_path IS NOT NULL
+          AND length(CAST(candidate.batch_audio_path AS BLOB)) BETWEEN 1 AND 4096
+          AND length(CAST(candidate.text AS BLOB)) BETWEEN 1 AND 65536
+          AND candidate.source!='word'
+          AND candidate.text NOT IN ('[silence]', '[hallucination]', '[decode_error]')
+          AND COALESCE(candidate.transcript_status, 'transcribed')='transcribed'
+          AND NOT EXISTS (
+            SELECT 1 FROM audio_captures AS newer
+            WHERE newer.batch_audio_path=candidate.batch_audio_path
+              AND newer.source!='word' AND newer.transcription_pass>candidate.transcription_pass)
+          AND NOT (
+            substr(ltrim(candidate.text),1,1) IN ('(', '[', '*')
+            AND substr(rtrim(candidate.text),-1) IN (')', ']', '*')
+            AND (lower(candidate.text) LIKE '%footstep%' OR lower(candidate.text) LIKE '%bell%'
+              OR lower(candidate.text) LIKE '%door%' OR lower(candidate.text) LIKE '%keyboard%'
+              OR lower(candidate.text) LIKE '%click%' OR lower(candidate.text) LIKE '%chime%'
+              OR lower(candidate.text) LIKE '%crackl%' OR lower(candidate.text) LIKE '%fire%'
+              OR lower(candidate.text) LIKE '%notification%' OR lower(candidate.text) LIKE '%ring%'
+              OR lower(candidate.text) LIKE '%no audio%' OR lower(candidate.text) LIKE '%no sound%'))
+          THEN candidate.batch_audio_path ELSE NULL END
+        FROM audio_captures AS candidate INDEXED BY idx_audio_captures_pass
+        WHERE candidate.transcription_pass=? AND candidate.id>?
+        ORDER BY candidate.id LIMIT ?
+        """
 
     /// Delete all pass-1 sentence and word records associated with a batch audio path
     @discardableResult
@@ -1301,6 +1671,8 @@ public struct AudioTranscription: Sendable {
     public let audioVariant: String
     public let qualityFlags: String?
     public let transcriptionPass: Int
+    /// Present only when this returned row was matched to its exact V30 snapshot.
+    public let evidenceReference: AudioEvidenceRef?
 
     public init(
         id: Int64,
@@ -1317,7 +1689,8 @@ public struct AudioTranscription: Sendable {
         detectedLanguage: String? = nil,
         audioVariant: String = "raw",
         qualityFlags: String? = nil,
-        transcriptionPass: Int = 1
+        transcriptionPass: Int = 1,
+        evidenceReference: AudioEvidenceRef? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -1334,6 +1707,7 @@ public struct AudioTranscription: Sendable {
         self.audioVariant = audioVariant
         self.qualityFlags = qualityFlags
         self.transcriptionPass = transcriptionPass
+        self.evidenceReference = evidenceReference
     }
 }
 
@@ -1346,6 +1720,7 @@ public struct UntranscribedBatch: Sendable {
     public let source: AudioSource
     public let audioPath: String
     public let audioSize: Int64
+    public let probableSilenceHint: Bool
 
     public init(
         id: Int64,
@@ -1353,7 +1728,8 @@ public struct UntranscribedBatch: Sendable {
         endTime: Date,
         source: AudioSource,
         audioPath: String,
-        audioSize: Int64
+        audioSize: Int64,
+        probableSilenceHint: Bool = false
     ) {
         self.id = id
         self.startTime = startTime
@@ -1361,5 +1737,28 @@ public struct UntranscribedBatch: Sendable {
         self.source = source
         self.audioPath = audioPath
         self.audioSize = audioSize
+        self.probableSilenceHint = probableSilenceHint
     }
+}
+
+/// Ephemeral checked source receipt. No caller can construct or decode one.
+/// It proves original declared recording source only, never capture consent.
+public struct AudioOriginalSourceReceipt: Sendable, Equatable {
+    public let source: AudioSource
+    fileprivate let recordingID: String
+    fileprivate let storeID: String
+    fileprivate let batchAudioPath: String
+    fileprivate let generation: Int64
+}
+
+public enum AudioOriginalSourceError: String, Error, Sendable {
+    case unavailable, conflicting, changed, invalidInput, capacityExceeded, cancelled
+    case connectionBusy, connectionUnsupported
+}
+
+/// Every inspected row advances progress, including ineligible/duplicate rows.
+/// An optional candidate path is not a source or privacy receipt.
+public struct AudioRefinementInspection: Sendable {
+    public let rowID: Int64
+    public let batchAudioPath: String?
 }

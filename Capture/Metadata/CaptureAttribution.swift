@@ -10,44 +10,97 @@ struct CapturedWindowSample: Sendable {
     let observedAt: Date
     let monotonicTime: TimeInterval
     let privacySignature: String?
+    /// Only a privacy-masked all-display source may grant display-only admission.
+    /// Nil context without this explicit display receipt continues to deny pixels.
+    let displayOnlyID: UInt32?
     init(context: ActivityContext?, observedAt: Date = Date(),
-         monotonicTime: TimeInterval = ProcessInfo.processInfo.systemUptime, privacySignature: String? = nil) {
+         monotonicTime: TimeInterval = ProcessInfo.processInfo.systemUptime, privacySignature: String? = nil,
+         displayOnlyID: UInt32? = nil) {
         self.context = context; self.observedAt = observedAt; self.monotonicTime = monotonicTime
         self.privacySignature = privacySignature
+        self.displayOnlyID = displayOnlyID
     }
 }
 
 enum CaptureSnapshotSequencer {
     static func capture(displayID: UInt32,
+                        allowDisplayOnly: Bool = false,
+                        capturePolicySHA256: String? = nil,
                         readContext: @Sendable () async -> CapturedWindowSample,
                         capturePixels: @Sendable () async throws -> CapturedFrame?) async rethrows -> CapturedFrame? {
+        try await captureAttributed(displayID: displayID, allowDisplayOnly: allowDisplayOnly,
+            capturePolicySHA256: capturePolicySHA256, readContext: readContext) { _ in
+                guard let frame = try await capturePixels() else { return nil }
+                return CaptureAttributedPixelRead(frame: frame)
+            }
+    }
+
+    static func captureAttributed(displayID: UInt32,
+                        allowDisplayOnly: Bool = false,
+                        capturePolicySHA256: String? = nil,
+                        readContext: @Sendable () async -> CapturedWindowSample,
+                        capturePixels: @Sendable (ActivityContext?) async throws -> CaptureAttributedPixelRead?) async rethrows -> CapturedFrame? {
         guard displayID > 0, !Task.isCancelled else { return nil }
         // Durable window identity survives title/move noise. Keep a separate
         // notification receipt across metadata AND pixels so A -> B -> A cannot
         // pass merely because the final context and window inventory match.
         let notificationRevision = ObservedWindowGenerations.shared.notificationRevision
         let before = await readContext()
-        guard let sampled = before.context, sampled.windowID.map({ $0 > 0 }) == true,
-              sampled.windowGeneration?.isEmpty == false, sampled.processID > 0,
-              !sampled.processGeneration.isEmpty, sampled.displayID == displayID,
-              before.privacySignature != nil,
+        let sampled = before.context
+        let focusedWindowIsProven = sampled.map {
+            $0.windowID.map({ $0 > 0 }) == true && $0.windowGeneration?.isEmpty == false &&
+                $0.processID > 0 && !$0.processGeneration.isEmpty && $0.displayID == displayID
+        } ?? false
+        let displayIsProven = allowDisplayOnly && sampled == nil && before.displayOnlyID == displayID
+        guard !Task.isCancelled, focusedWindowIsProven || displayIsProven, before.privacySignature != nil,
               notificationRevision == ObservedWindowGenerations.shared.notificationRevision else { return nil }
         let capturedAt = Date()
         let captureMonotonic = ProcessInfo.processInfo.systemUptime
-        guard let pixels = try await capturePixels(), !Task.isCancelled else { return nil }
+        guard let read = try await capturePixels(sampled), !Task.isCancelled,
+              !allowDisplayOnly || read.frame.metadata.displayID == displayID else { return nil }
+        let pixels = read.frame
         let after = await readContext()
         guard !Task.isCancelled, sampled == after.context,
+              before.displayOnlyID == after.displayOnlyID,
               notificationRevision == ObservedWindowGenerations.shared.notificationRevision,
               before.privacySignature == after.privacySignature,
               before.monotonicTime.isFinite, after.monotonicTime.isFinite,
               after.monotonicTime >= before.monotonicTime,
               after.monotonicTime - before.monotonicTime <= 2 else { return nil }
         let context = pixels.metadata.redactionReason == nil ? sampled : nil
+        let receipt = read.pixelReceipt
+        if let receipt {
+            let span = receipt.interval
+            guard span.startedAt.timeIntervalSince1970.isFinite, span.endedAt.timeIntervalSince1970.isFinite,
+                  span.endedAt >= span.startedAt, span.startedUptime.isFinite, span.endedUptime.isFinite,
+                  span.startedUptime >= before.monotonicTime, span.endedUptime >= span.startedUptime,
+                  span.endedUptime <= after.monotonicTime else { return nil }
+        }
+        let timestamp = receipt?.interval.startedAt ?? capturedAt
+        let monotonic = receipt?.interval.startedUptime ?? captureMonotonic
+        var text = read.captureText
+        if let retained = text {
+            do {
+                guard pixels.metadata.redactionReason == nil else { throw CaptureTextObservation.ValidationError.malformedObservation }
+                _ = try retained.retainedTextEncoding(frameWidth: pixels.width, frameHeight: pixels.height,
+                    displayID: displayID, frameTimestamp: timestamp, frameMonotonicTime: monotonic,
+                    pixelReceipt: receipt, sourceContext: context)
+            } catch {
+                let unavailable = CaptureTextObservation(captureAttemptID: receipt?.attemptID, sourceContext: nil,
+                    preRead: nil, pixelRead: nil, postRead: nil, availability: .unavailable,
+                    reasons: [pixels.metadata.redactionReason == nil ? .sourceChanged : .privacyMasked],
+                    consistency: nil, runs: [])
+                text = (try? unavailable.retainedTextEncoding(frameWidth: pixels.width, frameHeight: pixels.height,
+                    displayID: displayID, frameTimestamp: timestamp, frameMonotonicTime: monotonic,
+                    pixelReceipt: receipt, sourceContext: context)) == nil ? nil : unavailable
+            }
+        }
         let metadata = FrameMetadata(appBundleID: context?.appBundleID, appName: context?.appName,
             windowName: context?.windowTitle, browserURL: context?.safeURL,
             redactionReason: pixels.metadata.redactionReason, displayID: displayID,
-            captureContext: context, captureMonotonicTime: captureMonotonic)
-        return CapturedFrame(timestamp: capturedAt, imageData: pixels.imageData,
+            captureContext: context, captureMonotonicTime: monotonic,
+            capturePolicySHA256: capturePolicySHA256, pixelReceipt: receipt, captureText: text)
+        return CapturedFrame(timestamp: timestamp, imageData: pixels.imageData,
             width: pixels.width, height: pixels.height, bytesPerRow: pixels.bytesPerRow, metadata: metadata)
     }
 }
@@ -79,6 +132,28 @@ struct ActivityContextSource: Sendable {
             return CapturedWindowSample(context: nil)
         }
         return CapturedWindowSample(context: context, privacySignature: finalInventory)
+    }
+
+    /// Nonfocused displays never inherit the frontmost window's identity. The
+    /// candidate's strict full-window privacy masks are mandatory for this path.
+    func sampleCandidateCapture(config: CaptureConfig, displayID: UInt32) async -> CapturedWindowSample {
+        guard let initialInventory = visibleWindowSignature(displayID: displayID) else {
+            return CapturedWindowSample(context: nil)
+        }
+        var sampled: ActivityContext?
+        if let app = await frontmost(), ObservedWindowGenerations.shared.hasCaptureObservation(processID: app.pid),
+           let base = await window(app, true, config), base.displayID == displayID {
+            let enriched = await document(base, app) ?? base
+            guard app == (await frontmost()),
+                  ObservedWindowGenerations.shared.hasCaptureObservation(processID: app.pid) else {
+                return CapturedWindowSample(context: nil)
+            }
+            sampled = enriched
+        }
+        guard let finalInventory = visibleWindowSignature(displayID: displayID),
+              initialInventory == finalInventory else { return CapturedWindowSample(context: nil) }
+        return CapturedWindowSample(context: sampled, privacySignature: finalInventory,
+                                    displayOnlyID: sampled == nil ? displayID : nil)
     }
 
     /// An opaque inventory receipt protects exclusion masks from background-window
@@ -115,9 +190,48 @@ final class ObservedWindowGenerations: @unchecked Sendable {
     private var session = UUID()
     private var windows: [Process: [UInt32: UUID]] = [:]
     private var revision: UInt64 = 0
+    private var captureObservationToken: UUID?
+    private var captureObservedProcessID: Int32?
 
     /// Ephemeral, process-local admission state; never part of a durable context.
     var notificationRevision: UInt64 { lock.withLock { revision } }
+
+    func beginCaptureObservation(token: UUID) {
+        lock.withLock {
+            captureObservationToken = token; captureObservedProcessID = nil
+            session = UUID(); windows.removeAll()
+            revision &+= 1
+        }
+    }
+
+    func endCaptureObservation(token: UUID) {
+        lock.withLock {
+            guard captureObservationToken == token else { return }
+            captureObservationToken = nil; captureObservedProcessID = nil
+            session = UUID(); windows.removeAll()
+            revision &+= 1
+        }
+    }
+
+    func suspendCaptureObservation(token: UUID) {
+        lock.withLock {
+            guard captureObservationToken == token else { return }
+            captureObservedProcessID = nil
+            revision &+= 1
+        }
+    }
+
+    func confirmCaptureObservation(token: UUID, processID: Int32, revision expected: UInt64) -> Bool {
+        lock.withLock {
+            guard captureObservationToken == token, processID > 0, revision == expected else { return false }
+            captureObservedProcessID = processID
+            return true
+        }
+    }
+
+    func hasCaptureObservation(processID: Int32) -> Bool {
+        lock.withLock { captureObservationToken != nil && captureObservedProcessID == processID && processID > 0 }
+    }
 
     func noteNotification(resettingWindows: Bool) {
         lock.withLock {

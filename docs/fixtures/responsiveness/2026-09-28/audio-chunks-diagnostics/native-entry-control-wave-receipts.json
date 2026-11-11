@@ -1,0 +1,22 @@
+[
+  {
+    "path": "/tmp/retrace-boundary-native-entry-20260928-180908-acedc2/raw_legacy_first15s.wav",
+    "pcm_frames": 240000,
+    "pcm_sha256": "fb1f89c641ddda1892f34ea9e6b8ebf11db4ff48eb3fbebce2a48df7c68577c9"
+  },
+  {
+    "path": "/tmp/retrace-boundary-native-entry-20260928-180908-acedc2/raw_candidate_first10s.wav",
+    "pcm_frames": 160000,
+    "pcm_sha256": "97852a301d4e3141eb925a6da435269c5c0220768595f89b68626f4dc3842bb8"
+  },
+  {
+    "path": "/tmp/retrace-boundary-native-entry-20260928-180908-acedc2/decoded_legacy_first15s.wav",
+    "pcm_frames": 240000,
+    "pcm_sha256": "bf9acdc1479d4cea83aa711d8dd272a635cd17774d062d295632b0c03bb2d3ad"
+  },
+  {
+    "path": "/tmp/retrace-boundary-native-entry-20260928-180908-acedc2/decoded_candidate_first10s.wav",
+    "pcm_frames": 160000,
+    "pcm_sha256": "81fb541000f194702acc988191a13d2b6d669b2fcd631ce4f8c4aaad5863750c"
+  }
+]

@@ -163,6 +163,8 @@ struct ActivityObservationSignal: Sendable {
     var isWindowSample = false
     var ordinal: UInt64 = 0
     var administrativeMethod: String? = nil
+    var axRegistrationID: UUID? = nil
+    var coalescedAXID: UUID? = nil
     let wallTime = Date()
     let monotonicTime = ProcessInfo.processInfo.systemUptime
 }
@@ -177,6 +179,9 @@ final class ActivityObservationBuffer: @unchecked Sendable {
     private var dropped = 0
     private var ordinal: UInt64 = 0
     private var observerRefresh: (@Sendable () -> Void)?
+    private var axRegistrationID: UUID?
+    private var coalescingAXID: UUID?
+    private var pendingAX: [UUID: ActivityObservationSignal] = [:]
 
     init(capacity: Int = 128) {
         (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingOldest(max(1, capacity)))
@@ -184,6 +189,9 @@ final class ActivityObservationBuffer: @unchecked Sendable {
 
     func send(_ input: ActivityObservationSignal) {
         lock.lock(); defer { lock.unlock() }
+        if let registrationID = input.axRegistrationID {
+            guard !suspended, axRegistrationID == registrationID else { return }
+        }
         if input.kind == .enrichment || input.isWindowSample {
             guard !suspended, input.generation == generation else { return }
             if let revision = input.notificationRevision,
@@ -191,17 +199,57 @@ final class ActivityObservationBuffer: @unchecked Sendable {
         }
         var signal = input; signal.generation = generation
         ordinal &+= 1; signal.ordinal = ordinal
-        if case .dropped = continuation.yield(signal) { dropped += 1 }
+        if let registration = signal.axRegistrationID, !signal.isWindowSample, signal.kind != .enrichment {
+            // Coalesce only consecutive pending invalidations. Any intervening
+            // workspace/lifecycle/enrichment event seals this batch, preserving
+            // event order and the latest actual notification timestamp.
+            if let id = coalescingAXID, pendingAX[id]?.axRegistrationID == registration {
+                signal.coalescedAXID = id
+                pendingAX[id] = signal
+                return
+            }
+            let id = UUID()
+            signal.coalescedAXID = id
+            pendingAX[id] = signal
+            switch continuation.yield(signal) {
+            case .enqueued: coalescingAXID = id
+            case .dropped:
+                pendingAX.removeValue(forKey: id); coalescingAXID = nil; dropped += 1
+            case .terminated:
+                pendingAX.removeValue(forKey: id); coalescingAXID = nil
+            @unknown default:
+                pendingAX.removeValue(forKey: id); coalescingAXID = nil; dropped += 1
+            }
+        } else {
+            coalescingAXID = nil
+            if case .dropped = continuation.yield(signal) { dropped += 1 }
+        }
+    }
+    func resolve(_ queued: ActivityObservationSignal) -> ActivityObservationSignal? {
+        guard let id = queued.coalescedAXID else { return queued }
+        return lock.withLock {
+            if coalescingAXID == id { coalescingAXID = nil }
+            return pendingAX.removeValue(forKey: id)
+        }
     }
     func suspend() {
-        lock.withLock { suspended = true; generation += 1; ObservedWindowGenerations.shared.reset() }
+        lock.withLock { suspended = true; generation += 1; coalescingAXID = nil; ObservedWindowGenerations.shared.reset() }
     }
     func resume() {
-        lock.withLock { suspended = false; generation += 1; ObservedWindowGenerations.shared.reset() }
+        lock.withLock { suspended = false; generation += 1; coalescingAXID = nil; ObservedWindowGenerations.shared.reset() }
     }
     func permitsContent(generation expected: Int) -> Bool { lock.withLock { !suspended && generation == expected } }
     func permitsCapture(generation expected: Int, processedOrdinal: UInt64) -> Bool {
         lock.withLock { !suspended && generation == expected && ordinal == processedOrdinal && dropped == 0 }
+    }
+    func activateAXRegistration(_ id: UUID) {
+        lock.withLock { axRegistrationID = id; coalescingAXID = nil }
+    }
+    func invalidateAXRegistration(_ id: UUID) {
+        lock.withLock { if axRegistrationID == id { axRegistrationID = nil; coalescingAXID = nil } }
+    }
+    func permitsAXRegistration(_ id: UUID) -> Bool {
+        lock.withLock { !suspended && axRegistrationID == id }
     }
     func takeDroppedCount() -> Int { lock.withLock { let value = dropped; dropped = 0; return value } }
     func setObserverRefresh(_ callback: (@Sendable () -> Void)?) { lock.withLock { observerRefresh = callback } }
@@ -212,12 +260,37 @@ final class ActivityObservationBuffer: @unchecked Sendable {
     func finish() { continuation.finish() }
 }
 
+/// A refresh burst retains only its latest revision while one native setup is
+/// in flight. Notification callbacks never create tasks or query LaunchServices.
+final class ActivityObserverRefreshRelay: @unchecked Sendable {
+    let stream: AsyncStream<UInt64>
+    private let continuation: AsyncStream<UInt64>.Continuation
+    private let lock = NSLock()
+    private var revision: UInt64 = 0
+    private var finished = false
+
+    init() { (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1)) }
+    func request() {
+        lock.withLock {
+            guard !finished else { return }
+            revision &+= 1
+            continuation.yield(revision)
+        }
+    }
+    func isCurrent(_ expected: UInt64) -> Bool { lock.withLock { !finished && revision == expected } }
+    func finish() { lock.withLock { finished = true; continuation.finish() } }
+}
+
 @MainActor
 private final class ActivityObservationBridge {
     private let buffer: ActivityObservationBuffer
     private var tokens: [NSObjectProtocol] = []
     private var observer: AXObserver?
     private var focusedWindow: AXUIElement?
+    private var observerReference: ActivityAXCallbackReference?
+    private var observedApplication: ActivityApplicationSnapshot?
+    private var refreshes: ActivityObserverRefreshRelay?
+    private var refreshTask: Task<Void, Never>?
     private var poll: Task<Void, Never>?
     private var observedPID: Int32?
     private var observedGeneration: String?
@@ -230,9 +303,13 @@ private final class ActivityObservationBridge {
     func start() {
         guard !isObserving else { return }
         isObserving = true
-        buffer.setObserverRefresh { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.observe(kind: .reconciliation, application: NSWorkspace.shared.frontmostApplication, emitSignal: false)
+        let refreshes = ActivityObserverRefreshRelay()
+        self.refreshes = refreshes
+        buffer.setObserverRefresh { refreshes.request() }
+        refreshTask = Task { [weak self] in
+            for await revision in refreshes.stream {
+                guard !Task.isCancelled else { break }
+                await self?.refreshAXObserver(revision: revision, refreshes: refreshes)
             }
         }
         let center = NSWorkspace.shared.notificationCenter
@@ -277,53 +354,74 @@ private final class ActivityObservationBridge {
             if kind == .focus { ObservedWindowGenerations.shared.reset() }
             buffer.send(.init(kind: kind, app: applicationSnapshot))
         }
-        let pid = application?.processIdentifier
+        let pid = applicationSnapshot?.pid
         let generation = applicationSnapshot?.generation
-        if pid != observedPID || generation != observedGeneration || registrationID == nil {
-            let changedProcess = pid != observedPID || generation != observedGeneration
-            observedPID = pid
-            observedGeneration = generation
-            if changedProcess { removeAXObserver() }
-            guard let pid, let generation else { return }
-            let requestID = UUID(); registrationID = requestID
-            let buffer = self.buffer
-            // AX setup/metadata reads happen off main. Only run-loop registration is UI work.
-            Task { [weak self] in
-                let setup = await Task.detached(priority: .utility) { ActivityAXRegistration.make(pid: pid, buffer: buffer) }.value
-                guard let self, self.isObserving, self.observedPID == pid, self.observedGeneration == generation,
-                      self.registrationID == requestID else { return }
-                self.registrationID = nil
-                guard let setup else {
-                    self.removeAXObserver()
-                    if !self.observerUnavailable { buffer.send(.init(kind: .observerFailure, app: nil)) }
-                    self.observerUnavailable = true
-                    return
-                }
-                // Keep the old observer live until the replacement subscribes to
-                // the current same-app window's title/move/destroy notifications.
-                self.removeAXObserver()
-                self.observer = setup.observer; self.focusedWindow = setup.window
-                CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(setup.observer), .commonModes)
-                if self.observerUnavailable {
-                    buffer.send(.init(kind: .resume, app: nil, administrativeMethod: "accessibility-observer-restored"))
-                    buffer.send(.init(kind: .reconciliation, app: ActivityApplicationSnapshot(NSWorkspace.shared.frontmostApplication)))
-                }
-                self.observerUnavailable = false
-            }
+        let changedProcess = pid != observedPID || generation != observedGeneration
+        observedApplication = applicationSnapshot
+        observedPID = pid; observedGeneration = generation
+        if changedProcess {
+            // Invalidate an in-flight setup even if A -> B -> A returns to the
+            // same retained process before its native request completes.
+            registrationID = nil
+            removeAXObserver()
         }
+        guard applicationSnapshot != nil else { return }
+        buffer.refreshObserver()
+    }
+
+    private func refreshAXObserver(revision: UInt64, refreshes: ActivityObserverRefreshRelay) async {
+        guard isObserving, refreshes.isCurrent(revision), let application = observedApplication else { return }
+        let requestID = UUID(); registrationID = requestID
+        let buffer = self.buffer
+        // This consumer owns at most one native setup and joins it on stop.
+        let setup = await Task.detached(priority: .utility) {
+            ActivityAXRegistration.make(application: application, registrationID: requestID, buffer: buffer)
+        }.value
+        guard !Task.isCancelled, isObserving, observedApplication == application,
+              registrationID == requestID else { return }
+        registrationID = nil
+        // A new focus/window request is already queued. Never install a setup
+        // sampled before that request, even when its final PID/title match.
+        guard refreshes.isCurrent(revision) else { return }
+        guard let setup else {
+            removeAXObserver()
+            if !observerUnavailable { buffer.send(.init(kind: .observerFailure, app: nil)) }
+            observerUnavailable = true
+            return
+        }
+        // Keep the old same-process observer until the replacement is ready.
+        removeAXObserver()
+        observer = setup.observer; focusedWindow = setup.window
+        observerReference = setup.reference
+        buffer.activateAXRegistration(setup.reference.registrationID)
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(setup.observer), .commonModes)
+        if observerUnavailable {
+            buffer.send(.init(kind: .resume, app: nil, administrativeMethod: "accessibility-observer-restored"))
+            buffer.send(.init(kind: .reconciliation, app: nil))
+        }
+        observerUnavailable = false
     }
 
     private func removeAXObserver() {
+        let reference = observerReference
+        if let reference { buffer.invalidateAXRegistration(reference.registrationID) }
         if let observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
-        observer = nil; focusedWindow = nil
+        // The unretained native refcon remains alive through run-loop removal.
+        withExtendedLifetime(reference) {}
+        observer = nil; focusedWindow = nil; observerReference = nil
     }
 
-    func stop() {
+    func stop() async {
         isObserving = false
         buffer.setObserverRefresh(nil)
+        refreshes?.finish(); refreshes = nil
+        let task = refreshTask; refreshTask = nil
+        task?.cancel()
         poll?.cancel(); poll = nil
         for token in tokens { NSWorkspace.shared.notificationCenter.removeObserver(token) }
-        tokens.removeAll(); observedPID = nil; observedGeneration = nil; registrationID = nil; removeAXObserver()
+        tokens.removeAll(); observedPID = nil; observedGeneration = nil
+        observedApplication = nil; registrationID = nil; removeAXObserver()
+        await task?.value
     }
 }
 
@@ -332,11 +430,31 @@ private final class ActivityObservationBridge {
 enum ActivityAXNotificationHandler {
     static func handle(_ notification: String, app: ActivityApplicationSnapshot?,
                        buffer: ActivityObservationBuffer,
-                       registry: ObservedWindowGenerations = .shared) {
+                       registry: ObservedWindowGenerations = .shared,
+                       registrationID: UUID? = nil) {
         let windowChanged = notification != kAXTitleChangedNotification && notification != kAXMovedNotification
         registry.noteNotification(resettingWindows: windowChanged)
-        buffer.send(.init(kind: .focus, app: app))
+        buffer.send(.init(kind: .focus, app: app,
+                          administrativeMethod: registrationID == nil ? nil : "accessibility-window-notification",
+                          axRegistrationID: registrationID))
         if windowChanged { buffer.refreshObserver() }
+    }
+}
+
+/// Immutable registration provenance; never look up the current application in
+/// the native callback. Buffer admission fences both callbacks and queued work.
+final class ActivityAXCallbackReference: @unchecked Sendable {
+    let application: ActivityApplicationSnapshot
+    let registrationID: UUID
+    let buffer: ActivityObservationBuffer
+
+    init(application: ActivityApplicationSnapshot, registrationID: UUID, buffer: ActivityObservationBuffer) {
+        self.application = application; self.registrationID = registrationID; self.buffer = buffer
+    }
+    func handle(_ notification: String, registry: ObservedWindowGenerations = .shared) {
+        guard buffer.permitsAXRegistration(registrationID) else { return }
+        ActivityAXNotificationHandler.handle(notification, app: application, buffer: buffer,
+                                              registry: registry, registrationID: registrationID)
     }
 }
 
@@ -344,18 +462,19 @@ private struct ActivityAXRegistration: @unchecked Sendable {
     let observer: AXObserver
     let application: AXUIElement
     let window: AXUIElement?
+    let reference: ActivityAXCallbackReference
 
-    static func make(pid: Int32, buffer: ActivityObservationBuffer) -> Self? {
+    static func make(application: ActivityApplicationSnapshot, registrationID: UUID,
+                     buffer: ActivityObservationBuffer) -> Self? {
+        let pid = application.pid
+        let reference = ActivityAXCallbackReference(application: application,
+            registrationID: registrationID, buffer: buffer)
         guard AXIsProcessTrusted() else { return nil }
         var observer: AXObserver?
         guard AXObserverCreate(pid, { _, _, notification, pointer in
             guard let pointer else { return }
-            let buffer = Unmanaged<ActivityObservationBuffer>.fromOpaque(pointer).takeUnretainedValue()
-            // No AX traversal in a run-loop callback. Reconcile the current focused window off main.
-            MainActor.assumeIsolated {
-                ActivityAXNotificationHandler.handle(notification as String,
-                    app: ActivityApplicationSnapshot(NSWorkspace.shared.frontmostApplication, route: .ax), buffer: buffer)
-            }
+            let reference = Unmanaged<ActivityAXCallbackReference>.fromOpaque(pointer).takeUnretainedValue()
+            reference.handle(notification as String)
         }, &observer) == .success, let observer else { return nil }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.1)
@@ -363,16 +482,17 @@ private struct ActivityAXRegistration: @unchecked Sendable {
         let result = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value)
         let window: AXUIElement? = result == .success && value.map({ CFGetTypeID($0) == AXUIElementGetTypeID() }) == true
             ? (value as! AXUIElement) : nil
-        let pointer = Unmanaged.passUnretained(buffer).toOpaque()
+        let pointer = Unmanaged.passUnretained(reference).toOpaque()
         let subscribed = AXObserverAddNotification(observer, app, kAXFocusedWindowChangedNotification as CFString, pointer)
         AXObserverAddNotification(observer, app, kAXTitleChangedNotification as CFString, pointer)
         if let window {
+            AXUIElementSetMessagingTimeout(window, 0.1)
             for name in [kAXTitleChangedNotification, kAXMovedNotification, kAXUIElementDestroyedNotification] {
                 AXObserverAddNotification(observer, window, name as CFString, pointer)
             }
         }
         guard subscribed == .success || subscribed == .notificationAlreadyRegistered else { return nil }
-        return .init(observer: observer, application: app, window: window)
+        return .init(observer: observer, application: app, window: window, reference: reference)
     }
 }
 
@@ -459,8 +579,9 @@ public actor ActivityMonitor {
         let buffer = observations ?? ActivityObservationBuffer(); self.buffer = buffer
         buffer.send(.init(kind: .startup, app: nil))
         worker = Task { [weak self] in
-            for await signal in buffer.stream {
+            for await queued in buffer.stream {
                 guard !Task.isCancelled else { break }
+                guard let signal = buffer.resolve(queued) else { continue }
                 await self?.consume(signal, buffer: buffer)
             }
         }
@@ -546,6 +667,11 @@ public actor ActivityMonitor {
             && first.windowTitle == second.windowTitle && first.safeURL == second.safeURL
     }
 
+    private func permits(_ signal: ActivityObservationSignal, buffer: ActivityObservationBuffer) -> Bool {
+        buffer.permitsContent(generation: signal.generation)
+            && (signal.axRegistrationID.map { buffer.permitsAXRegistration($0) } ?? true)
+    }
+
     private func consume(_ signal: ActivityObservationSignal, buffer: ActivityObservationBuffer) async {
         defer { lastProcessedOrdinal = signal.ordinal }
         let dropped = buffer.takeDroppedCount()
@@ -580,11 +706,16 @@ public actor ActivityMonitor {
             return
         default: break
         }
-        guard buffer.permitsContent(generation: signal.generation) else { return }
+        guard permits(signal, buffer: buffer) else { return }
         let config = await configuration()
-        guard buffer.permitsContent(generation: signal.generation) else { return }
+        guard permits(signal, buffer: buffer) else { return }
         let currentApp = await source.frontmost()
-        guard buffer.permitsContent(generation: signal.generation) else { return }
+        guard permits(signal, buffer: buffer) else { return }
+        // AX identifies the observer's registered process, not an activation.
+        // A late background/terminated registration cannot manufacture focus.
+        if signal.axRegistrationID != nil {
+            guard signal.app == currentApp else { return }
+        }
         // Only an explicit reconciliation may sample a later current process.
         // An unavailable notified identity remains unknown at its original time.
         guard let app = signal.app ?? (signal.kind == .reconciliation ? currentApp : nil) else {
@@ -602,7 +733,7 @@ public actor ActivityMonitor {
             return
         }
         if signal.kind == .enrichment {
-            guard app == currentApp, buffer.permitsContent(generation: signal.generation),
+            guard app == currentApp, permits(signal, buffer: buffer),
                   signal.notificationRevision == ObservedWindowGenerations.shared.notificationRevision,
                   signal.relatedEventID == lastFocusEventID, let enriched = signal.enrichedContext,
                   enriched.windowID == lastBaseContext?.windowID,
@@ -615,7 +746,7 @@ public actor ActivityMonitor {
             if await persist(kind: navigationChanged ? .focus : .enrichment, coverage: .uncertain,
                              context: enriched, signal: signal, method: "captured-window-ax-document-v1",
                              relatedEventID: navigationChanged ? nil : signal.relatedEventID),
-               buffer.permitsContent(generation: signal.generation) {
+               permits(signal, buffer: buffer) {
                 lastContext = enriched
                 if navigationChanged { lastFocusEventID = lastWrittenEventID }
             }
@@ -632,7 +763,7 @@ public actor ActivityMonitor {
                                  context: context, signal: signal,
                                  method: signal.administrativeMethod
                                      ?? (fallback ? "two-second-reconciliation" : "sampled-window-after-notification")),
-                   buffer.permitsContent(generation: signal.generation) {
+                   permits(signal, buffer: buffer) {
                     lastContext = context; lastBaseContext = context; lastFocusEventID = lastWrittenEventID
                 }
             } else if lastEventTime.map({ signal.wallTime.timeIntervalSince($0) >= 30 }) ?? true {
@@ -642,7 +773,7 @@ public actor ActivityMonitor {
             if let relatedEventID = lastFocusEventID, app == currentApp,
                let revision = signal.notificationRevision,
                revision == ObservedWindowGenerations.shared.notificationRevision,
-               buffer.permitsContent(generation: signal.generation) {
+               permits(signal, buffer: buffer) {
                 // Keep one AX read in flight. A later same-title signal requests a
                 // fresh sample when it finishes, instead of losing that navigation
                 // or spawning an unbounded set of cancelled AX reads.
@@ -659,7 +790,7 @@ public actor ActivityMonitor {
                        revision == ObservedWindowGenerations.shared.notificationRevision {
                         buffer.send(.init(kind: .enrichment, app: app, enrichedContext: enriched,
                                           relatedEventID: relatedEventID, generation: generation,
-                                          notificationRevision: revision))
+                                          notificationRevision: revision, axRegistrationID: signal.axRegistrationID))
                     }
                     await self?.finishEnrichment(requestID)
                 }
@@ -673,8 +804,8 @@ public actor ActivityMonitor {
            lastContext?.appBundleID != app.bundleID || lastContext?.processGeneration != app.generation,
            let minimal = AppInfoProvider().activityContext(for: app, isStillFocused: false, config: config) {
             guard await persist(kind: .focus, coverage: .uncertain, context: minimal, signal: signal,
-                                method: "workspace-app-notification"),
-                  buffer.permitsContent(generation: signal.generation) else { return }
+                                method: signal.administrativeMethod ?? "workspace-app-notification"),
+                  permits(signal, buffer: buffer) else { return }
             lastContext = minimal; lastBaseContext = nil; lastFocusEventID = lastWrittenEventID
         }
         guard app == currentApp else { return }
@@ -688,8 +819,8 @@ public actor ActivityMonitor {
         }
         let revision = ObservedWindowGenerations.shared.notificationRevision
         let context = await source.window(app, true, config)
-        guard buffer.permitsContent(generation: signal.generation) else { return }
-        guard app == (await source.frontmost()), buffer.permitsContent(generation: signal.generation),
+        guard permits(signal, buffer: buffer) else { return }
+        guard app == (await source.frontmost()), permits(signal, buffer: buffer),
               revision == ObservedWindowGenerations.shared.notificationRevision else { return }
         guard let context else {
             let shouldPublish = lastContext != nil || lastEventKind != .excluded || lastEventTime.map({ signal.wallTime.timeIntervalSince($0) >= 30 }) ?? true
@@ -703,7 +834,7 @@ public actor ActivityMonitor {
         // This preserves chronological monotonic ordering without backdating a window.
         buffer.send(.init(kind: signal.kind, app: app, enrichedContext: context,
                           generation: signal.generation, notificationRevision: revision, isWindowSample: true,
-                          administrativeMethod: signal.administrativeMethod))
+                          administrativeMethod: signal.administrativeMethod, axRegistrationID: signal.axRegistrationID))
     }
 
     private func finishEnrichment(_ id: UUID) {
@@ -737,7 +868,7 @@ public actor ActivityMonitor {
             lastPersistedAt = receipt.persistedAt; lastEventTime = signal.wallTime; storageFailed = false
             lastEventKind = kind
             lastWrittenEventID = event.id
-            if context != nil, buffer?.permitsContent(generation: signal.generation) == true {
+            if context != nil, let buffer, permits(signal, buffer: buffer) {
                 lastContextEvent = event; lastContentGeneration = signal.generation
             }
             // persistedAt is sampled before the transaction's writes and commit.

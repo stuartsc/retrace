@@ -1,0 +1,57 @@
+{
+  "recordedAt": "2026-09-24T11:30:53.539305+00:00",
+  "status": "blocked_integration",
+  "reason": "No public App Server wire/config mapping to captured internal ToolPolicy.allowed_tools or SessionIsolation.Isolated",
+  "checks": {
+    "threadStartHasDynamicTools": true,
+    "threadStartHasNoExclusiveToolField": true,
+    "threadStartHasNoSessionIsolationField": true,
+    "pinnedConfigHasNoAllowedToolsField": true,
+    "internalToolPolicyHasTypedAllowlist": true,
+    "internalToolPolicyHasNoSerdeDerive": true,
+    "appServerStartupDoesNotInsertToolPolicy": true,
+    "appServerStartupOnlyAddsSelectedCapabilityRoots": true,
+    "configurationOffersEphemeralCredentials": true
+  },
+  "runtimeSessionsStarted": 0,
+  "accountOrModelCalls": 0,
+  "compilerInvoked": false,
+  "repoMutated": false,
+  "binary": {
+    "binary": "/Users/stuartbond/.local/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+    "binaryBytes": 238138912,
+    "binarySHA256": "0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a",
+    "wrapperSHA256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+    "calls": [
+      {
+        "label": "version",
+        "args": [
+          "--version"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "app-server-help",
+        "args": [
+          "app-server",
+          "--help"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "schema-help",
+        "args": [
+          "app-server",
+          "generate-json-schema",
+          "--help"
+        ],
+        "exit": 0
+      }
+    ],
+    "network": "denied",
+    "writes": "only the private task directory via sandbox-exec"
+  },
+  "releaseCommit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+  "explicitAuthMaterialReads": 0,
+  "runtimeAuthAccessTested": false
+}

@@ -111,7 +111,16 @@ actor MigrationRunner {
             V20_OCRBackfillState(),
             V21_ProgressiveRecall(),
             V22_ScreenEvidenceFeed(),
-            V23_ScreenEvidenceAdmission()
+            V23_ScreenEvidenceAdmission(),
+            V24_OriginalFrameSources(),
+            V25_SemanticRecall(),
+            V26_CaptureGroups(),
+            V27_LocalContextVisibility(),
+            V28_AudioOriginalSources(),
+            V29_JobEvents(),
+            V30_AudioEvidence(),
+            V31_AudioPendingWorkIndex(),
+            V32_AudioChunkMedia()
         ]
     }
 

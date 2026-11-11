@@ -77,6 +77,7 @@ public actor StorageManager: StorageProtocol {
         try await directoryManager.ensureBaseDirectories()
 
         // Initialize WAL
+        await walManager.configureOriginalPixelCompression(config.originalPixelCompression)
         try await walManager.initialize()
     }
 
@@ -121,6 +122,26 @@ public actor StorageManager: StorageProtocol {
     /// Get WAL manager for recovery operations
     public func getWALManager() -> WALManager {
         return walManager
+    }
+
+    public func configureOriginalStore(storeID: UUID) async throws {
+        try await walManager.configureOriginalStore(storeID: storeID)
+    }
+
+    public func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference,
+                                              expectedWidth: Int, expectedHeight: Int) async throws -> CapturedFrame? {
+        try await walManager.readOriginalFrameForProcessing(sourceStoreID: sourceStoreID, frame: frame,
+            expectedWidth: expectedWidth, expectedHeight: expectedHeight)
+    }
+
+    public func confirmOriginalArchive(video: VideoSegment) async throws {
+        try await walManager.confirmOriginalArchive(video: video)
+    }
+
+    public func reconcileOriginalSpool(
+        disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition
+    ) async throws -> OriginalSpoolStatus {
+        try await walManager.reconcileOriginalSpool(disposition: disposition)
     }
 
     /// OCR reads a fresh, exact decoded sample and preserves its saved context.

@@ -1,0 +1,22 @@
+{
+  "scope": "Clean full XCTest run after exact cross-source selection/reader integration and runtime fixture repairs; AX content-free diagnostics enabled only in native tests. JobIntegration and merged search still staged.",
+  "startedUTC": "2026-09-24T14:37:01.544270+00:00",
+  "argv": [
+    "swift",
+    "test",
+    "--jobs",
+    "2",
+    "--disable-automatic-resolution"
+  ],
+  "sourceManifest": "clean-integrated-tests-4-cross-source-source.json",
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+    "SDKROOT": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+    "RETRACE_TEST_DISABLE_FILE_LOGGING": "1"
+  },
+  "cleanExit": 0,
+  "pid": 72583,
+  "exit": 1,
+  "endedUTC": "2026-09-24T14:38:19.073482+00:00",
+  "sourceUnchanged": true
+}

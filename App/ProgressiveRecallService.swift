@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CryptoKit
 import Shared
 import Database
 
@@ -19,8 +20,36 @@ public struct ProgressiveRecallStageHealth: Sendable {
     public let audioTranscriptions: Int
 }
 
+/// A short-lived equality fence for local UI batches. It contains no captured
+/// content and is neither a persisted citation nor permission for agent access.
+public struct EvidencePresentationStamp: Equatable, Sendable {
+    fileprivate let sources: [FrameSource: String]
+    fileprivate let policy: ScreenEvidenceAccessPolicy
+
+    /// Exact-reference consumers separately re-read their selected evidence. They
+    /// may ignore unrelated corpus growth while retaining the current policy fence.
+    public func hasSamePolicy(as other: EvidencePresentationStamp) -> Bool { policy == other.policy }
+    public func hasPolicySHA256(_ expected: String) -> Bool { (try? policy.fingerprintSHA256()) == expected }
+
+    /// An ephemeral equality identity for a bounded local history batch. Encode
+    /// sorted source entries, not an enum-keyed dictionary with unstable order.
+    /// Only the existing policy digest enters this value, never its rule strings.
+    public func fingerprintSHA256() throws -> String {
+        struct Entry: Encodable { let source: String; let identity: String }
+        struct Payload: Encodable { let policySHA256: String; let sources: [Entry] }
+        let entries = sources.sorted { $0.key.rawValue < $1.key.rawValue }.map {
+            Entry(source: $0.key.rawValue, identity: $0.value)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(Payload(policySHA256: policy.fingerprintSHA256(), sources: entries))
+        return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 public enum ProgressiveRecallAction: String, Sendable {
     case opened, searched, expanded, grouped, ungrouped, glancesRevealed
+    case historySearched, historyRevalidated
     case glancesHidden, hiddenEpisodesRevealed, hiddenEpisodesHidden, textExpanded
     case intervalSelected, intervalDeselected, selectionCleared, collapsed, correctionOpened, correctionCancelled
     case correctionHistoryExpanded, correctionHistoryCollapsed, healthExpanded, healthCollapsed
@@ -40,6 +69,7 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     private let database: DatabaseManager
     private let adapter: DataAdapter
     private let configuration: @Sendable () async -> CaptureConfig
+    private let audioHistory: (any AudioEvidenceStoreProtocol)?
     private let imageReader: @Sendable (FrameWithVideoInfo) async throws -> CGImage
 
     #if DEBUG
@@ -59,8 +89,10 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
 
     public init(database: DatabaseManager, adapter: DataAdapter,
                 configuration: @escaping @Sendable () async -> CaptureConfig,
+                audioHistory: (any AudioEvidenceStoreProtocol)? = nil,
                 imageReader: @escaping @Sendable (FrameWithVideoInfo) async throws -> CGImage) {
         self.database = database; self.adapter = adapter
+        self.audioHistory = audioHistory
         self.configuration = configuration; self.imageReader = imageReader
     }
 
@@ -356,11 +388,90 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
                     height: snapshot.height, text: snapshot.text, legacyContext: snapshot.legacyContext,
                     highlightsVerified: snapshot.highlightsVerified, structuredObservation: snapshot.structuredObservation)
                 return .screen(selected, image: image)
-            case .audio: return .unavailable(.unsupported)
+            case .audio(let ref): return try await resolveAudio(ref)
+            case .job(let ref): return try await resolveJob(ref)
             }
         } catch let reason as EvidenceUnavailableReason { return .unavailable(reason) }
         catch DataAdapterError.sourceNotAvailable { return .unavailable(.sourceDisconnected) }
         catch { return .unavailable(.integrityFailure) }
+    }
+
+    /// The injected committed native reader owns audio's store identity. A
+    /// transcript never borrows the screen adapter's row IDs, timestamps or
+    /// media. Current screen rules are a change fence, not audio app provenance.
+    private func resolveAudio(_ reference: AudioEvidenceRef) async throws -> EvidenceResolution {
+        guard reference.source == .native else { return .unavailable(.sourceDisconnected) }
+        guard let audioHistory else { return .unavailable(.unsupported) }
+        let policy = ScreenEvidenceAccessPolicy(config: await configuration())
+        do {
+            let result = try await audioHistory.readAudioEvidence(reference)
+            switch result {
+            case .unavailable(let reason): return .unavailable(Self.audioUnavailable(reason))
+            case .available(let snapshot, let stamp):
+                guard snapshot.reference == reference, stamp.storeID == reference.storeID else {
+                    return .unavailable(.integrityFailure)
+                }
+                guard ScreenEvidenceAccessPolicy(config: await configuration()) == policy else {
+                    return .unavailable(.notPermitted)
+                }
+                // Canonical deletion/revision/owner validation follows the last
+                // configuration await. Neither the reader nor App opens media.
+                try await audioHistory.revalidateAudioEvidence(stamp, references: [reference])
+                try Task.checkCancellation()
+                return .audio(snapshot)
+            }
+        } catch AudioEvidenceError.readerClosed { return .unavailable(.sourceDisconnected) }
+        catch AudioEvidenceError.dataChanged { return .unavailable(.integrityFailure) }
+    }
+
+    private func resolveJob(_ reference: JobEvidenceRef) async throws -> EvidenceResolution {
+        let policy = ScreenEvidenceAccessPolicy(config: await configuration())
+        let fingerprint = try policy.fingerprintSHA256()
+        let first = try await database.resolveJobEvidence(reference)
+        switch first {
+        case .unavailable(let reason): return .unavailable(Self.jobUnavailable(reason))
+        case .available(let snapshot, _):
+            guard snapshot.reference == reference else { return .unavailable(.integrityFailure) }
+            guard snapshot.policySHA256 == fingerprint else { return .unavailable(.notPermitted) }
+            guard ScreenEvidenceAccessPolicy(config: await configuration()) == policy else {
+                return .unavailable(.notPermitted)
+            }
+            // Re-read this exact event after the App policy await. Unrelated
+            // journal growth cannot replace the immutable event or deny it.
+            switch try await database.resolveJobEvidence(reference) {
+            case .unavailable(let reason): return .unavailable(Self.jobUnavailable(reason))
+            case .available(let current, _):
+                guard current == snapshot, current.policySHA256 == fingerprint else {
+                    return .unavailable(.integrityFailure)
+                }
+                try Task.checkCancellation()
+                return .job(current)
+            }
+        }
+    }
+
+    private static func audioUnavailable(_ reason: AudioEvidenceUnavailableReason) -> EvidenceUnavailableReason {
+        switch reason {
+        case .notNative, .sourceMismatch, .sourceClosed: return .sourceDisconnected
+        case .evidenceDeleted: return .evidenceDeleted
+        case .evidenceMissing, .revisionUnavailable, .lineageUnavailable, .mediaUnregistered, .unavailableQuality, .oversizedText:
+            return .extractionUnavailable
+        case .lineageConflicting, .invalidTiming, .integrityFailure, .budgetExceeded: return .integrityFailure
+        case .unattestedCapturePolicy: return .notPermitted
+        case .unsupportedApplicationScope, .unsupportedWindowScope, .unsupportedURLScope,
+             .unsupportedTagScope, .unsupportedCommentScope, .unsupportedHiddenScope, .unsupportedDateScope:
+            return .unsupported
+        }
+    }
+
+    private static func jobUnavailable(_ reason: JobUnavailableReason) -> EvidenceUnavailableReason {
+        switch reason {
+        case .notPermitted: return .notPermitted
+        case .deleted: return .evidenceDeleted
+        case .missing: return .extractionUnavailable
+        case .unsupportedReference: return .unsupported
+        case .integrityFailure: return .integrityFailure
+        }
     }
 
     public func currentRevision(_ ref: ScreenEvidenceRef) async throws -> Int64? {
@@ -414,6 +525,24 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     public func sourceGeneration(source: FrameSource) async throws -> String {
         do { return try await adapter.evidenceSourceGeneration(source: source) }
         catch { throw Self.evidenceAccessError(error) }
+    }
+
+    /// Read before admission and again after every batch read. Source generation
+    /// alone cannot detect deletion, indexed text changes or new privacy rules.
+    public func presentationStamp(sources: Set<FrameSource>) async throws -> EvidencePresentationStamp {
+        do {
+            try Task.checkCancellation()
+            let policy = ScreenEvidenceAccessPolicy(config: await configuration())
+            var stamps: [FrameSource: String] = [:]
+            for source in sources.sorted(by: { $0.rawValue < $1.rawValue }) {
+                stamps[source] = try await adapter.evidencePresentationStamp(source: source)
+            }
+            guard ScreenEvidenceAccessPolicy(config: await configuration()) == policy else {
+                throw EvidenceUnavailableReason.notPermitted
+            }
+            try Task.checkCancellation()
+            return EvidencePresentationStamp(sources: stamps, policy: policy)
+        } catch { throw Self.evidenceAccessError(error) }
     }
 
     private func readableExpansionSnapshot(_ ref: ScreenEvidenceRef, generation: String,
@@ -475,7 +604,7 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     }
 
     private static func permits(_ metadata: FrameMetadata, config: CaptureConfig) -> Bool {
-        ScreenEvidenceAccessPolicy(config: config).permits(metadata)
+        ScreenEvidenceAccessPolicy(config: config).permitsLocalPresentation(metadata)
     }
 
     public func track(_ action: ProgressiveRecallAction, outcome: String = "success", count: Int = 1) async {

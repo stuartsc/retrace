@@ -1,0 +1,60 @@
+{
+  "native_vs_independent_decoded_aac": [
+    {
+      "index": 1,
+      "frame_count": 240000,
+      "same_bytes": true,
+      "max_absolute_int16_difference": 0,
+      "different_samples": 0,
+      "expected_sha256": "bf9acdc1479d4cea83aa711d8dd272a635cd17774d062d295632b0c03bb2d3ad",
+      "actual_sha256": "bf9acdc1479d4cea83aa711d8dd272a635cd17774d062d295632b0c03bb2d3ad"
+    },
+    {
+      "index": 2,
+      "frame_count": 183414,
+      "same_bytes": true,
+      "max_absolute_int16_difference": 0,
+      "different_samples": 0,
+      "expected_sha256": "11b705be513412d2776707b9f208148594efb4fb611c73c5645bdc3239628375",
+      "actual_sha256": "11b705be513412d2776707b9f208148594efb4fb611c73c5645bdc3239628375"
+    },
+    {
+      "index": 3,
+      "frame_count": 160000,
+      "same_bytes": false,
+      "max_absolute_int16_difference": 1,
+      "different_samples": 87,
+      "expected_sha256": "c9cc291fee9dd7bac105c1d04c53391404cae82d26d64708e4c9fb190f15ae15",
+      "actual_sha256": "81fb541000f194702acc988191a13d2b6d669b2fcd631ce4f8c4aaad5863750c"
+    },
+    {
+      "index": 4,
+      "frame_count": 240000,
+      "same_bytes": false,
+      "max_absolute_int16_difference": 1,
+      "different_samples": 131,
+      "expected_sha256": "03e56c630341e8b286dd74d90f4c2a5103aaef6364e638625fb35f80d7079f59",
+      "actual_sha256": "f9ac91a3e4ea15b1f3a609b12f766f7e9332fc91355ffffddb362e8facf25d54"
+    },
+    {
+      "index": 5,
+      "frame_count": 103414,
+      "same_bytes": false,
+      "max_absolute_int16_difference": 1,
+      "different_samples": 61,
+      "expected_sha256": "2fb1203b0cc143eb8df0d69cd56f17c27d0d5cff0f3c37cb6a58b1b928fbead9",
+      "actual_sha256": "e6339c0273f515a995a1ac6cf5f00c7ab47589b6f29f76a4c5658c10ce059d2f"
+    }
+  ],
+  "legacy_word_error_rate": 0.984375,
+  "candidate_word_error_rate": 0.8125,
+  "legacy_text": [
+    "beaucoup",
+    "A"
+  ],
+  "candidate_text": [
+    "The Blaagne pbdpposal is still a draft.",
+    "approved Was approved yesterday.",
+    "proposal was approved yesterday, please open the exact document and check the final amount before sending a reply."
+  ]
+}

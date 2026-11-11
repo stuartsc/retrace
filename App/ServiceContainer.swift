@@ -15,14 +15,20 @@ public actor ServiceContainer {
     // MARK: - Services
 
     public let database: DatabaseManager
+    public let audioHistory: AudioHistoryOwner
     public let ftsEngine: FTSManager
     public let storage: StorageManager
     public let capture: CaptureManager
     public let audioCapture: AudioCaptureManager
     public let processing: ProcessingManager
+    public let resourceUsage: ResourceUsageMonitor
+    public let storageUsage: StorageUsageService
+    public let backgroundProcessing: BackgroundProcessingGovernor
     public let audioProcessing: AudioProcessingManager
     public let dictation: DictationManager
     public let search: SearchManager
+    public let localRecall: LocalRecallController
+    public let jobs: JobIntegration
     public let migration: MigrationManager
     public let modelManager: ModelManager
     nonisolated public let onboardingManager: OnboardingManager
@@ -33,6 +39,8 @@ public actor ServiceContainer {
     public var audioRefinement: AudioRefinementManager?
     public var audioContextualRefinement: AudioContextualRefinementManager?
     private var transcriptionService: (any TranscriptionProtocol)?
+    private var chunkMedia: AudioChunkMediaStore?
+    private var audioPlaybackOwner: AudioMediaPlaybackOwner?
 
     // MARK: - Configuration
 
@@ -45,6 +53,9 @@ public actor ServiceContainer {
     private let searchConfig: SearchConfig
 
     private var isInitialized = false
+    private var servicesShutdownRequested = false
+    private var localContextOwner: LocalContextService?
+    private var localContextClosing = false
     private let initializationLifecycle = RecordingLifecycle()
 
     #if DEBUG
@@ -66,6 +77,9 @@ public actor ServiceContainer {
     func setBeforeDatabaseCloseForTesting(_ receipt: @escaping @Sendable () async throws -> Void) {
         beforeDatabaseCloseForTesting = receipt
     }
+    func audioChunkMediaForTesting() async throws -> any AudioChunkMediaStoreProtocol {
+        try await audioChunkMediaStore()
+    }
     #endif
 
     // MARK: - Initialization
@@ -77,25 +91,62 @@ public actor ServiceContainer {
         audioCaptureConfig: AudioCaptureConfig = .default,
         processingConfig: ProcessingConfig = .default,
         audioProcessingConfig: AudioProcessingConfig = .default,
-        searchConfig: SearchConfig = .default
+        searchConfig: SearchConfig = .default,
+        jobObservationConfig: JobObservationConfig = .default
     ) {
+        let resourceUsage = ResourceUsageMonitor()
+        self.resourceUsage = resourceUsage
+        let backgroundProcessing = BackgroundProcessingGovernor(resourceUsage: resourceUsage)
+        self.backgroundProcessing = backgroundProcessing
         self.databasePath = databasePath
         self.storageConfig = storageConfig
         self.captureConfig = captureConfig
         self.audioCaptureConfig = audioCaptureConfig
         self.processingConfig = processingConfig
-        self.audioProcessingConfig = audioProcessingConfig
         self.searchConfig = searchConfig
 
         // Initialize all managers
         self.database = DatabaseManager(databasePath: databasePath)
+        self.audioHistory = AudioHistoryOwner(factory: { [database] in
+            try await database.makeAudioEvidenceStore()
+        })
         self.ftsEngine = FTSManager(databasePath: databasePath)
         // Use the correct storage root (respects custom path setting)
         let storageRootURL = URL(fileURLWithPath: NSString(string: storageConfig.storageRootPath).expandingTildeInPath, isDirectory: true)
         self.storage = StorageManager(storageRoot: storageRootURL)
-        self.capture = CaptureManager(config: captureConfig,
-            configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database))
-        self.audioCapture = AudioCaptureManager(config: audioCaptureConfig)
+        self.storageUsage = StorageUsageService(
+            roots: StorageUsageService.roots(native: storageRootURL,
+                includeRelatedLibraries: storageRootURL.path == AppPaths.expandedStorageRoot),
+            resources: resourceUsage)
+        self.localRecall = LocalRecallController(database: database,
+            cacheRoot: storageRootURL.appendingPathComponent("model-cache/semantic", isDirectory: true),
+            governor: backgroundProcessing,
+            acknowledgeConfiguration: { selected in
+                let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+                if let selected { defaults.set(selected.path, forKey: LocalRecallSettings.modelPackagePathKey) }
+                else { defaults.removeObject(forKey: LocalRecallSettings.modelPackagePathKey) }
+            })
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        let configuredJobs = defaults.object(forKey: JobIntegration.defaultsKey) == nil ? jobObservationConfig :
+            JobObservationConfig(enabled: defaults.bool(forKey: JobIntegration.defaultsKey))
+        let jobOwner = JobIntegration(store: database, configuration: configuredJobs, metric: { [database] action in
+            try? await database.recordMetricEvent(metricType: .jobEvent, metadata: JobIntegration.metricMetadata(action))
+        })
+        self.jobs = jobOwner
+        let captureOwner = CaptureManager(config: captureConfig,
+            configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database, jobs: jobOwner), groupJournal: database)
+        self.capture = captureOwner
+        let configuredAudio = defaults.object(forKey: MeetingIntegration.defaultsKey) == nil ? audioCaptureConfig :
+            audioCaptureConfig.withMeetingEvidenceComparisonEnabled(defaults.bool(forKey: MeetingIntegration.defaultsKey))
+        let audioOwner = AudioCaptureManager(config: configuredAudio,
+            meetingCaptureConfig: { await captureOwner.meetingCapturePolicySnapshot() })
+        self.audioCapture = audioOwner
+        var selectedAudioProcessingConfig = audioProcessingConfig
+        if defaults.object(forKey: "chunkedAudioCaptureCandidateEnabled") != nil {
+            selectedAudioProcessingConfig.chunkedAudioEnabled = defaults.bool(forKey: "chunkedAudioCaptureCandidateEnabled")
+        }
+        let linkedAudioProcessingConfig = MeetingIntegration.processingConfiguration(selectedAudioProcessingConfig, audio: audioOwner)
+        self.audioProcessingConfig = linkedAudioProcessingConfig
         self.processing = ProcessingManager(config: processingConfig)
 
         // Audio processing: load model path from config or use default
@@ -136,7 +187,8 @@ public actor ServiceContainer {
             transcriptionService: transcriptionService,
             transcriptionQueries: nil,  // Set during initialization
             audioWriter: audioWriter,
-            config: audioProcessingConfig
+            config: linkedAudioProcessingConfig,
+            governor: backgroundProcessing
         )
         self.dictation = DictationManager(transcriptionService: transcriptionService)
 
@@ -173,20 +225,38 @@ public actor ServiceContainer {
         let sharedMemoryPath = "file:memdb_test_\(UUID().uuidString)?mode=memory&cache=shared"
         let testStorageRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("retrace-services-\(UUID().uuidString)", isDirectory: true)
+        self.resourceUsage = ResourceUsageMonitor()
+        self.backgroundProcessing = BackgroundProcessingGovernor(observeSystem: false)
         self.databasePath = sharedMemoryPath
         self.storageConfig = StorageConfig(storageRootPath: testStorageRoot.path)
         self.captureConfig = CaptureConfig()
         self.audioCaptureConfig = .default
         self.processingConfig = .default
-        self.audioProcessingConfig = .default
         self.searchConfig = .default
 
         self.database = DatabaseManager(databasePath: sharedMemoryPath)
+        self.audioHistory = AudioHistoryOwner(factory: { [database] in
+            try await database.makeAudioEvidenceStore()
+        })
         self.ftsEngine = FTSManager(databasePath: sharedMemoryPath)
         self.storage = StorageManager(storageRoot: testStorageRoot)
-        self.capture = CaptureManager(config: captureConfig,
-            configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database))
-        self.audioCapture = AudioCaptureManager()
+        self.storageUsage = StorageUsageService(
+            roots: [.init(id: "native", url: testStorageRoot.resolvingSymlinksInPath(), classifyNativeLibrary: true)],
+            resources: resourceUsage)
+        self.localRecall = LocalRecallController(database: database,
+            cacheRoot: testStorageRoot.appendingPathComponent("model-cache/semantic", isDirectory: true))
+        // Private in-memory fixtures never inherit a live user's opt-in setting.
+        let jobOwner = JobIntegration(store: database, metric: { [database] action in
+            try? await database.recordMetricEvent(metricType: .jobEvent, metadata: JobIntegration.metricMetadata(action))
+        })
+        self.jobs = jobOwner
+        let captureOwner = CaptureManager(config: captureConfig,
+            configurationAdmission: ScreenEvidenceAdmissionCoordinator(database: database, jobs: jobOwner), groupJournal: database)
+        self.capture = captureOwner
+        let audioOwner = AudioCaptureManager(meetingCaptureConfig: { await captureOwner.meetingCapturePolicySnapshot() })
+        self.audioCapture = audioOwner
+        let linkedAudioProcessingConfig = MeetingIntegration.processingConfiguration(.default, audio: audioOwner)
+        self.audioProcessingConfig = linkedAudioProcessingConfig
         self.processing = ProcessingManager()
 
         // Use mock transcription service in test mode to avoid loading heavy Whisper model
@@ -197,7 +267,7 @@ public actor ServiceContainer {
             transcriptionService: transcriptionService,
             transcriptionQueries: nil,  // Set during initialization
             audioWriter: audioWriter,
-            config: .default
+            config: linkedAudioProcessingConfig
         )
         self.dictation = DictationManager(transcriptionService: transcriptionService)
 
@@ -246,6 +316,14 @@ public actor ServiceContainer {
 
     private func initializeServices() async throws {
         try Task.checkCancellation()
+        guard !servicesShutdownRequested else { throw RecordingLifecycleError.shuttingDown }
+        try await backgroundProcessing.reopenAfterJoinedClose()
+        try await audioHistory.reopenAfterJoinedClose()
+        try await jobs.reopenAfterJoinedClose()
+        try await localRecall.reopenAfterJoinedClose()
+        try Task.checkCancellation()
+        guard !servicesShutdownRequested else { throw RecordingLifecycleError.shuttingDown }
+        localContextClosing = false
         guard !isInitialized else {
             Log.warning("ServiceContainer already initialized", category: .app)
             return
@@ -262,6 +340,9 @@ public actor ServiceContainer {
         // paused. Install it before any remaining service can claim derived work.
         try await capture.initializeConfigurationAdmission()
         try Task.checkCancellation()
+        await audioCapture.setMeetingOutcomeHandler { [database] outcome in
+            await MeetingIntegration.record(outcome, database: database)
+        }
 
         #if DEBUG
         if let initializationRemainderForTesting {
@@ -271,6 +352,14 @@ public actor ServiceContainer {
             return
         }
         #endif
+
+        await resourceUsage.start { [database] minute in
+            do { try await database.recordResourceUsageMinute(minute) }
+            catch { Log.warning("Resource usage aggregate could not be saved", category: .app) }
+        }
+        await storageUsage.start()
+        try? await database.recordMetricEvent(metricType: .storageUsage,
+                                             metadata: "{\"action\":\"periodicStarted\"}")
 
         // 2. Initialize FTS engine (shares same database)
         try await ftsEngine.initialize()
@@ -321,6 +410,8 @@ public actor ServiceContainer {
             let dictationSessionQueries = DictationSessionQueries(db: audioDbPointer)
             let audioStorageRoot = await storage.getStorageDirectory()
             let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
+            let chunkMedia = try await audioChunkMediaStore()
+            await audioProcessing.setChunkMediaStore(chunkMedia)
             try await audioProcessing.initialize(
                 transcriptionQueries: audioTranscriptionQueries,
                 audioWriter: audioWriter
@@ -334,8 +425,10 @@ public actor ServiceContainer {
                     transcriptionService: service,
                     transcriptionQueries: audioTranscriptionQueries,
                     audioWriter: audioWriter,
-                    storageRoot: audioStorageRoot
+                    storageRoot: audioStorageRoot,
+                    governor: backgroundProcessing
                 )
+                await self.audioBackfill?.setChunkMediaStore(chunkMedia)
                 Log.info("✓ Audio backfill manager initialized", category: .app)
             }
 
@@ -356,7 +449,9 @@ public actor ServiceContainer {
             storage: storage,
             processing: processing,
             search: search,
-            config: .default
+            config: .default,
+            extractionCommitted: { [localRecall] in await localRecall.refresh() },
+            governor: backgroundProcessing
         )
         self.processingQueue = queue
         Log.info("✓ Processing queue initialized", category: .app)
@@ -395,6 +490,16 @@ public actor ServiceContainer {
         try Task.checkCancellation()
         Log.info("✓ DataAdapter initialized", category: .app)
 
+        // Optional local meaning search has independent readiness. A missing or
+        // altered package leaves lexical search usable and clears its saved opt-in.
+        if let modelPath = defaults.string(forKey: LocalRecallSettings.modelPackagePathKey),
+           !modelPath.isEmpty {
+            do { try await localRecall.configure(modelPackageURL: URL(fileURLWithPath: modelPath)) }
+            catch is CancellationError { throw CancellationError() }
+            catch { Log.warning("Local meaning search is unavailable", category: .search) }
+            try Task.checkCancellation()
+        }
+
         // 10. Start retention manager (runs periodic cleanup based on user settings)
         await retentionManager.start()
         try Task.checkCancellation()
@@ -403,6 +508,7 @@ public actor ServiceContainer {
         // Capture is initialized when startCapture() is called
 
         isInitialized = true
+        try? await database.recordMetricEvent(metricType: .backgroundProcessing, metadata: "{\"action\":\"automaticPolicyStarted\"}")
         Log.info("All services initialized successfully", category: .app)
 
         // AppCoordinator starts workers after WAL/interrupted-claim recovery.
@@ -429,11 +535,13 @@ public actor ServiceContainer {
         let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
         let audioStorageRoot = await storage.getStorageDirectory()
         let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
-        let turboService = WhisperCppTranscriptionService(
+        let turboNativeService = WhisperCppTranscriptionService(
             modelPath: turboPath.path,
             samplingStrategy: .beamSearch(beamSize: 5),
             modelResidency: .onDemand(idleTimeout: .seconds(45))
         )
+
+        let turboService = BackgroundTranscriptionService(service: turboNativeService, governor: backgroundProcessing)
 
         if audioRefinement == nil {
             let refinement = AudioRefinementManager(
@@ -442,11 +550,10 @@ public actor ServiceContainer {
                 audioWriter: audioWriter,
                 storageRoot: audioStorageRoot
             )
-            let processingRef = self.audioProcessing
-            await refinement.setPass1ActiveCheck {
-                await processingRef.isCurrentlyProcessing
-            }
+            // The governor serializes native work; a recording-session flag would
+            // block explicit refinement for the entire time recording is enabled.
             self.audioRefinement = refinement
+            await refinement.setChunkMediaStore(try await audioChunkMediaStore())
             Log.info("✓ Audio refinement manager initialized (turbo model loads on demand)", category: .app)
         }
 
@@ -457,6 +564,7 @@ public actor ServiceContainer {
                 audioWriter: audioWriter,
                 storageRoot: audioStorageRoot
             )
+            await self.audioContextualRefinement?.setChunkMediaStore(try await audioChunkMediaStore())
             Log.info("✓ Audio contextual refinement manager initialized", category: .app)
         }
 
@@ -632,22 +740,33 @@ public actor ServiceContainer {
                 transcriptionService: realService,
                 transcriptionQueries: audioTranscriptionQueries,
                 audioWriter: audioWriter,
-                storageRoot: audioStorageRoot
+                storageRoot: audioStorageRoot,
+                governor: backgroundProcessing
             )
+            await self.audioBackfill?.setChunkMediaStore(try await audioChunkMediaStore())
             Log.info("[ServiceContainer] Audio backfill manager created after transcription upgrade", category: .app)
         }
     }
 
     /// Shutdown all services gracefully
     public func shutdown() async throws {
+        servicesShutdownRequested = true
+        localContextClosing = true
         await initializationLifecycle.beginShutdown()
         #if DEBUG
         shutdownRequestForTesting?()
         #endif
-        try await initializationLifecycle.stop(onRequest: { [capture] in
-            // Establish the policy fence before joining a late initialization.
-            // Teardown below retries this close and finishes other resources even
-            // if this first attempt fails; both errors remain in the task result.
+        await backgroundProcessing.cancelAutomaticWork()
+        try await initializationLifecycle.stop(onRequest: { [self, capture, localRecall, jobs] in
+            // Retire command observation and every callback before policy/writer teardown.
+            try await jobs.shutdown()
+            await stopLocalContext()
+            await audioPlaybackOwner?.close()
+            await audioHistory.close()
+            // Fence query/start admission immediately, then join canonical claim
+            // cleanup while its writer capability still exists. A failed cleanup
+            // retains that owner and database for the joined teardown retry.
+            try await localRecall.shutdown()
             try await capture.shutdownConfigurationAdmission()
         }, operation: { [self] in
             try await shutdownServices()
@@ -655,18 +774,34 @@ public actor ServiceContainer {
     }
 
     private func shutdownServices() async throws {
+        await backgroundProcessing.cancelAutomaticWork()
+        localContextClosing = true
+        await stopLocalContext()
+        await audioPlaybackOwner?.close()
+        await audioHistory.close()
         isInitialized = false
         var failures: [any Error] = []
         Log.info("Shutting down all services...", category: .app)
 
+        var canCloseWriter = true
+        do { try await jobs.shutdown() }
+        catch { canCloseWriter = false; failures.append(error) }
+        do { try await localRecall.shutdown() }
+        catch { canCloseWriter = false; failures.append(error) }
+
         // Partial startup and paused recording still have an owning policy.
-        do { try await capture.shutdownConfigurationAdmission() }
-        catch { failures.append(error) }
+        if canCloseWriter {
+            do { try await capture.shutdownConfigurationAdmission() }
+            catch { failures.append(error) }
+        }
 
         do { try await capture.stopCapture() }
         catch { failures.append(error) }
-        do { try await audioCapture.stopCapture() }
-        catch { failures.append(error) }
+        if let error = await RecordingLifecycle.stopCapturedAudio(
+            stopSource: { [audioCapture] in try await audioCapture.stopCapture() },
+            finishInput: { [audioProcessing] in await audioProcessing.finishCapturedInput() }) {
+            failures.append(error)
+        }
 
         // Stop processing queue workers
         await processingQueue?.stopWorkers()
@@ -677,7 +812,17 @@ public actor ServiceContainer {
         await processing.waitForQueueDrain()
         Log.info("✓ Processing queue drained", category: .app)
 
-        // Audio processing will complete when stream ends
+        // Audio ingestion and held callbacks joined above, including a reported
+        // native stop error, before the media store or writer can close.
+        await chunkMedia?.close()
+        chunkMedia = nil
+        audioPlaybackOwner = nil
+        audioBackfill = nil
+        audioRefinement = nil
+        audioContextualRefinement = nil
+        await backgroundProcessing.close()
+        await storageUsage.close()
+        await resourceUsage.close()
         Log.info("✓ Audio processing drained", category: .app)
 
         // Stop retention manager
@@ -690,8 +835,9 @@ public actor ServiceContainer {
         Log.info("✓ DataAdapter shutdown", category: .app)
 
         // Close database connections
-        do { try await ftsEngine.close() }
-        catch { failures.append(error) }
+        if canCloseWriter {
+            do { try await ftsEngine.close() }
+            catch { failures.append(error) }
         #if DEBUG
         if let receipt = beforeDatabaseCloseForTesting {
             beforeDatabaseCloseForTesting = nil
@@ -699,8 +845,9 @@ public actor ServiceContainer {
             catch { failures.append(error) }
         }
         #endif
-        do { try await database.close() }
-        catch { failures.append(error) }
+            do { try await database.close() }
+            catch { failures.append(error) }
+        }
 
         if failures.count == 1 { throw failures[0] }
         if !failures.isEmpty { throw ServiceCleanupFailure(failures: failures) }
@@ -708,6 +855,49 @@ public actor ServiceContainer {
     }
 
     // MARK: - Service Access
+
+    private func audioChunkMediaStore() async throws -> AudioChunkMediaStore {
+        guard !localContextClosing, !servicesShutdownRequested else { throw AudioChunkMediaError.closed }
+        if let chunkMedia { return chunkMedia }
+        // The canonical actor validates its connection before reading the shared
+        // native store UUID. Never retain a borrowed SQLite pointer across shutdown.
+        let storeID = try await database.originalStoreID()
+        let root = await storage.getStorageDirectory()
+        guard !localContextClosing, !servicesShutdownRequested else { throw AudioChunkMediaError.closed }
+        if let chunkMedia { return chunkMedia }
+        let media = AudioChunkMediaStore(storageRoot: root, storeID: storeID)
+        chunkMedia = media
+        return media
+    }
+
+    public func acquireAudioPlayback(_ reference: AudioEvidenceRef) async throws -> AudioPlaybackLease {
+        guard !localContextClosing else { throw AudioChunkMediaError.closed }
+        let media = try await audioChunkMediaStore()
+        guard !localContextClosing else { throw AudioChunkMediaError.closed }
+        let owner: AudioMediaPlaybackOwner
+        if let audioPlaybackOwner { owner = audioPlaybackOwner }
+        else {
+            owner = AudioMediaPlaybackOwner(evidence: audioHistory, media: media,
+                configuration: { [capture] in await capture.getConfig() })
+            audioPlaybackOwner = owner
+        }
+        return try await owner.acquire(reference)
+    }
+
+    public func invalidateAudioPlayback() async { await audioPlaybackOwner?.invalidate() }
+
+    /// Lazy owner: no model or evidence work begins until a workspace request.
+    public func localContextService(evidence: ProgressiveRecallService) throws -> LocalContextService {
+        guard isInitialized, !localContextClosing else { throw LocalContextError.stopped }
+        if let localContextOwner { return localContextOwner }
+        let database = database
+        let owner = LocalContextService(database: database, evidence: evidence, governor: backgroundProcessing,
+            recordMetric: { await LocalContextIntegration.record($0, database: database) })
+        localContextOwner = owner
+        return owner
+    }
+
+    private func stopLocalContext() async { await localContextOwner?.stop() }
 
     /// Check if services are initialized
     public var initialized: Bool {
@@ -813,7 +1003,11 @@ extension CaptureConfig {
             showCursor: showCursor,
             redactWindowTitlePatterns: redactWindowTitlePatterns,
             redactBrowserURLPatterns: redactBrowserURLPatterns,
-            captureOnWindowChange: captureOnWindowChange
+            captureOnWindowChange: captureOnWindowChange,
+            backend: defaults.string(forKey: "captureBackend").flatMap(CaptureBackend.init(rawValue:)) ?? .legacy,
+            displayPolicy: defaults.string(forKey: "captureDisplayPolicy").flatMap(CaptureDisplayPolicy.init(rawValue:)) ?? .allDisplays,
+            captureVisibleTextEnabled: defaults.bool(forKey: "captureVisibleTextEnabled"),
+            captureGroupReceiptsEnabled: defaults.bool(forKey: "captureGroupReceiptsEnabled")
         )
     }
 

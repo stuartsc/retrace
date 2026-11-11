@@ -16,7 +16,7 @@ let whisperLibPath = whisperPath + "/lib"
 let package = Package(
     name: "Retrace",
     platforms: [
-        .macOS(.v13)
+        .macOS("26.0")
     ],
     products: [
         .library(name: "Shared", targets: ["Shared"]),
@@ -119,12 +119,21 @@ let package = Package(
         ),
 
         // MARK: - Capture module
+        // Isolated compatibility entry points for the unpromoted legacy
+        // comparison backend. Missing runtime symbols fail explicitly.
+        .target(
+            name: "CaptureLegacyBridge",
+            path: "Capture/LegacyBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedFramework("CoreGraphics"), .linkedFramework("CoreFoundation")]
+        ),
         .target(
             name: "Capture",
-            dependencies: ["Shared"],
+            dependencies: ["Shared", "CaptureLegacyBridge"],
             path: "Capture",
             exclude: [
                 "Tests",
+                "LegacyBridge",
                 "README.md",
                 "AGENTS.md",
                 "PROGRESS.md"
@@ -165,7 +174,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ProcessingTests",
-            dependencies: ["Processing", "Shared", "Database", "Storage"],
+            dependencies: ["Processing", "Shared", "Database", "Storage", "Capture"],
             path: "Processing/Tests",
             resources: [.copy("Fixtures/WhisperTimedWords")],
             linkerSettings: [
@@ -190,12 +199,14 @@ let package = Package(
                 "README.md",
                 "AGENTS.md",
                 "PROGRESS.md"
-            ]
+            ],
+            resources: [.copy("Resources/MiniLM")]
         ),
         .testTarget(
             name: "SearchTests",
             dependencies: ["Search", "Shared", "Database"],
-            path: "Search/Tests"
+            path: "Search/Tests",
+            resources: [.copy("Fixtures/MiniLM")]
         ),
 
         // MARK: - Migration module
@@ -218,6 +229,7 @@ let package = Package(
             name: "App",
             dependencies: [
                 "Shared",
+                "CaptureLegacyBridge",
                 "Database",
                 "Storage",
                 "Capture",

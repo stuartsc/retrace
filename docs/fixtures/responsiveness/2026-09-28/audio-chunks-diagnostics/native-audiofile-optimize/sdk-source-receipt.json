@@ -1,0 +1,13 @@
+{
+  "path": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/AudioToolbox.framework/Versions/A/Headers/AudioFile.h",
+  "sha256": "3196ce5cdfeea36c51e5723fba6ddf6f658ed9bd3b9ef4e9020625c9a7fb6a28",
+  "AudioFileOptimize_lines": [
+    774,
+    787
+  ],
+  "optimized_property_lines": [
+    1089,
+    1093
+  ],
+  "official_api_url": "https://developer.apple.com/documentation/audiotoolbox/audiofileoptimize(_:)"
+}

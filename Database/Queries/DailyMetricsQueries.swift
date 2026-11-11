@@ -28,6 +28,13 @@ public enum DailyMetricsQueries {
         case searchDialogOpens = "search_dialog_opens"
         case ocrReprocessRequests = "ocr_reprocess_requests"
         case ocrSourceProcessing = "ocr_source_processing" // JSON {source: wal_bgra|archive_bgra, outcome: started|completed|failed|cancelled}; no content/identity/path
+        case captureGroup = "capture_group" // JSON kind/outcome and bounded target count; no identities or content
+        case captureText = "capture_text" // JSON categorical availability/reasons, bounded counts/timings or delivery overflow; no content/identity/path
+        case meetingAssessment = "meeting_assessment" // Content-free phase/uncertainty/count/timing; or comparisonChanged action.
+        case jobEvent = "job_event" // Categorical lifecycle/outcome only; no command, argv, output, path or IDs
+        case localContext = "local_context" // Closed operation/model-status/count metadata; no text, identities or paths
+        case semanticRecall = "semantic_recall" // Bounded categorical runtime/index operation/outcome, counts, partial scan and milliseconds; no content, identities or paths
+        case captureCoverage = "capture_coverage" // JSON {component: capture|storage, outcome: gap|recovered|ended, reason: categorical}; no content/identity/path
         case arrowKeyNavigation = "arrow_key_navigation"  // metadata: "left" or "right"
         case shiftDragZoomRegion = "shift_drag_zoom_region"  // metadata: JSON {region, screenSize}
         case shiftDragTextCopy = "shift_drag_text_copy"  // metadata: copied text
@@ -58,6 +65,8 @@ public enum DailyMetricsQueries {
         case allCommentsOpened = "all_comments_opened"
         case playbackToggled = "playback_toggled"
         case playbackSpeedChanged = "playback_speed_changed"
+        case audioEvidence = "audio_evidence" // Closed operation/outcome/count only; no text, paths or identities
+        case audioOriginalSource = "audio_original_source" // Closed outcome/pass only; no content, paths or identities
         case audioTranscriptPlayback = "audio_transcript_playback" // JSON {outcome,source}; categorical, no content or paths
 
         // Recording/pause/system-monitor/settings metrics
@@ -66,6 +75,9 @@ public enum DailyMetricsQueries {
         case recordingTurnedOff = "recording_turned_off"
         case recordingAutoResumed = "recording_auto_resumed"
         case systemMonitorOpened = "system_monitor_opened"
+        case backgroundProcessing = "background_processing" // JSON action/state only; no content, paths or identifiers
+        case resourceUsage = "resource_usage" // Content-free one-minute CPU/coverage/memory aggregate; retained 30 days
+        case storageUsage = "storage_usage" // Categorical refresh action/outcome; no paths or captured content
         case settingsSearchOpened = "settings_search_opened"
         case redactionRulesUpdated = "redaction_rules_updated"
         case systemMonitorSettingsOpened = "system_monitor_settings_opened"

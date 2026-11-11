@@ -28,6 +28,19 @@ protocol CaptureFrameSource: Actor {
     func stopCapture() async throws
     func updateConfig(_ config: CaptureConfig) async throws
     func captureImmediateAndResetTimer() async
+    func setCoverageHandler(_ handler: (@Sendable (CaptureCoverageEvent) -> Void)?) async
+    func setTextOutcomeHandler(_ handler: (@Sendable (CaptureTextOutcome) -> Void)?) async
+    func setGroupDelivery(_ delivery: CaptureGroupDelivery?) async
+    func suspendGroupedSampling() async
+    func activateGroupedSampling(expectedPolicySHA256: String) async throws
+}
+
+extension CaptureFrameSource {
+    func setCoverageHandler(_ handler: (@Sendable (CaptureCoverageEvent) -> Void)?) async { }
+    func setTextOutcomeHandler(_ handler: (@Sendable (CaptureTextOutcome) -> Void)?) async { }
+    func setGroupDelivery(_ delivery: CaptureGroupDelivery?) async { }
+    func suspendGroupedSampling() async { }
+    func activateGroupedSampling(expectedPolicySHA256: String) async throws { }
 }
 
 extension CGWindowListCapture: CaptureFrameSource {}
@@ -55,6 +68,32 @@ struct CaptureLifecycleCleanupFailure: Error {
     let cleanupErrors: [any Error]
 }
 
+/// Comparison setting failures report whether the prior recording was restored.
+/// Only fixed categories cross this boundary; native errors contain no authority.
+public struct CaptureConfigurationUpdateFailure: LocalizedError, Sendable {
+    public enum Reason: String, Sendable { case comparisonRejected, restorationFailed }
+    public let recordingRestored: Bool
+    public let reason: Reason
+    public var errorDescription: String? {
+        recordingRestored
+            ? "The comparison setting could not be applied. Recording continues with the previous setting."
+            : "The comparison setting and its restoration failed. Recording has stopped."
+    }
+}
+
+/// Separate from frame/group counters: policy owner replacement also invalidates
+/// an in-flight meeting read. Exhaustion permanently closes this ephemeral gate.
+struct MeetingPolicyRevision {
+    private var value: UInt64
+    private var exhausted = false
+    init(initialValue: UInt64 = 0) { value = initialValue }
+    var current: UInt64? { exhausted ? nil : value }
+    mutating func advance() {
+        guard !exhausted, value < .max else { exhausted = true; return }
+        value += 1
+    }
+}
+
 /// Main coordinator for screen capture
 /// Implements CaptureProtocol from Shared/Protocols
 public actor CaptureManager: CaptureProtocol {
@@ -64,13 +103,23 @@ public actor CaptureManager: CaptureProtocol {
     private let cgWindowListCapture: any CaptureFrameSource
     private let lifecycleEnvironment: CaptureLifecycleEnvironment
     private let configurationAdmission: (any CaptureConfigurationAdmissionProtocol)?
+    private let groupDelivery: CaptureGroupDelivery?
     private let displayMonitor: DisplayMonitor
     private let displaySwitchMonitor: DisplaySwitchMonitor
     private let deduplicator: FrameDeduplicator
     private let appInfoProvider: any FrontmostMetadataProviding
 
     private var currentConfig: CaptureConfig
-    private var lastKeptFrame: CapturedFrame?
+    private var lastKeptFrames: [UInt32: CapturedFrame] = [:]
+    private var dedupDisplayOrder: [UInt32] = []
+    private var dedupCacheBytes = 0
+    private var captureConfigurationGeneration: UInt64 = 0
+    private var meetingPolicyRevision = MeetingPolicyRevision()
+    private var configurationChangedMonotonic: TimeInterval?
+    private var configurationTransitionInFlight = false
+    private var configurationGapPending = false
+    private let coverageDelivery = CaptureCoverageDelivery()
+    private var forwardingGaps: Set<UInt32> = []
     private var _isCapturing: Bool = false
 
     // Frame stream management
@@ -79,9 +128,17 @@ public actor CaptureManager: CaptureProtocol {
     private var _frameStream: AsyncStream<CapturedFrame>?
     private var frameProcessingSession: CaptureFrameStreamSession?
     private var lifecycleOperation: (id: UUID, task: Task<Void, Error>)?
+    private var groupFailureShutdown: (id: UUID, task: Task<Void, Never>)?
+    /// Frame forwarding may already be closed while native teardown still owns
+    /// resources. Preserve a public retry path independently of recording state.
+    private var sourceCleanupPending = false
     private var configurationAdmissionClosed = false
     #if DEBUG
     private var lifecycleEnqueuedCheckpoint: (@Sendable () -> Void)?
+    private var groupForwardedCheckpoint: (@Sendable (CaptureGroupFrameReceipt) -> Void)?
+    func setGroupForwardedCheckpoint(_ checkpoint: (@Sendable (CaptureGroupFrameReceipt) -> Void)?) {
+        groupForwardedCheckpoint = checkpoint
+    }
 
     /// Observes actual queue entry, allowing tests to order concurrent public calls
     /// without timing sleeps or invoking native device APIs.
@@ -121,22 +178,25 @@ public actor CaptureManager: CaptureProtocol {
     // MARK: - Initialization
 
     public init(config: CaptureConfig = .default,
-                configurationAdmission: (any CaptureConfigurationAdmissionProtocol)? = nil) {
+                configurationAdmission: (any CaptureConfigurationAdmissionProtocol)? = nil,
+                groupJournal: (any CaptureGroupJournalProtocol)? = nil) {
         let display = DisplayMonitor()
         let monitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
         self.currentConfig = config
-        self.cgWindowListCapture = CGWindowListCapture()
+        self.cgWindowListCapture = CaptureSourceRouter()
         self.displayMonitor = display
         self.displaySwitchMonitor = monitor
         self.lifecycleEnvironment = .live(display: display, monitor: monitor)
         self.configurationAdmission = configurationAdmission
+        self.groupDelivery = groupJournal.map { CaptureGroupDelivery(journal: $0) }
         self.deduplicator = FrameDeduplicator()
         self.appInfoProvider = AppInfoProvider()
     }
 
     init(config: CaptureConfig = .default, metadataProvider: any FrontmostMetadataProviding,
          configurationAdmission: (any CaptureConfigurationAdmissionProtocol)? = nil,
-         source: any CaptureFrameSource = CGWindowListCapture(),
+         groupJournal: (any CaptureGroupJournalProtocol)? = nil,
+         source: any CaptureFrameSource = CaptureSourceRouter(),
          lifecycleEnvironment: CaptureLifecycleEnvironment? = nil) {
         let display = DisplayMonitor()
         let monitor = DisplaySwitchMonitor(displayMonitor: DisplayMonitor())
@@ -146,6 +206,7 @@ public actor CaptureManager: CaptureProtocol {
         self.displaySwitchMonitor = monitor
         self.lifecycleEnvironment = lifecycleEnvironment ?? .live(display: display, monitor: monitor)
         self.configurationAdmission = configurationAdmission
+        self.groupDelivery = groupJournal.map { CaptureGroupDelivery(journal: $0) }
         self.deduplicator = FrameDeduplicator()
         self.appInfoProvider = metadataProvider
     }
@@ -229,15 +290,47 @@ public actor CaptureManager: CaptureProtocol {
     }
 
     private func applyConfiguration(_ config: CaptureConfig, operation: ConfigurationOperation) async throws {
+        await groupFailureShutdown?.task.value
+        try Task.checkCancellation()
+        if sourceCleanupPending {
+            try await stopCaptureSession()
+            try Task.checkCancellation()
+        }
         if operation != .initialize, configurationAdmission != nil, configurationAdmissionClosed {
             throw ScreenEvidenceAdmissionError.inactive
         }
         // Preserve the existing duplicate-start no-op: it neither applies the
         // supplied configuration nor advertises a policy it did not apply.
         if operation == .start, _isCapturing { return }
+        if operation == .start, frameProcessingSession != nil {
+            // Finish the previous failed source while its existing policy can
+            // still acknowledge exact journal retries. Preparing the new epoch
+            // first would make a lost begin ACK impossible to reconcile here.
+            try await stopCaptureSession()
+            try Task.checkCancellation()
+        }
+
+        meetingPolicyRevision.advance()
+        let previousConfig = currentConfig
+        let rollbackSession = operation == .update && _isCapturing &&
+            Self.isComparisonOnlyChange(from: previousConfig, to: config) ? frameProcessingSession : nil
+
+        if operation != .initialize {
+            configurationTransitionInFlight = true
+            captureConfigurationGeneration &+= 1
+            configurationChangedMonotonic = ProcessInfo.processInfo.systemUptime
+            invalidateDeduplication(displayID: nil)
+            if operation == .update, _isCapturing {
+                configurationGapPending = true
+                coverageDelivery.receive(.init(backend: config.backend, displayID: nil,
+                    state: .gap(.configurationChanged)), stage: .forwarding)
+            }
+        }
 
         var transition: ScreenEvidencePolicyTransition?
         do {
+            if operation != .initialize { await cgWindowListCapture.suspendGroupedSampling() }
+            try Task.checkCancellation()
             if let admission = configurationAdmission {
                 if operation == .initialize {
                     transition = try await admission.beginSession(config: config)
@@ -257,8 +350,17 @@ public actor CaptureManager: CaptureProtocol {
                 // inactive interval, including a denied or late failed start.
                 try await startCaptureSession(config: config)
             case .update:
+                let requiresDisplayRebind = currentConfig.backend != config.backend || currentConfig.displayPolicy != config.displayPolicy
                 currentConfig = config
-                if _isCapturing { try await cgWindowListCapture.updateConfig(config) }
+                if _isCapturing {
+                    if requiresDisplayRebind, let session = frameProcessingSession {
+                        let displayID = await lifecycleEnvironment.activeDisplayID()
+                        try Task.checkCancellation()
+                        try await switchCaptureSource(session: session, displayID: displayID)
+                    } else {
+                        try await cgWindowListCapture.updateConfig(config)
+                    }
+                }
             }
 
             try Task.checkCancellation()
@@ -269,6 +371,14 @@ public actor CaptureManager: CaptureProtocol {
             // and after cancellation. The catch below still owns that exact token.
             try Task.checkCancellation()
             if operation == .initialize { configurationAdmissionClosed = false }
+            if operation != .initialize {
+                configurationChangedMonotonic = ProcessInfo.processInfo.systemUptime
+                configurationTransitionInFlight = false
+                if _isCapturing {
+                    try await cgWindowListCapture.activateGroupedSampling(
+                        expectedPolicySHA256: ScreenEvidenceAccessPolicy(config: config).fingerprintSHA256())
+                }
+            }
         } catch {
             let operationError = error
             var cleanupErrors: [any Error] = []
@@ -283,9 +393,31 @@ public actor CaptureManager: CaptureProtocol {
                     cleanupErrors.append(error)
                 }
             }
-            if operation == .start {
+            let mayRestore = rollbackSession != nil && !Task.isCancelled && !(operationError is CancellationError)
+            var restored = false
+            var restorationCancelled = false
+            if mayRestore, cleanupErrors.isEmpty, let rollbackSession {
+                do {
+                    try await restoreComparisonConfiguration(previousConfig, session: rollbackSession)
+                    restored = true
+                } catch is CancellationError {
+                    restorationCancelled = true
+                } catch {
+                    cleanupErrors.append(error)
+                }
+            }
+            if !restored && (operation == .start || operation == .update) {
                 do { try await Task { try await self.stopCaptureSession() }.value }
                 catch { cleanupErrors.append(error) }
+            }
+            if operation != .initialize {
+                configurationChangedMonotonic = ProcessInfo.processInfo.systemUptime
+                configurationTransitionInFlight = false
+            }
+            if restorationCancelled, cleanupErrors.isEmpty { throw CancellationError() }
+            if mayRestore {
+                throw CaptureConfigurationUpdateFailure(recordingRestored: restored,
+                    reason: restored ? .comparisonRejected : .restorationFailed)
             }
             if !cleanupErrors.isEmpty {
                 throw CaptureLifecycleCleanupFailure(operationError: operationError, cleanupErrors: cleanupErrors)
@@ -294,13 +426,70 @@ public actor CaptureManager: CaptureProtocol {
         }
     }
 
+    /// Restoring a comparison choice cannot undo an attempted privacy change.
+    private static func isComparisonOnlyChange(from previous: CaptureConfig, to next: CaptureConfig) -> Bool {
+        (previous.backend != next.backend || previous.displayPolicy != next.displayPolicy) &&
+            previous.captureIntervalSeconds == next.captureIntervalSeconds &&
+            previous.adaptiveCaptureEnabled == next.adaptiveCaptureEnabled &&
+            previous.deduplicationThreshold == next.deduplicationThreshold &&
+            previous.maxResolution == next.maxResolution &&
+            previous.excludedAppBundleIDs == next.excludedAppBundleIDs &&
+            previous.excludePrivateWindows == next.excludePrivateWindows &&
+            previous.customPrivateWindowPatterns == next.customPrivateWindowPatterns &&
+            previous.showCursor == next.showCursor &&
+            previous.redactWindowTitlePatterns == next.redactWindowTitlePatterns &&
+            previous.redactBrowserURLPatterns == next.redactBrowserURLPatterns &&
+            previous.idleThresholdSeconds == next.idleThresholdSeconds &&
+            previous.captureOnWindowChange == next.captureOnWindowChange &&
+            previous.captureVisibleTextEnabled == next.captureVisibleTextEnabled &&
+            previous.captureGroupReceiptsEnabled == next.captureGroupReceiptsEnabled
+    }
+
+    private func restoreComparisonConfiguration(_ config: CaptureConfig,
+                                                session: CaptureFrameStreamSession) async throws {
+        guard _isCapturing, frameProcessingSession?.id == session.id else {
+            throw CaptureError.captureSessionFailed(underlying: "Capture stream ended during configuration restoration")
+        }
+        var transition: ScreenEvidencePolicyTransition?
+        currentConfig = config
+        do {
+            try Task.checkCancellation()
+            transition = try await configurationAdmission?.prepareConfiguration(config)
+            try Task.checkCancellation()
+            try await cgWindowListCapture.stopCapture()
+            coverageDelivery.endSource()
+            try Task.checkCancellation()
+            let displayID = await lifecycleEnvironment.activeDisplayID()
+            try Task.checkCancellation()
+            try await cgWindowListCapture.startCapture(config: config, frameContinuation: session.input, displayID: displayID)
+            try Task.checkCancellation()
+            currentCaptureDisplayID = displayID
+            if let transition { try await configurationAdmission?.activate(transition) }
+            try Task.checkCancellation()
+            configurationChangedMonotonic = ProcessInfo.processInfo.systemUptime
+            configurationTransitionInFlight = false
+            try await cgWindowListCapture.activateGroupedSampling(
+                expectedPolicySHA256: ScreenEvidenceAccessPolicy(config: config).fingerprintSHA256())
+        } catch {
+            if let transition, let admission = configurationAdmission {
+                do { try await Task { try await admission.revoke(transition) }.value }
+                catch let cleanupError {
+                    throw CaptureLifecycleCleanupFailure(operationError: error, cleanupErrors: [cleanupError])
+                }
+            }
+            throw error
+        }
+    }
+
     private func endConfigurationAdmission() async throws {
+        meetingPolicyRevision.advance()
         configurationAdmissionClosed = true
         try await configurationAdmission?.endSession()
     }
 
     private func startCaptureSession(config: CaptureConfig) async throws {
         guard !_isCapturing else { return }
+        if frameProcessingSession != nil { try await stopCaptureSession() }
 
         let permitted = await hasPermission()
         try Task.checkCancellation()
@@ -315,9 +504,16 @@ public actor CaptureManager: CaptureProtocol {
         }
 
         // Get the active display (the one containing the focused window)
+        let initialDisplayID = await lifecycleEnvironment.activeDisplayID()
+        try Task.checkCancellation()
+        await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
+        try Task.checkCancellation()
         let activeDisplayID = await lifecycleEnvironment.activeDisplayID()
         try Task.checkCancellation()
         currentCaptureDisplayID = activeDisplayID
+
+        await cgWindowListCapture.setGroupDelivery(groupDelivery)
+        try Task.checkCancellation()
 
         // The configuration bracket owns rollback, including native acquisition
         // that completes late or throws after acquiring its input stream.
@@ -336,10 +532,6 @@ public actor CaptureManager: CaptureProtocol {
             captureStartTime: Date(),
             lastFrameTime: nil
         )
-
-        let initialDisplayID = await lifecycleEnvironment.activeDisplayID()
-        try Task.checkCancellation()
-        await startDisplaySwitchMonitoring(initialDisplayID: initialDisplayID)
     }
 
     public func stopCapture() async throws {
@@ -347,7 +539,8 @@ public actor CaptureManager: CaptureProtocol {
     }
 
     private func stopCaptureSession() async throws {
-        guard _isCapturing || frameProcessingSession != nil else { return }
+        await groupFailureShutdown?.task.value
+        guard _isCapturing || frameProcessingSession != nil || sourceCleanupPending else { return }
 
         // Invalidate callback work before the first suspension. A display-switch
         // callback must not restart the source while shutdown is awaiting it.
@@ -361,15 +554,23 @@ public actor CaptureManager: CaptureProtocol {
 
         await lifecycleEnvironment.stopDisplayMonitoring()
         var sourceError: Error?
+        sourceCleanupPending = true
         do {
             try await cgWindowListCapture.stopCapture()
+            sourceCleanupPending = false
         } catch {
             sourceError = error
         }
+        coverageDelivery.endSource()
 
         // Always join the forwarding task, even if source teardown failed.
         await stopFrameProcessing()
-        lastKeptFrame = nil
+        do { try await groupDelivery?.cancelUnforwarded(reason: .sourceStopped) }
+        catch { if sourceError == nil { sourceError = error } }
+        invalidateDeduplication(displayID: nil)
+        forwardingGaps.removeAll()
+        configurationGapPending = false
+        coverageDelivery.reset()
         hasShownAccessibilityWarning = false
         currentCaptureDisplayID = nil
         isDisplaySwitchInFlight = false
@@ -406,6 +607,15 @@ public actor CaptureManager: CaptureProtocol {
         currentConfig
     }
 
+    /// Cheap process-local proof only; never performs SQLite, AX or file work.
+    /// Presence of an admission dependency alone is not active recording proof.
+    public func meetingCapturePolicySnapshot() -> MeetingCapturePolicySnapshot? {
+        guard _isCapturing, configurationAdmission != nil, !configurationAdmissionClosed,
+              !configurationTransitionInFlight, lifecycleOperation == nil,
+              let revision = meetingPolicyRevision.current else { return nil }
+        return MeetingCapturePolicySnapshot(configuration: currentConfig, revision: revision)
+    }
+
     // MARK: - CaptureProtocol - Display Info
 
     public func getAvailableDisplays() async throws -> [DisplayInfo] {
@@ -421,6 +631,32 @@ public actor CaptureManager: CaptureProtocol {
     /// Get current capture statistics
     public func getStatistics() -> CaptureStatistics {
         stats
+    }
+
+    /// Handlers must enqueue inexpensive content-free status/metric updates.
+    public func setCoverageHandler(_ handler: (@Sendable (CaptureCoverageEvent) -> Void)?) async {
+        coverageDelivery.setHandler(handler)
+        let delivery = coverageDelivery
+        let forward: (@Sendable (CaptureCoverageEvent) -> Void)?
+        if handler == nil { forward = nil }
+        else { forward = { event in delivery.receive(event, stage: .source) } }
+        await cgWindowListCapture.setCoverageHandler(forward)
+    }
+
+    /// The App owner supplies a bounded content-free inbox and drains it only
+    /// after capture stop joins native pixel/text work.
+    public func setTextOutcomeHandler(_ handler: (@Sendable (CaptureTextOutcome) -> Void)?) async {
+        await cgWindowListCapture.setTextOutcomeHandler(handler)
+    }
+
+    /// A failed durable admission must retry unchanged pixels on the next sample.
+    public func invalidateDeduplication(displayID: UInt32?) {
+        if let displayID {
+            if let removed = lastKeptFrames.removeValue(forKey: displayID) { dedupCacheBytes -= removed.imageData.count }
+            dedupDisplayOrder.removeAll { $0 == displayID }
+        } else {
+            lastKeptFrames.removeAll(); dedupDisplayOrder.removeAll(); dedupCacheBytes = 0
+        }
     }
 
     // MARK: - Private Helpers - Display Switching
@@ -527,6 +763,10 @@ public actor CaptureManager: CaptureProtocol {
         }
 
         guard _isCapturing, frameProcessingSession?.id == session.id else { return }
+        if currentConfig.backend == .screenCaptureKitCandidate && currentConfig.displayPolicy == .allDisplays {
+            currentCaptureDisplayID = newDisplayID
+            return
+        }
         guard oldDisplayID != newDisplayID else {
             currentCaptureDisplayID = newDisplayID
             return
@@ -562,7 +802,16 @@ public actor CaptureManager: CaptureProtocol {
 
     private func switchCaptureSource(session: CaptureFrameStreamSession, displayID: UInt32) async throws {
         guard _isCapturing, frameProcessingSession?.id == session.id else { return }
+        captureConfigurationGeneration &+= 1
+        configurationChangedMonotonic = ProcessInfo.processInfo.systemUptime
+        invalidateDeduplication(displayID: nil)
+        if !configurationGapPending {
+            configurationGapPending = true
+            coverageDelivery.receive(.init(backend: currentConfig.backend, displayID: nil,
+                state: .gap(.configurationChanged)), stage: .forwarding)
+        }
         try await cgWindowListCapture.stopCapture()
+        coverageDelivery.endSource()
         guard _isCapturing, frameProcessingSession?.id == session.id else { return }
         try await cgWindowListCapture.startCapture(
             config: currentConfig,
@@ -571,6 +820,11 @@ public actor CaptureManager: CaptureProtocol {
         )
         guard _isCapturing, frameProcessingSession?.id == session.id else { return }
         currentCaptureDisplayID = displayID
+        if !configurationTransitionInFlight {
+            configurationChangedMonotonic = ProcessInfo.processInfo.systemUptime
+            try await cgWindowListCapture.activateGroupedSampling(
+                expectedPolicySHA256: ScreenEvidenceAccessPolicy(config: currentConfig).fingerprintSHA256())
+        }
     }
 
     /// Handle accessibility permission denial
@@ -614,10 +868,10 @@ public actor CaptureManager: CaptureProtocol {
         frameProcessingSession?.task.cancel()
         frameProcessingSession?.input.finish()
         dedupedFrameContinuation?.finish()
-        lastKeptFrame = nil
+        invalidateDeduplication(displayID: nil)
         let id = UUID()
-        let (rawStream, rawContinuation) = AsyncStream<CapturedFrame>.makeStream()
-        let (output, outputContinuation) = AsyncStream<CapturedFrame>.makeStream()
+        let (rawStream, rawContinuation) = AsyncStream<CapturedFrame>.makeStream(bufferingPolicy: .bufferingOldest(2))
+        let (output, outputContinuation) = AsyncStream<CapturedFrame>.makeStream(bufferingPolicy: .bufferingOldest(2))
         rawFrameContinuation = rawContinuation
         dedupedFrameContinuation = outputContinuation
         _frameStream = output
@@ -652,70 +906,171 @@ public actor CaptureManager: CaptureProtocol {
         output: AsyncStream<CapturedFrame>.Continuation,
         enrich: @Sendable (CapturedFrame) async -> CapturedFrame
     ) async {
-        // Never finish the manager's mutable current-generation continuation.
         defer { output.finish() }
         var totalBytes: Int64 = 0
         var totalFrames = 0
-
-        for await frame in rawStream {
-            guard !Task.isCancelled else { break }
-            totalFrames += 1
-            totalBytes += Int64(frame.imageData.count)
-
-            // Apply deduplication if enabled
-            if currentConfig.adaptiveCaptureEnabled {
-                let similarity = lastKeptFrame != nil ? deduplicator.computeSimilarity(frame, lastKeptFrame!) : 0.0
-                let shouldKeep = deduplicator.shouldKeepFrame(
-                    frame,
-                    comparedTo: lastKeptFrame,
-                    threshold: currentConfig.deduplicationThreshold
-                )
-
-                if shouldKeep {
-                    // Keep raw frame for future similarity checks. Metadata is not needed for dedup.
-                    lastKeptFrame = frame
-                    let enrichedFrame = await enrich(frame)
-                    guard !Task.isCancelled else { break }
-                    output.yield(enrichedFrame)
-
-                    // Update stats
-                    stats = CaptureStatistics(
-                        totalFramesCaptured: totalFrames,
-                        framesDeduped: stats.framesDeduped,
-                        averageFrameSizeBytes: Int(totalBytes / Int64(totalFrames)),
-                        captureStartTime: stats.captureStartTime,
-                        lastFrameTime: enrichedFrame.timestamp
-                    )
-
-                    Log.verbose("Frame kept (similarity: \(String(format: "%.2f%%", similarity * 100)))", category: .capture)
-                } else {
-                    // Frame was filtered out
-                    stats = CaptureStatistics(
-                        totalFramesCaptured: totalFrames,
-                        framesDeduped: stats.framesDeduped + 1,
-                        averageFrameSizeBytes: Int(totalBytes / Int64(totalFrames)),
-                        captureStartTime: stats.captureStartTime,
-                        lastFrameTime: stats.lastFrameTime
-                    )
-
-                    Log.info("Frame deduplicated (similarity: \(String(format: "%.2f%%", similarity * 100)), threshold: \(String(format: "%.2f%%", currentConfig.deduplicationThreshold * 100)))", category: .capture)
+        do {
+            for await frame in rawStream {
+                guard !Task.isCancelled else { break }
+                guard !configurationTransitionInFlight else {
+                    try await cancelGroupFrame(frame, reason: .configurationChanged); continue
                 }
-            } else {
-                // No deduplication - pass through all frames
+                if let boundary = configurationChangedMonotonic,
+                   (frame.metadata.captureMonotonicTime ?? -.infinity) < boundary {
+                    try await cancelGroupFrame(frame, reason: .configurationChanged); continue
+                }
+                if currentConfig.backend == .screenCaptureKitCandidate, currentConfig.captureGroupReceiptsEnabled,
+                   frame.metadata.captureGroup == nil { throw CaptureGroupJournalError.invalidTransition }
+                let member = frame.metadata.captureGroup
+                if let member {
+                    guard groupDelivery != nil, let receipt = frame.metadata.pixelReceipt,
+                          receipt.attemptID == member.attemptID, member.displayID == frame.metadata.displayID else {
+                        throw CaptureGroupJournalError.invalidTransition
+                    }
+                }
+                let admittedGeneration = captureConfigurationGeneration
+                let displayID = frame.metadata.displayID
+                totalFrames += 1
+                totalBytes += Int64(frame.imageData.count)
+                var previous = lastKeptFrames[displayID]
+                if previous?.metadata.captureContext != frame.metadata.captureContext ||
+                    previous?.metadata.redactionReason != frame.metadata.redactionReason { previous = nil }
+                // A grouped suppression must name a cached sample in the same
+                // source/configuration/attachment lifetime. Missing proof keeps
+                // fresh pixels; it never invents an earlier read or timestamp.
+                var reference: CaptureAttemptReference?
+                if let member {
+                    if let old = previous?.metadata.captureGroup, let receipt = previous?.metadata.pixelReceipt,
+                       old.sessionID == member.sessionID, old.configurationGeneration == member.configurationGeneration,
+                       old.attachmentID == member.attachmentID, old.displayID == member.displayID,
+                       old.groupID != member.groupID, old.attemptID == receipt.attemptID {
+                        reference = .init(member: old, pixelReceipt: receipt)
+                    } else { previous = nil }
+                }
+                // The grouped candidate retains every changed pixel, including
+                // tiny text edits that sampled/perceptual comparisons can miss.
+                // Legacy capture remains independently selectable for comparison.
+                let exact = member == nil ? nil : ExactFrameReuse.comparison(frame, previous: previous,
+                    directTextEnabled: currentConfig.captureVisibleTextEnabled)
+                var shouldKeep = !currentConfig.adaptiveCaptureEnabled || (member != nil ? exact == nil :
+                    ((currentConfig.captureVisibleTextEnabled && DirectTextDeduplication.hasNewEvidence(frame, comparedTo: previous)) ||
+                    deduplicator.shouldKeepFrame(frame, comparedTo: previous, threshold: currentConfig.deduplicationThreshold)))
+                if !shouldKeep, let member {
+                    guard let delivery = groupDelivery, let pixels = frame.metadata.pixelReceipt, let reference, let exact else {
+                        throw CaptureGroupJournalError.invalidTransition
+                    }
+                    let suppressed = try await delivery.suppress(member, receipt: pixels, reference: reference,
+                        comparison: exact)
+                    if !suppressed { invalidateDeduplication(displayID: displayID); shouldKeep = true }
+                }
+                guard shouldKeep else {
+                    stats = CaptureStatistics(totalFramesCaptured: totalFrames, framesDeduped: stats.framesDeduped + 1,
+                        averageFrameSizeBytes: Int(totalBytes / Int64(totalFrames)),
+                        captureStartTime: stats.captureStartTime, lastFrameTime: stats.lastFrameTime)
+                    continue
+                }
+                guard admittedGeneration == captureConfigurationGeneration, !configurationTransitionInFlight else {
+                    try await cancelGroupFrame(frame, reason: .configurationChanged); continue
+                }
+                rememberForDeduplication(frame)
                 let enrichedFrame = await enrich(frame)
                 guard !Task.isCancelled else { break }
-                output.yield(enrichedFrame)
+                guard admittedGeneration == captureConfigurationGeneration, !configurationTransitionInFlight else {
+                    try await cancelGroupFrame(frame, reason: .configurationChanged); continue
+                }
+                switch output.yield(enrichedFrame) {
+                case .enqueued:
+                    if let member {
+                        try await groupDelivery?.forwarded(member)
+                        #if DEBUG
+                        groupForwardedCheckpoint?(member)
+                        #endif
+                    }
+                    if configurationGapPending {
+                        configurationGapPending = false
+                        coverageDelivery.receive(.init(backend: currentConfig.backend, displayID: nil,
+                            state: .recovered), stage: .forwarding)
+                    }
+                    if forwardingGaps.remove(displayID) != nil {
+                        coverageDelivery.receive(CaptureCoverageEvent(backend: currentConfig.backend, displayID: displayID,
+                                                                     state: .recovered), stage: .forwarding)
+                    }
+                    stats = CaptureStatistics(totalFramesCaptured: totalFrames, framesDeduped: stats.framesDeduped,
+                        averageFrameSizeBytes: Int(totalBytes / Int64(totalFrames)),
+                        captureStartTime: stats.captureStartTime, lastFrameTime: enrichedFrame.timestamp)
+                case .dropped(let dropped):
+                    if let droppedMember = dropped.metadata.captureGroup, let receipt = dropped.metadata.pixelReceipt {
+                        try await groupDelivery?.terminal(.init(member: droppedMember, disposition: .dropped,
+                            reason: .outputBufferBackpressure, pixelReceipt: receipt))
+                    }
+                    invalidateDeduplication(displayID: dropped.metadata.displayID)
+                    if !forwardingGaps.contains(dropped.metadata.displayID) {
+                        if forwardingGaps.count < 128 { forwardingGaps.insert(dropped.metadata.displayID) }
+                        coverageDelivery.receive(CaptureCoverageEvent(backend: currentConfig.backend, displayID: dropped.metadata.displayID,
+                                                                     state: .gap(.consumerBackpressure)), stage: .forwarding)
+                    }
+                case .terminated:
+                    try await cancelGroupFrame(frame, reason: .streamCancelled)
+                    return
+                @unknown default: throw CaptureGroupJournalError.invalidTransition
+                }
+            }
+            if !Task.isCancelled, _isCapturing, currentConfig.backend == .screenCaptureKitCandidate,
+               currentConfig.captureGroupReceiptsEnabled { await stopAfterGroupJournalFailure() }
+        } catch {
+            await stopAfterGroupJournalFailure()
+        }
+    }
 
-                stats = CaptureStatistics(
-                    totalFramesCaptured: totalFrames,
-                    framesDeduped: 0,
-                    averageFrameSizeBytes: Int(totalBytes / Int64(totalFrames)),
-                    captureStartTime: stats.captureStartTime,
-                    lastFrameTime: enrichedFrame.timestamp
-                )
+    private func cancelGroupFrame(_ frame: CapturedFrame, reason: CaptureGroupOutcomeReason) async throws {
+        guard let member = frame.metadata.captureGroup else { return }
+        guard let delivery = groupDelivery, let pixels = frame.metadata.pixelReceipt else {
+            throw CaptureGroupJournalError.invalidTransition
+        }
+        try await delivery.terminal(.init(member: member, disposition: .cancelled,
+            reason: reason, pixelReceipt: pixels))
+        invalidateDeduplication(displayID: member.displayID)
+    }
+
+    /// Runs in the forwarding worker, so it joins native work but never itself.
+    /// App observes stream exhaustion plus this categorical gap through its
+    /// owned lifecycle task and joins normal stop before closing the journal.
+    private func stopAfterGroupJournalFailure() async {
+        if let shutdown = groupFailureShutdown { await shutdown.task.value; return }
+        _isCapturing = false
+        windowChangeCaptureTask?.cancel(); windowChangeCaptureTask = nil
+        deferredDisplaySyncTask?.cancel(); deferredDisplaySyncTask = nil
+        invalidateDeduplication(displayID: nil)
+        coverageDelivery.receive(.init(backend: .screenCaptureKitCandidate, displayID: nil,
+            state: .gap(.groupJournalUnavailable)), stage: .forwarding)
+        let source = cgWindowListCapture, environment = lifecycleEnvironment, id = UUID()
+        sourceCleanupPending = true
+        let task = Task {
+            await environment.stopDisplayMonitoring()
+            do {
+                try await source.stopCapture()
+                sourceCleanupPending = false
+            } catch {
+                // The App's normal stop must retry this owner before releasing
+                // the capture service or admitting another configuration.
+                sourceCleanupPending = true
             }
         }
+        groupFailureShutdown = (id, task)
+        await task.value
+        if groupFailureShutdown?.id == id { groupFailureShutdown = nil }
+    }
 
+    private func rememberForDeduplication(_ frame: CapturedFrame) {
+        let displayID = frame.metadata.displayID
+        invalidateDeduplication(displayID: displayID)
+        let byteLimit = 128 * 1024 * 1024
+        guard frame.imageData.count <= byteLimit else { return }
+        while (lastKeptFrames.count >= 8 || dedupCacheBytes + frame.imageData.count > byteLimit),
+              let oldest = dedupDisplayOrder.first { invalidateDeduplication(displayID: oldest) }
+        lastKeptFrames[displayID] = frame
+        dedupDisplayOrder.append(displayID)
+        dedupCacheBytes += frame.imageData.count
     }
 
     /// Capture-time metadata is immutable. Unknown context stays unknown; a

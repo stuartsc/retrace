@@ -1,0 +1,124 @@
+[
+  {
+    "name": "upstream-allowed-tools.rs",
+    "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.156.1/codex-rs/ext/extension-api/src/allowed_tools.rs",
+    "error": "HTTPError: HTTP Error 404: Not Found"
+  },
+  {
+    "name": "upstream-config.schema.json",
+    "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.156.1/codex-rs/core/config.schema.json",
+    "finalURL": "https://raw.githubusercontent.com/openai/codex/rust-v0.156.1/codex-rs/core/config.schema.json",
+    "status": 200,
+    "bytes": 220935,
+    "sha256": "b373250e2565043b270d22df0e8cf32cacb36dd32fa2dc1e1e871115e73caab8"
+  },
+  {
+    "name": "upstream-tag.json",
+    "url": "https://api.github.com/repos/openai/codex/git/ref/tags/rust-v0.156.1",
+    "finalURL": "https://api.github.com/repos/openai/codex/git/ref/tags/rust-v0.156.1",
+    "status": 200,
+    "bytes": 343,
+    "sha256": "e56c63524534a5b3b3513862eaf977ce44f035df61454f2182b979270f74d601"
+  },
+  {
+    "name": "upstream-tag-object.json",
+    "url": "https://api.github.com/repos/openai/codex/git/tags/81e8e29b2956dfe9b092c63953a9ed282781e77c",
+    "finalURL": "https://api.github.com/repos/openai/codex/git/tags/81e8e29b2956dfe9b092c63953a9ed282781e77c",
+    "status": 200,
+    "bytes": 655,
+    "sha256": "ae6fb8c0c3a9b2a57e32d274fa644ebe3f8d6124b037570e49ce54f511541ba1"
+  },
+  {
+    "name": "upstream-pr45711-allowed-tools.rs",
+    "url": "https://raw.githubusercontent.com/openai/codex/2fdcdeaf0e219eea34c710e01de2ee0571ddeeb5/codex-rs/ext/extension-api/src/allowed_tools.rs",
+    "finalURL": "https://raw.githubusercontent.com/openai/codex/2fdcdeaf0e219eea34c710e01de2ee0571ddeeb5/codex-rs/ext/extension-api/src/allowed_tools.rs",
+    "status": 200,
+    "bytes": 1019,
+    "sha256": "4b58b7fda8f0dd5acbc13f5a8e3402610b9367fa4c2bdf1018c2c4603a5b4fc9"
+  },
+  {
+    "name": "upstream-pr45711.patch",
+    "url": "https://github.com/openai/codex/commit/2fdcdeaf0e219eea34c710e01de2ee0571ddeeb5.patch",
+    "finalURL": "https://github.com/openai/codex/commit/2fdcdeaf0e219eea34c710e01de2ee0571ddeeb5.patch",
+    "status": 200,
+    "bytes": 32010,
+    "sha256": "718525414062e4ed397255d877f0cf14ecd47a985adcc9cf0467a32291b4f8cf"
+  },
+  {
+    "name": "pin-codex-rs__ext__extension-api__src__tool_policy.rs",
+    "path": "codex-rs/ext/extension-api/src/tool_policy.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/ext/extension-api/src/tool_policy.rs",
+    "status": 200,
+    "bytes": 1774,
+    "sha256": "909df60dd82a289a4fb7ae7083f56d6018e75cc1942880be14f2f51bc5e33f42"
+  },
+  {
+    "name": "pin-codex-rs__ext__extension-api__src__user_instructions.rs",
+    "path": "codex-rs/ext/extension-api/src/user_instructions.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/ext/extension-api/src/user_instructions.rs",
+    "status": 200,
+    "bytes": 3492,
+    "sha256": "6625f773fb5ffe448334aa0803fff9eea3c048d4592d45679451981d368e1b4b"
+  },
+  {
+    "name": "pin-codex-rs__ext__extension-api__src__session_isolation.rs",
+    "path": "codex-rs/ext/extension-api/src/session_isolation.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/ext/extension-api/src/session_isolation.rs",
+    "status": 200,
+    "bytes": 815,
+    "sha256": "464b7cfd837ab8375cea58d40c3714d0c20a05eacc461074f78bc6644dbbdf1f"
+  },
+  {
+    "name": "pin-codex-rs__ext__extension-api__src__lib.rs",
+    "path": "codex-rs/ext/extension-api/src/lib.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/ext/extension-api/src/lib.rs",
+    "status": 200,
+    "bytes": 4335,
+    "sha256": "0aba4d324322ce9a6f1e4cec3264839336927eb21ce80dd04eed9c2b044aecfe"
+  },
+  {
+    "name": "pin-codex-rs__core__src__config_loader__mod.rs",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/core/src/config_loader/mod.rs",
+    "error": "HTTPError: HTTP Error 404: Not Found"
+  },
+  {
+    "name": "pin-codex-rs__app-server-protocol__src__protocol__v2__thread.rs",
+    "path": "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+    "status": 200,
+    "bytes": 77161,
+    "sha256": "761fb1a61a8107ab37dcfd7f997a4983bd58aab81cf84355ae30197ed809c8ac"
+  },
+  {
+    "name": "pin-codex-rs__app-server__src__request_processors__thread_processor.rs",
+    "path": "codex-rs/app-server/src/request_processors/thread_processor.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/app-server/src/request_processors/thread_processor.rs",
+    "status": 200,
+    "bytes": 249139,
+    "sha256": "57e6398917825662f3b457197419607274b141e21b93e17c67ea6a1e328f3033"
+  },
+  {
+    "name": "pin-codex-rs__app-server__src__dynamic_tools.rs",
+    "path": "codex-rs/app-server/src/dynamic_tools.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/app-server/src/dynamic_tools.rs",
+    "status": 200,
+    "bytes": 3863,
+    "sha256": "b93d2e6adb139da47f1e0479f5c0099b5c2b612ed1080e12917a4b590eb286c0"
+  },
+  {
+    "name": "pin-codex-rs__app-server__src__extensions.rs",
+    "path": "codex-rs/app-server/src/extensions.rs",
+    "commit": "b412ff32c417f855c2b2d1581b77058eed87c84b",
+    "url": "https://raw.githubusercontent.com/openai/codex/b412ff32c417f855c2b2d1581b77058eed87c84b/codex-rs/app-server/src/extensions.rs",
+    "status": 200,
+    "bytes": 24664,
+    "sha256": "d747b1f157abcc773b7b9662a2b939f3f6b3ff9536fcc5334f6ef2f427acbca3"
+  }
+]

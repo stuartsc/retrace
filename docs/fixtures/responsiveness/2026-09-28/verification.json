@@ -1,0 +1,147 @@
+{
+  "benchmark_artifact_sha256": {
+    "authored-codec-output/aac-12000.m4a": "dd278da802b083cbdf2fa857c78a2416af4dae7c0bb9d1a5e49b723f39a45bb8",
+    "authored-codec-output/aac-28000.m4a": "35c0dc2756d83a6a6508d91bd56fb5bb96857b2d8f1e8edb32d4ce8167430966",
+    "authored-codec-output/aac-48000.m4a": "c8bd023adbc4227ef478d069d1c37365c4fe6c07cbd458b2483e425f9c92c856",
+    "authored-codec-output/existing-quality-based.m4a": "56006cfef72a014ceaaf2753340e972291d43a2b62a37b15107dff0aeddf891c",
+    "authored-codec-output/experimental-opus.caf": "8056e9c4b923cd7dbd8218cba71f6a75ad38905b8b38eec67615ed3bc20fefd7",
+    "codec-comparison.json": "314bc42c84cd63deb6e108bb763206ca755f2750b01f699fed663124bc418e11",
+    "codec-speech-comparison.json": "21bac32b0a1a0bfc2085010f738e37df4ab3bf6414f792d702dbc944fa4718eb",
+    "speech-comparison.json": "05cf50c56e4e91335b1368ab7903a24d48fb196b58a28f1d4fa607143ee01c57",
+    "speech-helper-memory.json": "2e3f407ce3f5ed623fd6e4c231a920c0674da57f2a72d573fdf68e429e58473c",
+    "whisper-cancellation.json": "95e2123a0208d1838f870a7ef0dd7d976765f3bcefa14b6c6dc8f73a1dccd028",
+    "whisper-comparison.json": "f2ab409275c0d712cc0f940d05d3445624cc25f25a5e327cf5614473d5bc0ed6"
+  },
+  "checks": {
+    "clean_debug": {
+      "build_seconds": 426.24,
+      "exit": 0,
+      "failures": 0,
+      "skipped": 8,
+      "tests": 227
+    },
+    "codec_transcription": {
+      "cases": 5,
+      "exit": 0,
+      "interpretation": "Measured word errors remain; test completion is not accuracy acceptance",
+      "test_failures": 0
+    },
+    "compatibility": {
+      "exit": 0,
+      "failures": 0,
+      "skipped": 3,
+      "tests": 110
+    },
+    "final_test_only_extensions": {
+      "build_seconds": 10.64,
+      "exit": 0,
+      "failures": 0,
+      "scope": "Actual Opus export and separate cancellation join timing; production source unchanged after clean builds",
+      "tests": 3
+    },
+    "native_speech_after_asset_preparation": {
+      "asset_preparation_seconds": 2.4014685,
+      "exit": 0,
+      "failures": 0,
+      "locale": "en_AU",
+      "promotion": false,
+      "tests": 1
+    },
+    "native_speech_initial": {
+      "exit": 1,
+      "interpretation": "environment readiness failure, not successful comparison",
+      "reason": "assetsNotInstalled(en_AU)"
+    },
+    "native_whisper": {
+      "exit": 0,
+      "failures": 0,
+      "model_sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "promotion": false,
+      "tests": 3
+    },
+    "optimized_build": {
+      "configuration": "release",
+      "exit": 0,
+      "fresh_directory_created": "2026-09-28T14:37:00+10:00",
+      "jobs": 2,
+      "scratch": "/tmp/retrace-responsiveness-release-20260928",
+      "seconds": 707.01
+    },
+    "whole_system_energy": "unavailable: powermetrics requires superuser"
+  },
+  "history_recompressed_or_deleted": false,
+  "host": {
+    "ac_low_power_mode": true,
+    "cpu": "Apple M1 Max",
+    "installed_build": "2609.18.1",
+    "macOS": "26.1 (25B78)",
+    "memory_bytes": 68719476736
+  },
+  "installation_changed": false,
+  "log_sha256": {
+    "/tmp/retrace-responsiveness-clean-debug-final.log": "1e2a14d41e54aab3fc25cfb52afd4c8cededb7101f7cfe0bcd63d6e094f36d88",
+    "/tmp/retrace-responsiveness-clean-debug-verified.log": "5784048698668983bda2005c3e8cfbd93e57e49a9a3bc1db943edf7114dd04b1",
+    "/tmp/retrace-responsiveness-codec-cancellation-final.log": "ea0f4631bb0e431cc8779e6d415786d7203659f2d4b631ad0da841cf54ea1faf",
+    "/tmp/retrace-responsiveness-compatibility.log": "5dcdd764a13f132ca14374142900cf5a53193e76b818b5429b669b551ea212e4",
+    "/tmp/retrace-responsiveness-release.log": "7c29f69a1b42d476c8c72c067b35f0f08af99e448a5fde541484dcd4fbaf9f9b",
+    "/tmp/retrace-responsiveness-speech-native.log": "a8035d95eb9f31f7b9460b91dfa13b7f65d283efa3c1d7eea9b774fafa9ed526",
+    "/tmp/retrace-responsiveness-speech-preparation.log": "d67435659fca2340c4343adfd28fd133d8a589a31a6bc52e96b5a8b203bd28b3",
+    "/tmp/retrace-responsiveness-whisper-native.log": "5c4b20c311336e20c556b3b03f6a0059588472b5378111a8354d17ee0fb24881"
+  },
+  "native_library_sha256": {
+    "Vendors/whisper/lib/libggml-base.dylib": "86ae45cafc861c92f939bb28215a446a401d2cee63b947eea175f7676db4c650",
+    "Vendors/whisper/lib/libggml-blas.dylib": "b7f54577a21aba5a37b22518f60f9bc3b1f4c9438c1876759330e58fa15bb490",
+    "Vendors/whisper/lib/libggml-cpu.dylib": "f17e57d4d4df1a34a06f3b204ae4c5f762860eee2f7846c56d1d033a2792e10c",
+    "Vendors/whisper/lib/libggml-metal.dylib": "9e1049b0ce4ed957d7724a3301c40853207b5caab027aa49a69d267e6da53692",
+    "Vendors/whisper/lib/libggml.dylib": "a611b8585b2afd0ea2b72c50968115cd8384075091ca6da34ea2a3fedd07c53f",
+    "Vendors/whisper/lib/libwhisper.1.8.2.dylib": "390087cd637596019ebb383bee548fb90f4f42f2d7d21dc7818c2d518717fdd6",
+    "Vendors/whisper/lib/libwhisper.1.dylib": "390087cd637596019ebb383bee548fb90f4f42f2d7d21dc7818c2d518717fdd6",
+    "Vendors/whisper/lib/libwhisper.dylib": "390087cd637596019ebb383bee548fb90f4f42f2d7d21dc7818c2d518717fdd6"
+  },
+  "production_codec_changed": false,
+  "recorded_at": "2026-09-28T04:47:37.140893+00:00",
+  "schema": 1,
+  "scope": "First responsiveness slice and opt-in codec/hardware candidates; full plan remains open",
+  "source_head": "7723d3f8259ff25e37a062fa8dfbdb465d75c642",
+  "source_sha256": {
+    "App/AppCoordinator.swift": "32d121a427a09cfea0a543e5e418930222d82acc2226a18809de06281e1b2b5a",
+    "App/BackgroundProcessingGovernor.swift": "bc4f2174ae0efb5bd6d4d8207e850763c254b470497a0878a842d2a857b7cf18",
+    "App/BackgroundTranscriptionService.swift": "ebba23d0de843f571218f9cf5e8f38d19dbfaf6fc821e16ce7cf98a7da129d04",
+    "App/LocalContextService.swift": "e86d128e344a7d1892afa4fc1d59ff732b4911dfd74f3b26a0bf055c3141a893",
+    "App/LocalRecallController.swift": "8292373919f87b10182ae1d218eb1a9f9a50f6e848a4df931ca32060134e7dab",
+    "App/ServiceContainer.swift": "fe655751039a46cc64bca466edd76ce78b62e1f5b1b86d557dd7b653f4c82094",
+    "App/Tests/BackgroundProcessingGovernorTests.swift": "aeea1a6cccc21f293e3407f95f446b11b51809193276dacb0f44afd5bea0c7b0",
+    "App/Tests/LocalContextServiceTests.swift": "581486c839e3ea95da20ae8cca3083a7643c74ebf6441519fe62b05c3c0e7bbc",
+    "App/Tests/ManualRefinementOwnershipTests.swift": "79942788d568bd0f9e10f61cc9915e10908acddba5ed219e5cf8a7bc6bec10e6",
+    "Database/Migrations/MigrationRunner.swift": "b0287f3326e37936ae44fbd4faea204e2503960e5cf34bf95356b709b97c3598",
+    "Database/Migrations/V31_AudioPendingWorkIndex.swift": "6f8adf2bf5ad4948672d181fdb230fe4babeff2393d1c1d4a08fc06909ba620d",
+    "Database/Queries/AudioTranscriptionQueries.swift": "e03a9e69f1fba01fc72556a76b44c9daff26864ca3b0b528376f9222e947da78",
+    "Database/Queries/DailyMetricsQueries.swift": "9bf60d890088be465c1b30a9ed399a7eff7784d11aaea82fdc5239511985c2f0",
+    "Database/Tests/AudioOriginalSourceTests.swift": "5f74b0f8f1fdbf8b6ee8f68f28e309ca21770acb6b8ba974f130c60fbf147034",
+    "Package.resolved": "beb207d5d10b5334d35400ea7ad2274e57b582cba8a10b18ac1dbaacb48c13e1",
+    "Package.swift": "e1e499fa2edb457cb8354da452078e69b5faea582e4a32b5ba6b06a60da2915d",
+    "Processing/Audio/AudioBackfillManager.swift": "74cddb641851fd616cae623301769375ad716c2562132537f5c3e015bbf076fd",
+    "Processing/Audio/AudioProcessingManager.swift": "a2dcce7dc793a26b378cea5f05b4128611c48d1ee6fc19702ef184b48cd94fc0",
+    "Processing/Audio/NativeSpeechTranscriptionService.swift": "434723c99d9d115151ecf26e17fd7a8f6dffd02089f90ae7006d8390cdba7b48",
+    "Processing/Audio/WhisperCppTranscriptionService.swift": "227d752e1b99bf01c9ad7928ee469ededb05cb3efad97b0e6cc47957f3f16184",
+    "Processing/Tests/AudioProcessingBackpressureTests.swift": "ddaa570752e8f88252b55b2209e1473c10bb9a2d2ceb50c20057b7dc0c5157cb",
+    "Processing/Tests/AudioProcessingLifecycleTests.swift": "367594c47988891b2ccdfd2de560d85332da7eb65c48424a428c9dc8c89b258f",
+    "Processing/Tests/Fixtures/WhisperTimedWords/authored.wav": "271a49fc227c083978627f4ea436d4f5c155514542d9089390a6885182c3cd00",
+    "Processing/Tests/Fixtures/WhisperTimedWords/reference.txt": "c9e4267ce37593ab46a3a7ce5e15ee3ceb95d39d7ce87a0481fe4ffadb7038ad",
+    "Processing/Tests/NativeSpeechTranscriptionServiceTests.swift": "26a3334539325c5a8225e26090c8b3c980496af8b26c7098e05b9bbbdf296312",
+    "Processing/Tests/WhisperHardwareComparisonTests.swift": "9a8e2a627a069edaa26b2d470913f0c0c5e24a2abcd249904f4d5bee95b7366f",
+    "Processing/Tests/WhisperModelResidencyTests.swift": "6d2f2c57b65800fca57120945e6b5305d8837297510e20cd9e077272025ab961",
+    "Search/SemanticRecallEngine.swift": "889f440202fb54b6a3edee87213eb7091350d01d2ffcddf6af817a2601ef128c",
+    "Shared/Models/BackgroundProcessingContext.swift": "ecefd3a94b27cce9df47dc4d10601a94281a1e1919cc2eacf7a7cc05e20e794a",
+    "Shared/Protocols/BackgroundProcessingProtocol.swift": "c90e39c91464abdf8c77e39a27105c17293c889da0cd259e069dc388028028e0",
+    "Storage/Audio/AudioFileDecoder.swift": "8d766d79e16a3bc037a644cc2f836b29e6e10a9728a0edd9fe8f724c8d726dd2",
+    "Storage/Audio/AudioSegmentWriter.swift": "e688a38f804219d6cc89626700dba9cc3630645e363ae2c869ffb88d377b26c0",
+    "Storage/Tests/AudioCodecComparisonTests.swift": "24054a44f1b4ecfef862b3847fe21c66d61bb08d7d9f84cb939ea0fe0ccd3a48",
+    "Storage/Tests/HEVCEncoderTests.swift": "1ddf393c651b3d734bdc6647aea6efbe4ecc2350fddd56a77f2b1539fd1fddc3",
+    "Storage/Tests/WALFrameCompressionTests.swift": "3548e87db8ad6b2c5574989feccc82ecb0a4d6c30149955b96fb9f6bc3debbff",
+    "Storage/VideoEncoder/HEVCEncoder.swift": "3c9ee37fed88cd1e9bc96db69e0c76b7556d9310105323e9ac35eb6f08c87004",
+    "Storage/WAL/WALFrameCodec.swift": "66bd6dfa1ca3441d7770c633281c112f32da80edc75c31a0ca8d9f7813f674ed",
+    "UI/Views/Dashboard/SystemMonitorView.swift": "a2a6ae81ce626d57d5fb001100cdf90918fe4f9a2c5c46e8a610cf80d74d0a41"
+  },
+  "worktree": "pre-existing and new uncommitted changes; manifest is current checked source, not attribution of all changes"
+}

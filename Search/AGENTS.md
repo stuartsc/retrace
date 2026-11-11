@@ -2,7 +2,7 @@
 
 You are responsible for the **Search** module of Retrace. Your job is to implement search functionality including query parsing, full-text search via SQLite FTS5, and result ranking.
 
-**Status**: Full-text search uses FTS5. The query parser supports app/date filters, phrases and exclusions. **No vector/semantic search is active.** `VectorSearchTODO/` contains excluded implementation sketches; its llama.cpp/Nomic configuration is historical, not a selected or verified model/runtime pin. See [the progressive recall plan](../docs/progressive-recall-plan.md) for the coordinated Phase 2 scope.
+**Status**: Full-text search uses FTS5. The query parser supports app/date filters, phrases and exclusions. A separately enabled native MiniLM/V25 index supplies bounded semantic candidates to the explicit workspace search. It is disabled by default and has no installed acceptance. `VectorSearchTODO/` remains excluded historical code; it is not the implemented runtime. See [the unified history ledger](../docs/unified-history-plan.md) for source and acceptance boundaries.
 
 ## Your Directory
 
@@ -10,10 +10,19 @@ You are responsible for the **Search** module of Retrace. Your job is to impleme
 Search/
 ├── SearchManager.swift            # SearchProtocol lexical fallback
 ├── IngestionManager.swift         # Search-index ingestion
+├── SemanticRecallEngine.swift     # Optional fresh/backfill worker, foreground queries and joined lifecycle
 ├── QueryParser/
 │   └── QueryParser.swift          # QueryParserProtocol implementation and filter parsing
 ├── Ranking/
 │   └── ResultRanker.swift         # Rank lexical fallback results
+├── Embedding/                    # Pinned local native runtime; App owns explicit activation
+│   ├── MiniLMModelPin.swift       # Exact conversion/transform pin and bounded local contracts
+│   ├── MiniLMWordPieceTokenizer.swift # Pinned native tokenizer, UTF-16 spans and full windows
+│   ├── VerifiedMiniLMArtifacts.swift # Bounded hash-verified private model copy/cleanup
+│   ├── MiniLMEmbeddingRuntime.swift # Serialized CPU-only Core ML prediction actor
+│   ├── LocalEmbeddingRuntime.swift # Public Shared protocol adapter; explicit local URLs and content-free metrics
+│   └── LocalEmbeddingResources.swift # SwiftPM/framework lookup of the pinned bundled tokenizer
+├── Resources/MiniLM/             # Production tokenizer and Apache license; no bundled model weights
 ├── VectorSearchTODO/              # Excluded from the Search target in Package.swift
 │   ├── Embedding.swift
 │   ├── HybridSearchManager.swift
@@ -21,6 +30,11 @@ Search/
 │   └── VectorStore/
 └── Tests/
     ├── QueryParserTests.swift
+    ├── MiniLMWordPieceTokenizerTests.swift # Authored upstream Unicode/token/window parity
+    ├── MiniLMEmbeddingRuntimeTests.swift # Native model parity, artifact/lifecycle regressions
+    ├── LocalEmbeddingRuntimeTests.swift # Shared adapter and exact canonical-page native parity
+    ├── SemanticRecallEngineTests.swift # Real SQLCipher retrieval, preemption, cancellation and joined teardown
+    ├── Fixtures/MiniLM/            # Pinned tokenizer, authored vectors/window plans, canonical-page oracle and license
     └── TestLogger.swift
 ```
 
@@ -48,6 +62,27 @@ Phase 2D preserves the complete question in `SearchViewModel`, including exclusi
 The developer-only evaluator in `scripts/recall_benchmark/` pins model artifacts and complete snapshot inventories, tokenizer/pooling/normalization, runtime versions, CPU/thread settings and ranking parameters. It accepts only a SHA-pinned authored export from `App/Tests/ProgressiveRecallBenchmarkTests.swift`, using real Vision/SQLite and the primary DataAdapter route. Eight reviewed screens and twelve frozen questions in `docs/fixtures/progressive-recall/phase2d/` compare full-question lexical, separately labelled authored keywords, embeddings, fusion and reranking. These fixtures do not establish broad user quality, production-scale cost or installed acceptance. The evaluator remains outside compiled Search/App targets and grants no derived-result readiness.
 
 Phase 2C's native evidence feed persists identity-only blocked lexical/vector work. It adds no embedding worker, copied text, readiness or result-acceptance API. Durable writer-owned policy/source fencing is required before a later implementation accepts derived results; current exact evidence checks remain authoritative for disclosure.
+
+`Embedding/` supplies a separately verified local runtime only. It accepts explicit
+local artifact URLs, verifies the exact measured MiniLM conversion and tokenizer,
+and loads from a private owned copy. It downloads nothing and adds no index,
+background worker, DataAdapter route, evidence admission or disclosure permission.
+The native tokenizer preserves complete token windows and original UTF-16 spans;
+its 224/32 windows use the saved benchmark's nearby sentence/newline boundaries.
+Model IDs, conversion hashes and transform fingerprints must survive later durable
+index integration; compatible dimensions alone are insufficient.
+
+App's `LocalRecallController` owns activation, the V25 engine and its bounded metric inbox. First enable creates a private cache parent; failed artifact validation leaves lexical search usable. The tokenizer ships as a SwiftPM resource/framework folder, while model weights require an explicit verified local package. No model download or implicit question-triggered activation occurs. `ServiceContainer` closes query/start admission and joins claims, predictions and metric delivery before ending the capture writer or closing SQLite. A failed claim cleanup retains its owner/database for retry. OCR completion only signals a coalesced wake after atomic extraction publication.
+
+The actor serializes fixed 256-token CPU-only predictions, rejects oversized
+requests without truncation, returns no partial vectors on cancellation, and owns
+explicit joined cleanup. Its required metric sink enqueues categorical outcomes
+only; the integrating App owner must drain a bounded inbox into `daily_metrics`
+and instrument foreground latency. Core ML's internal CPU pool is not an exact
+thread-count guarantee. Model-dependent tests require an explicitly supplied
+`RETRACE_MINILM_MODEL_PACKAGE`; ordinary suites must report their skips honestly.
+Automated parity on authored material does not establish installed acceptance,
+semantic retrieval quality, policy fences or production-scale latency.
 
 ## Key Implementation Details
 
@@ -551,3 +586,14 @@ These are targets, not measured acceptance or permission to truncate a user's qu
 2. Trace whether the requested behavior uses the primary DataAdapter route or the fallback before choosing a test seam.
 3. Write and run a failing regression using real input, then make the smallest passing change.
 4. Coordinate cross-module contracts and any future model/dependency work through the progressive recall plan; keep excluded code excluded until its identity, policy and benchmark requirements are met.
+
+The retained `Fixtures/MiniLM/canonical-page-oracle.json` contains two canonical expansion pages bounded to 4096 bytes from repeated authored Cedar text, with six windows computed by the pinned offline tokenizer/PyTorch model. Database continuation tests bind exact page text, offsets and vectors to this oracle; the publication boundary verifies current evidence and declared structural coverage, while native runtime parity separately verifies inference. This fixture is authored, not captured history.
+
+### Optional semantic engine
+
+`SemanticRecallEngine` accepts only Shared canonical store/runtime protocols and a caller-owned explicit runtime factory. `start()` is required; questions and captured text cannot reactivate a stopped engine. Starts/stops coalesce and own their tasks. Foreground questions cancel and join background inference and its claim cleanup before using the single native runtime, supersede older questions, preserve the complete bounded input, and resume quiet fresh-first work afterward. `refresh()` coalesces meaningful source changes; there is no idle model polling. Successful `stop()` joins startup/work/query metrics and runtime cleanup before App drains its metric writer or closes the canonical database. Failed cleanup retains ownership for retry.
+
+Queries use bounded exact cosine scans over V25 current-policy pages, preserve source-qualified references and exact spans, and return a read stamp that App must retain/revalidate before later disclosure. Full question windows and the native descriptor are validated before ranking. Scanning has page/time budgets with explicit partial status; those bounds do not establish production latency or broad semantic quality. Lexical matching and exact identifiers remain the primary adapter's responsibility. `SemanticRecallEngineTests` runs actual private SQLCipher and canonical transaction engines; deterministic scheduling cases replay authored pinned vector goldens, and the native integration is explicitly model-path gated. It does not initialize DatabaseManager or probe imported/live history.
+
+
+The optional App-provided `BackgroundProcessingProtocol` gates automatic semantic work before taking a durable claim. Explicit question embedding/search retains its foreground path. Permit revocation rejects publication, drains claims and waits for renewed admission; a stopped/cancelled owner does not retry. This is scheduling integration, not a change to model activation or ranking acceptance.

@@ -7,6 +7,20 @@ import Shared
 @testable import Processing
 
 final class WhisperModelResidencyTests: XCTestCase {
+    func testCancelledCallerDoesNotLoadOnDemandModel() async {
+        let service = WhisperCppTranscriptionService(modelPath: Self.missingModelPath(),
+            modelResidency: .onDemand(idleTimeout: .seconds(1)))
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await service.transcribe(Data(repeating: 0, count: 32_000))
+                XCTFail("Cancelled work must not enter the native model")
+            } catch is CancellationError {
+            } catch { XCTFail("Expected cancellation before model loading, got \(error)") }
+        }
+        await task.value
+    }
+
     /// Opt-in real inference on the reviewed, authored (never recorded) fixture.
     /// The decoder's full text is the oracle for its independently extracted
     /// timed words, so this regression does not require perfect speech accuracy.

@@ -2,7 +2,7 @@
 
 Recorded **2026-09-20** on `feature/push-to-dictate`, source `cab177fd44c9e99d4a9aa41e4bab7bc8148b00a5`. Stuart requested better character accuracy, a screen → app/window → text account using native sources where possible, and higher-quality capture followed by efficient archival compression. This document records findings and the next implementation priority. **No production code, recording settings or installed app were changed by this audit.**
 
-**Implementation update:** the [native OCR/archive-pixel checkpoint below](#native-ocr-and-archive-pixel-implementation--september-20) follows the audit. It addresses avoidable losses and reproducible comparisons first; original retention requires a separate durable lifecycle change and remains the next priority. This source checkpoint is uninstalled.
+**Implementation update:** the [native OCR/archive-pixel checkpoint below](#native-ocr-and-archive-pixel-implementation--september-20) follows the audit. The [September 24 unified-history ledger](unified-history-plan.md) now tracks the separate original-retention lifecycle, native capture candidate, streaming speech comparison and unified workspace. Source validation and installed acceptance are recorded separately; no new installation is implied.
 
 ## Pre-change audit findings
 

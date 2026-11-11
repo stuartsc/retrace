@@ -28,6 +28,21 @@ public protocol StorageProtocol: Actor {
     /// The supplied frame and video must belong to the same saved source.
     func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame
 
+    /// Original pixels located by exact frame identity, even after archive recovery
+    /// changes the video path. A corrupt/conflicting retained identity must throw.
+    func configureOriginalStore(storeID: UUID) async throws
+
+    func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference, expectedWidth: Int,
+                                       expectedHeight: Int) async throws -> CapturedFrame?
+
+    /// Called only after the finalized archive mapping is durable in SQLite.
+    func confirmOriginalArchive(video: VideoSegment) async throws
+
+    /// Revalidate durable extraction and current archive mapping before releasing
+    /// originals. Pending, unreadable, and unacknowledged work remains retained.
+    func reconcileOriginalSpool(disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition)
+        async throws -> OriginalSpoolStatus
+
     /// Get the file path for a segment
     func getSegmentPath(id: VideoSegmentID) async throws -> URL
 
@@ -64,6 +79,18 @@ public protocol StorageProtocol: Actor {
 }
 
 public extension StorageProtocol {
+    func configureOriginalStore(storeID: UUID) async throws {}
+
+    func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference, expectedWidth: Int,
+                                       expectedHeight: Int) async throws -> CapturedFrame? { nil }
+
+    func confirmOriginalArchive(video: VideoSegment) async throws {}
+
+    func reconcileOriginalSpool(disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition)
+        async throws -> OriginalSpoolStatus {
+        throw StorageError.fileReadFailed(path: "original spool", underlying: "Original retention is unavailable")
+    }
+
     func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame {
         throw StorageError.fileReadFailed(path: video.relativePath, underlying: "Native processing pixels are unavailable")
     }

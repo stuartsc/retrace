@@ -14,6 +14,9 @@ public struct TimelineTapeView: View {
     @ObservedObject var viewModel: SimpleTimelineViewModel
     let width: CGFloat
     let coordinator: AppCoordinator
+    /// The windowed workspace supplies its own single toolbar and inspector.
+    var showsControls = true
+    var searchMarkerIndices: [Int] = []
 
     // Tape dimensions (resolution-adaptive)
     private var tapeHeight: CGFloat { TimelineScaleFactor.tapeHeight }
@@ -32,9 +35,16 @@ public struct TimelineTapeView: View {
 
     /// Scrubbing animation duration from settings (0 = no animation, max 0.20)
     /// Using @AppStorage so the view automatically updates when the setting changes
-    @AppStorage("scrubbingAnimationDuration", store: TimelineTapeView.settingsStore)
-    private var scrubbingAnimationDuration: Double = 0.10
+    @AppStorage private var scrubbingAnimationDuration: Double
     @StateObject private var tapeLayoutCache = TapeLayoutCache()
+
+    init(viewModel: SimpleTimelineViewModel, width: CGFloat, coordinator: AppCoordinator,
+         showsControls: Bool = true, searchMarkerIndices: [Int] = [], settingsStore: UserDefaults? = nil) {
+        self.viewModel = viewModel; self.width = width; self.coordinator = coordinator
+        self.showsControls = showsControls; self.searchMarkerIndices = searchMarkerIndices
+        _scrubbingAnimationDuration = AppStorage(wrappedValue: 0.10, "scrubbingAnimationDuration",
+            store: settingsStore ?? Self.settingsStore)
+    }
 
     // MARK: - Body
 
@@ -55,7 +65,11 @@ public struct TimelineTapeView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
 
             // Fixed center playhead (on top of everything)
-            playhead
+            if showsControls { playhead }
+            else {
+                Rectangle().fill(Color.primary).frame(width: 2, height: tapeHeight + 14)
+                    .allowsHitTesting(false)
+            }
         }
         .frame(height: tapeHeight)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isPeeking)
@@ -132,6 +146,11 @@ public struct TimelineTapeView: View {
 
                 if viewModel.showVideoBoundaries {
                     videoBoundaryMarkers(layout: layout)
+                }
+                ForEach(searchMarkerIndices.filter { viewModel.frames.indices.contains($0) }, id: \.self) { index in
+                    Circle().fill(Color.orange).frame(width: 6, height: 6)
+                        .offset(x: layout.offsetForFrame(index) - 3, y: -10)
+                        .allowsHitTesting(false)
                 }
             }
             .offset(x: tapeOffset)

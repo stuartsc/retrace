@@ -1,0 +1,14 @@
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+  "license": "Apache-2.0",
+  "tokenizerSHA256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+  "sourceOracleSHA256": "bc8cc204f628ac96a1467ce828935199ce2abb2bc9336b94132f7af8995e61ba",
+  "benchmarkSHA256": "3c31efd30ba000248cf278951b752f5d6b0695c10083aada512b15ea6b15f057",
+  "savedTorchVectorsSHA256": "941bfe37888d4946644c7693354c3d2f5bb69c26fc588e2625fb526ceb0235bc",
+  "savedWindowsSHA256": "255a803ae294064bbe283b4141512b53828f7211709c8557e82ca674121df8c4",
+  "fullWindowBoundaryChangesFromFirstOracle": [
+    "case-019",
+    "case-040"
+  ]
+}

@@ -342,10 +342,10 @@ This project follows standard open-source collaboration practices:
 
 ### Prerequisites
 
-- macOS 13.0+ (Ventura)
-- Xcode 15.0+
-- Swift 5.9+
-- Apple Silicon recommended (for hardware encoding/Neural Engine)
+- macOS 26+ (Tahoe)
+- Xcode 26+ with the macOS 26 SDK
+- Swift 5.9+ language mode (the Xcode 26 Swift toolchain)
+- Apple Silicon required (for hardware encoding/Neural Engine)
 
 ### Initial Setup
 

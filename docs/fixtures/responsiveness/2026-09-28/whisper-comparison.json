@@ -1,0 +1,510 @@
+[
+  {
+    "apple_speech": "untested_no_assets_prepared_or_installed",
+    "audio_seconds": 10.7316875,
+    "comparisons": [
+      {
+        "agreement_is_not_accuracy": true,
+        "cpu_to_metal_word_edits": 1,
+        "iteration": 1,
+        "normalized_words_identical": false,
+        "text_identical": false
+      }
+    ],
+    "core_ml": "untested_no_pinned_encoder_or_verified_backend_in_this_comparison",
+    "fixture": "WhisperTimedWords/authored.wav",
+    "fixture_kind": "authored_Karen_en_AU_TTS",
+    "helper_process_memory": "not_measured",
+    "measurements": [
+      {
+        "actual_gpu_execution_verified": false,
+        "backend_configuration": "cpu_requested",
+        "inference_process_cpu_seconds": 29.731943,
+        "inference_seconds": 15.925320375,
+        "initialization_seconds": 0.313665375,
+        "iteration": 1,
+        "peak_rss_scope": "cumulative_test_process_high_water_not_backend_allocation",
+        "process_lifetime_peak_rss_bytes": 1355874304,
+        "reference_word_error_rate": 0,
+        "system_after": {
+          "active_cores": 10,
+          "getrusage_valid": true,
+          "load_1_5_15_minutes": [
+            29.5869140625,
+            32.37060546875,
+            50.5576171875
+          ],
+          "load_valid": true,
+          "logical_cores": 10,
+          "low_power_mode": true,
+          "os": "Version 26.1 (Build 25B78)",
+          "physical_memory_bytes": 68719476736,
+          "thermal_state": 1
+        },
+        "system_before": {
+          "active_cores": 10,
+          "getrusage_valid": true,
+          "load_1_5_15_minutes": [
+            30.4716796875,
+            32.6806640625,
+            50.9892578125
+          ],
+          "load_valid": true,
+          "logical_cores": 10,
+          "low_power_mode": true,
+          "os": "Version 26.1 (Build 25B78)",
+          "physical_memory_bytes": 68719476736,
+          "thermal_state": 1
+        },
+        "threads_requested": 2,
+        "timestamps": [
+          {
+            "end": 0.21,
+            "start": 0.02,
+            "word": "The"
+          },
+          {
+            "end": 0.58,
+            "start": 0.21,
+            "word": "blue"
+          },
+          {
+            "end": 1.13,
+            "start": 0.58,
+            "word": "proposal"
+          },
+          {
+            "end": 1.2,
+            "start": 1.13,
+            "word": "is"
+          },
+          {
+            "end": 1.55,
+            "start": 1.2,
+            "word": "still"
+          },
+          {
+            "end": 1.62,
+            "start": 1.55,
+            "word": "a"
+          },
+          {
+            "end": 2.24,
+            "start": 1.62,
+            "word": "draft."
+          },
+          {
+            "end": 2.39,
+            "start": 2.26,
+            "word": "Do"
+          },
+          {
+            "end": 2.65,
+            "start": 2.39,
+            "word": "not"
+          },
+          {
+            "end": 3.09,
+            "start": 2.65,
+            "word": "approve"
+          },
+          {
+            "end": 3.37,
+            "start": 3.09,
+            "word": "the"
+          },
+          {
+            "end": 3.94,
+            "start": 3.37,
+            "word": "payment."
+          },
+          {
+            "end": 4.12,
+            "start": 3.96,
+            "word": "The"
+          },
+          {
+            "end": 4.52,
+            "start": 4.12,
+            "word": "green"
+          },
+          {
+            "end": 4.9,
+            "start": 4.52,
+            "word": "proposal"
+          },
+          {
+            "end": 5.08,
+            "start": 4.9,
+            "word": "was"
+          },
+          {
+            "end": 5.56,
+            "start": 5.08,
+            "word": "approved"
+          },
+          {
+            "end": 6.32,
+            "start": 5.56,
+            "word": "yesterday."
+          },
+          {
+            "end": 6.73,
+            "start": 6.34,
+            "word": "Please"
+          },
+          {
+            "end": 6.97,
+            "start": 6.73,
+            "word": "open"
+          },
+          {
+            "end": 7.16,
+            "start": 6.97,
+            "word": "the"
+          },
+          {
+            "end": 7.48,
+            "start": 7.16,
+            "word": "exact"
+          },
+          {
+            "end": 8,
+            "start": 7.48,
+            "word": "document"
+          },
+          {
+            "end": 8.19,
+            "start": 8,
+            "word": "and"
+          },
+          {
+            "end": 8.56,
+            "start": 8.19,
+            "word": "check"
+          },
+          {
+            "end": 8.7,
+            "start": 8.56,
+            "word": "the"
+          },
+          {
+            "end": 9.08,
+            "start": 8.7,
+            "word": "final"
+          },
+          {
+            "end": 9.44,
+            "start": 9.08,
+            "word": "amount"
+          },
+          {
+            "end": 9.8,
+            "start": 9.44,
+            "word": "before"
+          },
+          {
+            "end": 10.25,
+            "start": 9.8,
+            "word": "sending"
+          },
+          {
+            "end": 10.31,
+            "start": 10.25,
+            "word": "a"
+          },
+          {
+            "end": 10.68,
+            "start": 10.31,
+            "word": "reply."
+          }
+        ],
+        "words": [
+          "the",
+          "blue",
+          "proposal",
+          "is",
+          "still",
+          "a",
+          "draft",
+          "do",
+          "not",
+          "approve",
+          "the",
+          "payment",
+          "the",
+          "green",
+          "proposal",
+          "was",
+          "approved",
+          "yesterday",
+          "please",
+          "open",
+          "the",
+          "exact",
+          "document",
+          "and",
+          "check",
+          "the",
+          "final",
+          "amount",
+          "before",
+          "sending",
+          "a",
+          "reply"
+        ]
+      },
+      {
+        "actual_gpu_execution_verified": false,
+        "backend_configuration": "metal_requested",
+        "inference_process_cpu_seconds": 1.6853289999999994,
+        "inference_seconds": 4.243381208,
+        "initialization_seconds": 0.353001375,
+        "iteration": 1,
+        "peak_rss_scope": "cumulative_test_process_high_water_not_backend_allocation",
+        "process_lifetime_peak_rss_bytes": 1397915648,
+        "reference_word_error_rate": 0.03125,
+        "system_after": {
+          "active_cores": 10,
+          "getrusage_valid": true,
+          "load_1_5_15_minutes": [
+            28.89892578125,
+            32.181640625,
+            50.38427734375
+          ],
+          "load_valid": true,
+          "logical_cores": 10,
+          "low_power_mode": true,
+          "os": "Version 26.1 (Build 25B78)",
+          "physical_memory_bytes": 68719476736,
+          "thermal_state": 1
+        },
+        "system_before": {
+          "active_cores": 10,
+          "getrusage_valid": true,
+          "load_1_5_15_minutes": [
+            29.5869140625,
+            32.37060546875,
+            50.5576171875
+          ],
+          "load_valid": true,
+          "logical_cores": 10,
+          "low_power_mode": true,
+          "os": "Version 26.1 (Build 25B78)",
+          "physical_memory_bytes": 68719476736,
+          "thermal_state": 1
+        },
+        "threads_requested": 2,
+        "timestamps": [
+          {
+            "end": 0.19,
+            "start": 0.02,
+            "word": "The"
+          },
+          {
+            "end": 0.44,
+            "start": 0.19,
+            "word": "blue"
+          },
+          {
+            "end": 0.95,
+            "start": 0.44,
+            "word": "proposal"
+          },
+          {
+            "end": 1.13,
+            "start": 0.95,
+            "word": "is"
+          },
+          {
+            "end": 1.38,
+            "start": 1.13,
+            "word": "still"
+          },
+          {
+            "end": 1.44,
+            "start": 1.38,
+            "word": "a"
+          },
+          {
+            "end": 1.91,
+            "start": 1.44,
+            "word": "draft."
+          },
+          {
+            "end": 2.13,
+            "start": 2,
+            "word": "DO"
+          },
+          {
+            "end": 2.31,
+            "start": 2.13,
+            "word": "NOT"
+          },
+          {
+            "end": 2.77,
+            "start": 2.31,
+            "word": "APPROVE"
+          },
+          {
+            "end": 2.97,
+            "start": 2.77,
+            "word": "THE"
+          },
+          {
+            "end": 3.7,
+            "start": 2.97,
+            "word": "PAINMENT."
+          },
+          {
+            "end": 3.91,
+            "start": 3.74,
+            "word": "The"
+          },
+          {
+            "end": 4.3,
+            "start": 3.91,
+            "word": "green"
+          },
+          {
+            "end": 4.85,
+            "start": 4.3,
+            "word": "proposal"
+          },
+          {
+            "end": 4.93,
+            "start": 4.85,
+            "word": "was"
+          },
+          {
+            "end": 5.44,
+            "start": 4.93,
+            "word": "approved"
+          },
+          {
+            "end": 6.08,
+            "start": 5.44,
+            "word": "yesterday."
+          },
+          {
+            "end": 6.23,
+            "start": 6.1,
+            "word": "Please"
+          },
+          {
+            "end": 6.28,
+            "start": 6.23,
+            "word": "open"
+          },
+          {
+            "end": 6.34,
+            "start": 6.28,
+            "word": "the"
+          },
+          {
+            "end": 6.49,
+            "start": 6.34,
+            "word": "exact"
+          },
+          {
+            "end": 6.66,
+            "start": 6.49,
+            "word": "document"
+          },
+          {
+            "end": 6.66,
+            "start": 6.66,
+            "word": "and"
+          },
+          {
+            "end": 6.76,
+            "start": 6.66,
+            "word": "check"
+          },
+          {
+            "end": 6.82,
+            "start": 6.76,
+            "word": "the"
+          },
+          {
+            "end": 6.92,
+            "start": 6.82,
+            "word": "final"
+          },
+          {
+            "end": 7.04,
+            "start": 6.92,
+            "word": "amount"
+          },
+          {
+            "end": 7.21,
+            "start": 7.04,
+            "word": "before"
+          },
+          {
+            "end": 7.3,
+            "start": 7.21,
+            "word": "sending"
+          },
+          {
+            "end": 7.32,
+            "start": 7.3,
+            "word": "a"
+          },
+          {
+            "end": 7.52,
+            "start": 7.32,
+            "word": "reply."
+          }
+        ],
+        "words": [
+          "the",
+          "blue",
+          "proposal",
+          "is",
+          "still",
+          "a",
+          "draft",
+          "do",
+          "not",
+          "approve",
+          "the",
+          "painment",
+          "the",
+          "green",
+          "proposal",
+          "was",
+          "approved",
+          "yesterday",
+          "please",
+          "open",
+          "the",
+          "exact",
+          "document",
+          "and",
+          "check",
+          "the",
+          "final",
+          "amount",
+          "before",
+          "sending",
+          "a",
+          "reply"
+        ]
+      }
+    ],
+    "model_sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+    "pcm_sha256": "b1295d561ac7a320eec47d9f5e5ccb58ed4e1e20f52dc3119b445f1d88952b41",
+    "quantization": "only_the_explicit_model_tested_no_cross_model_quality_claim",
+    "scope": "single_authored_fixture_not_names_numbers_quiet_speech_overlap_or_promotion_acceptance",
+    "whole_system_energy": "not_measured"
+  },
+  {
+    "boundary": "handler_installed_before_whisper_full",
+    "cancelled": true,
+    "case": "owned_CPU_cancellation_and_next_inference",
+    "exact_native_sampling_phase_unverified": true,
+    "joined_and_next_inference_seconds": 17.477402667,
+    "reused_model_returned_text": true
+  }
+]

@@ -376,7 +376,7 @@ final class ScreenEvidenceFeedPublicationTests: XCTestCase {
         XCTAssertLessThan(trace.steps, 30_000, "Migration must not scale with retained frame/extraction rows")
         let feedID = try rawString(fixture.db, "SELECT feedID FROM screen_evidence_feed_state")
         try await MigrationRunner(db: fixture.db).runMigrations()
-        XCTAssertEqual(try rawScalar(fixture.db, "SELECT MAX(version) FROM schema_migrations"), 23)
+        XCTAssertEqual(try rawScalar(fixture.db, "SELECT MAX(version) FROM schema_migrations"), 32)
         try await MigrationRunner(db: fixture.db).runMigrations()
         XCTAssertEqual(try rawString(fixture.db, "SELECT feedID FROM screen_evidence_feed_state"), feedID)
     }
@@ -395,7 +395,7 @@ final class ScreenEvidenceFeedPublicationTests: XCTestCase {
         var enabled: Int32 = 0
         XCTAssertEqual(retrace_test_enable_defensive(reader, &enabled), SQLITE_OK)
         XCTAssertEqual(enabled, 1)
-        XCTAssertEqual(try rawScalar(reader, "SELECT MAX(version) FROM schema_migrations"), 23)
+        XCTAssertEqual(try rawScalar(reader, "SELECT MAX(version) FROM schema_migrations"), 32)
         try PipelineSQL.execute(writer, "BEGIN IMMEDIATE")
         _ = try ScreenEvidenceSQL.commitLegacyText(writer, frameID: frame.id, mainText: "V21 writer new revision", chromeText: nil)
         XCTAssertEqual(try rawScalar(reader, "SELECT COUNT(*) FROM screen_evidence_feed"), 0)

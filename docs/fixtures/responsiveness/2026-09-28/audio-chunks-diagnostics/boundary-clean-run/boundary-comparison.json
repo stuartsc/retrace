@@ -1,0 +1,479 @@
+{
+  "backend" : "CPU_requested",
+  "byte_scope" : "AAC_files_only_excludes_manifests_receipts_journals_filesystem_allocation",
+  "candidate_arm" : "liveFirstPass_retry_quality_policy_with_required_word_timings_and_exact_window_ownership",
+  "candidate_decode_contracts" : [
+    "nativeAACPCM16V1"
+  ],
+  "candidate_encoded_bytes" : 146076,
+  "candidate_media_read_integrity" : "exact_encoded_SHA256_bytes_packet_and_valid_frame_metadata_bounded_finite_decode_and_file_identity",
+  "candidate_pcm_hash_scope" : "encode_time_native_verification_diagnostic_for_nativeAACPCM16V1",
+  "candidate_unique_chunk_frames" : [
+    160000,
+    160000,
+    23414
+  ],
+  "comparisons" : [
+    {
+      "boundaries" : [
+        {
+          "candidate_owned_words_near_boundary" : [
+            {
+              "end" : 9.9199999999999999,
+              "start" : 8.9800000000000004,
+              "word" : "draft."
+            }
+          ],
+          "legacy_model_spans_crossing_boundary" : [
+            {
+              "end" : 13.74,
+              "start" : 0.02,
+              "word" : "beaucoup"
+            }
+          ],
+          "legacy_words_near_boundary" : [
+            {
+              "end" : 13.74,
+              "start" : 0.02,
+              "word" : "beaucoup"
+            },
+            {
+              "end" : 21.43,
+              "start" : 10,
+              "word" : "A"
+            }
+          ],
+          "second" : 10
+        },
+        {
+          "candidate_owned_words_near_boundary" : [
+            {
+              "end" : 19.84,
+              "start" : 17.100000000000001,
+              "word" : "Was"
+            },
+            {
+              "end" : 19.859999999999999,
+              "start" : 19.84,
+              "word" : "approved"
+            },
+            {
+              "end" : 20,
+              "start" : 19.859999999999999,
+              "word" : "yesterday."
+            },
+            {
+              "end" : 20.52,
+              "start" : 20.079999999999998,
+              "word" : "before"
+            },
+            {
+              "end" : 21.030000000000001,
+              "start" : 20.52,
+              "word" : "sending"
+            }
+          ],
+          "legacy_model_spans_crossing_boundary" : [
+            {
+              "end" : 21.43,
+              "start" : 10,
+              "word" : "A"
+            }
+          ],
+          "legacy_words_near_boundary" : [
+            {
+              "end" : 21.43,
+              "start" : 10,
+              "word" : "A"
+            }
+          ],
+          "second" : 20
+        }
+      ],
+      "candidate_owned_words" : [
+        "the",
+        "blaagne",
+        "pbdpposal",
+        "is",
+        "still",
+        "a",
+        "draft",
+        "was",
+        "approved",
+        "yesterday",
+        "before",
+        "sending",
+        "a",
+        "reply"
+      ],
+      "candidate_windows" : [
+        {
+          "attempts" : 1,
+          "decoded_frames" : 160000,
+          "inference_seconds" : 12.586554165999999,
+          "kept_absolute_words" : [
+            {
+              "end" : 2.2400000000000002,
+              "start" : 0.02,
+              "word" : "The"
+            },
+            {
+              "end" : 7,
+              "start" : 2.2400000000000002,
+              "word" : "Blaagne"
+            },
+            {
+              "end" : 8.0600000000000005,
+              "start" : 7,
+              "word" : "pbdpposal"
+            },
+            {
+              "end" : 8.2899999999999991,
+              "start" : 8.0600000000000005,
+              "word" : "is"
+            },
+            {
+              "end" : 8.8699999999999992,
+              "start" : 8.2899999999999991,
+              "word" : "still"
+            },
+            {
+              "end" : 8.9800000000000004,
+              "start" : 8.8699999999999992,
+              "word" : "a"
+            },
+            {
+              "end" : 9.9199999999999999,
+              "start" : 8.9800000000000004,
+              "word" : "draft."
+            }
+          ],
+          "owned_start_frame" : 0,
+          "ownership_error" : "none",
+          "path" : "chunked\/audio\/chunk-media\/e22cd45f-2e7b-46c6-89e1-2607f23ed1a8\/window_c0cdcbc8-8576-4dc7-a855-3dbad64de565.retraceaudio",
+          "profile" : "liveFirstPass",
+          "quality_flags" : [
+
+          ],
+          "raw_absolute_words" : [
+            {
+              "end" : 2.2400000000000002,
+              "start" : 0.02,
+              "word" : "The"
+            },
+            {
+              "end" : 7,
+              "start" : 2.2400000000000002,
+              "word" : "Blaagne"
+            },
+            {
+              "end" : 8.0600000000000005,
+              "start" : 7,
+              "word" : "pbdpposal"
+            },
+            {
+              "end" : 8.2899999999999991,
+              "start" : 8.0600000000000005,
+              "word" : "is"
+            },
+            {
+              "end" : 8.8699999999999992,
+              "start" : 8.2899999999999991,
+              "word" : "still"
+            },
+            {
+              "end" : 8.9800000000000004,
+              "start" : 8.8699999999999992,
+              "word" : "a"
+            },
+            {
+              "end" : 9.9199999999999999,
+              "start" : 8.9800000000000004,
+              "word" : "draft."
+            }
+          ],
+          "raw_text" : "The Blaagne pbdpposal is still a draft.",
+          "require_word_timings" : true,
+          "selected_audio_variant" : "raw",
+          "selected_language_hint" : "en",
+          "status" : "transcribed",
+          "window_start_seconds" : 0
+        },
+        {
+          "attempts" : 1,
+          "decoded_frames" : 240000,
+          "inference_seconds" : 15.221694208000001,
+          "kept_absolute_words" : [
+            {
+              "end" : 19.84,
+              "start" : 17.100000000000001,
+              "word" : "Was"
+            },
+            {
+              "end" : 19.859999999999999,
+              "start" : 19.84,
+              "word" : "approved"
+            },
+            {
+              "end" : 20,
+              "start" : 19.859999999999999,
+              "word" : "yesterday."
+            }
+          ],
+          "owned_start_frame" : 80000,
+          "ownership_error" : "none",
+          "path" : "chunked\/audio\/chunk-media\/e22cd45f-2e7b-46c6-89e1-2607f23ed1a8\/window_017193fd-8642-4521-bb9c-66435ec46f4f.retraceaudio",
+          "profile" : "liveFirstPass",
+          "quality_flags" : [
+
+          ],
+          "raw_absolute_words" : [
+            {
+              "end" : 17.100000000000001,
+              "start" : 5,
+              "word" : "approved"
+            },
+            {
+              "end" : 19.84,
+              "start" : 17.100000000000001,
+              "word" : "Was"
+            },
+            {
+              "end" : 19.859999999999999,
+              "start" : 19.84,
+              "word" : "approved"
+            },
+            {
+              "end" : 20.02,
+              "start" : 19.859999999999999,
+              "word" : "yesterday."
+            }
+          ],
+          "raw_text" : "approved Was approved yesterday.",
+          "require_word_timings" : true,
+          "selected_audio_variant" : "raw",
+          "selected_language_hint" : "en",
+          "status" : "transcribed",
+          "window_start_seconds" : 5
+        },
+        {
+          "attempts" : 1,
+          "decoded_frames" : 103414,
+          "inference_seconds" : 3.671453708,
+          "kept_absolute_words" : [
+            {
+              "end" : 20.52,
+              "start" : 20.079999999999998,
+              "word" : "before"
+            },
+            {
+              "end" : 21.030000000000001,
+              "start" : 20.52,
+              "word" : "sending"
+            },
+            {
+              "end" : 21.100000000000001,
+              "start" : 21.030000000000001,
+              "word" : "a"
+            },
+            {
+              "end" : 21.463374999999999,
+              "start" : 21.100000000000001,
+              "word" : "reply."
+            }
+          ],
+          "owned_start_frame" : 80000,
+          "ownership_error" : "none",
+          "path" : "chunked\/audio\/chunk-media\/e22cd45f-2e7b-46c6-89e1-2607f23ed1a8\/window_04ad2d48-7a91-40f6-b23e-ec667e9817a4.retraceaudio",
+          "profile" : "liveFirstPass",
+          "quality_flags" : [
+
+          ],
+          "raw_absolute_words" : [
+            {
+              "end" : 15.57,
+              "start" : 15,
+              "word" : "proposal"
+            },
+            {
+              "end" : 15.779999999999999,
+              "start" : 15.57,
+              "word" : "was"
+            },
+            {
+              "end" : 16.390000000000001,
+              "start" : 15.779999999999999,
+              "word" : "approved"
+            },
+            {
+              "end" : 17.120000000000001,
+              "start" : 16.390000000000001,
+              "word" : "yesterday,"
+            },
+            {
+              "end" : 17.490000000000002,
+              "start" : 17.120000000000001,
+              "word" : "please"
+            },
+            {
+              "end" : 17.740000000000002,
+              "start" : 17.490000000000002,
+              "word" : "open"
+            },
+            {
+              "end" : 17.920000000000002,
+              "start" : 17.740000000000002,
+              "word" : "the"
+            },
+            {
+              "end" : 18.259999999999998,
+              "start" : 17.920000000000002,
+              "word" : "exact"
+            },
+            {
+              "end" : 18.759999999999998,
+              "start" : 18.259999999999998,
+              "word" : "document"
+            },
+            {
+              "end" : 18.899999999999999,
+              "start" : 18.759999999999998,
+              "word" : "and"
+            },
+            {
+              "end" : 19.210000000000001,
+              "start" : 18.899999999999999,
+              "word" : "check"
+            },
+            {
+              "end" : 19.259999999999998,
+              "start" : 19.210000000000001,
+              "word" : "the"
+            },
+            {
+              "end" : 19.640000000000001,
+              "start" : 19.259999999999998,
+              "word" : "final"
+            },
+            {
+              "end" : 20.02,
+              "start" : 19.640000000000001,
+              "word" : "amount"
+            },
+            {
+              "end" : 20.52,
+              "start" : 20.079999999999998,
+              "word" : "before"
+            },
+            {
+              "end" : 21.030000000000001,
+              "start" : 20.52,
+              "word" : "sending"
+            },
+            {
+              "end" : 21.100000000000001,
+              "start" : 21.030000000000001,
+              "word" : "a"
+            },
+            {
+              "end" : 21.48,
+              "start" : 21.100000000000001,
+              "word" : "reply."
+            }
+          ],
+          "raw_text" : "proposal was approved yesterday, please open the exact document and check the final amount before sending a reply.",
+          "require_word_timings" : true,
+          "selected_audio_variant" : "raw",
+          "selected_language_hint" : "en",
+          "status" : "transcribed",
+          "window_start_seconds" : 15
+        }
+      ],
+      "candidate_word_error_rate" : 0.8125,
+      "iteration" : 1,
+      "legacy_to_candidate_word_edits" : 13,
+      "legacy_windows" : [
+        {
+          "decoded_frames" : 240000,
+          "inference_seconds" : 25.858079332999999,
+          "kept_absolute_words" : [
+            {
+              "end" : 13.74,
+              "start" : 0.02,
+              "word" : "beaucoup"
+            }
+          ],
+          "path" : "legacy\/audio\/2023\/11\/15\/batch_1700000000000_system_A8AE_1ABA0442.m4a",
+          "raw_absolute_words" : [
+            {
+              "end" : 13.74,
+              "start" : 0.02,
+              "word" : "beaucoup"
+            }
+          ],
+          "raw_text" : "beaucoup",
+          "window_start_seconds" : 0
+        },
+        {
+          "decoded_frames" : 183414,
+          "inference_seconds" : 10.673603207999999,
+          "kept_absolute_words" : [
+            {
+              "end" : 21.43,
+              "start" : 10,
+              "word" : "A"
+            }
+          ],
+          "path" : "legacy\/audio\/2023\/11\/15\/batch_1700000010000_system_4348_1AF525F0.m4a",
+          "raw_absolute_words" : [
+            {
+              "end" : 21.43,
+              "start" : 10,
+              "word" : "A"
+            }
+          ],
+          "raw_text" : "A",
+          "window_start_seconds" : 10
+        }
+      ],
+      "legacy_word_error_rate" : 0.984375,
+      "legacy_words" : [
+        "beaucoup",
+        "a"
+      ],
+      "matched_token_timing_differences" : [
+        {
+          "candidate_minus_legacy_end_seconds" : -12.449999999999999,
+          "candidate_minus_legacy_start_seconds" : -1.1300000000000008,
+          "candidate_token_index" : 5,
+          "legacy_token_index" : 1,
+          "token" : "a"
+        }
+      ]
+    }
+  ],
+  "encoded_media_byte_saving_fraction" : -0.069472204528981507,
+  "fixture" : "two_sequential_copies_of_WhisperTimedWords\/authored.wav",
+  "fixture_kind" : "authored_Karen_en_AU_TTS_not_human_accent_coverage",
+  "legacy_arm" : "native_forced_timed_word_geometry_with_frozen_overlap_rule",
+  "legacy_encoded_bytes" : 136587,
+  "legacy_window_frames" : [
+    240000,
+    183414
+  ],
+  "limits" : [
+    "Native ASR timestamps are hypotheses, not a word-timing oracle.",
+    "The legacy arm forces timed words for geometry comparison; existing live first pass requests text-only timing and also uses retry\/quality policy.",
+    "The candidate arm uses its retry\/quality path, but neither arm runs segmentation, database publication or the complete live capture lifecycle.",
+    "Word-start ownership prevents duplicate attribution but does not guarantee recovery of words truncated at a chunk boundary.",
+    "This single authored repeated phrase is not representative codec\/recognition\/latency acceptance.",
+    "Candidate stays default-off; no backend, model or storage setting is promoted."
+  ],
+  "model_file" : "ggml-small.bin",
+  "model_sha256" : "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+  "reference" : "The blue proposal is still a draft. Do not approve the payment. The green proposal was approved yesterday. Please open the exact document and check the final amount before sending a reply. The blue proposal is still a draft. Do not approve the payment. The green proposal was approved yesterday. Please open the exact document and check the final amount before sending a reply.",
+  "schema" : 2,
+  "source_pcm_frames" : 343414,
+  "source_pcm_sha256" : "d0f75891461c5c7f4d18b14305e5e6e950d2cdc0c2c34b306d498ac85dbd46f0",
+  "threads" : 2
+}

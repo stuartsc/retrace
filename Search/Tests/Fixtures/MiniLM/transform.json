@@ -1,0 +1,19 @@
+{
+  "specification": {
+    "format": 1,
+    "modelRevision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "tokenizerSHA256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+    "tokenOffsets": "original-utf16",
+    "windowTokens": 224,
+    "overlapTokens": 32,
+    "boundary": "backward-inclusive-48-tokens-newline-or-previous-dot-bang-question-semicolon",
+    "specialTokens": "[CLS]+original-content-ids+[SEP]",
+    "padding": "right-zero-to-256",
+    "pooling": "attention-mask-mean-clamp-1e-9",
+    "normalization": "L2",
+    "dimensions": 384,
+    "compute": "CoreML-float32-CPUOnly",
+    "modelPackageManifestSHA256": "d3806da4c9148f87ef92f5054d4fbc74875589ce5ee81640d65c7813d7a17779"
+  },
+  "sha256": "266a80a756948759e1818406797949566dda34fd16dd16987d36544bf10b42e5"
+}

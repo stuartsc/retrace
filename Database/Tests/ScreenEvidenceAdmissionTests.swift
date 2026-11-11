@@ -74,7 +74,16 @@ final class ScreenEvidenceAdmissionTests: XCTestCase {
         let trace = AdmissionSQLTrace()
         installTrace(legacy, trace)
         defer { sqlite3_trace_v2(legacy, 0, nil, nil) }
-        try await MigrationRunner(db: legacy).runMigrations()
+        // Keep this historical migration's scan budget pinned to V23.
+        try PipelineSQL.execute(legacy, "BEGIN IMMEDIATE")
+        do {
+            try await V23_ScreenEvidenceAdmission().migrate(db: legacy)
+            try PipelineSQL.execute(legacy, "INSERT INTO schema_migrations(version,applied_at) VALUES(23,0)")
+            try PipelineSQL.execute(legacy, "COMMIT")
+        } catch {
+            try? PipelineSQL.execute(legacy, "ROLLBACK")
+            throw error
+        }
         sqlite3_trace_v2(legacy, 0, nil, nil)
         XCTAssertEqual(try scalar(legacy, "SELECT MAX(version) FROM schema_migrations"), 23)
         let names = try PipelineSQL.query(legacy, "SELECT name FROM sqlite_schema WHERE type='table'") { RecallSQL.string($0, 0) }

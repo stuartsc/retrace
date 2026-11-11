@@ -10,11 +10,16 @@ import CoreGraphics
 /// Owner: PROCESSING agent
 public actor AudioContextualRefinementManager {
 
-    private let transcriptionService: WhisperCppTranscriptionService
+    private let transcriptionService: any TranscriptionProtocol
     private let transcriptionQueries: AudioTranscriptionQueries
     private let audioWriter: AudioSegmentWriter
     private let storageRoot: URL
+    private var mediaStore: (any AudioChunkMediaStoreProtocol)?
     private var isRunning = false
+    // Carry inspection progress across the App's bounded automatic/manual cycles.
+    // Restart begins another safe sweep; no legacy transcript is rewritten.
+    private var refinementCandidateCursor: Int64 = 0
+    private let candidateInspectionLimit = 256
 
     // Throttling — more conservative than pass-2 since this is idle-only
     private let batchesPerCycle = 3
@@ -35,16 +40,20 @@ public actor AudioContextualRefinementManager {
     }
 
     public init(
-        transcriptionService: WhisperCppTranscriptionService,
+        transcriptionService: any TranscriptionProtocol,
         transcriptionQueries: AudioTranscriptionQueries,
         audioWriter: AudioSegmentWriter,
-        storageRoot: URL
+        storageRoot: URL,
+        mediaStore: (any AudioChunkMediaStoreProtocol)? = nil
     ) {
         self.transcriptionService = transcriptionService
         self.transcriptionQueries = transcriptionQueries
         self.audioWriter = audioWriter
         self.storageRoot = storageRoot
+        self.mediaStore = mediaStore
     }
+
+    public func setChunkMediaStore(_ store: (any AudioChunkMediaStoreProtocol)?) { mediaStore = store }
 
     /// Process all pass-2 transcriptions that can be contextually refined
     public func processAllPendingRefinements(
@@ -69,10 +78,11 @@ public actor AudioContextualRefinementManager {
         var totalFailed = 0
         var totalSentences = 0
         var batchesInCycle = 0
+        var inspectedCandidates = 0
         var attemptedBatchPaths = Set<String>()
         var attemptedBatches = 0
 
-        while true {
+        while !Task.isCancelled && inspectedCandidates < candidateInspectionLimit {
             if let batchLimit, attemptedBatches >= batchLimit { break }
             // Wait for idle conditions
             while runMode == .automatic && !isIdle() {
@@ -82,32 +92,33 @@ public actor AudioContextualRefinementManager {
             }
             if Task.isCancelled { break }
 
-            let batchPaths: [String]
+            let candidates: [AudioRefinementInspection]
             do {
-                let fetchLimit = batchLimit.map { min(10, max($0 - attemptedBatches, 0)) } ?? 10
-                guard fetchLimit > 0 else { break }
-                let candidates = try await transcriptionQueries.getDistinctBatchPathsForContextualRefinement(limit: fetchLimit)
-                batchPaths = candidates.filter { !attemptedBatchPaths.contains($0) }
+                candidates = try await transcriptionQueries.originalSourceRefinementPage(
+                    transcriptionPass: 2, afterRowID: refinementCandidateCursor,
+                    limit: min(10, candidateInspectionLimit - inspectedCandidates))
             } catch {
-                Log.error("[ContextualRefinement] Failed to query candidates: \(error)", category: .processing)
+                Log.error("[ContextualRefinement] Failed to query refinement candidates: \(error)", category: .processing)
                 break
             }
 
-            guard !batchPaths.isEmpty else {
-                Log.info("[ContextualRefinement] No more pass-2 batches to refine", category: .processing)
+            guard !candidates.isEmpty else {
+                refinementCandidateCursor = 0
                 break
             }
 
-            for batchPath in batchPaths {
+            for candidate in candidates {
                 if Task.isCancelled { break }
                 if let batchLimit, attemptedBatches >= batchLimit { break }
-                attemptedBatchPaths.insert(batchPath)
-                attemptedBatches += 1
-
-                // Re-check idle before each batch
                 if runMode == .automatic && !isIdle() { break }
+                if Task.isCancelled { break }
+                refinementCandidateCursor = candidate.rowID
+                inspectedCandidates += 1
+                guard let batchPath = candidate.batchAudioPath,
+                      attemptedBatchPaths.insert(batchPath).inserted else { continue }
 
                 let result = await processSingleBatch(batchPath)
+                if Task.isCancelled { break }
                 switch result {
                 case .refined(let sentenceCount):
                     totalRefined += 1
@@ -115,13 +126,20 @@ public actor AudioContextualRefinementManager {
                 case .skipped(let reason):
                     totalSkipped += 1
                     await retireBatchCandidate(batchPath, status: .refinementSkipped, reason: reason)
+                case .sourceUnavailable(let modelAttempted):
+                    totalFailed += 1
+                    // Inspect legacy gaps without consuming the model-work limit
+                    // or throttle. The persisted actor cursor prevents starvation.
+                    if !modelAttempted { continue }
                 case .failed(let reason):
                     totalFailed += 1
                     await retireBatchCandidate(batchPath, status: .refinementFailed, reason: reason)
                 }
 
+                attemptedBatches += 1
                 batchesInCycle += 1
-                if batchesInCycle >= batchesPerCycle {
+                if batchesInCycle >= batchesPerCycle,
+                   batchLimit.map({ attemptedBatches < $0 }) ?? true {
                     batchesInCycle = 0
                     try? await Task.sleep(for: .milliseconds(Int64(yieldDuration * 1_000)), clock: .continuous)
                 }
@@ -159,13 +177,45 @@ public actor AudioContextualRefinementManager {
 
     // MARK: - Private
 
-    private enum BatchResult {
+    private enum BatchResult: Sendable {
         case refined(sentenceCount: Int)
         case skipped(reason: String)
         case failed(reason: String)
+        case sourceUnavailable(modelAttempted: Bool)
+    }
+
+    private func recordSourceFailure(_ failure: AudioOriginalSourceError) async {
+        do { try await transcriptionQueries.recordOriginalSourceFailure(failure, pass: 3) }
+        catch { Log.warning("[ContextualRefinement] Original source outcome metric unavailable", category: .processing) }
     }
 
     private func processSingleBatch(_ batchPath: String) async -> BatchResult {
+        let originalSource: AudioOriginalSourceReceipt
+        do {
+            originalSource = try await transcriptionQueries.originalSourceReceipt(forBatchPath: batchPath)
+        } catch {
+            let failure = (error as? AudioOriginalSourceError) ?? .unavailable
+            await recordSourceFailure(failure)
+            let reason = failure.rawValue
+            Log.warning("[ContextualRefinement] Original recording source unavailable: \(reason)", category: .processing)
+            return .sourceUnavailable(modelAttempted: false)
+        }
+
+        do {
+            return try await AudioTranscriptionMedia.withInput(path: batchPath,
+                legacyStartTime: Self.parseTimestampFromBatchPath(batchPath), storageRoot: storageRoot,
+                queries: transcriptionQueries, mediaStore: mediaStore) { [self] input in
+                    await processLoadedBatch(batchPath, originalSource: originalSource, input: input)
+                }
+        } catch is CancellationError {
+            return .sourceUnavailable(modelAttempted: false)
+        } catch {
+            return .sourceUnavailable(modelAttempted: false)
+        }
+    }
+
+    private func processLoadedBatch(_ batchPath: String, originalSource: AudioOriginalSourceReceipt,
+        input: AudioTranscriptionInput) async -> BatchResult {
         // 1. Get neighboring batch text for context
         let neighbors: (preceding: String?, following: String?)
         do {
@@ -186,60 +236,51 @@ public actor AudioContextualRefinementManager {
         if let following = neighbors.following { promptParts.append(following) }
         let prompt = promptParts.joined(separator: " ")
 
-        // 3. Resolve and decode batch audio
-        let fileURL = storageRoot.appendingPathComponent(batchPath)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            Log.warning("[ContextualRefinement] Batch file missing; keeping pass-2 text for recall: \(batchPath)", category: .processing)
-            return .failed(reason: "missing_file")
-        }
-
-        let decoded: AudioFileDecoder.DecodedAudio
-        do {
-            decoded = try AudioFileDecoder.decodeToPCM(fileURL: fileURL)
-        } catch {
-            Log.error("[ContextualRefinement] Failed to decode \(batchPath): \(error)", category: .processing)
-            return .failed(reason: "decode_failed")
-        }
-
         // 4. Transcribe with text prompt only. Do not delete pass-2 unless this pass succeeds.
         let decision: AudioTranscriptionDecision
         do {
+            try input.checkValidity()
             decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
-                audioData: decoded.data,
-                sampleRate: decoded.sampleRate,
+                audioData: input.data,
+                sampleRate: input.sampleRate,
                 channels: 1,
                 transcriptionService: transcriptionService,
                 wordLevel: true,
                 initialPrompt: prompt
             )
+            // A backend may return normally after cancellation, including an
+            // empty result. Never retire retained text on that cancelled result.
+            try input.checkValidity()
+        } catch is CancellationError {
+            await recordSourceFailure(.cancelled)
+            return .sourceUnavailable(modelAttempted: true)
+        } catch is AudioTranscriptionMediaError {
+            return .sourceUnavailable(modelAttempted: true)
         } catch {
             Log.error("[ContextualRefinement] Transcription failed for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "transcription_failed")
         }
         let transcription = decision.transcription
 
-        let adjustedWords = transcription.words
-        let adjustedText = transcription.text
-
         guard decision.shouldStoreText else {
             return .skipped(reason: "no_storable_text")
         }
 
-        // 7. Segment into sentences
+        let owned: (words: [TranscriptionWord], text: String)
+        do { owned = try input.ownedTranscript(transcription) }
+        catch { return .sourceUnavailable(modelAttempted: true) }
+
+        // Segment only words owned by this exact logical window.
         let sentences = SentenceSegmenter.segment(
-            words: adjustedWords,
-            fullText: adjustedText,
-            fallbackDuration: decoded.duration
+            words: owned.words,
+            fullText: owned.text,
+            fallbackDuration: input.duration
         )
         guard !sentences.isEmpty else {
             return .skipped(reason: "empty_sentence_segments")
         }
 
-        // 8. Parse batch start time
-        guard let batchStartTime = Self.parseTimestampFromBatchPath(batchPath) else {
-            Log.error("[ContextualRefinement] Cannot parse timestamp from \(batchPath)", category: .processing)
-            return .failed(reason: "bad_batch_filename")
-        }
+        let batchStartTime = input.startTime
 
         // Contextual refinement shares the immutable raw batch with earlier passes.
         let transcriptAudioPath = AudioStoragePolicy.canonicalTranscriptPath(
@@ -270,7 +311,7 @@ public actor AudioContextualRefinementManager {
                 text: sentence.text,
                 startTime: batchStartTime.addingTimeInterval(sentence.startTime),
                 endTime: batchStartTime.addingTimeInterval(sentence.endTime),
-                source: .microphone,
+                source: originalSource.source,
                 confidence: sentence.confidence,
                 words: sentence.words,
                 audioPath: transcriptAudioPath,
@@ -287,12 +328,23 @@ public actor AudioContextualRefinementManager {
             return .skipped(reason: "empty_replacement_batch")
         }
 
-        // 11. Atomically insert pass-3 records and remove pass-2 replacements.
+        // 11. Revalidate the original recording source and atomically append pass-3; earlier passes remain retained.
         do {
+            try await input.validateForPublication(queries: transcriptionQueries, path: batchPath)
             try await transcriptionQueries.replacePass2RecordsForBatch(
                 batchAudioPath: batchPath,
-                with: transcriptionsBatch
+                with: transcriptionsBatch,
+                originalSource: originalSource
             )
+        } catch is CancellationError {
+            await recordSourceFailure(.cancelled)
+            return .sourceUnavailable(modelAttempted: true)
+        } catch let error as AudioOriginalSourceError {
+            await recordSourceFailure(error)
+            Log.warning("[ContextualRefinement] Original recording source changed: \(error.rawValue)", category: .processing)
+            return .sourceUnavailable(modelAttempted: true)
+        } catch is AudioTranscriptionMediaError {
+            return .sourceUnavailable(modelAttempted: true)
         } catch {
             Log.error("[ContextualRefinement] Failed to replace records for \(batchPath): \(error)", category: .processing)
             return .failed(reason: "replace_failed")

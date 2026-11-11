@@ -181,6 +181,16 @@ public struct SettingsView: View {
     @AppStorage("captureOnWindowChange", store: settingsStore) private var captureOnWindowChange: Bool = SettingsDefaults.captureOnWindowChange
 
     @State private var captureContextEnabled: Bool?
+    @AppStorage(LocalContextSettings.foundationModelsKey, store: settingsStore) private var localTopicsEnabled = false
+    @AppStorage(UnifiedWorkspacePolicy.defaultsKey, store: settingsStore) private var unifiedWorkspaceEnabled = false
+    @AppStorage("chunkedAudioCaptureCandidateEnabled", store: settingsStore) private var chunkedAudioEnabled = false
+    @State private var selectedCaptureBackend: CaptureBackend?
+    @State private var selectedDisplayPolicy: CaptureDisplayPolicy?
+    @State private var captureVisibleTextEnabled: Bool?
+    @State private var captureGroupReceiptsEnabled: Bool?
+    @State private var changingCaptureBackend = false
+    @State private var captureBackendRevision: UInt64 = 0
+    @State private var captureBackendError: String?
     @State private var changingCaptureContext = false
     @State private var captureContextReadRevision: UInt64 = 0
 
@@ -461,94 +471,7 @@ public struct SettingsView: View {
     private static let powerOCRPriorityAnchorID = "settings.powerOCRPriorityAnchor"
 
     public var body: some View {
-        GeometryReader { geometry in
-            let windowWidth = geometry.size.width
-            let detached = windowWidth > settingsMaxWidth
-
-            HStack(spacing: 0) {
-                // Sidebar
-                sidebar
-                    .frame(width: 220)
-
-                // Divider
-                Rectangle()
-                    .fill(Color.white.opacity(0.06))
-                    .frame(width: 1)
-
-                // Content
-                content
-                    .frame(maxWidth: .infinity)
-            }
-            .frame(maxWidth: detached ? settingsMaxWidth : .infinity)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        }
-        .frame(minWidth: settingsMinWidth, minHeight: 650)
-        .background(
-            ZStack {
-                themeBaseBackground
-
-                // Subtle gradient orb
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [Color.retraceAccent.opacity(0.05), Color.clear],
-                            center: .center,
-                            startRadius: 0,
-                            endRadius: 400
-                        )
-                    )
-                    .frame(width: 800, height: 800)
-                    .offset(x: 200, y: -100)
-                    .blur(radius: 80)
-            }
-            .ignoresSafeArea()
-        )
-        .onAppear {
-            // Capture the Retrace DB path the app was launched with (only once)
-            if !launchedPathInitialized {
-                launchedWithRetraceDBPath = customRetraceDBLocation
-                launchedPathInitialized = true
-            }
-
-            // Sync launch at login toggle with actual system state
-            let systemLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
-            if launchAtLogin != systemLaunchAtLoginEnabled {
-                launchAtLogin = systemLaunchAtLoginEnabled
-            }
-
-            postSelectedTabNotification(selectedTab)
-        }
-        .onChange(of: selectedTab) { newTab in
-            postSelectedTabNotification(newTab)
-        }
-        .onChange(of: navigationRevision) { _ in
-            // A new request updates the existing Settings view; its remaining
-            // local state and any open sheet retain their identity.
-            if let initialTab { selectedTab = initialTab }
-            if let initialScrollTargetID {
-                requestNavigation(to: initialScrollTargetID)
-            } else {
-                pendingScrollTargetID = nil
-            }
-        }
-        .onChange(of: timelineShortcut) { _ in
-            Task { await saveShortcuts() }
-        }
-        .onChange(of: dashboardShortcut) { _ in
-            Task { await saveShortcuts() }
-        }
-        .onChange(of: recordingShortcut) { _ in
-            Task { await saveShortcuts() }
-        }
-        .onChange(of: systemMonitorShortcut) { _ in
-            Task { await saveShortcuts() }
-        }
-        .onChange(of: feedbackShortcut) { _ in
-            Task { await saveShortcuts() }
-        }
-        .onChange(of: dictationShortcut) { _ in
-            Task { await saveShortcuts(recordDictationChange: true) }
-        }
+        settingsShortcutObservers
         .onReceive(NotificationCenter.default.publisher(for: .openSettingsPower)) { _ in
             selectedTab = .power
             pendingScrollTargetID = nil
@@ -596,6 +519,105 @@ public struct SettingsView: View {
             .frame(width: 0, height: 0)
             .opacity(0)
         }
+    }
+
+    private var settingsShortcutObservers: some View {
+        settingsNavigationObservers
+        .onChange(of: timelineShortcut) { _ in
+            Task { await saveShortcuts() }
+        }
+        .onChange(of: dashboardShortcut) { _ in
+            Task { await saveShortcuts() }
+        }
+        .onChange(of: recordingShortcut) { _ in
+            Task { await saveShortcuts() }
+        }
+        .onChange(of: systemMonitorShortcut) { _ in
+            Task { await saveShortcuts() }
+        }
+        .onChange(of: feedbackShortcut) { _ in
+            Task { await saveShortcuts() }
+        }
+        .onChange(of: dictationShortcut) { _ in
+            Task { await saveShortcuts(recordDictationChange: true) }
+        }
+    }
+
+    private var settingsNavigationObservers: some View {
+        settingsLayout
+        .onAppear {
+            // Capture the Retrace DB path the app was launched with (only once)
+            if !launchedPathInitialized {
+                launchedWithRetraceDBPath = customRetraceDBLocation
+                launchedPathInitialized = true
+            }
+
+            // Sync launch at login toggle with actual system state
+            let systemLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+            if launchAtLogin != systemLaunchAtLoginEnabled {
+                launchAtLogin = systemLaunchAtLoginEnabled
+            }
+
+            postSelectedTabNotification(selectedTab)
+        }
+        .onChange(of: selectedTab) { newTab in
+            postSelectedTabNotification(newTab)
+        }
+        .onChange(of: navigationRevision) { _ in
+            // A new request updates the existing Settings view; its remaining
+            // local state and any open sheet retain their identity.
+            if let initialTab { selectedTab = initialTab }
+            if let initialScrollTargetID {
+                requestNavigation(to: initialScrollTargetID)
+            } else {
+                pendingScrollTargetID = nil
+            }
+        }
+    }
+
+    private var settingsLayout: some View {
+        GeometryReader { geometry in
+            let windowWidth = geometry.size.width
+            let detached = windowWidth > settingsMaxWidth
+
+            HStack(spacing: 0) {
+                // Sidebar
+                sidebar
+                    .frame(width: 220)
+
+                // Divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(width: 1)
+
+                // Content
+                content
+                    .frame(maxWidth: .infinity)
+            }
+            .frame(maxWidth: detached ? settingsMaxWidth : .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .frame(minWidth: settingsMinWidth, minHeight: 650)
+        .background(
+            ZStack {
+                themeBaseBackground
+
+                // Subtle gradient orb
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.retraceAccent.opacity(0.05), Color.clear],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 400
+                        )
+                    )
+                    .frame(width: 800, height: 800)
+                    .offset(x: 200, y: -100)
+                    .blur(radius: 80)
+            }
+            .ignoresSafeArea()
+        )
     }
 
     /// Returns true if the current Retrace DB setting differs from what the app launched with
@@ -1102,6 +1124,28 @@ public struct SettingsView: View {
 
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            ModernSettingsCard(title: "Workspace", icon: "rectangle.split.2x1") {
+                ModernToggleRow(title: "Try the Now / History workspace",
+                    subtitle: "Open recordings, extracted text, audio and Intel together in a resizable window. You can switch back at any time.",
+                    isOn: $unifiedWorkspaceEnabled)
+                    .onChange(of: unifiedWorkspaceEnabled) { enabled in
+                        DashboardViewModel.recordSettingsUtilityAction(coordinator: coordinatorWrapper.coordinator,
+                            action: enabled ? "unified_workspace_enabled" : "unified_workspace_disabled")
+                    }
+            }
+            ModernSettingsCard(title: "Search by meaning", icon: "sparkle.magnifyingglass") {
+                LocalRecallSettingsContent(coordinator: coordinatorWrapper.coordinator)
+            }
+            ModernSettingsCard(title: "Local context", icon: "text.bubble") {
+                Toggle("Local topic suggestions", isOn: $localTopicsEnabled)
+                    .onChange(of: localTopicsEnabled) { enabled in
+                        Task { try? await coordinatorWrapper.coordinator.recordMetricEvent(metricType: .progressiveRecallAction,
+                            metadata: enabled ? "{\"action\":\"localTopicsEnabled\"}" : "{\"action\":\"localTopicsDisabled\"}") }
+                    }
+                Text("Use Apple Intelligence on this Mac to suggest a short topic from the selected moment. Suggestions are labelled interpretations and link to their recorded evidence. Text context remains available when the local model is unavailable.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+            }
             updatesCard
             keyboardShortcutsCard
             startupCard
@@ -1765,7 +1809,11 @@ public struct SettingsView: View {
 
     private var captureSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            captureBackendCard
             captureContextCard
+            ModernSettingsCard(title: "Call detection", icon: "video") {
+                MeetingComparisonSettings(coordinator: coordinatorWrapper.coordinator)
+            }
             captureRateCard
             compressionCard
             Color.clear
@@ -1829,6 +1877,97 @@ public struct SettingsView: View {
             let enabled = await coordinatorWrapper.coordinator.isActivityContextEnabled()
             guard !Task.isCancelled, !changingCaptureContext, revision == captureContextReadRevision else { return }
             captureContextEnabled = enabled
+        }
+    }
+
+    private var captureBackendCard: some View {
+        ModernSettingsCard(title: "Screen capture", icon: "display.2") {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("Capture backend", selection: Binding(
+                    get: { selectedCaptureBackend ?? .legacy },
+                    set: { updateCaptureBackend($0, displayPolicy: selectedDisplayPolicy ?? .allDisplays) })) {
+                    Text("Existing capture").tag(CaptureBackend.legacy)
+                    Text("ScreenCaptureKit comparison candidate").tag(CaptureBackend.screenCaptureKitCandidate)
+                }
+                Picker("Displays", selection: Binding(
+                    get: { selectedDisplayPolicy ?? .allDisplays },
+                    set: { updateCaptureBackend(selectedCaptureBackend ?? .legacy, displayPolicy: $0) })) {
+                    Text("All displays").tag(CaptureDisplayPolicy.allDisplays)
+                    Text("Active display").tag(CaptureDisplayPolicy.activeDisplay)
+                }.disabled(selectedCaptureBackend != .screenCaptureKitCandidate)
+                Text("The candidate uses modern macOS screen capture. Existing capture follows the active display. Privacy, sleep/wake and quality comparison are still pending.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Read visible app text directly", isOn: Binding(
+                    get: { captureVisibleTextEnabled ?? false },
+                    set: { updateCaptureBackend(selectedCaptureBackend ?? .legacy,
+                        displayPolicy: selectedDisplayPolicy ?? .allDisplays, visibleTextEnabled: $0) }))
+                Toggle("Keep displays together in history", isOn: Binding(
+                    get: { captureGroupReceiptsEnabled ?? false },
+                    set: { updateCaptureBackend(selectedCaptureBackend ?? .legacy,
+                        displayPolicy: selectedDisplayPolicy ?? .allDisplays, groupReceiptsEnabled: $0) }))
+                    .disabled(selectedCaptureBackend != .screenCaptureKitCandidate)
+                Text("Records each display's own sample time and any capture gaps. Requires the ScreenCaptureKit comparison backend.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Uses Accessibility to retain visible text alongside screenshots when its window can be verified. OCR continues for other content.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = captureBackendError { Text(error).font(.caption).foregroundStyle(.orange) }
+            }.disabled(selectedCaptureBackend == nil || changingCaptureBackend)
+        }
+        .task {
+            let revision = captureBackendRevision
+            let config = await coordinatorWrapper.coordinator.getCaptureConfig()
+            guard !Task.isCancelled, !changingCaptureBackend, captureBackendRevision == revision else { return }
+            selectedCaptureBackend = config.backend; selectedDisplayPolicy = config.displayPolicy
+            captureVisibleTextEnabled = config.captureVisibleTextEnabled
+            captureGroupReceiptsEnabled = config.captureGroupReceiptsEnabled
+        }
+    }
+
+    private func updateCaptureBackend(_ backend: CaptureBackend, displayPolicy: CaptureDisplayPolicy,
+                                      visibleTextEnabled: Bool? = nil, groupReceiptsEnabled: Bool? = nil) {
+        guard !changingCaptureBackend else { return }
+        changingCaptureBackend = true; captureBackendRevision &+= 1; captureBackendError = nil
+        Task {
+            let coordinator = coordinatorWrapper.coordinator
+            let current = await coordinator.getCaptureConfig()
+            let wasRecording = await coordinator.getStatus().isRunning
+            do {
+                try await coordinator.updateCaptureConfig(CaptureBackendSettingsPolicy.replacing(current,
+                    backend: backend, displayPolicy: displayPolicy, visibleTextEnabled: visibleTextEnabled,
+                    groupReceiptsEnabled: groupReceiptsEnabled))
+                let acknowledged = await coordinator.getCaptureConfig()
+                selectedCaptureBackend = acknowledged.backend; selectedDisplayPolicy = acknowledged.displayPolicy
+                captureVisibleTextEnabled = acknowledged.captureVisibleTextEnabled
+                captureGroupReceiptsEnabled = acknowledged.captureGroupReceiptsEnabled
+                settingsStore.set(acknowledged.captureGroupReceiptsEnabled, forKey: "captureGroupReceiptsEnabled")
+                settingsStore.set(acknowledged.captureVisibleTextEnabled, forKey: "captureVisibleTextEnabled")
+                settingsStore.set(acknowledged.backend.rawValue, forKey: "captureBackend")
+                settingsStore.set(acknowledged.displayPolicy.rawValue, forKey: "captureDisplayPolicy")
+                DashboardViewModel.recordSettingsUtilityAction(coordinator: coordinator,
+                    action: groupReceiptsEnabled != nil ? "capture_groups_updated" :
+                        (visibleTextEnabled == nil ? "capture_backend_updated" : "capture_visible_text_updated"))
+            } catch {
+                let actual = await coordinator.getCaptureConfig()
+                let status = await coordinator.getStatus()
+                selectedCaptureBackend = actual.backend; selectedDisplayPolicy = actual.displayPolicy
+                captureVisibleTextEnabled = actual.captureVisibleTextEnabled
+                captureGroupReceiptsEnabled = actual.captureGroupReceiptsEnabled
+                settingsStore.set(actual.captureGroupReceiptsEnabled, forKey: "captureGroupReceiptsEnabled")
+                settingsStore.set(actual.captureVisibleTextEnabled, forKey: "captureVisibleTextEnabled")
+                settingsStore.set(actual.backend.rawValue, forKey: "captureBackend")
+                settingsStore.set(actual.displayPolicy.rawValue, forKey: "captureDisplayPolicy")
+                if status.isRunning {
+                    captureBackendError = "Capture could not apply this change. Recording continues with the settings shown."
+                } else if wasRecording {
+                    captureBackendError = "Recording stopped after the capture change failed. Review the settings shown before restarting recording."
+                } else {
+                    captureBackendError = "Capture could not apply this change. Recording is stopped; the settings shown reflect the current configuration."
+                }
+                DashboardViewModel.recordSettingsUtilityAction(coordinator: coordinator,
+                    action: groupReceiptsEnabled != nil ? "capture_groups_update_failed" :
+                        (visibleTextEnabled == nil ? "capture_backend_update_failed" : "capture_visible_text_update_failed"))
+            }
+            changingCaptureBackend = false
         }
     }
 
@@ -2102,6 +2241,7 @@ public struct SettingsView: View {
 
     private var storageSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            StorageUsageCard(coordinator: coordinatorWrapper.coordinator)
             rewindDataCard
             databaseLocationsCard
             retentionPolicyCard
@@ -3455,6 +3595,19 @@ public struct SettingsView: View {
 
     private var audioSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            ModernSettingsCard(title: "Audio Storage Trial", icon: "externaldrive") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Save audio without repeated overlap", isOn: $chunkedAudioEnabled)
+                        .onChange(of: chunkedAudioEnabled) { enabled in
+                            Task {
+                                try? await coordinatorWrapper.coordinator.recordMetricEvent(metricType: .backgroundProcessing,
+                                    metadata: "{\"action\":\"audioStorageTrialSelected\",\"enabled\":\(enabled),\"applies\":\"nextLaunch\"}")
+                            }
+                        }
+                    Text("Applies to new recordings after restarting Retrace. Existing recordings stay readable. This trial is still being validated.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
             // Whisper Model Card
             ModernSettingsCard(title: "Whisper Model", icon: "waveform") {
                 VStack(spacing: 12) {
@@ -6496,7 +6649,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: currentConfig.captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: currentConfig.captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             do {
@@ -6534,7 +6692,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: windowPatterns,
                 redactBrowserURLPatterns: urlPatterns,
-                captureOnWindowChange: currentConfig.captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: currentConfig.captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             do {
@@ -6781,7 +6944,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: currentConfig.captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: currentConfig.captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             // Update the capture manager config
@@ -6814,7 +6982,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: currentConfig.captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: currentConfig.captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             // Update the capture manager config
@@ -6848,7 +7021,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             // Update the capture manager config
@@ -6960,7 +7138,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: SettingsDefaults.captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: SettingsDefaults.captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             do {
@@ -7007,7 +7190,12 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: [],
                 redactBrowserURLPatterns: [],
-                captureOnWindowChange: currentConfig.captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: currentConfig.captureOnWindowChange,
+                backend: currentConfig.backend,
+                displayPolicy: currentConfig.displayPolicy,
+                captureVisibleTextEnabled: currentConfig.captureVisibleTextEnabled,
+                captureGroupReceiptsEnabled: currentConfig.captureGroupReceiptsEnabled
             )
 
             do {

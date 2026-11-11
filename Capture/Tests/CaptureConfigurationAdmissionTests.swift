@@ -204,6 +204,88 @@ final class CaptureConfigurationAdmissionTests: XCTestCase {
         await assertUnreadable(receipt)
     }
 
+    func testFailedBackendComparisonRestoresPriorSourceIntoSameStreamWithFreshPolicy() async throws {
+        _ = try await seedActivePolicy()
+        try await manager.startCapture(config: allowed)
+        let oldReceipt = try await stageArtifact()
+        let stream = await manager.frameStream
+        let received = expectation(description: "original stream continues after backend rollback")
+        let collector = Task { () -> CapturedFrame? in
+            for await frame in stream { received.fulfill(); return frame }
+            return nil
+        }
+        await source.failNextStart()
+        do {
+            try await manager.updateConfig(comparisonConfig())
+            XCTFail("Failed comparison must report the original setting was restored")
+        } catch let failure as CaptureConfigurationUpdateFailure {
+            XCTAssertTrue(failure.recordingRestored)
+        }
+        let capturing = await manager.isCapturing
+        let restored = await manager.getConfig()
+        XCTAssertTrue(capturing)
+        XCTAssertEqual(restored.backend, .legacy)
+        let newClaim = try await probeClaim()
+        XCTAssertGreaterThan(newClaim.policy.policyEpoch, oldReceipt.claim.policy.policyEpoch,
+                             "Rollback must issue a fresh policy, never reactivate an obsolete capability")
+        await assertUnreadable(oldReceipt)
+        let expected = try pixels()
+        await source.yield(expected)
+        await fulfillment(of: [received], timeout: 3)
+        try await manager.stopCapture()
+        let output = await collector.value
+        XCTAssertEqual(output?.imageData, expected.imageData)
+    }
+
+    func testFailedBackendRollbackStopsAndRevokesInsteadOfAdvertisingRecording() async throws {
+        _ = try await seedActivePolicy()
+        try await manager.startCapture(config: allowed)
+        await source.failStarts(2)
+        do {
+            try await manager.updateConfig(comparisonConfig())
+            XCTFail("A failed replacement and restoration must be reported as stopped")
+        } catch let failure as CaptureConfigurationUpdateFailure {
+            XCTAssertFalse(failure.recordingRestored)
+        }
+        let capturing = await manager.isCapturing
+        let sourceActive = await source.isActive
+        XCTAssertFalse(capturing)
+        XCTAssertFalse(sourceActive)
+        await assertClaimDenied(.inactive)
+    }
+
+    func testBackendFailureCombinedWithPrivacyChangeNeverRestoresLessRestrictivePolicy() async throws {
+        _ = try await seedActivePolicy()
+        try await manager.startCapture(config: allowed)
+        await source.failNextStart()
+        do {
+            try await manager.updateConfig(comparisonConfig(excluding: [appID]))
+            XCTFail("The failed privacy change must remain inactive")
+        } catch AdmissionTestFailure.nativeSource { }
+        let capturing = await manager.isCapturing
+        XCTAssertFalse(capturing)
+        await assertClaimDenied(.inactive)
+    }
+
+    func testCancellingBackendRestorationRevokesItsFreshPolicyAndStopsSource() async throws {
+        _ = try await seedActivePolicy()
+        try await manager.startCapture(config: allowed)
+        let gate = makeGate()
+        await source.failNextStart()
+        await source.holdRestorationStart(gate)
+        let update = launch { try await self.manager.updateConfig(self.comparisonConfig()) }
+        guard await requireEntered(gate) else { return }
+        await assertClaimDenied(.inactive)
+        update.cancel()
+        await gate.release()
+        await assertCancelled(update)
+        let capturing = await manager.isCapturing
+        let active = await source.isActive
+        XCTAssertFalse(capturing)
+        XCTAssertFalse(active)
+        await assertClaimDenied(.inactive)
+    }
+
     func testCancellingAdmittedStartupJoinsLateSourceAndRevokesAdmission() async throws {
         _ = try await seedActivePolicy()
         let gate = makeGate()
@@ -233,6 +315,34 @@ final class CaptureConfigurationAdmissionTests: XCTestCase {
         await assertCancelled(update)
         await assertClaimDenied(.inactive)
         await assertUnreadable(receipt)
+    }
+
+    func testGroupedNativeSamplingWaitsForTheActualPolicyActivationAcknowledgement() async throws {
+        _ = try await seedActivePolicy()
+        let grouped = CaptureConfig(excludePrivateWindows: false, backend: .screenCaptureKitCandidate,
+            captureGroupReceiptsEnabled: true)
+        let pixels = GroupPixelFixture(), journal = try GroupFileJournal()
+        let groupedSource = ScreenCaptureKitCapture(environment: pixels.environment(), automaticallyPoll: false,
+            displayAttachments: CaptureDisplayAttachmentTracker(observeNativeChanges: false))
+        manager = CaptureManager(config: grouped, metadataProvider: AdmissionTestMetadata(),
+            configurationAdmission: bridge, groupJournal: journal, source: groupedSource,
+            lifecycleEnvironment: .init(hasPermission: { true }, activeDisplayID: { 42 },
+                startDisplayMonitoring: { _ in }, stopDisplayMonitoring: {}))
+        addTeardownBlock { await journal.close() }
+        let activation = makeGate()
+        await bridge.holdNextActivation(activation)
+        let start = launch { try await self.manager.startCapture(config: grouped) }
+        guard await requireEntered(activation) else { return }
+        // The real SQLite activation committed, but its owning lifecycle has
+        // not acknowledged it and established the processing generation yet.
+        await groupedSource.captureImmediateAndResetTimer()
+        let before = await pixels.readCount(), events = await journal.events()
+        XCTAssertEqual(before, 0)
+        XCTAssertTrue(events.isEmpty)
+        await activation.release(); try await start.value
+        await groupedSource.captureImmediateAndResetTimer()
+        let after = await pixels.readCount()
+        XCTAssertEqual(after, 2)
     }
 
     func testCancellationAfterRealActivationCommitJoinsExactRevocationBeforeReturning() async throws {
@@ -362,11 +472,68 @@ final class CaptureConfigurationAdmissionTests: XCTestCase {
         XCTAssertEqual(retained.data, artifact)
     }
 
+    func testMeetingPolicySnapshotRequiresActiveOwnedRecordingAndAcknowledgedConfiguration() async throws {
+        let dormant = await manager.meetingCapturePolicySnapshot()
+        XCTAssertNil(dormant)
+        try await manager.initializeConfigurationAdmission()
+        let initialized = await manager.meetingCapturePolicySnapshot()
+        XCTAssertNil(initialized, "Historical authority alone is not live meeting observation permission")
+        try await manager.startCapture(config: allowed)
+        let started = await manager.meetingCapturePolicySnapshot()
+        let before = try XCTUnwrap(started)
+        let gate = makeGate()
+        await bridge.holdNextActivation(gate)
+        let update = launch { try await self.manager.updateConfig(self.denied) }
+        guard await requireEntered(gate) else { return }
+        let pending = await manager.meetingCapturePolicySnapshot()
+        XCTAssertNil(pending, "Prepared or committed-but-unacknowledged configuration cannot grant AX access")
+        await gate.release(); try await update.value
+        let afterUpdate = await manager.meetingCapturePolicySnapshot()
+        let deniedSnapshot = try XCTUnwrap(afterUpdate)
+        XCTAssertGreaterThan(deniedSnapshot.revision, before.revision)
+        XCTAssertEqual(ScreenEvidenceAccessPolicy(config: deniedSnapshot.configuration), ScreenEvidenceAccessPolicy(config: denied))
+        try await manager.updateConfig(allowed)
+        let restored = await manager.meetingCapturePolicySnapshot()
+        XCTAssertGreaterThan(try XCTUnwrap(restored).revision, deniedSnapshot.revision,
+                             "A→B→A cannot revive a pre-exclusion control read")
+        try await manager.stopCapture()
+        let paused = await manager.meetingCapturePolicySnapshot()
+        XCTAssertNil(paused)
+    }
+
+    func testMeetingPolicyOwnerCloseAndReopenCannotReuseRevision() async throws {
+        try await manager.initializeConfigurationAdmission()
+        try await manager.startCapture(config: allowed)
+        let initial = await manager.meetingCapturePolicySnapshot()
+        let before = try XCTUnwrap(initial)
+        try await manager.shutdownConfigurationAdmission()
+        let closed = await manager.meetingCapturePolicySnapshot()
+        XCTAssertNil(closed)
+        try await manager.initializeConfigurationAdmission()
+        let reopened = await manager.meetingCapturePolicySnapshot()
+        XCTAssertGreaterThan(try XCTUnwrap(reopened).revision, before.revision)
+    }
+
+    func testMeetingPolicyRevisionExhaustionFailsClosedWithoutWrapping() {
+        var revision = MeetingPolicyRevision(initialValue: UInt64.max - 1)
+        revision.advance()
+        XCTAssertEqual(revision.current, UInt64.max)
+        revision.advance()
+        XCTAssertNil(revision.current)
+        revision.advance()
+        XCTAssertNil(revision.current)
+    }
+
     private var artifact: Data { Data("authored unpublished artifact".utf8) }
 
     private func config(excluding: Set<String>) -> CaptureConfig {
         CaptureConfig(adaptiveCaptureEnabled: false, excludedAppBundleIDs: excluding,
                       excludePrivateWindows: false, captureOnWindowChange: false)
+    }
+
+    private func comparisonConfig(excluding: Set<String> = []) -> CaptureConfig {
+        CaptureConfig(adaptiveCaptureEnabled: false, excludedAppBundleIDs: excluding,
+                      excludePrivateWindows: false, captureOnWindowChange: false, backend: .screenCaptureKitCandidate)
     }
 
     /// A pre-existing capable writer is real setup for the individual assignment
@@ -500,7 +667,8 @@ final class CaptureConfigurationAdmissionTests: XCTestCase {
         return CapturedFrame(timestamp: capturedAt,
             imageData: Data(bytes: try XCTUnwrap(context.data), count: 4096),
             width: 32, height: 32, bytesPerRow: 128,
-            metadata: .init(appBundleID: appID, displayID: 7))
+            metadata: .init(appBundleID: appID, displayID: 7,
+                            captureMonotonicTime: ProcessInfo.processInfo.systemUptime))
     }
 }
 
@@ -542,7 +710,8 @@ private actor AdmissionTestFrameSource: CaptureFrameSource {
     private var continuation: AsyncStream<CapturedFrame>.Continuation?
     private var startGate: AdmissionTestGate?
     private var updateGate: AdmissionTestGate?
-    private var startFailure = false
+    private var restorationGate: AdmissionTestGate?
+    private var startFailures = 0
     private var updateFailure = false
     private var permissionGranted = true
     private(set) var isActive = false
@@ -551,20 +720,26 @@ private actor AdmissionTestFrameSource: CaptureFrameSource {
 
     func holdNextStart(_ gate: AdmissionTestGate) { startGate = gate }
     func holdNextUpdate(_ gate: AdmissionTestGate) { updateGate = gate }
-    func failNextStart() { startFailure = true }
+    func holdRestorationStart(_ gate: AdmissionTestGate) { restorationGate = gate }
+    func failNextStart() { startFailures = 1 }
+    func failStarts(_ count: Int) { startFailures = count }
     func failNextUpdate() { updateFailure = true }
     func setPermission(_ granted: Bool) { permissionGranted = granted }
     func hasPermission() -> Bool { permissionGranted }
 
     func startCapture(config: CaptureConfig, frameContinuation: AsyncStream<CapturedFrame>.Continuation,
                       displayID: CGDirectDisplayID?) async throws {
-        let gate = startGate; startGate = nil
+        var gate = startGate; startGate = nil
         startCount += 1
+        if config.backend == .legacy, startCount > 1, let restorationGate {
+            gate = restorationGate
+            self.restorationGate = nil
+        }
         continuation = frameContinuation
         isActive = true
         lastConfiguration = config
         await gate?.hold()
-        if startFailure { startFailure = false; throw AdmissionTestFailure.nativeSource }
+        if startFailures > 0 { startFailures -= 1; throw AdmissionTestFailure.nativeSource }
     }
     func updateConfig(_ config: CaptureConfig) async throws {
         let gate = updateGate; updateGate = nil

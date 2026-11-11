@@ -658,6 +658,32 @@ public actor DataAdapter {
         return "\(generation):\(storeID.uuidString)"
     }
 
+    /// Includes content mutations as well as store identity. Intended only for
+    /// bracketing bounded presentation batches, never as an evidence reference.
+    func evidencePresentationStamp(source: FrameSource) async throws -> String {
+        try Task.checkCancellation()
+        let identity = try await evidenceSourceGeneration(source: source)
+        let (connection, _) = try evidenceConnection(for: source)
+        let stamp = try await Self.readSelectionStamp {
+            if source == .native {
+                return SearchIndexStamp(nativeRevision: try Self.searchInteger(connection,
+                    sql: "SELECT revision FROM recall_search_revision WHERE id=1"))
+            }
+            _ = try Self.validatedImportedDatabasePath(connection)
+            return SearchIndexStamp(rewindDataVersion: try Self.searchInteger(connection, sql: "PRAGMA data_version"),
+                                    rewindTotalChanges: sqlite3_total_changes64(connection.getConnection()))
+        }
+        guard try await evidenceSourceGeneration(source: source) == identity else {
+            throw SearchPaginationError.dataChanged
+        }
+        try Task.checkCancellation()
+        if let revision = stamp.nativeRevision { return "\(identity):native:\(revision)" }
+        guard let version = stamp.rewindDataVersion, let changes = stamp.rewindTotalChanges else {
+            throw EvidenceUnavailableReason.integrityFailure
+        }
+        return "\(identity):imported:\(version):\(changes)"
+    }
+
     public func savedEvidenceText(frame: FrameReference) throws -> ExtractedText? {
         let (connection, _) = try evidenceConnection(for: frame.source)
         let sql = "SELECT sc.c0, sc.c1 FROM doc_segment ds JOIN searchRanking_content sc ON sc.id=ds.docid WHERE ds.frameId=? ORDER BY ds.docid DESC LIMIT 1"
@@ -957,7 +983,6 @@ public actor DataAdapter {
         guard isInitialized else { throw DataAdapterError.notInitialized }
         try Task.checkCancellation()
         let startedAt = Date()
-        let hiddenTagId = cachedHiddenTagId
         let nativeCursor = query.cursor?.native
         let rewindCursor = query.cursor?.rewind
         let hasRewind = !requiresRetraceOnly(query.filters) && rewindConnection != nil && rewindConfig != nil
@@ -1021,8 +1046,7 @@ public actor DataAdapter {
             try Task.checkCancellation()
             let task = Task.detached(priority: .userInitiated) {
                 try Self.searchConnection(query: query, connection: request.connection,
-                    config: request.config, source: request.source, sourceCursor: request.cursor,
-                    hiddenTagId: hiddenTagId)
+                    config: request.config, source: request.source, sourceCursor: request.cursor)
             }
             let page: SearchResults
             do {
@@ -3167,8 +3191,7 @@ public actor DataAdapter {
         connection: DatabaseConnection,
         config: DatabaseConfig,
         source: FrameSource,
-        sourceCursor: SearchSourceCursor?,
-        hiddenTagId: Int64?
+        sourceCursor: SearchSourceCursor?
     ) throws -> SearchResults {
         let startedAt = Date()
         let components = parseFTSQueryComponents(query.text)
@@ -3236,27 +3259,17 @@ public actor DataAdapter {
                     """)
                 values.append(contentsOf: tags)
             }
+            // Resolve the current built-in tag in the same SQL snapshot. An
+            // ID cached at startup becomes stale after delete/recreate; that
+            // must never make hidden observations fill a search candidate page.
+            let hidden = """
+                EXISTS (SELECT 1 FROM segment_tag st JOIN tag t ON t.id=st.tagId
+                    WHERE st.segmentId=f.segmentId AND t.name='hidden')
+                """
             switch query.filters.hiddenFilter {
-            case .hide:
-                if let hiddenTagId {
-                    conditions.append("""
-                        NOT EXISTS (SELECT 1 FROM segment_tag st
-                            WHERE st.segmentId = f.segmentId AND st.tagId = ?)
-                        """)
-                    values.append(hiddenTagId)
-                }
-            case .onlyHidden:
-                if let hiddenTagId {
-                    conditions.append("""
-                        EXISTS (SELECT 1 FROM segment_tag st
-                            WHERE st.segmentId = f.segmentId AND st.tagId = ?)
-                        """)
-                    values.append(hiddenTagId)
-                } else {
-                    conditions.append("0")
-                }
-            case .showAll:
-                break
+            case .hide: conditions.append("NOT (\(hidden))")
+            case .onlyHidden: conditions.append(hidden)
+            case .showAll: break
             }
         }
         if let commentClause = buildCommentFilterClause(

@@ -1,0 +1,13 @@
+{
+  "files": 5,
+  "total_before_bytes": 282663,
+  "total_after_bytes": 282663,
+  "total_bytes_saved": 0,
+  "all_originals_unchanged": true,
+  "all_private_files_unchanged": true,
+  "all_packet_metadata_preserved": true,
+  "max_decoded_sample_difference": 0,
+  "read_only_handle_optimize_statuses": [
+    1886547263
+  ]
+}

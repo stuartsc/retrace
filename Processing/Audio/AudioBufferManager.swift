@@ -9,7 +9,7 @@ public struct AudioBatch: Sendable {
     public let source: AudioSource
     /// Timestamp of the first sample in the batch
     public let startTimestamp: Date
-    /// Timestamp of the last sample in the batch
+    /// Exclusive end of the last PCM chunk in the batch
     public let endTimestamp: Date
     /// Total duration in seconds
     public let duration: TimeInterval
@@ -56,7 +56,7 @@ public actor AudioBufferManager {
             if micStartTimestamp == nil {
                 micStartTimestamp = audio.timestamp
             }
-            micEndTimestamp = audio.timestamp
+            micEndTimestamp = audio.timestamp.addingTimeInterval(audio.duration)
             micDuration += audio.duration
             micSampleRate = audio.sampleRate
             micChannels = audio.channels
@@ -70,7 +70,7 @@ public actor AudioBufferManager {
             if systemStartTimestamp == nil {
                 systemStartTimestamp = audio.timestamp
             }
-            systemEndTimestamp = audio.timestamp
+            systemEndTimestamp = audio.timestamp.addingTimeInterval(audio.duration)
             systemDuration += audio.duration
             systemSampleRate = audio.sampleRate
             systemChannels = audio.channels

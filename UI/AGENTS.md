@@ -14,13 +14,19 @@ UI/
 ├── Views/
 │   ├── Timeline/
 │   │   ├── ExactEvidenceView.swift          # Shared exact image/context inspector and retained-media states
+│   │   ├── CaptureGroupStrip.swift       # Per-display sample times, gap states and refreshed pinned navigation
+│   │   ├── CaptureDirectTextView.swift      # Off-main direct-text validation and separately labelled selectable native text
 │   │   └── EvidenceTextView.swift           # Bounded OCR pages with explicit continuation and provenance
 │   ├── FullscreenTimeline/
 │   │   ├── SimpleTimelineView.swift      # Active timeline, frame canvas and search selection
 │   │   ├── TimelineWindowController.swift # Timeline presentation and focus lifecycle
 │   │   ├── SpotlightSearchOverlay.swift # Primary search overlay UI
 │   │   └── SearchFilterBar.swift        # Search filters and controls
+│   ├── Search/
+│   │   └── MomentMatchDetails.swift     # Exact/text/meaning match labels and bounded coverage status
 │   ├── Dashboard/
+│   │   ├── LocalContextCards.swift     # Exact-support excerpts and separately labelled optional topic interpretations
+│   │   ├── UnifiedWorkspaceView.swift    # Default-off Now/History window, retained session, shared tape, contextual inspector and Intel drawer
 │   │   ├── DashboardWindowController.swift # Persistent Settings/dashboard destinations and native presentation
 │   │   ├── ScreenshotEvidencePreview.swift # Shared immutable evidence selection and verified screenshot preview
 │   │   ├── DashboardView.swift          # Voice-first dashboard, visual memory, and live intelligence UI
@@ -34,8 +40,12 @@ UI/
 │   │   ├── TranscriptContentView.swift  # Continuous transcript display
 │   │   └── TranscriptWindowController.swift # Transcript window lifecycle
 │   └── Settings/
+│       ├── CaptureBackendSettingsPolicy.swift # Preserve privacy/timing fields while selecting the comparison capture backend
+│       ├── LocalRecallSettingsContent.swift # Native model chooser and acknowledged async local-search activation
 │       └── SettingsView.swift           # Settings root and all General/Capture/Storage/Privacy/Power sections
 ├── Components/
+│   ├── ResourceUsageCard.swift         # Cached one-core CPU windows and explicit unknown/coverage state
+│   ├── StorageUsageCard.swift          # Cached category totals, last complete scan and coalesced manual refresh
 │   ├── AppResourceBundle.swift          # Packaged app resource bundle and SwiftPM/Xcode fallbacks
 │   ├── ApplicationTerminationWorkflow.swift # Coalesced startup cancellation and async metrics/service shutdown before Quit
 │   ├── TimelineSessionMetrics.swift     # Shared duration/scrub write ownership and acknowledgement across hide/Quit/retry
@@ -52,9 +62,16 @@ UI/
 │   ├── SimpleTimelineViewModel.swift     # Active historical timeline state and media loading
 │   ├── SearchViewModel.swift
 │   ├── DashboardViewModel.swift
+│   ├── LocalContextPresentationModel.swift # Coalesced cancellable context requests and monotonic native expiry
+│   ├── UnifiedWorkspaceModel.swift      # Exact pinned selection, audio admission/cancellation, bounded history/bookmarks and source-fenced tape choices
 │   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
-│   └── SettingsViewModel.swift
+│   └── Settings state lives in Views/Settings/SettingsView.swift
 └── Tests/
+    ├── LocalContextPresentationTests.swift # Private SQLite deletion, held reads and native expiry/regeneration fences
+    ├── WorkspaceAudioEvidenceTests.swift # Private SQLite standalone audio selection, exact revisions and deletion
+    ├── WorkspaceMixedEvidenceTests.swift # Private SQLite standalone exact jobs, history/bookmarks and deletion without substitute screens
+    ├── UnifiedWorkspaceTests.swift      # Private SQLite pinning, exact bookmarks/deletion, late work, backend preservation and offscreen native drawer layout
+    ├── UnifiedWorkspaceVisualTests.swift # Opt-in actual SwiftUI workspace render/input checks at 1100 and 760 points using private SQLite and authored Cedar images
     ├── ApplicationTerminationWorkflowTests.swift # Async Quit/startup ordering, retry and real SQLite commit-before-close regressions
     ├── TimelineSessionMetricsTests.swift # Real SQLite retry, partial failure, hide/reopen, reconfiguration and timeout acknowledgements
     ├── DashboardScreenshotIdentityTests.swift # Real native/imported SQLite collisions through list and selection policy
@@ -78,11 +95,33 @@ UI/
 
 ## Feature Requirements
 
+### Unified Now / History candidate (September 24)
+
+Settings → General → Search by meaning explicitly selects the pinned local model; the feature stays off until App verifies and acknowledges it. Heavy artifact/SQLite/Core ML work remains on its owner actor. Workspace search uses `AppCoordinator.searchMoments`; legacy/paginated routes keep their full existing constraints. Exact identifier, text and semantic labels describe retrieval signals, never inferred conclusions. Coverage explicitly limits semantic matching to native screen text, distinguishes pending/skipped work and bounded partial scans, and is cleared on source changes, cancellation or later evidence revalidation. `UnifiedWorkspaceTests` exercises late coverage cancellation and real SQLite deletion of admitted results. Recording/OCR/transcription/local-index freshness remain independent. The UI displays no fabricated percentage or all-history readiness.
+
+The independent `io.retrace.app` preference `unifiedHistoryWorkspaceEnabled` defaults false. Settings → General exposes the candidate; switching off restores the established dashboard. `DashboardContentView` creates `UnifiedWorkspaceSession` lazily and retains it across Settings/Voice navigation. The native window can shrink to 760×620 while the candidate is enabled; the same inspector becomes a drawer below 1,080 points. This is source implementation, not installed or performance acceptance.
+
+`UnifiedWorkspaceVisualTests` is an explicit opt-in real-view harness. After compiling the test target, run `RETRACE_TEST_DISABLE_FILE_LOGGING=1 RETRACE_WORKSPACE_VISUAL_EXPORT=/tmp/retrace-unified-20260924/workspace-visual swift test --skip-build --filter UnifiedWorkspaceVisualTests`. It exports PNGs and a JSON receipt in a new UUID directory under that private root; inspect the images before claiming layout acceptance. A nonactivating offscreen `NSPanel` hosts the actual view at 1100×800 and 760×620, including its real evidence canvas, tape, search and drawer. The DEBUG-only initializers use an inert in-memory coordinator handle, private SQLite, private defaults/notifications, reviewed authored Cedar JPEGs and a static intercept-all Intel URL session. They start no capture, permission checks, live polling or service initialization. Mutable preferences and metrics belong to the fixture; the native player is muted and has no audio clips. Native field/AX actions fail the test if unavailable rather than silently falling back to model actions. Pinned refresh and controlled cancellation also exercise the production selection owner. These results establish fixture layout/input behavior only; installed acceptance, audio playback, capture, performance and accessibility permission workflows remain separate.
+
+`UnifiedWorkspaceModel` owns one exact selection. Background refresh advances Now only; History retains its source-qualified capture and extraction until an explicit selection, scrub or Return to now. Back/forward is bounded to 50 destinations. Bookmarks persist at most 50 exact references and timestamps in `unifiedWorkspaceBookmarksV1`; no image, transcript or OCR cache is stored with them. Opening a deleted, disconnected or denied bookmark must remain unavailable. A missing current revision revalidates the same citation and clears pixels, retained text, selected frame, tape context and audio admission when unavailable; it never advances the selected extraction. Source changes clear presented pixels, tape batches and results before any revalidation. Tape rows retain their acquired source generation or exact citation, never a mutable proof from the latest rows. Search cancellation, closed windows and later selections fence late responses. The independent SCK-only capture-group candidate uses durable sampling receipts to show each display and its own exact sample time. Similar samples preserve their earlier time; gaps and pending/deleted/excluded/interrupted outcomes are explicit. A cancellable bounded reader refreshes pinned group states, and each click reloads the same attempt before revalidating its exact evidence. Legacy/imported frames receive no invented group.
+
+Search snippets are admitted through the original `SearchResult` proof, retained exact extraction and a repeated current-policy check before publication; no screenshot decode is needed. Ordinary refresh removes cached snippets before checking them again, and source/search/lifecycle generations reject late admission. Candidate tape context is cleared on every context refresh and reacquired through a cancellable query capped at 100 rows. Every neighbouring row must pass current exact privacy/deletion admission before its immutable app/window metadata is published. Both result batches and tape batches compare the App-owned `EvidencePresentationStamp` from before the first admission to immediately before publication, including the tape's final selected-frame retained read. A changed source identity, content revision or access policy discards the entire batch. Unsupported stamp clients fail closed. `TimelineEvidenceSelectionTests` holds result/neighbour B after A was admitted, then deletes or excludes A; a second tape variant holds the final selected-frame read. These candidate checks do not rewrite the legacy fullscreen neighbourhood path. `workspace.search.admission` and `workspace.tape.admission` record latency; runtime performance acceptance remains pending.
+
+The candidate reuses `TimelineTapeView`, `SimpleTimelineViewModel`, `ExactEvidenceView`, and the existing transcript playback owner. Its separate transient timeline buffer avoids colliding with fullscreen state. The workspace supplies the single toolbar; fullscreen remains optional. Day/hour/minute controls set a time-navigation range and tape detail, and intentional time navigation shows the actual timestamp of the admitted recorded frame. Search-hit markers are derived off main. Captioned app/change blocks and gaps remain the existing tape's source-backed presentation; they are not inferred work assignments.
+
+Transcript text in the candidate can select its time in the shared timeline and seek the retained audio range. One owned task covers screen selection, tape anchoring, audio lookup and playback; selection and presentation tokens are checked after every suspension. `WorkspaceAudioContext` coalesces duplicate reads and clears transcript rows and playback synchronously when admission is revoked. Native playback also checks admission after clip resolution and seeking. Inline pause/resume, 0.5–2× speed and an actual AAC-decoded peak waveform reuse `TranscriptAudioPlayback`; waveform reads are cancellable, chunked, off main and bounded to five minutes. The waveform is cleared on selection replacement/close. A later pause or selection fences a pending seek. Tests use private SQLite, controlled async interruptions, authored AAC and a muted native player.
+
+Recording, OCR queue, latest available transcript and pending semantic index status stay distinct. The existing dashboard also reads `getCaptureHealth()` in its normal status poll so original-spool pressure/gaps remain visible with the candidate off. FuseIntel is read only, source-labelled and context-ranked on a background task. Search progress reflects actual lexical lookup/evidence resolution, supports cancellation and respects reduced motion; there is no Codex/model readiness claim.
+
+Capture Settings acknowledge coordinator success before persisting `captureBackend` (`legacy` or `screenCaptureKitCandidate`) and `captureDisplayPolicy` (`allDisplays` or `activeDisplay`). On failure the UI rereads the actual configuration and recording status; it shows whether recording continues or stopped, without promising a successful rollback. All existing settings updates preserve these fields and the original idle/privacy configuration. The candidate remains a comparison choice until native multi-display, exclusion, sleep/wake and performance gates pass.
+
 ### Transcript audio playback
 
 Root coordinates the UI playback owner, App's configured audio-storage directory accessor and Database's `audio_transcript_playback` metric. No Shared contract or recording format changes are needed. Each playable row owns its original audio range; ambient rows with recordings stay separate. File checks and media loading run off main. Resolve both canonical batch and retained legacy sentence paths using the writer's filename start time; a missing sentence can fall back to its retained batch. Do not create duplicate clips. One panel-owned player seeks to the row start, stops at its end and is cancelled on selection replacement or either close route. Late loads, item callbacks and refreshes cannot revive a closed selection. Metrics contain only categorical outcome/source fields. Finder remains an explicit separate button.
 
 ### Application termination
+
+The default-off exact audio trial uses registered `.retraceaudio` windows through App's `AudioMediaPlaybackOwner`; it never passes a manifest to AVPlayer or derives its timing from a filename. `TranscriptAudioRequest` retains a committed V30 reference, and the resolver verifies its source, path and interval. New media plays verified bounded PCM via an in-memory WAV and AVAudioPlayer. Every stop/late-load cancellation releases the lease after stopping native playback; App shutdown joins releases. Legacy AAC keeps the existing AVPlayer route. The Settings trial switch applies on next launch and does not migrate history. Pending raw rows without an exact committed transcript remain explicitly unplayable in this candidate. Native UI tests are muted and use private AAC/SQLite fixtures.
 
 `ApplicationTerminationWorkflow` owns one launch task and one confirmed-Quit drain. Repeated Quit stays `terminateLater` while coordinator shutdown preparation, metrics, cancelled initialization and coordinator shutdown are awaited in that order. Preparation permanently fences recording entry points and cancels owned startup before the join. Startup cancellation checkpoints must prevent a late autostart or window reveal; normal startup runs once. The coordinator's shutdown route preserves recording intent for the next launch. A service shutdown failure replies false, reports that services may be partially stopped and permits a fresh Quit attempt without restarting initialization. Ask, Run in Background and Cancel retain their existing behavior.
 
@@ -92,7 +131,7 @@ Shortcut reloads call `TimelineWindowController.configure(coordinator:)` again w
 
 ### Progressive recall (Phase 2 scope)
 
-Stuart's September 14 direction is evidence collection and exact replay. Remove project assignment, visit/episode grouping, focus-duration presentation and correction controls from the active UI. Preserve captured data and historical protocol compatibility. Optional bookmarking/selection of evidence is a roadmap possibility only. The standalone Activity & Evidence product surface is being retired in favour of the main Screenshots image/OCR/context inspector.
+Stuart's September 14 direction is evidence collection and exact replay. Remove project assignment, visit/episode grouping, focus-duration presentation and correction controls from the active UI. Preserve captured data and historical protocol compatibility. The September 24 unified-workspace candidate adds exact-reference bookmarks behind its independent switch. The standalone Activity & Evidence product surface is retired in favour of the main Screenshots image/OCR/context inspector.
 
 The Capture settings card owns the existing context opt-in. Its async initial read is fenced against concurrent setting changes; publish the setter acknowledgement only after the coordinator returns. Existing capture preferences and master pause remain authoritative.
 
@@ -679,3 +718,25 @@ Focus on getting the timeline + search working first before polishing dashboard/
 Project assignment, visit grouping, correction forms and the separate Activity & Evidence window are removed. Old backend Codable/storage contracts remain compatible. Full structured-observation projection belongs on a background service/model path, never in SwiftUI `body`; render only bounded fragments and the selected verified highlight ordinals.
 
 Screenshot lists must retain source + frame + capture time + acquired source-generation proof with each row. Key selection, row identity, caches and async admission consistently. A selected row that disappears is unavailable, not permission to select the first remaining row. Bracket source reads and validate the original token at selection/presentation; source reconfiguration invalidates all older work. Reuse exact-thumbnail admission rather than an unvalidated image cache. A disconnected imported OCR request must never fall back to native data with the same numeric ID.
+
+`captureGroupReceiptsEnabled` defaults false and is acknowledged before settings persistence. Switching to the legacy capture backend clears this unsupported switch while preserving privacy/timing/direct-text settings. It does not delete or rewrite prior grouped history.
+
+`Views/Settings/MeetingComparisonSettings.swift` exposes the independent default-off call comparison, preserves recording consent and waits for detector acknowledgement without replacing audio streams. The workspace Intel panel labels fresh possible/supported/ended/unknown states separately from recording, with unavailable status after expiry.
+
+`ViewModels/MeetingStatusModel.swift` schedules an owned monotonic expiry task, so a cached supported call becomes unavailable without waiting for another poll/view render. `Tests/MeetingStatusModelTests.swift` exercises actual task expiry and replacement; no native reads occur in SwiftUI body.
+
+The independent local-topic setting defaults off. Context cards remain source-qualified and require current privacy/deletion admission; optional Foundation Models labels are interpretations. The presentation model starts and coalesces work without blocking shared Now/health refresh, joins replacements, and expires cards at their original monotonic deadline. Routine polls cannot renew a delayed result. `SimpleTimelineView` divides its existing ordered layers into same-owner builders to limit SwiftUI type inference without changing state or identity.
+
+The macOS 26 build also splits comment-card, recent-search, result-card and Settings modifier expressions into same-owner helpers. Modifier/event ordering and state identities remain unchanged. Onboarding exercises its existing one-shot capture permission path through `TimelineLiveCapture` asynchronously; captured pixels are discarded, and permission-dialog behavior still requires an installed check.
+
+### Explicit mixed-source workspace search
+
+The candidate's one search field uses App-owned `HistoryMomentSearch` through the coordinator. `UnifiedWorkspaceModel` retains typed screen/transcript hits and their complete canonical read receipt, then revalidates the whole batch before publication and on refresh. Changed, cancelled, closed or replaced searches clear excerpts and coverage. Screen results alone supply tape markers; selecting a transcript uses its exact reference and timestamp without manufacturing a frame or verified playback. Screen and transcript coverage remain separate, and unsupported audio syntax/filters are visible. `WorkspaceAudioEvidenceTests` covers one-field discovery/selection, canonical deletion during refresh and late closed-window delivery using actual private SQLite and a separate V30 reader. Legacy screen-only callers retain their current route.
+
+
+System Monitor's automatic-processing panel polls cheap App snapshots separately from recording and index state. Process now is an explicit cancellable in-memory override with categorical daily metrics; it does not change global macOS power preferences. Spool pressure remains visible and does not authorize discarding originals.
+
+
+### Capture-masked recorded screens
+
+A non-nil `FrameMetadata.redactionReason` describes pixels masked before storage. The local history viewer must display the retained masked image and its remaining OCR when independently permitted; it is not a whole-frame access denial. `ExactEvidenceView` explains the saved masking reason and the dashboard labels these rows “Recorded screen”. App owns local admission separately from automatic derivation. Exact source/frame/revision, deletion and cancellation checks still apply.

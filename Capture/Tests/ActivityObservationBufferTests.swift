@@ -4,6 +4,24 @@ import Shared
 @testable import Capture
 
 final class ActivityObservationBufferTests: XCTestCase {
+    func testObserverRefreshBurstRetainsOnlyLatestRequestAndInvalidatesHeldSetup() async {
+        let relay = ActivityObserverRefreshRelay()
+        var requests = relay.stream.makeAsyncIterator()
+        relay.request()
+        let held = await requests.next()
+        XCTAssertEqual(held, 1)
+        for _ in 0..<10_000 { relay.request() }
+        XCTAssertFalse(relay.isCurrent(1))
+        let latest = await requests.next()
+        XCTAssertEqual(latest, 10_001)
+        XCTAssertTrue(relay.isCurrent(10_001))
+        relay.finish()
+        relay.request()
+        XCTAssertFalse(relay.isCurrent(10_001))
+        let ended = await requests.next()
+        XCTAssertNil(ended)
+    }
+
     func testBoundedStreamRetainsObservedTransitionsAndReportsOverflow() async {
         let buffer = ActivityObservationBuffer(capacity: 2)
         buffer.send(.init(kind: .focus, app: nil))

@@ -4,7 +4,7 @@ import SQLCipher
 import Shared
 
 extension DatabaseManager: ScreenEvidenceAdmissionStoreProtocol {
-    private func requireAdmissionConnection() throws -> OpaquePointer {
+    func requireAdmissionConnection() throws -> OpaquePointer {
         guard !screenEvidenceAdmissionClosing, isReady() else { throw ScreenEvidenceAdmissionError.inactive }
         return try requireRecallConnection()
     }
@@ -347,7 +347,7 @@ enum ScreenEvidenceAdmissionSQL {
         }
     }
 
-    private struct State {
+    struct State {
         let feed: ScreenEvidenceFeedStatus
         let session: ScreenEvidenceWriterSession?
         let policyEpoch: Int64
@@ -370,12 +370,14 @@ enum ScreenEvidenceAdmissionSQL {
         let retainUntil: Date?
     }
 
-    private struct Input {
+    struct Input {
         let sequence: Int64
         let hash: String
         let bytes: Int
         let fragments: Int
         let nextCursor: ScreenEvidenceExpansionCursor?
+        let page: ScreenEvidenceExpansionPage
+        let hasExtractionText: Bool
     }
 
     /// The explicit envelope avoids concatenation ambiguity and preserves actual
@@ -402,6 +404,18 @@ enum ScreenEvidenceAdmissionSQL {
             bounds = fragment.blockBounds.map { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] }
             isLastFragment = fragment.isLastFragment; provenance = fragment.provenance
         }
+    }
+
+    /// Validated retained identity for explicit local history reads. This does
+    /// not inspect or mint live writer capability and must never authorize work.
+    /// Prepared/incomplete state is unavailable while configuration is changing.
+    static func retainedStateForLocalRead(_ db: OpaquePointer) throws -> State {
+        let state = try readState(db)
+        guard state.phase == "active" || state.phase == "revoked",
+              state.policy != nil, state.transition != nil, state.policyEpoch > 0 else {
+            throw ScreenEvidenceAdmissionError.inactive
+        }
+        return state
     }
 
     private static func readState(_ db: OpaquePointer) throws -> State {
@@ -463,7 +477,7 @@ enum ScreenEvidenceAdmissionSQL {
         guard state.transition == transition else { throw ScreenEvidenceAdmissionError.stalePolicy }
     }
 
-    private static func requireActive(_ db: OpaquePointer, capability: ScreenEvidenceAdmissionCapability,
+    static func requireActive(_ db: OpaquePointer, capability: ScreenEvidenceAdmissionCapability,
                                       expected: ScreenEvidencePolicyTransition? = nil) throws -> State {
         guard let active = capability.active, capability.session == active.session else { throw ScreenEvidenceAdmissionError.inactive }
         if let expected {
@@ -504,11 +518,25 @@ enum ScreenEvidenceAdmissionSQL {
 
     private static func loadInput(_ db: OpaquePointer, request: ScreenEvidenceDerivationRequest,
                                   state: State, retainedClaim: ScreenEvidenceDerivationClaim? = nil) throws -> Input {
-        let ref = request.expansion.reference
-        let referenceError: ScreenEvidenceAdmissionError = retainedClaim == nil ? .invalidReference : .sourceChanged
+        let input = try projectInput(db, expansion: request.expansion, state: state,
+                                     retainedSourceSequence: retainedClaim?.sourceSequence,
+                                     retainedMetadataEpoch: retainedClaim?.metadataEpoch)
+        try requireWork(db, request: request, sequence: input.sequence)
+        guard input.bytes > 0, !input.page.fragments.isEmpty else { throw ScreenEvidenceAdmissionError.invalidRequest }
+        return input
+    }
+
+    /// Shared canonical projector for typed local consumers. Each caller must
+    /// validate its own current cursor/work receipt in the same transaction.
+    /// Empty pages are representable here; V23's wrapper still forbids them.
+    static func projectInput(_ db: OpaquePointer, expansion: ScreenEvidenceExpansionRequest,
+                             state: State, retainedSourceSequence: Int64? = nil,
+                             retainedMetadataEpoch: Int64? = nil) throws -> Input {
+        let ref = expansion.reference
+        let referenceError: ScreenEvidenceAdmissionError = retainedSourceSequence == nil ? .invalidReference : .sourceChanged
         guard ref.source == .native, ref.storeID == state.feed.storeID, ref.frameID.value > 0, ref.extractionRevision >= 0,
               ref.blockIDs.count <= 500, Set(ref.blockIDs).count == ref.blockIDs.count else { throw referenceError }
-        if let retainedClaim, retainedClaim.metadataEpoch != state.metadataEpoch { throw ScreenEvidenceAdmissionError.sourceChanged }
+        if let retainedMetadataEpoch, retainedMetadataEpoch != state.metadataEpoch { throw ScreenEvidenceAdmissionError.sourceChanged }
         let rows = try PipelineSQL.query(db, """
             SELECT o.frameID,o.nativeFrameID,o.source,o.preferredRevision,
               CASE WHEN length(CAST(o.framePayload AS BLOB))<=? THEN o.framePayload END,
@@ -553,7 +581,7 @@ enum ScreenEvidenceAdmissionSQL {
                     throw ScreenEvidenceAdmissionError.sourceChanged
                 }
             }
-            if let retainedClaim, retainedClaim.sourceSequence != sequence { throw ScreenEvidenceAdmissionError.sourceChanged }
+            if let retainedSourceSequence, retainedSourceSequence != sequence { throw ScreenEvidenceAdmissionError.sourceChanged }
             guard let policy = state.policy else { throw ScreenEvidenceAdmissionError.inactive }
             let current = FrameMetadata(appBundleID: optionalString(row, 10), windowName: optionalString(row, 11),
                                         browserURL: optionalString(row, 12), redactionReason: optionalString(row, 13))
@@ -561,21 +589,20 @@ enum ScreenEvidenceAdmissionSQL {
                 throw ScreenEvidenceAdmissionError.notPermitted
             }
             guard reason == nil else { throw ScreenEvidenceAdmissionError.sourceChanged }
-            try requireWork(db, request: request, sequence: sequence)
             if !ref.blockIDs.isEmpty {
                 let count = (snapshot.text?.regions.count ?? 0) + (snapshot.text?.chromeRegions.count ?? 0)
                 guard snapshot.highlightsVerified, ref.blockIDs.allSatisfy({ $0 >= 0 && $0 < count }) else { throw referenceError }
             }
             let page: ScreenEvidenceExpansionPage
-            do { page = try snapshot.expansionPage(for: request.expansion) }
+            do { page = try snapshot.expansionPage(for: expansion) }
             catch is ScreenEvidenceExpansionError { throw ScreenEvidenceAdmissionError.invalidRequest }
-            guard page.textUTF8Bytes > 0, !page.fragments.isEmpty else { throw ScreenEvidenceAdmissionError.invalidRequest }
             let manifest = InputManifest(extractionSHA256: sha256(Data(extractionPayload.utf8)),
-                captureSHA256: sha256(Data(capturePayload.utf8)), request: request.expansion,
+                captureSHA256: sha256(Data(capturePayload.utf8)), request: expansion,
                 fragments: page.fragments.map(FragmentManifest.init), nextCursor: page.nextCursor)
             let inputHash = sha256(Data(try RecallSQL.encode(manifest).utf8))
             return Input(sequence: sequence, hash: inputHash, bytes: page.textUTF8Bytes,
-                         fragments: page.fragments.count, nextCursor: page.nextCursor)
+                         fragments: page.fragments.count, nextCursor: page.nextCursor, page: page,
+                         hasExtractionText: snapshot.text != nil)
         }
         guard rows.count == 1, let result = rows.first else { throw referenceError }
         return result

@@ -1,0 +1,367 @@
+{
+  "source": "/Users/stuartbond/backintime/Processing/Tests/Fixtures/WhisperTimedWords/authored.wav",
+  "source_sha256": "b1295d561ac7a320eec47d9f5e5ccb58ed4e1e20f52dc3119b445f1d88952b41",
+  "decoder": "native /usr/bin/afconvert WAVE LEI16, same rate",
+  "rows": [
+    {
+      "arm": "candidate",
+      "path": "chunked/audio/chunk-media/cf0ea030-0be7-4619-a197-f13dc4cc8349/f55e5ec7-8ab4-4fe8-a237-16c9fa0ec505.m4a",
+      "start_frame": 320000,
+      "expected_frames": 23414,
+      "decoded_frames": 23414,
+      "format": [
+        1,
+        2,
+        16000
+      ],
+      "encoded_bytes": 29957,
+      "encoded_sha256": "dc8aec29a60adb909a65236318c5c1bab118f4c8404e0ae672b6f9cb875ccfd4",
+      "decoded_sha256": "07997deb7f326a28fba59836cb57b23da9859a29f1c09224c2942dabab864cd8",
+      "expected_rms": 5030.648204419013,
+      "decoded_rms": 4959.058606005225,
+      "decoded_peak": 23477,
+      "correlation": 0.9971165492353028,
+      "snr_db": 22.300803591766588,
+      "original_pcm_receipt_matches": true,
+      "per_second": [
+        {
+          "second": 0.0,
+          "correlation": 0.9980830288044851,
+          "snr_db": 24.02413099441319
+        },
+        {
+          "second": 1.0,
+          "correlation": 0.9944551218667416,
+          "snr_db": 19.51254827329406
+        }
+      ]
+    },
+    {
+      "arm": "candidate",
+      "path": "chunked/audio/chunk-media/cf0ea030-0be7-4619-a197-f13dc4cc8349/9a0eedd4-db1f-4827-8ab6-bbdd4ee86fc2.m4a",
+      "start_frame": 0,
+      "expected_frames": 160000,
+      "decoded_frames": 160000,
+      "format": [
+        1,
+        2,
+        16000
+      ],
+      "encoded_bytes": 57940,
+      "encoded_sha256": "1f39f648bc0c88746828306848414baaa35ff6597388aed712046f00453edf04",
+      "decoded_sha256": "c9cc291fee9dd7bac105c1d04c53391404cae82d26d64708e4c9fb190f15ae15",
+      "expected_rms": 4922.62317982369,
+      "decoded_rms": 4853.9934734949165,
+      "decoded_peak": 22413,
+      "correlation": 0.9963593957887231,
+      "snr_db": 21.32292928088418,
+      "original_pcm_receipt_matches": true,
+      "per_second": [
+        {
+          "second": 0.0,
+          "correlation": 0.998128294484896,
+          "snr_db": 24.149729735426067
+        },
+        {
+          "second": 1.0,
+          "correlation": 0.9930346545352604,
+          "snr_db": 18.50119458343364
+        },
+        {
+          "second": 2.0,
+          "correlation": 0.9972942478097624,
+          "snr_db": 22.622486947603377
+        },
+        {
+          "second": 3.0,
+          "correlation": 0.9965053437680078,
+          "snr_db": 21.437064099382134
+        },
+        {
+          "second": 4.0,
+          "correlation": 0.9974015359950561,
+          "snr_db": 22.665723249946723
+        },
+        {
+          "second": 5.0,
+          "correlation": 0.9958623945373574,
+          "snr_db": 20.780134036909672
+        },
+        {
+          "second": 6.0,
+          "correlation": 0.997410140741874,
+          "snr_db": 22.776543042959045
+        },
+        {
+          "second": 7.0,
+          "correlation": 0.9962919068186887,
+          "snr_db": 21.285468304647445
+        },
+        {
+          "second": 8.0,
+          "correlation": 0.9937369816131217,
+          "snr_db": 19.024278465544178
+        },
+        {
+          "second": 9.0,
+          "correlation": 0.9971774225656526,
+          "snr_db": 22.41128488102642
+        }
+      ]
+    },
+    {
+      "arm": "candidate",
+      "path": "chunked/audio/chunk-media/cf0ea030-0be7-4619-a197-f13dc4cc8349/124cff2c-341c-4a05-ac9d-c42ed9753d7b.m4a",
+      "start_frame": 160000,
+      "expected_frames": 160000,
+      "decoded_frames": 160000,
+      "format": [
+        1,
+        2,
+        16000
+      ],
+      "encoded_bytes": 58179,
+      "encoded_sha256": "40877ff7585c2a420f437a800ccf17b3cc4600e9867b6f758232405c7571e3f1",
+      "decoded_sha256": "aa9346c33540f287c6716dd07ec61362f025900975441e26f09e10fb63e3ae2a",
+      "expected_rms": 4960.365137401681,
+      "decoded_rms": 4887.643464540836,
+      "decoded_peak": 23493,
+      "correlation": 0.9965381470787761,
+      "snr_db": 21.526042904727476,
+      "original_pcm_receipt_matches": true,
+      "per_second": [
+        {
+          "second": 0.0,
+          "correlation": 0.9983605106720901,
+          "snr_db": 24.574615981123983
+        },
+        {
+          "second": 1.0,
+          "correlation": 0.9968260892982282,
+          "snr_db": 21.861769397695614
+        },
+        {
+          "second": 2.0,
+          "correlation": 0.9914703297624945,
+          "snr_db": 17.637737093331754
+        },
+        {
+          "second": 3.0,
+          "correlation": 0.9970248777622672,
+          "snr_db": 22.157697696057678
+        },
+        {
+          "second": 4.0,
+          "correlation": 0.9967069406310769,
+          "snr_db": 21.738861545676894
+        },
+        {
+          "second": 5.0,
+          "correlation": 0.9973554026822475,
+          "snr_db": 22.596658344362353
+        },
+        {
+          "second": 6.0,
+          "correlation": 0.9959156377860786,
+          "snr_db": 20.84835665202523
+        },
+        {
+          "second": 7.0,
+          "correlation": 0.9975312747407892,
+          "snr_db": 23.008106079362566
+        },
+        {
+          "second": 8.0,
+          "correlation": 0.9940111656237494,
+          "snr_db": 19.19267776453073
+        },
+        {
+          "second": 9.0,
+          "correlation": 0.9970247468309563,
+          "snr_db": 22.22948749396786
+        }
+      ]
+    },
+    {
+      "arm": "legacy",
+      "path": "legacy/audio/2023/11/15/batch_1700000000000_system_FDBE_51AF5646.m4a",
+      "start_frame": 0,
+      "expected_frames": 240000,
+      "decoded_frames": 240000,
+      "format": [
+        1,
+        2,
+        16000
+      ],
+      "encoded_bytes": 73960,
+      "encoded_sha256": "5ba50c2b9ca01fc2bfab3ce193b81565004b6c97ded050f6ad242ff159b18d10",
+      "decoded_sha256": "9a85078a1ff17996e2b069dea185c5df5bba32c827605ff9e5290cfc65fd4ad3",
+      "expected_rms": 4905.353176069487,
+      "decoded_rms": 4836.214604312188,
+      "decoded_peak": 24627,
+      "correlation": 0.9963380328956258,
+      "snr_db": 21.296334238734,
+      "original_pcm_receipt_matches": true,
+      "per_second": [
+        {
+          "second": 0.0,
+          "correlation": 0.9981282960550584,
+          "snr_db": 24.149733450501664
+        },
+        {
+          "second": 1.0,
+          "correlation": 0.9930346597437981,
+          "snr_db": 18.501197361133002
+        },
+        {
+          "second": 2.0,
+          "correlation": 0.9972942487320909,
+          "snr_db": 22.622487057084605
+        },
+        {
+          "second": 3.0,
+          "correlation": 0.9965053421684064,
+          "snr_db": 21.437061680874688
+        },
+        {
+          "second": 4.0,
+          "correlation": 0.9974015303400479,
+          "snr_db": 22.66571447050842
+        },
+        {
+          "second": 5.0,
+          "correlation": 0.9958623920736047,
+          "snr_db": 20.78013120741272
+        },
+        {
+          "second": 6.0,
+          "correlation": 0.9974101433042201,
+          "snr_db": 22.776546240228676
+        },
+        {
+          "second": 7.0,
+          "correlation": 0.9962919123429687,
+          "snr_db": 21.285474345293316
+        },
+        {
+          "second": 8.0,
+          "correlation": 0.9937369830553231,
+          "snr_db": 19.024279591896384
+        },
+        {
+          "second": 9.0,
+          "correlation": 0.997323977332634,
+          "snr_db": 22.64010652645224
+        },
+        {
+          "second": 10.0,
+          "correlation": 0.9960626799335519,
+          "snr_db": 21.004025202860312
+        },
+        {
+          "second": 11.0,
+          "correlation": 0.9964762617867771,
+          "snr_db": 21.39002890521725
+        },
+        {
+          "second": 12.0,
+          "correlation": 0.9916365894244001,
+          "snr_db": 17.772067000498048
+        },
+        {
+          "second": 13.0,
+          "correlation": 0.9976152050695456,
+          "snr_db": 23.03039407432555
+        },
+        {
+          "second": 14.0,
+          "correlation": 0.9973144888778905,
+          "snr_db": 22.674313102434294
+        }
+      ]
+    },
+    {
+      "arm": "legacy",
+      "path": "legacy/audio/2023/11/15/batch_1700000010000_system_BB5_93A02805.m4a",
+      "start_frame": 160000,
+      "expected_frames": 183414,
+      "decoded_frames": 183414,
+      "format": [
+        1,
+        2,
+        16000
+      ],
+      "encoded_bytes": 62627,
+      "encoded_sha256": "657184b80489bbdf673ccbd28e107c5b0ba47dc7451ccff725b337c12f88d1c2",
+      "decoded_sha256": "55db708aff7017189fa6732273312bd7bf444f3a1ef32a157b5c31f1bd969e41",
+      "expected_rms": 4969.392579751294,
+      "decoded_rms": 4895.893943670672,
+      "decoded_peak": 24004,
+      "correlation": 0.9965177611553688,
+      "snr_db": 21.49953053000265,
+      "original_pcm_receipt_matches": true,
+      "per_second": [
+        {
+          "second": 0.0,
+          "correlation": 0.9983605089505362,
+          "snr_db": 24.57461055106758
+        },
+        {
+          "second": 1.0,
+          "correlation": 0.9968260867540853,
+          "snr_db": 21.861767011693477
+        },
+        {
+          "second": 2.0,
+          "correlation": 0.9914703398434807,
+          "snr_db": 17.637741498132904
+        },
+        {
+          "second": 3.0,
+          "correlation": 0.997024883254584,
+          "snr_db": 22.157706558933615
+        },
+        {
+          "second": 4.0,
+          "correlation": 0.9967069399524383,
+          "snr_db": 21.738860195339697
+        },
+        {
+          "second": 5.0,
+          "correlation": 0.9973554057852034,
+          "snr_db": 22.596660796002812
+        },
+        {
+          "second": 6.0,
+          "correlation": 0.9959156323716417,
+          "snr_db": 20.848350815513026
+        },
+        {
+          "second": 7.0,
+          "correlation": 0.997531280972744,
+          "snr_db": 23.008117693445882
+        },
+        {
+          "second": 8.0,
+          "correlation": 0.9940111569948593,
+          "snr_db": 19.19267194336157
+        },
+        {
+          "second": 9.0,
+          "correlation": 0.9971056922712386,
+          "snr_db": 22.349450364539415
+        },
+        {
+          "second": 10.0,
+          "correlation": 0.9975343165006024,
+          "snr_db": 22.940614515706606
+        },
+        {
+          "second": 11.0,
+          "correlation": 0.9929456531350721,
+          "snr_db": 18.481571667994157
+        }
+      ]
+    }
+  ]
+}

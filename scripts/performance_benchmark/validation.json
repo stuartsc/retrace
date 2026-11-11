@@ -1,0 +1,79 @@
+{
+  "branch_coverage": "unavailable: coverage.py is not installed; standard-library trace reports executable-line coverage only",
+  "coverage_summary": [
+    "lines   cov%   module   (path)",
+    "  645    93%   benchmark   (/Users/stuartbond/backintime/scripts/performance_benchmark/benchmark.py)",
+    "  486    99%   test_benchmark   (/Users/stuartbond/backintime/scripts/performance_benchmark/test_benchmark.py)"
+  ],
+  "errors": 0,
+  "failures": 0,
+  "native_acceptance": false,
+  "receipt_directory": "/var/folders/lc/bzv28_2x2jl5vpt7tj8vksmm0000gn/T/retrace-performance-validation-6h605f34",
+  "schema_version": 1,
+  "scope": "Python benchmark rules, real SIGINT/SIGTERM child-process cleanup, actual authored subprocesses, and read-only imports of existing native exports; no SwiftPM or live recording run",
+  "self_test_commands": [
+    {
+      "argv": [
+        "/Users/stuartbond/.pyenv/versions/3.11.4/bin/python3",
+        "-c",
+        "import hashlib,json; print(json.dumps({'sha256':hashlib.sha256(b'Retrace authored runner self-test').hexdigest(),'sum':sum(i*i for i in range(10000))},sort_keys=True))"
+      ],
+      "child_process_cpu_seconds": 0.03470499999999996,
+      "cpu_scope": "reaped child CPU only; descendants not reaped by their parent may be missing; not Retrace recording",
+      "elapsed_seconds": 0.03892620799888391,
+      "exit_code": 0,
+      "id": "authored-0",
+      "interrupted_signal": null,
+      "output_sha256": "bbd231fcc3cb978fbd44b34f0e44bde2e4009c00ec16b471de4b623b057af687",
+      "timed_out": false
+    },
+    {
+      "argv": [
+        "/Users/stuartbond/.pyenv/versions/3.11.4/bin/python3",
+        "-c",
+        "import hashlib,json; print(json.dumps({'sha256':hashlib.sha256(b'Retrace authored runner self-test').hexdigest(),'sum':sum(i*i for i in range(10000))},sort_keys=True))"
+      ],
+      "child_process_cpu_seconds": 0.03292799999999996,
+      "cpu_scope": "reaped child CPU only; descendants not reaped by their parent may be missing; not Retrace recording",
+      "elapsed_seconds": 0.036641000006056856,
+      "exit_code": 0,
+      "id": "authored-1",
+      "interrupted_signal": null,
+      "output_sha256": "bbd231fcc3cb978fbd44b34f0e44bde2e4009c00ec16b471de4b623b057af687",
+      "timed_out": false
+    },
+    {
+      "argv": [
+        "/Users/stuartbond/.pyenv/versions/3.11.4/bin/python3",
+        "-c",
+        "import hashlib,json; print(json.dumps({'sha256':hashlib.sha256(b'Retrace authored runner self-test').hexdigest(),'sum':sum(i*i for i in range(10000))},sort_keys=True))"
+      ],
+      "child_process_cpu_seconds": 0.03528000000000009,
+      "cpu_scope": "reaped child CPU only; descendants not reaped by their parent may be missing; not Retrace recording",
+      "elapsed_seconds": 0.05499620800401317,
+      "exit_code": 0,
+      "id": "authored-2",
+      "interrupted_signal": null,
+      "output_sha256": "bbd231fcc3cb978fbd44b34f0e44bde2e4009c00ec16b471de4b623b057af687",
+      "timed_out": false
+    }
+  ],
+  "signal_regression_stability": {
+    "attempts": [
+      true,
+      true,
+      true
+    ],
+    "pass_at_1": true,
+    "pass_at_3": true,
+    "pass_power_3": true
+  },
+  "source_sha256": {
+    "docs/performance-measurement.md": "aeacf3317803aab0856331460217205a7b65503cb7ae3c7293877834884aec02",
+    "scripts/performance_benchmark/README.md": "928c8bc41fdcda9c7ab63fef93cdbabd2016927d2c14e5beb6cf166f15805f6c",
+    "scripts/performance_benchmark/benchmark.py": "25a4474f39fd290d480352a67b8060a57bc895699fb1579add34a7c1e741aebd",
+    "scripts/performance_benchmark/test_benchmark.py": "d2bcf665898f3bc51a1e9980fa8d9479b36ec9a89682cb38b681e79a2abf0f70"
+  },
+  "time_utc": "2026-09-30T10:25:14.376384+00:00",
+  "unit_tests": 39
+}

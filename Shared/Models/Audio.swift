@@ -28,6 +28,10 @@ public struct CapturedAudio: Sendable {
     /// Number of channels (should always be 1 for mono)
     public let channels: Int
 
+    /// Native sample-clock continuity, independent of callback delivery jitter.
+    /// Nil retains the legacy timestamp-only input contract.
+    public let continuityID: UUID?
+
     public init(
         id: UUID = UUID(),
         timestamp: Date,
@@ -35,7 +39,8 @@ public struct CapturedAudio: Sendable {
         duration: TimeInterval,
         source: AudioSource,
         sampleRate: Int = 16000,
-        channels: Int = 1
+        channels: Int = 1,
+        continuityID: UUID? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -44,6 +49,7 @@ public struct CapturedAudio: Sendable {
         self.source = source
         self.sampleRate = sampleRate
         self.channels = channels
+        self.continuityID = continuityID
     }
 }
 
@@ -84,11 +90,26 @@ public struct MeetingState: Sendable {
     public let isInMeeting: Bool
     public let detectedApp: String?
     public let detectedAt: Date?
+    public let assessment: MeetingAssessment?
 
     public init(isInMeeting: Bool, detectedApp: String? = nil, detectedAt: Date? = nil) {
         self.isInMeeting = isInMeeting
         self.detectedApp = detectedApp
         self.detectedAt = detectedAt
+        self.assessment = nil
+    }
+
+    public init(assessment: MeetingAssessment) {
+        self.assessment = assessment
+        self.isInMeeting = assessment.phase == .supportedActive
+        self.detectedApp = assessment.application?.bundleID
+        self.detectedAt = assessment.supportedSince ?? assessment.possibleSince
+    }
+
+    /// A legacy false bool has no fresh absence proof. It cannot release the
+    /// audio consent gate merely because no positive call evidence was supplied.
+    public func requiresMeetingAudioProtection(at uptime: TimeInterval) -> Bool {
+        assessment?.requiresMeetingAudioProtection(at: uptime) ?? true
     }
 
     public static let notInMeeting = MeetingState(isInMeeting: false)

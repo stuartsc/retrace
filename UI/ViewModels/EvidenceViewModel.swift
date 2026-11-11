@@ -18,6 +18,9 @@ struct EvidenceClient: Sendable {
     var expand: @Sendable (ScreenEvidenceExpansionRequest) async throws -> ScreenEvidenceExpansionPage = { _ in
         throw EvidenceUnavailableReason.unsupported
     }
+    var presentationStamp: @Sendable (Set<FrameSource>) async throws -> EvidencePresentationStamp = { _ in
+        throw EvidenceUnavailableReason.unsupported
+    }
 
     static func live(service: ProgressiveRecallService) -> Self {
         live(service: { service })
@@ -45,7 +48,8 @@ struct EvidenceClient: Sendable {
              sourceGeneration: { try await service().sourceGeneration(source: $0) },
              expand: { request in
                  try await service().expandScreenEvidence(request, for: .localUser)
-             })
+             },
+             presentationStamp: { try await service().presentationStamp(sources: $0) })
     }
 }
 
@@ -59,10 +63,31 @@ final class EvidenceViewModel: ObservableObject {
     @Published private(set) var isPresentingEvidence = false
     @Published private(set) var selectedFrame: FrameReference?
 
+    /// Availability is independent of pixels: retained context, transcripts and
+    /// jobs can be selected when no screen was captured at their occurrence.
+    var hasAdmittedEvidence: Bool {
+        guard isPresentingEvidence, evidenceReference != nil else { return false }
+        switch resolution {
+        case .screen, .activity, .job, .audio: return true
+        default: return retainedSnapshot != nil && selectedFrame != nil
+        }
+    }
+    var selectedTimestamp: Date? {
+        if let frame = selectedFrame { return frame.timestamp }
+        switch resolution {
+        case .activity(let stored): return stored.event.observedAt
+        case .job(let stored): return stored.observation.observedAt
+        case .audio(let stored): return stored.startTime
+        default: return nil
+        }
+    }
+    var availableReference: EvidenceRef? { hasAdmittedEvidence ? evidenceReference : nil }
+
     private let client: EvidenceClient
     private var generation: UInt64 = 0
     private var request: Request?
     private var task: Task<Void, Never>?
+    private var standaloneRefresh: (id: UUID, generation: UInt64, task: Task<Void, Never>)?
     private var selectedSourceProof: SourceProof?
 
     private struct SourceProof: Sendable {
@@ -105,6 +130,50 @@ final class EvidenceViewModel: ObservableObject {
 
     init(client: EvidenceClient) { self.client = client }
 
+    /// Snippet admission does not select evidence or decode media. Both the
+    /// original result proof and retained extraction must still be readable.
+    func admitsSearchResult(_ result: SearchResult) async -> Bool {
+        do {
+            try Task.checkCancellation()
+            let reference = try await client.reference(result)
+            guard let snapshot = await client.retainedScreen(reference) else { return false }
+            let expected = FrameReference(id: result.id, timestamp: result.timestamp, segmentID: result.segmentID,
+                videoID: result.videoID, frameIndexInSegment: result.frameIndex, metadata: result.metadata, source: result.source)
+            try Self.validate(snapshot, reference: reference, expectedFrame: expected)
+            // Recheck after the retained-text read, including current privacy
+            // and the original legacy selection token if one was supplied.
+            guard try await client.reference(result) == reference else { return false }
+            return !Task.isCancelled
+        } catch { return false }
+    }
+
+    func sourceGeneration(for source: FrameSource) async throws -> String {
+        try await client.sourceGeneration(source)
+    }
+
+    func presentationStamp(sources: Set<FrameSource>) async throws -> EvidencePresentationStamp {
+        try await client.presentationStamp(sources)
+    }
+
+    func retainedFrame(_ reference: ScreenEvidenceRef) async -> FrameReference? {
+        guard !Task.isCancelled, let snapshot = await client.retainedScreen(reference), !Task.isCancelled,
+              (try? Self.validate(snapshot, reference: reference, expectedFrame: nil)) != nil else { return nil }
+        return snapshot.frame
+    }
+
+    /// Use the admitted immutable metadata, not unchecked nearby-row metadata.
+    func admittedContextFrame(_ frame: FrameReference, sourceGeneration: String) async -> FrameReference? {
+        let proof = SourceProof(source: frame.source, generation: sourceGeneration)
+        do {
+            try await Self.validateSource(proof, client: client)
+            let reference = try await client.frameReference(frame.id, frame.source)
+            guard let snapshot = await client.retainedScreen(reference) else { return nil }
+            try Self.validate(snapshot, reference: reference, expectedFrame: frame)
+            try await Self.validateSource(proof, client: client)
+            return snapshot.frame
+        } catch { return nil }
+    }
+
     func openSearchResult(_ result: SearchResult) async {
         let identity = SearchIdentity(result)
         let client = client
@@ -127,8 +196,9 @@ final class EvidenceViewModel: ObservableObject {
     }
 
     func closeEvidence() {
-        guard isPresentingEvidence || task != nil else { return }
+        guard isPresentingEvidence || task != nil || standaloneRefresh != nil else { return }
         generation &+= 1
+        standaloneRefresh?.task.cancel(); standaloneRefresh = nil
         task?.cancel(); task = nil; request = nil
         selectedSourceProof = nil
         resolution = nil; evidenceReference = nil; selectedFrame = nil
@@ -142,6 +212,7 @@ final class EvidenceViewModel: ObservableObject {
     /// revalidation can suspend. Keep the original citation as the only retry target.
     func invalidateForSourceChange() {
         generation &+= 1
+        standaloneRefresh?.task.cancel(); standaloneRefresh = nil
         task?.cancel(); task = nil; request = nil
         selectedSourceProof = nil
         resolution = .unavailable(.sourceDisconnected)
@@ -150,6 +221,14 @@ final class EvidenceViewModel: ObservableObject {
     }
 
     func refreshCurrentRevision() async {
+        if isPresentingEvidence, let reference = evidenceReference {
+            switch reference {
+            case .screen: break
+            default:
+                await refreshStandalone(reference)
+                return
+            }
+        }
         guard isPresentingEvidence, selectedFrame != nil,
               case .screen(let ref) = evidenceReference else { return }
         let token = generation
@@ -161,10 +240,82 @@ final class EvidenceViewModel: ObservableObject {
             guard isCurrent(token) else { return }
             try await Self.validateSource(proof, client: client)
             guard isCurrent(token) else { return }
-            newerRevision = revision.flatMap { $0 > ref.extractionRevision ? $0 : nil }
+            if let revision {
+                newerRevision = revision > ref.extractionRevision ? revision : nil
+            } else {
+                // A missing current revision also represents deletion or a new
+                // privacy restriction. Re-resolve this citation, never a newer
+                // extraction or the current row sharing its numeric ID.
+                clearPresentedEvidence(reason: nil)
+                resolvingEvidence = true
+                defer { if isCurrent(token) { resolvingEvidence = false } }
+                let reference = EvidenceRef.screen(ref)
+                let result = await client.resolve(reference)
+                guard isCurrent(token) else { return }
+                try await Self.validateSource(proof, client: client)
+                guard isCurrent(token) else { return }
+                try Self.validate(result, reference: reference, expectedFrame: nil)
+                resolution = result
+                if case .screen(let snapshot, _) = result {
+                    selectedFrame = snapshot.frame
+                } else if case .unavailable = result {
+                    let retained = await client.retainedScreen(ref)
+                    guard isCurrent(token) else { return }
+                    try await Self.validateSource(proof, client: client)
+                    guard isCurrent(token) else { return }
+                    if let retained {
+                        try Self.validate(retained, reference: ref, expectedFrame: nil)
+                        retainedSnapshot = retained; selectedFrame = retained.frame
+                    }
+                }
+            }
         } catch {
-            if isCurrent(token) { newerRevision = nil }
+            if isCurrent(token) {
+                clearPresentedEvidence(reason: (error as? EvidenceUnavailableReason) ?? .integrityFailure)
+                resolvingEvidence = false
+            }
         }
+    }
+
+    /// Join the owning selection before a fresh canonical read. A refresh takes
+    /// publication ownership immediately, so the joined selection cannot flash
+    /// an older snapshot after a deletion or another current-state denial.
+    private func refreshStandalone(_ reference: EvidenceRef) async {
+        guard !Task.isCancelled else { return }
+        if let existing = standaloneRefresh, existing.generation == generation {
+            await existing.task.value
+            return
+        }
+        let token = generation, id = UUID()
+        let pendingSelection = task
+        let client = client
+        resolvingEvidence = true
+        let owned = Task { [weak self] in
+            defer {
+                if self?.standaloneRefresh?.id == id {
+                    self?.standaloneRefresh = nil
+                    self?.resolvingEvidence = false
+                }
+            }
+            if let pendingSelection { await pendingSelection.value }
+            guard self?.isCurrent(token) == true, self?.standaloneRefresh?.id == id else { return }
+            let current = await client.resolve(reference)
+            guard self?.isCurrent(token) == true, self?.standaloneRefresh?.id == id else { return }
+            do {
+                try Self.validate(current, reference: reference, expectedFrame: nil)
+                self?.resolution = current
+            } catch {
+                self?.clearPresentedEvidence(reason: .integrityFailure)
+            }
+        }
+        standaloneRefresh = (id, token, owned)
+        await withTaskCancellationHandler(operation: { await owned.value }, onCancel: { owned.cancel() })
+    }
+
+    private func clearPresentedEvidence(reason: EvidenceUnavailableReason?) {
+        // Keep evidenceReference unchanged so Retry preserves the citation.
+        resolution = reason.map(EvidenceResolution.unavailable)
+        retainedSnapshot = nil; selectedFrame = nil; newerRevision = nil
     }
 
     func expandText(_ request: ScreenEvidenceExpansionRequest) async throws -> ScreenEvidenceExpansionPage {
@@ -203,10 +354,14 @@ final class EvidenceViewModel: ObservableObject {
         guard !Task.isCancelled else { return }
         if request == selection, let task {
             await task.value
+            if let refresh = standaloneRefresh, refresh.generation == generation {
+                await refresh.task.value
+            }
             return
         }
         generation &+= 1
         let token = generation
+        standaloneRefresh?.task.cancel(); standaloneRefresh = nil
         task?.cancel()
         request = selection
         selectedSourceProof = sourceProof
@@ -218,7 +373,8 @@ final class EvidenceViewModel: ObservableObject {
             let began = CFAbsoluteTimeGetCurrent()
             defer {
                 if self?.generation == token {
-                    self?.resolvingEvidence = false; self?.task = nil; self?.request = nil
+                    if self?.standaloneRefresh?.generation != token { self?.resolvingEvidence = false }
+                    self?.task = nil; self?.request = nil
                 }
                 Log.recordLatency("progressive_recall.evidence", valueMs: (CFAbsoluteTimeGetCurrent() - began) * 1_000, category: .ui)
             }
@@ -242,6 +398,9 @@ final class EvidenceViewModel: ObservableObject {
                 guard self?.isCurrent(token) == true else { return }
                 try await Self.validateSource(sourceProof, client: client)
                 guard self?.isCurrent(token) == true else { return }
+                // A same-generation standalone refresh has joined this task
+                // and now owns the only publication after its fresh read.
+                guard self?.standaloneRefresh?.generation != token else { return }
                 try Self.validate(result, reference: ref, expectedFrame: expectedFrame)
                 if case .screen(let snapshot, _) = result {
                     self?.evidenceReference = ref
@@ -271,7 +430,8 @@ final class EvidenceViewModel: ObservableObject {
                 if case .unavailable = result { await client.track(.evidenceUnavailable, "unavailable", 1) }
                 else { await client.track(.evidenceResolved, "success", 1) }
             } catch {
-                guard self?.isCurrent(token) == true else { return }
+                guard self?.isCurrent(token) == true,
+                      self?.standaloneRefresh?.generation != token else { return }
                 self?.resolution = .unavailable((error as? EvidenceUnavailableReason) ?? .integrityFailure)
                 self?.evidenceReference = nil; self?.retainedSnapshot = nil; self?.selectedFrame = nil
                 self?.selectedSourceProof = nil
@@ -319,6 +479,10 @@ final class EvidenceViewModel: ObservableObject {
             guard event.id == reference.eventID, event.storeID == reference.storeID else {
                 throw EvidenceUnavailableReason.integrityFailure
             }
+        case (.audio(let reference), .audio(let snapshot)):
+            guard snapshot.reference == reference else { throw EvidenceUnavailableReason.integrityFailure }
+        case (.job(let reference), .job(let snapshot)):
+            guard snapshot.reference == reference else { throw EvidenceUnavailableReason.integrityFailure }
         case (_, .unavailable): break
         default: throw EvidenceUnavailableReason.integrityFailure
         }

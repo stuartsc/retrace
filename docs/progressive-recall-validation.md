@@ -734,3 +734,38 @@ The hidden background launch was requested at **23:29:22.629 Brisbane**, creatin
 The final read at **197.430 seconds** after launch found **all 19 captures from the fixed first-minute cohort completed**, including the initially pending frames. The newest twenty captures were also all completed. It reconfirmed the installed executable/build/source, V23, unchanged store/settings, zero derived consumers/work/artifacts and the same hidden canonical process with zero windows. This bounded startup check confirms resumed recording and processing; it is not a matched performance or recall comparison. Receipts are `installation-complete.json`, `database-backup.json`, `launch.json`, `postlaunch-first.json` and `postlaunch-final.json` in the private directory above.
 
 Retained rollback material consists of `Installed 2609.15.1 before audio playback.app` and `Database before V23` in that private directory, with identity/hash receipts. Prefer preserving the current library for any app rollback; restoring the pre-upgrade database later would omit subsequent captures and must not be automatic. This remains an **unreleased local trial**. No foreground timeline, installed keyboard/visual playback or audible speaker acceptance was performed, and no retained user audio was played. The prior full-suite results establish automated playback timing, not those installed acceptance checks or broader recall/resource targets.
+
+## Unified history and typed local recall integration — September 24
+
+The [unified history ledger](unified-history-plan.md) records original-pixel
+retention, visible direct text, capture-group receipts, one workspace, and the
+explicitly enabled native screen-text V25 index. Exact lexical proofs survive
+hybrid ranking; current privacy/deletion stamps fence excerpts and navigation.
+New lifecycle regressions use private SQLCipher and actual native model work.
+
+The integrated core App target and DatabaseTests target compile (checkpoint10 and
+checkpoint11 under `/tmp/retrace-unified-20260924/`). These are compilation-only
+receipts. No complete linked XCTest, UI fixture, physical multi-display, warm
+query-latency, energy, installed activation or release acceptance is established
+by those checkpoints. Final actor/protocol tests must start after `swift package
+clean`, with process-local file logging disabled; a separately clean optimized
+build is also required. The installed 2609.18.1 baseline remains unchanged.
+
+
+## Masked recording display repair — 2026-09-29
+
+An already-masked captured screen could have `redactionReason` set even though only a small excluded window region was removed. The September 14 local viewer treated that capture-time masking flag as a prohibition on the entire recording, including retained OCR. The installed 2609.18.1 executable was verified against SHA-256 `dc0cf0728968d1ac07056a9d86484178be7f24c5cef8e933daa57daf61bcdcec`; a bounded read-only investigation confirmed a captured row, masked-region logs and decodable retained HEVC media.
+
+The hotfix is isolated from the larger uninstalled source candidate, starting at installed-source commit `83dc626c672c2dd576290bd39ee88a2ff19460f7`. `ScreenEvidenceAccessPolicy.permitsLocalPresentation` admits the already-sanitised recording while retaining the independent current app, title, private-window and URL checks. `permits` keeps its conservative automatic-work masking fence. Agent reads remain denied. No capture setting, pixel mask, source identity, deletion guard, revision fence or database schema changes.
+
+Two test-first regressions reproduced six failures (including two uncaught `notPermitted` errors) after a clean 362.13-second debug build; 448 source input hashes were unchanged during that run. The new fixture uses real private SQLite and three actual HEVC samples: the selected sample retains a black region and a visible grey region, distinguishable from both neighbouring samples. It covers local resolution, exact search references, retained OCR, bounded text expansion, missing media, current restrictions and agent denial. Existing deletion, source replacement and exact reader regressions run alongside it.
+
+The focused GREEN selection passed **169 tests with zero failures** in 16.272 seconds after a 56.46-second debug rebuild. All three new masking regressions passed, along with exact-reader, source/revision, deletion, current-restriction, thumbnail and UI selection tests. Independent source and delivery-script review found no blocking issues. The separate clean optimized build passed in **452.54 seconds**, with all **448 source inputs unchanged**. Source commit: `7aab20a378555c2c0361551ca908ed62677c572c`; tested executable SHA-256: `455e0b7656e0c009427fc141ca8e4c378b968885a22c49aac0dc00c02d0c66cc`. After packaging, all **37 executable code/data sections** matched that tested binary. Signing, designated requirement, entitlements and deep strict bundle verification passed.
+
+The narrow hotfix was installed as **0.7.6 (2609.29.1)** on **2026-09-29 at 12:44 Brisbane** and launched from `/Applications/Retrace.app`. Packaged/installed executable SHA-256: `2430b90c6a55941015cabdda65939e69268c0441e40b3359701fc1b83a69ba98`. Read-only post-launch checks confirmed the same V23 schema, native store identity, exact reported observation and capture/privacy settings. Both screen and audio rows advanced. The Dashboard visibly displayed a masked recording with its retained mask reason; the originally reported 11:24:41 screen also displayed in the timeline, with the selected frame ID and archive index confirmed in the native log. The original frame's separate exact-evidence panel was not exercised by that installed UI check; real SQLite/HEVC regressions cover its service path. This is scoped installed acceptance, not a full performance or quality benchmark.
+
+Delivery included two normal shutdown/relaunch intervals. The final quit-to-capture restart was **59.419 seconds**. The adjacent stored-frame gap spanning the update window was **360.090 seconds**, including the earlier shutdown/relaunch and meaningful-change sampling; uninterrupted capture is not claimed. The first install attempt stopped before mutation because Retrace was running again. Its relaunch cause was not established, and watchdog settings were not changed. The successful installer verified a quiescent APFS database/sidecar clone and replaced the app through exclusive renames, retaining the previous bundle, without writing the live library.
+
+Private command receipts and rollback material are retained in `~/Library/Application Support/Retrace Candidates/2026-09-29-masked-history/`, including `release-complete.json`, `package-verified.json`, `installation-complete.json` and `installed-acceptance.json`. The previous V23-compatible app and a quiescent database snapshot are retained there. App rollback uses the retained app against the current library; a database-only backup must not be treated as a complete later library snapshot. The helper required by the installer was copied and hash-verified into this September 29 directory, removing its dependency on the September 13 candidate directory.
+
+The same fix was forward-ported into the larger uninstalled workspace, preserving its additional `capturePolicySHA256` check and other pending work. Its focused selection passed **201 tests with zero failures** in 19.111 seconds. Independent forward-port review found no blockers. That larger workspace, including its schema, governor and audio-storage candidates, was not packaged or installed by this repair.

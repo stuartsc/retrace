@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Database
 import Foundation
 import Shared
@@ -260,6 +261,86 @@ final class ActivityApplicationIdentityTests: XCTestCase {
         XCTAssertEqual(sampled.event.method, "two-second-reconciliation")
         XCTAssertGreaterThanOrEqual(sampled.event.observedAt, signal.wallTime)
         XCTAssertFalse(records.contains { $0.event.method == "workspace-app-notification" })
+    }
+
+    func testRegisteredAXCallbackKeepsItsActualNativeOwnerAndRejectsRetiredRegistration() async throws {
+        let fixture = try await makeFixture()
+        let child = try await launch(fixture)
+        let application = try await MainActor.run {
+            try XCTUnwrap(ActivityApplicationSnapshot(NSRunningApplication(processIdentifier: child.pid)))
+        }
+        let buffer = ActivityObservationBuffer(capacity: 4)
+        let registry = ObservedWindowGenerations()
+        let oldID = UUID(), currentID = UUID()
+        let old = ActivityAXCallbackReference(application: application, registrationID: oldID, buffer: buffer)
+        let current = ActivityAXCallbackReference(application: application, registrationID: currentID, buffer: buffer)
+        buffer.activateAXRegistration(oldID)
+        old.handle(kAXTitleChangedNotification, registry: registry)
+        let beforeRetiredCallback = registry.notificationRevision
+        buffer.activateAXRegistration(currentID)
+        old.handle(kAXFocusedWindowChangedNotification, registry: registry)
+        XCTAssertEqual(registry.notificationRevision, beforeRetiredCallback)
+        current.handle(kAXMovedNotification, registry: registry)
+        buffer.invalidateAXRegistration(currentID)
+        current.handle(kAXTitleChangedNotification, registry: registry)
+        buffer.finish()
+        var received: [ActivityObservationSignal] = []
+        for await queued in buffer.stream { if let signal = buffer.resolve(queued) { received.append(signal) } }
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(received.map(\.app), [application, application],
+                       "The nonactivating native helper must not be relabelled as the user's frontmost app")
+        XCTAssertEqual(received.map(\.axRegistrationID), [oldID, currentID])
+        XCTAssertTrue(received.allSatisfy { $0.administrativeMethod == "accessibility-window-notification" })
+        XCTAssertFalse(buffer.permitsAXRegistration(oldID))
+        XCTAssertFalse(buffer.permitsAXRegistration(currentID))
+    }
+
+    func testNativeAXBurstCoalescesWithoutCrossingAnObservedWorkspaceBoundary() async throws {
+        let fixture = try await makeFixture()
+        let child = try await launch(fixture)
+        let application = try await MainActor.run {
+            try XCTUnwrap(ActivityApplicationSnapshot(NSRunningApplication(processIdentifier: child.pid)))
+        }
+        let buffer = ActivityObservationBuffer(capacity: 4)
+        let registration = UUID()
+        let reference = ActivityAXCallbackReference(application: application, registrationID: registration, buffer: buffer)
+        let registry = ObservedWindowGenerations()
+        buffer.activateAXRegistration(registration)
+        for _ in 0..<10_000 { reference.handle(kAXTitleChangedNotification, registry: registry) }
+        buffer.send(.init(kind: .reconciliation, app: application))
+        reference.handle(kAXMovedNotification, registry: registry)
+        buffer.finish()
+        var received: [ActivityObservationSignal] = []
+        for await queued in buffer.stream { if let signal = buffer.resolve(queued) { received.append(signal) } }
+        XCTAssertEqual(buffer.takeDroppedCount(), 0)
+        XCTAssertEqual(received.map(\.kind), [.focus, .reconciliation, .focus])
+        XCTAssertEqual(received.map(\.ordinal), [10_000, 10_001, 10_002])
+        XCTAssertEqual(registry.notificationRevision, 10_001,
+                       "Every native invalidation still fences pixels while only pending sampling work coalesces")
+        XCTAssertTrue(zip(received, received.dropFirst()).allSatisfy { pair in pair.0.wallTime <= pair.1.wallTime })
+    }
+
+    func testLateNativeAXOwnerDoesNotCreateFocusForAnotherCurrentProcess() async throws {
+        let fixture = try await makeFixture()
+        let old = try await launch(fixture)
+        let application = try await MainActor.run {
+            try XCTUnwrap(ActivityApplicationSnapshot(NSRunningApplication(processIdentifier: old.pid)))
+        }
+        let oldStatus = await old.stop()
+        XCTAssertEqual(oldStatus, 0)
+        let current = try await launch(fixture)
+        let (database, _, observations) = try await makeMonitor(current: current)
+        let id = UUID()
+        observations.activateAXRegistration(id)
+        ActivityAXCallbackReference(application: application, registrationID: id, buffer: observations)
+            .handle(kAXTitleChangedNotification)
+        observations.send(.init(kind: .pause, app: nil))
+        try await waitUntil {
+            try await database.searchActivity(ActivityQuery()).events.contains { $0.event.kind == .pause }
+        }
+        let records = try await database.searchActivity(ActivityQuery()).events
+        XCTAssertFalse(records.contains { $0.event.context != nil },
+                       "A queued old registration is neither a current activation nor a new-process identity")
     }
 
     private func assertUnavailableNotification(_ notified: NSRunningApplication?,

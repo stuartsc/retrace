@@ -40,6 +40,9 @@ public struct SystemMonitorView: View {
                     // Main content
                     ScrollView(showsIndicators: false) {
                         VStack(alignment: .leading, spacing: 16) {
+                            backgroundPreparationSection
+                            ResourceUsageCard(usage: viewModel.resourceUsage)
+                            StorageUsageCard(coordinator: coordinator)
                             // OCR Processing Section
                             ocrProcessingSection
                                 .padding(.bottom, 40)
@@ -82,6 +85,30 @@ public struct SystemMonitorView: View {
             .keyboardShortcut("[", modifiers: .command)
             .hidden()
         )
+    }
+
+    private var backgroundPreparationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(viewModel.isRecordingActive ? "Recording" : "Recording paused")
+                .font(.headline)
+            if viewModel.audioPersistenceFailed {
+                Text("Audio recording interrupted: the last batch could not be saved. Check storage before restarting recording.")
+                    .foregroundStyle(.orange)
+            }
+            Text("Text preparation: " + viewModel.backgroundPreparationStatus)
+            Text("Indexing: " + viewModel.indexingStatus)
+                .foregroundStyle(.secondary)
+            if viewModel.originalSpoolUnderPressure {
+                Text("Original image storage is under pressure. Unprocessed originals are retained.")
+                    .foregroundStyle(.orange)
+            }
+            Button(viewModel.processingOverride ? "Cancel Process now" : "Process now") {
+                Task { await viewModel.setProcessingOverride(!viewModel.processingOverride) }
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
     }
 
     // MARK: - Background
@@ -224,6 +251,275 @@ public struct SystemMonitorView: View {
 
     // MARK: - OCR Processing Section
 
+    private var ocrProcessingChart: some View {
+    VStack(alignment: .leading, spacing: 12) {
+        HStack(spacing: 6) {
+            Text("Frames processed")
+                .font(.retraceCaption)
+                .foregroundColor(.retraceSecondary)
+            Text("·")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary.opacity(0.5))
+            Text("Last 30 min")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary.opacity(0.7))
+            Spacer()
+        }
+
+        ProcessingBarChart(
+            dataPoints: viewModel.processingHistory,
+            pendingCount: viewModel.pendingCount,
+            processingCount: viewModel.processingCount,
+            hoveredIndex: $viewModel.hoveredBarIndex
+        )
+        .frame(height: 140)
+    }
+    .padding(.vertical, 16)
+    .padding(.horizontal, 20)
+    }
+
+    private var ocrProcessingStats: some View {
+    HStack(spacing: 16) {
+        // Processed (left) - blue
+        HStack(spacing: 4) {
+            Text("\(viewModel.processedLast30Min)")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundColor(.retraceAccent)
+            // Show "in the last 30 minutes" only when idle (no pending/processing)
+            if viewModel.processingCount == 0 && viewModel.pendingCount == 0 {
+                Text("processed in the last 30 minutes")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary.opacity(0.7))
+            } else {
+                Text("processed")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary.opacity(0.7))
+            }
+        }
+
+        if viewModel.processingCount > 0 {
+            Circle()
+                .fill(Color.retraceSecondary.opacity(0.3))
+                .frame(width: 3, height: 3)
+
+            // Processing (status 1) - green
+            HStack(spacing: 4) {
+                Text("\(viewModel.processingCount)")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundColor(.green)
+                Text("processing")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary.opacity(0.7))
+            }
+        }
+
+        if viewModel.pendingCount > 0 {
+            Circle()
+                .fill(Color.retraceSecondary.opacity(0.3))
+                .frame(width: 3, height: 3)
+
+            // Pending (status 0) - orange
+            HStack(spacing: 4) {
+                Text("\(viewModel.pendingCount)")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundColor(.orange)
+                Text("pending")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary.opacity(0.7))
+            }
+        }
+
+        Spacer()
+
+        // ETA (right side)
+        if viewModel.queueDepth > 0 {
+            HStack(spacing: 4) {
+                Text(viewModel.etaText)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundColor(.retracePrimary)
+                Text(viewModel.etaSuffixText)
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary.opacity(0.7))
+            }
+        }
+    }
+    .padding(.vertical, 12)
+    .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private var ocrPowerPausedWarning: some View {
+        Divider()
+            .background(Color.white.opacity(0.06))
+
+        HStack(spacing: 8) {
+            Image(systemName: "bolt.slash.fill")
+                .font(.retraceCaption)
+                .foregroundColor(.orange)
+            Text("Processing paused by power settings — adjust them in ")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceSecondary)
+            + Text("Settings")
+                .font(.retraceCaption2)
+                .foregroundColor(.retraceAccent)
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            DashboardViewModel.recordSystemMonitorOpenPowerOCRCard(
+                coordinator: coordinator,
+                source: "monitor_paused_warning"
+            )
+            NotificationCenter.default.post(name: .openSettingsPowerOCRCard, object: nil)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.05))
+    }
+
+    @ViewBuilder
+    private var ocrDisabledWarning: some View {
+        Divider()
+            .background(Color.white.opacity(0.06))
+
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.retraceAccent.opacity(0.28))
+                    .frame(width: 28, height: 28)
+                Image(systemName: "eye.slash.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("OCR is paused")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.95))
+                Text("New frames are still captured, but text won’t be searchable until OCR resumes.")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.white.opacity(0.78))
+            }
+
+            Spacer()
+
+            HStack(spacing: 4) {
+                Text("Open Power Settings")
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white.opacity(0.95))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.retraceAccent.opacity(0.30))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.retraceAccent.opacity(0.55), lineWidth: 1)
+            )
+            .cornerRadius(8)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            DashboardViewModel.recordSystemMonitorOpenPowerOCRCard(
+                coordinator: coordinator,
+                source: "monitor_ocr_disabled_warning"
+            )
+            NotificationCenter.default.post(name: .openSettingsPowerOCRCard, object: nil)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.retraceAccent.opacity(0.22),
+                            Color.retraceAccent.opacity(0.10)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.retraceAccent.opacity(0.35), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var ocrPerformanceNudge: some View {
+        Divider()
+            .background(Color.white.opacity(0.06))
+
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.orange.opacity(0.25))
+                    .frame(width: 30, height: 30)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.orange)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Large OCR Backlog Detected")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.96))
+                Text("\(viewModel.queueDepth) frames queued. Go to System Settings to increase your OCR Priority.")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.white.opacity(0.82))
+            }
+
+            Spacer()
+
+            HStack(spacing: 4) {
+                Text("Go to System Settings")
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white.opacity(0.95))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.retraceAccent.opacity(0.3))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.retraceAccent.opacity(0.6), lineWidth: 1)
+            )
+            .cornerRadius(8)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            DashboardViewModel.recordSystemMonitorOpenPowerOCRPriority(
+                coordinator: coordinator,
+                source: "monitor_backlog_nudge"
+            )
+            NotificationCenter.default.post(name: .openSettingsPowerOCRPriority, object: nil)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.orange.opacity(0.24),
+                            Color.orange.opacity(0.12)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.orange.opacity(0.42), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+    }
+
     private var ocrProcessingSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(spacing: 0) {
@@ -244,273 +540,25 @@ public struct SystemMonitorView: View {
                 Divider()
                     .background(Color.white.opacity(0.06))
 
-                // Chart area
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 6) {
-                        Text("Frames processed")
-                            .font(.retraceCaption)
-                            .foregroundColor(.retraceSecondary)
-                        Text("·")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary.opacity(0.5))
-                        Text("Last 30 min")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary.opacity(0.7))
-                        Spacer()
-                    }
-
-                    ProcessingBarChart(
-                        dataPoints: viewModel.processingHistory,
-                        pendingCount: viewModel.pendingCount,
-                        processingCount: viewModel.processingCount,
-                        hoveredIndex: $viewModel.hoveredBarIndex
-                    )
-                    .frame(height: 140)
-                }
-                .padding(.vertical, 16)
-                .padding(.horizontal, 20)
+                ocrProcessingChart
 
                 Divider()
                     .background(Color.white.opacity(0.06))
 
-                // Stats row - horizontal layout with dots between
-                HStack(spacing: 16) {
-                    // Processed (left) - blue
-                    HStack(spacing: 4) {
-                        Text("\(viewModel.processedLast30Min)")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundColor(.retraceAccent)
-                        // Show "in the last 30 minutes" only when idle (no pending/processing)
-                        if viewModel.processingCount == 0 && viewModel.pendingCount == 0 {
-                            Text("processed in the last 30 minutes")
-                                .font(.retraceCaption2)
-                                .foregroundColor(.retraceSecondary.opacity(0.7))
-                        } else {
-                            Text("processed")
-                                .font(.retraceCaption2)
-                                .foregroundColor(.retraceSecondary.opacity(0.7))
-                        }
-                    }
-
-                    if viewModel.processingCount > 0 {
-                        Circle()
-                            .fill(Color.retraceSecondary.opacity(0.3))
-                            .frame(width: 3, height: 3)
-
-                        // Processing (status 1) - green
-                        HStack(spacing: 4) {
-                            Text("\(viewModel.processingCount)")
-                                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                .foregroundColor(.green)
-                            Text("processing")
-                                .font(.retraceCaption2)
-                                .foregroundColor(.retraceSecondary.opacity(0.7))
-                        }
-                    }
-
-                    if viewModel.pendingCount > 0 {
-                        Circle()
-                            .fill(Color.retraceSecondary.opacity(0.3))
-                            .frame(width: 3, height: 3)
-
-                        // Pending (status 0) - orange
-                        HStack(spacing: 4) {
-                            Text("\(viewModel.pendingCount)")
-                                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                .foregroundColor(.orange)
-                            Text("pending")
-                                .font(.retraceCaption2)
-                                .foregroundColor(.retraceSecondary.opacity(0.7))
-                        }
-                    }
-
-                    Spacer()
-
-                    // ETA (right side)
-                    if viewModel.queueDepth > 0 {
-                        HStack(spacing: 4) {
-                            Text(viewModel.etaText)
-                                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                .foregroundColor(.retracePrimary)
-                            Text(viewModel.etaSuffixText)
-                                .font(.retraceCaption2)
-                                .foregroundColor(.retraceSecondary.opacity(0.7))
-                        }
-                    }
-                }
-                .padding(.vertical, 12)
-                .padding(.horizontal, 16)
+                ocrProcessingStats
 
                 // Paused warning
                 if viewModel.isPausedForBattery {
-                    Divider()
-                        .background(Color.white.opacity(0.06))
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "bolt.slash.fill")
-                            .font(.retraceCaption)
-                            .foregroundColor(.orange)
-                        Text("Processing paused by power settings — adjust them in ")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary)
-                        + Text("Settings")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceAccent)
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        DashboardViewModel.recordSystemMonitorOpenPowerOCRCard(
-                            coordinator: coordinator,
-                            source: "monitor_paused_warning"
-                        )
-                        NotificationCenter.default.post(name: .openSettingsPowerOCRCard, object: nil)
-                    }
-                    .padding(12)
-                    .background(Color.orange.opacity(0.05))
+                    ocrPowerPausedWarning
                 }
 
                 // OCR disabled warning
                 if !viewModel.ocrEnabled {
-                    Divider()
-                        .background(Color.white.opacity(0.06))
-
-                    HStack(alignment: .center, spacing: 12) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.retraceAccent.opacity(0.28))
-                                .frame(width: 28, height: 28)
-                            Image(systemName: "eye.slash.fill")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white)
-                        }
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("OCR is paused")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.95))
-                            Text("New frames are still captured, but text won’t be searchable until OCR resumes.")
-                                .font(.retraceCaption2)
-                                .foregroundColor(.white.opacity(0.78))
-                        }
-
-                        Spacer()
-
-                        HStack(spacing: 4) {
-                            Text("Open Power Settings")
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.95))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.retraceAccent.opacity(0.30))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.retraceAccent.opacity(0.55), lineWidth: 1)
-                        )
-                        .cornerRadius(8)
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        DashboardViewModel.recordSystemMonitorOpenPowerOCRCard(
-                            coordinator: coordinator,
-                            source: "monitor_ocr_disabled_warning"
-                        )
-                        NotificationCenter.default.post(name: .openSettingsPowerOCRCard, object: nil)
-                    }
-                    .padding(14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.retraceAccent.opacity(0.22),
-                                        Color.retraceAccent.opacity(0.10)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.retraceAccent.opacity(0.35), lineWidth: 1)
-                            )
-                    )
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 8)
+                    ocrDisabledWarning
                 }
 
                 if viewModel.shouldShowPerformanceNudge {
-                    Divider()
-                        .background(Color.white.opacity(0.06))
-
-                    HStack(alignment: .center, spacing: 12) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.orange.opacity(0.25))
-                                .frame(width: 30, height: 30)
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.orange)
-                        }
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Large OCR Backlog Detected")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.96))
-                            Text("\(viewModel.queueDepth) frames queued. Go to System Settings to increase your OCR Priority.")
-                                .font(.retraceCaption2)
-                                .foregroundColor(.white.opacity(0.82))
-                        }
-
-                        Spacer()
-
-                        HStack(spacing: 4) {
-                            Text("Go to System Settings")
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9, weight: .semibold))
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.95))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.retraceAccent.opacity(0.3))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.retraceAccent.opacity(0.6), lineWidth: 1)
-                        )
-                        .cornerRadius(8)
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        DashboardViewModel.recordSystemMonitorOpenPowerOCRPriority(
-                            coordinator: coordinator,
-                            source: "monitor_backlog_nudge"
-                        )
-                        NotificationCenter.default.post(name: .openSettingsPowerOCRPriority, object: nil)
-                    }
-                    .padding(14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.orange.opacity(0.24),
-                                        Color.orange.opacity(0.12)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.orange.opacity(0.42), lineWidth: 1)
-                            )
-                    )
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 8)
+                    ocrPerformanceNudge
                 }
             }
             .background(
@@ -1261,6 +1309,18 @@ class SystemMonitorViewModel: ObservableObject {
     @Published var powerSource: PowerStateMonitor.PowerSource = .unknown
     @Published var ocrProcessingLevel: Int = 3
     @Published var isRecordingActive: Bool = false
+    @Published var backgroundPreparationStatus = "Automatic"
+    @Published var indexingStatus = "Off"
+    @Published var processingOverride = false
+    @Published var originalSpoolUnderPressure = false
+    @Published var audioPersistenceFailed = false
+    @Published var resourceUsage = ResourceUsageSnapshot.unavailable
+
+    func setProcessingOverride(_ enabled: Bool) async {
+        await coordinator.setBackgroundProcessNow(enabled)
+        await updateStats()
+    }
+
 
     // Chart data
     @Published var processingHistory: [ProcessingDataPoint] = []
@@ -1459,6 +1519,16 @@ class SystemMonitorViewModel: ObservableObject {
     }
 
     private func updateStats() async {
+        let background = await coordinator.backgroundProcessingSnapshot()
+        resourceUsage = await coordinator.resourceUsageSnapshot()
+        processingOverride = background.processNow
+        originalSpoolUnderPressure = background.originalSpoolUnderPressure
+        audioPersistenceFailed = await coordinator.hasAudioPersistenceFailure()
+        let preparingText = background.activeKind == .ambientSpeech || background.activeKind == .ambientSilence
+            || background.activeKind == .refinement || background.activeKind == .freshOCR || background.activeKind == .historicalOCR
+        backgroundPreparationStatus = background.waitReason?.summary
+            ?? (preparingText ? "Preparing text" : "Automatic")
+        indexingStatus = await coordinator.localRecallSnapshot().summary
         let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
 
         // Get queue statistics

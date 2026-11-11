@@ -23,6 +23,93 @@ final class FramePipelinePersistenceTests: XCTestCase {
         database = nil
     }
 
+    func testGovernorLaneSelectionNeverClaimsDeferredHistoryAsFreshWork() async throws {
+        let historical = try await insertPendingFrame()
+        let fresh = try await insertPendingFrame(capturedAt: Date())
+        try await execute("UPDATE processing_queue SET priority=10 WHERE frameId=\(fresh)")
+        let pending = try await database.pendingFrameProcessingLanes()
+        XCTAssertEqual(Set(pending), [.current, .historical])
+        let stillPending = try await database.getFrameProcessingStatuses(frameIDs: [historical, fresh])
+        XCTAssertEqual(stillPending[historical], 0)
+        XCTAssertEqual(stillPending[fresh], 0, "Demand registration must not claim either frame")
+        let noManual = try await database.dequeueFrameForProcessing(lane: .manual)
+        XCTAssertNil(noManual)
+        let current = try await database.dequeueFrameForProcessing(lane: .current)
+        XCTAssertEqual(current?.frameID, fresh)
+        let noCurrent = try await database.dequeueFrameForProcessing(lane: .current)
+        XCTAssertNil(noCurrent)
+        let statuses = try await database.getFrameProcessingStatuses(frameIDs: [historical])
+        XCTAssertEqual(statuses[historical], 0, "A governor denial must leave history durably pending")
+        let old = try await database.dequeueFrameForProcessing(lane: .historical)
+        XCTAssertEqual(old?.frameID, historical)
+    }
+
+    func testOriginalSpoolRequiresDurableExtractionAndFinalizedArchive() async throws {
+        let videoID = try await database.insertVideoSegment(video(path: "chunks/202609/24/1780000000125", count: 1))
+        let frameID = FrameID(value: try await insertPendingFrame(videoID: videoID))
+        try await execute("UPDATE video SET processingState=1 WHERE id=\(videoID)")
+        // Exclusion and old code paths can mark status=2 without running OCR.
+        try await database.updateFrameProcessingStatus(frameID: frameID.value, status: 2)
+        guard case .pending = try await database.originalFrameDisposition(frameID: frameID) else {
+            return XCTFail("A queue status is not durable extraction proof")
+        }
+        _ = try await database.commitFrameOCR(frameID: frameID,
+            text: ExtractedText(frameID: frameID, timestamp: timestamp, regions: []),
+            frameWidth: 640, frameHeight: 360)
+        guard case .pending = try await database.originalFrameDisposition(frameID: frameID) else {
+            return XCTFail("Pending archive must retain originals even after empty OCR commits")
+        }
+        try await database.markVideoFinalized(id: videoID, frameCount: 1, fileSize: 100)
+        guard case let .extracted(storeID, frame, archive) = try await database.originalFrameDisposition(frameID: frameID) else {
+            return XCTFail("Durable blank OCR is a completed extraction, not a missing document")
+        }
+        let expectedStore = try await database.originalStoreID()
+        XCTAssertEqual(storeID, expectedStore)
+        XCTAssertEqual(frame.id, frameID)
+        XCTAssertEqual(frame.videoID.value, videoID)
+        XCTAssertEqual(archive.id.value, videoID)
+        XCTAssertEqual(archive.relativePath, "chunks/202609/24/1780000000125")
+    }
+
+    func testOriginalSpoolDeletionRequiresDurableTombstone() async throws {
+        guard case .pending = try await database.originalFrameDisposition(frameID: FrameID(value: 999_999)) else {
+            return XCTFail("Unknown identity must not be treated as permission to destroy originals")
+        }
+        let id = FrameID(value: try await insertPendingFrame())
+        try await database.deleteFrame(id: id)
+        guard case .deleted = try await database.originalFrameDisposition(frameID: id) else {
+            return XCTFail("Canonical deletion must prevent original recovery from resurrecting evidence")
+        }
+    }
+
+    func testProcessingReadPreservesCapturedDisplayAfterArchiveRemapping() async throws {
+        let firstVideo = try await database.insertVideoSegment(video(path: "chunks/202609/24/1700000000000", count: 1))
+        let nextVideo = try await database.insertVideoSegment(video(path: "chunks/202609/24/1700000001000", count: 1))
+        let id = FrameID(value: try await database.insertFrame(FrameReference(id: .init(value: 0),
+            timestamp: timestamp, segmentID: .init(value: segmentID), videoID: .init(value: firstVideo),
+            frameIndexInSegment: 0, metadata: FrameMetadata(displayID: 42, captureMonotonicTime: 123))))
+        try await execute("UPDATE frame SET videoId=\(nextVideo),videoFrameIndex=0 WHERE id=\(id.value)")
+        let loaded = try await database.getFrameWithVideoInfoByID(id: id)
+        XCTAssertEqual(loaded?.frame.metadata.displayID, 42)
+        XCTAssertEqual(loaded?.frame.metadata.captureMonotonicTime, 123)
+        XCTAssertEqual(loaded?.frame.videoID.value, nextVideo, "The immutable metadata must not restore an obsolete archive link")
+    }
+
+    func testOriginalSpoolRetainsPixelsAfterOCRTransactionRollback() async throws {
+        let videoID = try await database.insertVideoSegment(video(path: "chunks/202609/24/1780000000325", count: 1))
+        let frameID = FrameID(value: try await insertPendingFrame(videoID: videoID))
+        try await database.markVideoFinalized(id: videoID, frameCount: 1, fileSize: 100)
+        try await execute("CREATE TEMP TRIGGER reject_spool_ocr BEFORE INSERT ON node BEGIN SELECT RAISE(ABORT, 'retention rollback'); END;")
+        do {
+            _ = try await database.commitFrameOCR(frameID: frameID, text: text(frameID.value, "Pending 47000.00"),
+                frameWidth: 3840, frameHeight: 2160)
+            XCTFail("Expected SQLite failure")
+        } catch {}
+        guard case .pending = try await database.originalFrameDisposition(frameID: frameID) else {
+            return XCTFail("Failed extraction must not release original pixels")
+        }
+    }
+
     func testDeferredClaimReturnsToDurableQueueAtomically() async throws {
         let frameID = try await insertPendingFrame()
         _ = try await database.dequeueFrameForProcessing()

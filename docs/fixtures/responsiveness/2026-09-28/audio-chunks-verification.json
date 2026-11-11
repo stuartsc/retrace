@@ -1,0 +1,166 @@
+{
+  "application_preferences_changed": false,
+  "backend_promoted": false,
+  "candidate_default_enabled": false,
+  "checks": {
+    "clean_debug": {
+      "build_seconds": 430.02,
+      "clean_command": [
+        "swift",
+        "package",
+        "clean"
+      ],
+      "command": [
+        "swift",
+        "test",
+        "-j",
+        "2",
+        "--filter",
+        "AudioChunk|AudioCaptureSampleClockTests|AudioStreamBufferingPolicyTests|AudioMediaPlaybackOwnerTests|AudioMediaServiceLifecycleTests|AudioHistoryOwnerTests|TranscriptAudioPlaybackTests|AudioFormatConverterTests|AudioProcessingLifecycleTests|AudioProcessingBackpressureTests|AudioTranscriptionCommitTests|AudioRefinementSourceTests|AudioOriginalSourceTests|AudioEvidencePersistenceTests|BackgroundProcessingGovernorTests|ManualRefinementOwnershipTests|AudioBufferTimingTests|AudioPipelineBufferPolicyTests|RecordingLifecycleTests|MigrationTests|AudioTranscriptionCompletenessPolicyTests|JobIntegrationTests|LocalRecallControllerTests|LocalRecallServiceLifecycleTests|ScreenEvidenceAdmissionIntegrationTests|CrossSourceEvidenceResolutionTests|HistoryMomentSearchTests|WorkspaceAudioEvidenceTests|WorkspaceMixedEvidenceTests|UnifiedWorkspaceTests|WALRecoveryTests|ExactWALFrameTests|CaptureTextWALTests|WALFrameCodecTests|WALFrameCompressionTests|OriginalFrameSpoolTests|RetentionPathValidationTests|CaptureHealthTests|LocalContextServiceTests|LocalContextOwnershipTests|LocalRecallMetricsTests|SemanticRecallEngineTests|StartupRecoverySequencingTests"
+      ],
+      "environment": {
+        "RETRACE_TEST_DISABLE_FILE_LOGGING": "1"
+      },
+      "exit": 0,
+      "failures": 0,
+      "skip_scope": [
+        "separately invoked native boundary comparison",
+        "one explicit Foundation Models fixture",
+        "three explicit pinned Core ML model fixtures"
+      ],
+      "skipped": 5,
+      "test_seconds": 124.629,
+      "tests": 487
+    },
+    "focused_final_processing_regression": {
+      "exit": 0,
+      "failures": 0,
+      "review": "Existing no_context skip policy retained; row identity/text/times/media, ownership and lease assertions preserved.",
+      "seconds": 13.208,
+      "tests": 14
+    },
+    "matched_window_controls": {
+      "cases": [
+        "raw-15s",
+        "aac-15s",
+        "raw-10s",
+        "aac-10s"
+      ],
+      "exit": 0,
+      "failures": 0,
+      "reference_available": false,
+      "scope": "Qualitative raw/AAC comparisons at identical10s/15s geometry. Timed-span count and longer output are not accuracy scores. No backend promotion.",
+      "tests": 4
+    },
+    "native_audiofile_optimize": {
+      "all_originals_and_private_copies_unchanged": true,
+      "bytes_saved": 0,
+      "files": 5,
+      "native_error": "kAudioFilePermissionsError",
+      "native_status": 1886547263,
+      "scope": "Authored copies only; API reports append readiness, not minimum container size; no compaction implementation."
+    },
+    "native_boundary": {
+      "backend": "CPU_requested",
+      "byte_scope": "AAC_files_only_excludes_manifests_receipts_journals_filesystem_allocation",
+      "candidate_encoded_bytes": 146076,
+      "candidate_owned_word_edits": 52,
+      "clean_run_exit": 0,
+      "clean_run_seconds": 69.621,
+      "command": [
+        "swift",
+        "test",
+        "--skip-build",
+        "--filter",
+        "AudioChunkBoundaryComparisonTests.testExplicitNativeCPUComparisonAcrossTenSecondChunkBoundaries"
+      ],
+      "encoded_media_byte_saving_fraction": -0.06947220452898151,
+      "environment_keys": [
+        "RETRACE_TEST_DISABLE_FILE_LOGGING",
+        "RETRACE_WHISPER_COMPARISON_MODEL",
+        "RETRACE_AUDIO_BOUNDARY_EXPORT",
+        "RETRACE_AUDIO_BOUNDARY_REPEATS"
+      ],
+      "forced_timing_legacy_word_edits": 63,
+      "legacy_encoded_bytes": 136587,
+      "legacy_scope": "Forced timed-word geometry comparison; bypasses production live-first-pass retry/quality behavior. Not production legacy first-pass WER. Neither arm includes segmentation or database publication.",
+      "model_sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "quality_accepted": false,
+      "reference_words": 64,
+      "reproduction": "Same text/byte outcome on incremental binary, clean binary and LLDB run.",
+      "source_pcm_sha256": "d0f75891461c5c7f4d18b14305e5e6e950d2cdc0c2c34b306d498ac85dbd46f0",
+      "storage_savings_accepted": false,
+      "threads": 2
+    },
+    "native_entry_audit": {
+      "calls": 5,
+      "candidate_max_independent_decode_int16_difference": 1,
+      "effective_parameters_match": true,
+      "legacy_pcm_matches_actual_decoder_bytes": true,
+      "scope": "Native-entry snapshots and source lifetime audit found no discrepancy; does not prove pointer behavior throughout native execution. No process memory modified."
+    },
+    "optimized_build": {
+      "binary": "/tmp/retrace-audio-chunks-release-20260928/arm64-apple-macosx/release/Retrace",
+      "binary_bytes": 57756232,
+      "binary_launched": false,
+      "binary_sha256": "6432abef81a43fdc46abcfeb4bc9a6885b26979ae746cd0398d87d8b58cb87fd",
+      "command": [
+        "swift",
+        "build",
+        "-c",
+        "release",
+        "--scratch-path",
+        "/tmp/retrace-audio-chunks-release-20260928",
+        "-j",
+        "2"
+      ],
+      "exit": 0,
+      "scratch_verified_absent_before_command": true,
+      "seconds": 532.55
+    },
+    "reviews": {
+      "introduced_high_or_medium_findings_remaining": 0,
+      "native_report_limits_reviewed": true,
+      "scope": "Coordinated audio contracts, exact media/deletion, lifecycle drains/reopen, native timing request and refined test expectations. Not an audit of every pre-existing worktree change."
+    },
+    "source_guards": {
+      "git_diff_check_exit": 0,
+      "no_nanoseconds_sleep_guard_exit": 0
+    }
+  },
+  "codec_promoted": false,
+  "diagnostic_receipts": {
+    "entries": 100,
+    "path": "audio-chunks-diagnostics/receipts.json",
+    "sha256": "d4a09a3099a06b8d31fb629abf094c68ae10d17ec4e223835cd6a6329859564b"
+  },
+  "global_power_settings_changed": false,
+  "history_recompressed_or_deleted": false,
+  "host": {
+    "cpu": "Apple M1 Max",
+    "installed_build_rechecked": "2609.18.1",
+    "macOS": "26.1 (25B78)",
+    "memory_bytes": 68719476736,
+    "xcode": "26.3 (17C529)"
+  },
+  "installation_changed": false,
+  "recorded_at": "2026-09-28T08:27:52.979306+00:00",
+  "remaining_gates": [
+    "Recognition/windowing/codec quality failure on authored native comparison",
+    "Representative retained bytes, listening quality and decoding/foreground latency",
+    "Exact playback for pending recordings without committed transcript",
+    "Installed sleep/wake, low-disk and physical capture acceptance",
+    "Matched active-use/idle CPU, foreground p95 and whole-system energy acceptance",
+    "Remaining capture/hardware/storage/unified-workspace plan work in delivery ledger"
+  ],
+  "schema": 1,
+  "scope": "Default-off unique audio chunk source candidate and coordinated lifecycle/read/playback changes. Automated integrity checks pass; native recognition/storage rollout gates fail; full plan remains open.",
+  "source_head": "7723d3f8259ff25e37a062fa8dfbdb465d75c642",
+  "source_manifest": {
+    "files": 587,
+    "path": "audio-chunks-source-manifest.json",
+    "sha256": "66ae72243274394c4377425e458449dc16651acca104a98e0c08b6152d294f22",
+    "unchanged_across_clean_debug_and_release": true
+  },
+  "worktree": "Pre-existing and current uncommitted work; this is a source identity snapshot, not attribution of all changes."
+}

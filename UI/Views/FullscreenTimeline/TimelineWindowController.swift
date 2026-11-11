@@ -1182,22 +1182,8 @@ public class TimelineWindowController: NSObject {
             timelineWindowID = nil
         }
         let captureStartTime = CFAbsoluteTimeGetCurrent()
-        let captureTask = Task.detached(priority: .userInitiated) { [screenBounds, screenNumber, timelineWindowID] () -> CGImage? in
-            // Prefer a below-window capture to avoid including the timeline overlay itself.
-            if let timelineWindowID,
-               let image = CGWindowListCreateImage(
-                   screenBounds,
-                   .optionOnScreenBelowWindow,
-                   timelineWindowID,
-                   [.boundsIgnoreFraming]
-               ) {
-                return image
-            }
-
-            // Fallback to full display capture when below-window capture is unavailable.
-            return CGDisplayCreateImage(screenNumber)
-        }
-        let cgImage = await captureTask.value
+        let cgImage = await TimelineLiveCapture.image(displayID: screenNumber, bounds: screenBounds,
+                                                       belowWindowID: timelineWindowID)
         let captureElapsedMs = (CFAbsoluteTimeGetCurrent() - captureStartTime) * 1000
         Log.recordLatency(
             "timeline.live_screenshot.capture_ms",

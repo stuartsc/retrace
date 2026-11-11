@@ -25,6 +25,11 @@ public actor CGWindowListCapture {
     private var configurationGeneration: UInt64 = 0
     private var contextUnavailable = false
     private let contextSource = ActivityContextSource.live
+    private var frameContinuation: AsyncStream<CapturedFrame>.Continuation?
+    private var coverageHandler: (@Sendable (CaptureCoverageEvent) -> Void)?
+    private var textOutcomeHandler: (@Sendable (CaptureTextOutcome) -> Void)?
+    private var textCaptureTask: (id: UUID, task: Task<CaptureAttributedPixelRead?, Never>)?
+    private var coverageGap: CaptureCoverageGapReason?
 
     /// Callback when frame is captured
     nonisolated(unsafe) var onFrameCaptured: (@Sendable (CapturedFrame) -> Void)?
@@ -66,15 +71,16 @@ public actor CGWindowListCapture {
         displayID: CGDirectDisplayID? = nil
     ) async throws {
         guard !isActive else { return }
+        guard LegacyCaptureAPI.isAvailable else {
+            throw CaptureError.captureSessionFailed(underlying: "Legacy CoreGraphics capture is unavailable on this system")
+        }
 
         self.currentConfig = config
         configurationGeneration &+= 1
         self.isActive = true
 
         // Set up frame callback
-        self.onFrameCaptured = { frame in
-            frameContinuation.yield(frame)
-        }
+        self.frameContinuation = frameContinuation
 
         // Use provided display ID or fall back to main display
         let targetDisplayID = displayID ?? CGMainDisplayID()
@@ -91,6 +97,9 @@ public actor CGWindowListCapture {
 
         isActive = false
         configurationGeneration &+= 1
+        let oldText = textCaptureTask?.task
+        oldText?.cancel()
+        await oldText?.value
 
         // Stop timer on main thread
         await MainActor.run {
@@ -99,12 +108,20 @@ public actor CGWindowListCapture {
         }
 
         onFrameCaptured = nil
+        frameContinuation = nil
+        coverageGap = nil
     }
+
+    func setCoverageHandler(_ handler: (@Sendable (CaptureCoverageEvent) -> Void)?) async { coverageHandler = handler }
+    func setTextOutcomeHandler(_ handler: (@Sendable (CaptureTextOutcome) -> Void)?) async { textOutcomeHandler = handler }
 
     /// Update capture configuration
     func updateConfig(_ config: CaptureConfig) async throws {
         configurationGeneration &+= 1
         self.currentConfig = config
+        let oldText = textCaptureTask?.task
+        oldText?.cancel()
+        await oldText?.value
         // No need to update excluded windows here - they're computed on every capture
     }
 
@@ -168,18 +185,31 @@ public actor CGWindowListCapture {
         guard isActive, let config = currentConfig else { return }
         guard !isCaptureInFlight else {
             Log.debug("[CGWindowListCapture] Skipping capture because another capture is still in flight", category: .capture)
+            reportGap(.busy, displayID: displayID)
             return
         }
         isCaptureInFlight = true
         defer { isCaptureInFlight = false }
 
         let generation = configurationGeneration
+        guard let capturePolicySHA256 = try? ScreenEvidenceAccessPolicy(config: config).fingerprintSHA256() else {
+            reportGap(.captureFailed, displayID: displayID)
+            return
+        }
         let started = ContinuousClock.now
-        let frame = await CaptureSnapshotSequencer.capture(displayID: displayID,
+        let frame = await CaptureSnapshotSequencer.captureAttributed(displayID: displayID, capturePolicySHA256: capturePolicySHA256,
             readContext: { await self.contextSource.sampleCapture(config: config, displayID: displayID) },
-            capturePixels: { await self.captureFilteredPixels(displayID: displayID, config: config) })
+            capturePixels: { context in
+                if config.captureVisibleTextEnabled {
+                    return await self.capturePreparedLegacyPixelsOwned(displayID: displayID, config: config,
+                        context: context, generation: generation)
+                }
+                guard let pixels = await self.captureFilteredPixels(displayID: displayID, config: config) else { return nil }
+                return CaptureAttributedPixelRead(frame: pixels)
+            })
         guard isActive, generation == configurationGeneration else { return }
         guard let frame else {
+            reportGap(.unstableContext, displayID: displayID)
             if !contextUnavailable {
                 Log.info("[CGWindowListCapture] Waiting for a stable permitted surface before retaining pixels", category: .capture)
                 contextUnavailable = true
@@ -192,7 +222,25 @@ public actor CGWindowListCapture {
         }
         let elapsed = started.duration(to: .now)
         Log.recordLatency("capture.attributed_pixels", valueMs: Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15, category: .capture)
-        onFrameCaptured?(frame)
+        if let frameContinuation {
+            switch frameContinuation.yield(frame) {
+            case .enqueued:
+                if coverageGap != nil {
+                    coverageGap = nil
+                    coverageHandler?(CaptureCoverageEvent(backend: .legacy, displayID: displayID, state: .recovered))
+                }
+                onFrameCaptured?(frame)
+            case .dropped: reportGap(.consumerBackpressure, displayID: displayID)
+            case .terminated: break
+            @unknown default: reportGap(.consumerBackpressure, displayID: displayID)
+            }
+        }
+    }
+
+    private func reportGap(_ reason: CaptureCoverageGapReason, displayID: UInt32) {
+        guard coverageGap != reason else { return }
+        coverageGap = reason
+        coverageHandler?(CaptureCoverageEvent(backend: .legacy, displayID: displayID, state: .gap(reason)))
     }
 
     private func captureFilteredPixels(displayID: CGWindowID, config: CaptureConfig) async -> CapturedFrame? {
@@ -249,11 +297,138 @@ public actor CGWindowListCapture {
         return frame
     }
 
+    private func capturePreparedLegacyPixelsOwned(displayID: UInt32, config: CaptureConfig,
+                                                  context: ActivityContext?, generation: UInt64) async -> CaptureAttributedPixelRead? {
+        guard isActive, configurationGeneration == generation, !Task.isCancelled, textCaptureTask == nil else { return nil }
+        let id = UUID()
+        let task = Task { await self.capturePreparedLegacyPixels(displayID: displayID, config: config, context: context) }
+        textCaptureTask = (id, task)
+        let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        if textCaptureTask?.id == id { textCaptureTask = nil }
+        guard isActive, configurationGeneration == generation, !Task.isCancelled else { return nil }
+        return result
+    }
+
+    /// Direct text requires one already-selected native operation. The disabled
+    /// legacy comparison path above keeps its existing fallback behavior.
+    private func capturePreparedLegacyPixels(displayID: UInt32, config: CaptureConfig,
+                                             context: ActivityContext?) async -> CaptureAttributedPixelRead? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID) as? [[String: Any]], windows.count <= 4096 else { return nil }
+        let exclusions = await computeExcludedWindowIDs(config: config, displayID: displayID, suppliedWindows: windows)
+        let displayBounds = CGDisplayBounds(displayID)
+        var included: [UInt32] = []
+        var masks: [CGRect] = []
+        var visibleExcluded = Set<UInt32>()
+        let useArray = !exclusions.excludedWindowIDs.isEmpty && exclusions.redactedWindowIDs.isEmpty && !arrayCaptureBroken
+        for window in windows {
+            guard let id = window[kCGWindowNumber as String] as? UInt32,
+                  let dictionary = window[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary),
+                  CaptureTextPixelProof.valid(bounds) else { return nil }
+            guard bounds.intersects(displayBounds) else { continue }
+            if exclusions.excludedWindowIDs.contains(id) {
+                visibleExcluded.insert(id)
+                if !useArray { masks.append(bounds) }
+            } else if !useArray || ((window[kCGWindowLayer as String] as? Int) == 0 &&
+                       (window[kCGWindowAlpha as String] as? Double ?? 0) > 0 &&
+                       (window[kCGWindowIsOnscreen as String] as? Bool) == true) {
+                included.append(id)
+            }
+        }
+        guard !included.isEmpty, !Task.isCancelled else { return nil }
+        let proof = CaptureTextPixelProof.copy(displayID: displayID, includedWindowIDs: Set(included),
+                                               privacyMaskBounds: masks, suppliedWindows: windows)
+        let ids = included
+        let raw = await CaptureVisibleTextReader.readImage(proof: proof, context: context, enabled: true,
+            backend: .legacy, outcome: textOutcomeHandler) {
+                if useArray {
+                    return LegacyCaptureAPI.windowImage(bounds: displayBounds,
+                        windows: ids.map { NSNumber(value: $0) } as CFArray, options: [.bestResolution])
+                }
+                return LegacyCaptureAPI.displayImage(displayID)
+            }
+        guard let raw else {
+            // A fallback is a different plan and gets fresh AX/pixel receipts on
+            // the next sample, never text read for an unsuccessful array attempt.
+            if useArray { arrayCaptureBroken = true }
+            return nil
+        }
+        guard let image = CapturePrivacyMask.apply(to: raw.image, displayBounds: displayBounds, excludedBounds: masks),
+              let data = convertCGImageToBGRAData(image) else { return nil }
+        let redaction = summarizeRedaction(for: visibleExcluded.intersection(exclusions.redactedWindowIDs),
+            contextByWindowID: exclusions.redactionContextByWindowID, redactionOrder: exclusions.redactionWindowOrder)
+        let frame = CapturedFrame(timestamp: raw.pixelReceipt.interval.startedAt, imageData: data,
+            width: image.width, height: image.height, bytesPerRow: image.width * 4,
+            metadata: FrameMetadata(redactionReason: redaction?.reason, displayID: displayID))
+        return CaptureAttributedPixelRead(frame: frame, pixelReceipt: raw.pixelReceipt, captureText: raw.captureText)
+    }
+
+    /// The candidate shares the legacy exclusion rules and pixel conversion,
+    /// with conservative handling where nonfocused browser policy is unproven.
+    /// Snapshot sequencing outside this method brackets this entire operation.
+    func captureFilteredCandidatePixels(
+        displayID: UInt32, config: CaptureConfig,
+        readPixels: @Sendable (Set<CapturePermittedWindow>, [CGRect]) async throws -> CapturePixelImageRead?
+    ) async throws -> CaptureAttributedPixelRead? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID) as? [[String: Any]], windows.count <= 4096 else { return nil }
+        let displayBounds = CGDisplayBounds(displayID)
+        let exclusions = await computeExcludedWindowIDs(config: config, displayID: displayID,
+                                                       suppliedWindows: windows)
+        var boundsToMask: [CGRect] = []
+        var permittedWindows: Set<CapturePermittedWindow> = []
+        for window in windows {
+            guard let windowID = window[kCGWindowNumber as String] as? UInt32,
+                  let pid = window[kCGWindowOwnerPID as String] as? Int32,
+                  let dictionary = window[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary),
+                  bounds.origin.x.isFinite, bounds.origin.y.isFinite,
+                  bounds.width.isFinite, bounds.height.isFinite else { return nil }
+            guard bounds.intersects(displayBounds), bounds.width > 0, bounds.height > 0 else { continue }
+            let bundleID = bundleIDForPID(pid)
+            let title = window[kCGWindowName as String] as? String
+            guard (title?.utf8.count ?? 0) <= 4096 else { return nil }
+            let unknownOrDenied = Self.candidateMustMaskWindow(bundleID: bundleID, title: title, config: config)
+            if exclusions.excludedWindowIDs.contains(windowID) || unknownOrDenied {
+                boundsToMask.append(bounds)
+            } else if let bundleID, windowID > 0, pid > 0 {
+                permittedWindows.insert(.init(windowID: windowID, processID: pid, bundleID: bundleID))
+            }
+        }
+        guard !Task.isCancelled else { return nil }
+        guard let raw = try await readPixels(permittedWindows, boundsToMask) else { return nil }
+        guard !Task.isCancelled,
+              let image = CapturePrivacyMask.apply(to: raw.image, displayBounds: displayBounds,
+                                                    excludedBounds: boundsToMask),
+              let data = convertCGImageToBGRAData(image) else { return nil }
+        let frame = CapturedFrame(timestamp: raw.pixelReceipt.interval.startedAt, imageData: data,
+            width: image.width, height: image.height, bytesPerRow: image.width * 4,
+            metadata: FrameMetadata(redactionReason: boundsToMask.isEmpty ? nil : "capture-policy", displayID: displayID))
+        return CaptureAttributedPixelRead(frame: frame, pixelReceipt: raw.pixelReceipt, captureText: raw.captureText)
+    }
+
+    /// Titles and focused URLs cannot prove background-window privacy throughout
+    /// a screenshot. Until every included window has its own observer, dynamic
+    /// title rules mask all windows and private/URL rules mask every browser.
+    nonisolated static func candidateMustMaskWindow(bundleID: String?, title: String?, config: CaptureConfig) -> Bool {
+        guard let bundleID, !bundleID.isEmpty else { return true }
+        if config.excludedAppBundleIDs.contains(bundleID) ||
+            ["com.apple.loginwindow", "com.apple.SecurityAgent", "com.apple.ScreenSaver.Engine"].contains(bundleID) { return true }
+        if config.redactWindowTitlePatterns.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { return true }
+        if BrowserURLExtractor.isBrowser(bundleID) {
+            if config.redactBrowserURLPatterns.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { return true }
+            if config.excludePrivateWindows { return true }
+        }
+        return false
+    }
+
     /// Compute which window IDs should be excluded based on current config
     /// Called on EVERY capture to ensure real-time filtering
     private func computeExcludedWindowIDs(
         config: CaptureConfig,
-        displayID: CGWindowID
+        displayID: CGWindowID,
+        suppliedWindows: [[String: Any]]? = nil
     ) async -> ExclusionComputationResult {
         var excludedIDs = Set<CGWindowID>()
         var redactedWindowIDs = Set<CGWindowID>()
@@ -266,7 +441,7 @@ public actor CGWindowListCapture {
         }
 
         // Get all on-screen windows
-        guard let windowList = CGWindowListCopyWindowInfo(
+        guard let windowList = suppliedWindows ?? CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]] else {
@@ -365,6 +540,9 @@ public actor CGWindowListCapture {
             }
 
             // Slow path: query browser URL for this visible browser window.
+            // Candidate masks browsers with URL rules without pretending that
+            // the focused browser URL proves another visible window's URL.
+            if suppliedWindows != nil { continue }
             guard let ownerPID, let bundleID, BrowserURLExtractor.isBrowser(bundleID) else {
                 continue
             }
@@ -568,7 +746,7 @@ public actor CGWindowListCapture {
     ) -> FilteredCaptureResult? {
         // If no exclusions, use simple display capture
         if excludedWindowIDs.isEmpty {
-            guard let image = CGDisplayCreateImage(displayID) else { return nil }
+            guard let image = LegacyCaptureAPI.displayImage(displayID) else { return nil }
             return FilteredCaptureResult(image: image, visibleExcludedWindowIDs: [])
         }
 
@@ -577,7 +755,7 @@ public actor CGWindowListCapture {
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]] else {
-            guard let image = CGDisplayCreateImage(displayID) else { return nil }
+            guard let image = LegacyCaptureAPI.displayImage(displayID) else { return nil }
             return FilteredCaptureResult(image: image, visibleExcludedWindowIDs: [])
         }
 
@@ -617,7 +795,7 @@ public actor CGWindowListCapture {
 
         // If we filtered everything, capture just desktop
         if includedWindowIDs.isEmpty {
-            guard let image = CGDisplayCreateImage(displayID) else { return nil }
+            guard let image = LegacyCaptureAPI.displayImage(displayID) else { return nil }
             return FilteredCaptureResult(image: image, visibleExcludedWindowIDs: [])
         }
 
@@ -654,10 +832,10 @@ public actor CGWindowListCapture {
         }
 
         // Try the array-based capture first
-        if let image = CGImage(
-            windowListFromArrayScreenBounds: displayBounds,
-            windowArray: windowArray,
-            imageOption: [.bestResolution]
+        if let image = LegacyCaptureAPI.windowImage(
+            bounds: displayBounds,
+            windows: windowArray,
+            options: [.bestResolution]
         ) {
             Log.info("[Filtering] SUCCESS with array capture: \(image.width)x\(image.height)", category: .capture)
             return FilteredCaptureResult(image: image, visibleExcludedWindowIDs: [])
@@ -667,10 +845,10 @@ public actor CGWindowListCapture {
         Log.warning("[Filtering] Array capture failed on macOS, testing individual windows (one-time diagnostic)...", category: .capture)
         for windowID in includedWindowIDs {
             let singleArray: CFArray = [NSNumber(value: windowID)] as CFArray
-            if CGImage(
-                windowListFromArrayScreenBounds: displayBounds,
-                windowArray: singleArray,
-                imageOption: [.bestResolution]
+            if LegacyCaptureAPI.windowImage(
+                bounds: displayBounds,
+                windows: singleArray,
+                options: [.bestResolution]
             ) == nil {
                 let info = windowList.first { ($0[kCGWindowNumber as String] as? CGWindowID) == windowID }
                 let name = info?[kCGWindowName as String] as? String ?? "(no name)"
@@ -696,7 +874,7 @@ public actor CGWindowListCapture {
         windowList: [[String: Any]]
     ) -> FilteredCaptureResult? {
         // Capture the full screen first
-        guard let fullScreenImage = CGDisplayCreateImage(displayID) else {
+        guard let fullScreenImage = LegacyCaptureAPI.displayImage(displayID) else {
             Log.error("[Masking] Failed to capture full screen", category: .capture)
             return nil
         }
@@ -780,9 +958,9 @@ public actor CGWindowListCapture {
                 bytesPerRow: width * 4,
                 space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else {
+        ) else {
             Log.error("[Masking] Failed to create graphics context", category: .capture)
-            return FilteredCaptureResult(image: fullScreenImage, visibleExcludedWindowIDs: [])
+            return nil
         }
 
         // Draw the full screen image
@@ -803,7 +981,7 @@ public actor CGWindowListCapture {
 
         guard let maskedImage = context.makeImage() else {
             Log.error("[Masking] Failed to create masked image", category: .capture)
-            return FilteredCaptureResult(image: fullScreenImage, visibleExcludedWindowIDs: [])
+            return nil
         }
 
         let visibleExcludedWindowIDs = Set(visibleExcludedRegions.map { $0.windowID })

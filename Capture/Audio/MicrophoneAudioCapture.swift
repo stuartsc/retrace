@@ -202,8 +202,7 @@ final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDele
     // Callback conversion and background shutdown share this bounded critical section.
     private let stateLock = NSLock()
     private var isFinished = false
-    private var pendingStart: Date?
-    private var lastOutputEnd: Date?
+    private var sampleClock = AudioCaptureSampleClock()
     private var reportedConversionFailure = false
 
     init(continuation: AsyncStream<CapturedAudio>.Continuation, formatConverter: AudioFormatConverter) {
@@ -220,21 +219,39 @@ final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDele
         stateLock.lock()
         defer { stateLock.unlock() }
         guard !isFinished else { return }
-        if pendingStart == nil { pendingStart = receivedAt }
+        let packet: AudioNativePacketTiming
+        do { packet = try AudioNativePacketTiming(sampleBuffer) }
+        catch {
+            // No part of the rejected packet has entered the converter. Drain
+            // only previously accepted PCM on its existing clock before reset.
+            if let acceptedTail = try? formatConverter.finish() { emit(acceptedTail) }
+            resetAfterConversionFailure()
+            return
+        }
         do {
+            if !sampleClock.isContinuous(packet) {
+                // Drain accepted filter output on its old sample clock before a
+                // physical gap/format boundary. Privacy resets discard it instead.
+                emit(try formatConverter.finish())
+                sampleClock.begin(packet, receivedAt: receivedAt)
+            }
             let data = try formatConverter.convert(sampleBuffer: sampleBuffer)
-            emit(data, at: pendingStart ?? receivedAt)
+            sampleClock.consumed(packet)
+            emit(data)
             reportedConversionFailure = false
         } catch {
-            // A rejected packet is a discontinuity; retain neither filter history nor
-            // its wall-clock anchor. Empty successful output above is normal priming.
-            formatConverter.reset()
-            pendingStart = nil
-            lastOutputEnd = nil
-            if !reportedConversionFailure {
-                Log.warning("[MicrophoneAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
-                reportedConversionFailure = true
-            }
+            // A failed conversion may have consumed part of the rejected packet;
+            // never publish its ambiguous filter tail or cross a privacy reset.
+            resetAfterConversionFailure()
+        }
+    }
+
+    private func resetAfterConversionFailure() {
+        formatConverter.reset()
+        sampleClock.reset()
+        if !reportedConversionFailure {
+            Log.warning("[MicrophoneAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
+            reportedConversionFailure = true
         }
     }
 
@@ -244,21 +261,21 @@ final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDele
         guard !isFinished else { return }
         isFinished = true
         do {
-            emit(try formatConverter.finish(), at: lastOutputEnd ?? pendingStart ?? Date())
+            emit(try formatConverter.finish())
         } catch {
             Log.warning("[MicrophoneAudioCapture] Could not drain final audio conversion samples", category: .capture)
         }
     }
 
-    private func emit(_ data: Data, at timestamp: Date) {
-        guard !data.isEmpty else { return }
+    private func emit(_ data: Data) {
+        guard !data.isEmpty,
+              let timestamp = sampleClock.timestampForOutput(frameCount: data.count / MemoryLayout<Int16>.size) else { return }
         let duration = Double(data.count) / Double(formatConverter.targetSampleRate * MemoryLayout<Int16>.size)
         continuation.yield(CapturedAudio(
             timestamp: timestamp, audioData: data, duration: duration, source: .microphone,
-            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels
+            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels,
+            continuityID: sampleClock.continuityID
         ))
-        lastOutputEnd = timestamp.addingTimeInterval(duration)
-        pendingStart = nil
     }
 }
 

@@ -1,0 +1,29 @@
+{
+  "source": "/tmp/retrace-audio-boundary-final-20260928-1749/chunked/audio/chunk-media/cf0ea030-0be7-4619-a197-f13dc4cc8349/9a0eedd4-db1f-4827-8ab6-bbdd4ee86fc2.m4a",
+  "boxes": [
+    {
+      "type": "ftyp",
+      "offset": 0,
+      "bytes": 28,
+      "header_bytes": 8
+    },
+    {
+      "type": "moov",
+      "offset": 28,
+      "bytes": 1527,
+      "header_bytes": 8
+    },
+    {
+      "type": "free",
+      "offset": 1555,
+      "bytes": 23013,
+      "header_bytes": 8
+    },
+    {
+      "type": "mdat",
+      "offset": 24568,
+      "bytes": 33372,
+      "header_bytes": 8
+    }
+  ]
+}

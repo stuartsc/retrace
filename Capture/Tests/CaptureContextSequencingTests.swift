@@ -4,6 +4,21 @@ import Shared
 @testable import Capture
 
 final class CaptureContextSequencingTests: XCTestCase {
+    func testSequencerPreservesThePolicyOfItsActualPixelReadThroughContextReconstruction() async throws {
+        let source = CaptureSampleFixture(captureTestContext())
+        let pixels = try renderedCaptureFixture()
+        let policy = ScreenEvidenceAccessPolicy(config: CaptureConfig(excludedAppBundleIDs: ["com.test.background"]))
+        let fingerprint = try policy.fingerprintSHA256()
+        let captured = await CaptureSnapshotSequencer.capture(displayID: 42, capturePolicySHA256: fingerprint,
+            readContext: { await source.sample() }, capturePixels: { pixels })
+        let result = try XCTUnwrap(captured)
+        XCTAssertEqual(result.metadata.capturePolicySHA256, fingerprint)
+        XCTAssertEqual(result.imageData, pixels.imageData)
+        XCTAssertEqual(result.metadata.linkingActivity(nil).capturePolicySHA256, fingerprint)
+        XCTAssertTrue(policy.permits(result.metadata))
+        XCTAssertFalse(ScreenEvidenceAccessPolicy(config: CaptureConfig()).permits(result.metadata))
+    }
+
     func testMatchingSamplesBindActualPixelsToCaptureTimeContext() async throws {
         let context = captureTestContext()
         let source = CaptureSampleFixture(context)

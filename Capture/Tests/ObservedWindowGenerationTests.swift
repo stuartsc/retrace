@@ -64,6 +64,30 @@ final class ObservedWindowGenerationTests: XCTestCase {
         XCTAssertNotEqual(focused, generation())
     }
 
+    func testCapturePauseAndRestartFenceNativeWindowGenerationWithoutActivityWriter() throws {
+        let window = makeWindow()
+        defer { window.close() }
+        let id = UInt32(window.windowNumber)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let registry = ObservedWindowGenerations()
+        let fence = CaptureNotificationFence(registry: registry)
+        let center = NotificationCenter()
+        let generation = {
+            registry.generation(processID: pid, processGeneration: "native-capture-only-session",
+                                windowID: id, visibleWindowIDs: [id])
+        }
+        _ = fence.start(workspaceCenter: center, displayCenter: center)
+        let first = generation()
+        fence.stop()
+        let stopped = generation()
+        XCTAssertNotEqual(first, stopped, "A reused WindowServer identifier during an unobserved pause has no old lifetime proof")
+        _ = fence.start(workspaceCenter: center, displayCenter: center)
+        defer { fence.stop() }
+        let restarted = generation()
+        XCTAssertNotEqual(stopped, restarted)
+        XCTAssertEqual(restarted, generation(), "Stable native identity remains stable within the new observed session")
+    }
+
     private func makeWindow() -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: CGRect(x: -10_000, y: -10_000, width: 64, height: 48),

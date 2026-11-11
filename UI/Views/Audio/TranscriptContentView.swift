@@ -10,6 +10,7 @@ struct TranscriptContentView: View {
     @ObservedObject var playback: TranscriptAudioPlayback
     let onReveal: (TranscriptAudioRequest) -> Void
     let onClose: () -> Void
+    var onSelect: ((AudioTranscription) async -> Void)? = nil
 
     /// Strip whisper.cpp control tokens for display (handles legacy DB records)
     static func stripControlTokens(_ text: String) -> String {
@@ -62,6 +63,8 @@ struct TranscriptContentView: View {
             Divider()
                 .background(Color.white.opacity(0.1))
 
+            TranscriptPlaybackControls(playback: playback)
+
             // Content
             if transcriptions.isEmpty {
                 Spacer()
@@ -81,7 +84,8 @@ struct TranscriptContentView: View {
                             TranscriptionRow(
                                 row: row,
                                 playback: playback,
-                                onReveal: onReveal
+                                onReveal: onReveal,
+                                onSelect: onSelect
                             )
                         }
                     }
@@ -286,6 +290,7 @@ private struct TranscriptionRow: View {
     let row: TranscriptPresentationRow
     @ObservedObject var playback: TranscriptAudioPlayback
     let onReveal: (TranscriptAudioRequest) -> Void
+    var onSelect: ((AudioTranscription) async -> Void)? = nil
     @State private var isHovering = false
     @State private var didPushCursor = false
 
@@ -347,11 +352,13 @@ private struct TranscriptionRow: View {
                             .italic()
                     }
                 } else {
-                    Text(row.displayText)
-                        .font(.system(size: 13))
-                        .foregroundColor(row.isCollapsedAmbientCaption ? .white.opacity(0.58) : .white.opacity(0.85))
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if let onSelect {
+                        Button { Task { await onSelect(transcription) } } label: {
+                            transcriptText
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Play and select \(Self.timeFormatter.string(from: transcription.startTime)): \(row.displayText)")
+                    } else { transcriptText }
                 }
                 if isSelected, let message = playback.state.message {
                     Text(message)
@@ -406,6 +413,12 @@ private struct TranscriptionRow: View {
         .onDisappear {
             releaseCursorIfNeeded()
         }
+    }
+
+    private var transcriptText: some View {
+        Text(row.displayText).font(.system(size: 13))
+            .foregroundColor(row.isCollapsedAmbientCaption ? .white.opacity(0.58) : .white.opacity(0.85))
+            .lineLimit(nil).fixedSize(horizontal: false, vertical: true)
     }
 
     private func applyCursorAction(hovering: Bool) {
@@ -465,5 +478,33 @@ private struct TranscriptionRow: View {
         case .zoom: return .orange
         default: return .gray
         }
+    }
+}
+
+private struct TranscriptPlaybackControls: View {
+    @ObservedObject var playback: TranscriptAudioPlayback
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("Playback").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Picker("Speed", selection: Binding(get: { playback.playbackRate }, set: { playback.setRate($0) })) {
+                    ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 2], id: \.self) { rate in
+                        Text("\(rate.formatted())×").tag(rate)
+                    }
+                }.frame(width: 120)
+            }
+            if !playback.waveform.isEmpty {
+                Canvas { context, size in
+                    let step = size.width / CGFloat(playback.waveform.count)
+                    for (index, value) in playback.waveform.enumerated() {
+                        let height = max(1, min(size.height, CGFloat(value) * size.height * 4))
+                        let rect = CGRect(x: CGFloat(index) * step, y: (size.height - height) / 2,
+                            width: max(1, step - 1), height: height)
+                        context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(.accentColor))
+                    }
+                }.frame(height: 32).accessibilityLabel("Waveform from the selected audio recording")
+            }
+        }.padding(.horizontal, 16).padding(.vertical, 8)
     }
 }

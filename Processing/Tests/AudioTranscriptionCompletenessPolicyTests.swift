@@ -387,6 +387,34 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertEqual(prompts.first ?? nil, "trusted neighboring transcript")
     }
 
+    func testExactMediaLiveProfileRequiresWordTimingsAcrossEnhancementAttempts() async throws {
+        let service = ScriptedTranscriptionService(results: [
+            DetailedTranscriptionResult(text: "", words: [], language: "en", duration: 1),
+            Self.result("Cedar approved seven changes before sending the reply")
+        ])
+        try await service.initialize()
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1, sampleRate: 16_000, amplitude: 0.1),
+            sampleRate: 16_000, channels: 1, transcriptionService: service,
+            wordLevel: false, initialPrompt: nil, profile: .liveFirstPass, requireWordTimings: true
+        )
+        let requests = await service.wordTimingRequestsSeen()
+        XCTAssertEqual(decision.attempts, 2)
+        XCTAssertEqual(requests, [true, true], "Required ownership timing must survive the fast first-pass profile and every retry")
+    }
+
+    func testLegacyLiveProfileKeepsItsTextOnlyDefault() async throws {
+        let service = ScriptedTranscriptionService(results: [Self.result("Cedar approved seven changes before sending the reply")])
+        try await service.initialize()
+        _ = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1, sampleRate: 16_000, amplitude: 0.1),
+            sampleRate: 16_000, channels: 1, transcriptionService: service,
+            wordLevel: true, initialPrompt: nil, profile: .liveFirstPass
+        )
+        let requests = await service.wordTimingRequestsSeen()
+        XCTAssertEqual(requests, [false], "Legacy capture keeps its existing first-pass cost unless ownership explicitly requires timing")
+    }
+
     func testLiveRetryProfileRejectsSoundEffectCaptionsBeforeReturning() async throws {
         let caption = DetailedTranscriptionResult(
             text: "(fire crackling)",
@@ -480,6 +508,7 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
     private var callIndex = 0
     private var languageHints: [String] = []
     private var initialPrompts: [String?] = []
+    private var wordTimingRequests: [Bool] = []
 
     init(results: [DetailedTranscriptionResult]) {
         self.results = results
@@ -527,6 +556,7 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
         }
         languageHints.append(languageHint ?? "nil")
         initialPrompts.append(initialPrompt)
+        wordTimingRequests.append(wordLevel)
         let result = results[min(callIndex, results.count - 1)]
         callIndex += 1
         return result
@@ -539,4 +569,6 @@ private actor ScriptedTranscriptionService: TranscriptionProtocol {
     func initialPromptsSeen() -> [String?] {
         initialPrompts
     }
+
+    func wordTimingRequestsSeen() -> [Bool] { wordTimingRequests }
 }

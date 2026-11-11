@@ -1,0 +1,12 @@
+[
+  {
+    "boundary": "handler_installed_before_whisper_full",
+    "cancellation_join_seconds": 3.477089708,
+    "cancelled": true,
+    "case": "owned_CPU_cancellation_and_next_inference",
+    "exact_native_sampling_phase_unverified": true,
+    "joined_and_next_inference_seconds": 15.075489875,
+    "next_inference_seconds": 11.598389083,
+    "reused_model_returned_text": true
+  }
+]

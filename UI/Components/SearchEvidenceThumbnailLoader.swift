@@ -45,7 +45,7 @@ actor SearchEvidenceThumbnailLoader {
             try Task.checkCancellation()
             return thumbnail
         case .unavailable(let reason): throw reason
-        case .activity: throw EvidenceUnavailableReason.integrityFailure
+        case .activity, .audio, .job: throw EvidenceUnavailableReason.integrityFailure
         }
     }
 
@@ -83,7 +83,7 @@ actor SearchEvidenceThumbnailLoader {
             try Task.checkCancellation()
             return thumbnail
         case .unavailable(let reason): throw reason
-        case .activity: throw EvidenceUnavailableReason.integrityFailure
+        case .activity, .audio, .job: throw EvidenceUnavailableReason.integrityFailure
         }
     }
 

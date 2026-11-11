@@ -4,11 +4,76 @@ import XCTest
 import Database
 import Shared
 import Storage
+import App
 @testable import Retrace
 
 @MainActor
 final class TranscriptAudioPlaybackTests: XCTestCase {
     private let base = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testChunkWindowUsesVerifiedPCMAndReleasesAfterNativeStop() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("chunk-playback-ui-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let database = DatabaseManager(databasePath: root.appendingPathComponent("fixture.sqlite").path)
+        try await database.initialize()
+        let pointer = await database.getConnection()
+        let queries = AudioTranscriptionQueries(db: try XCTUnwrap(pointer))
+        let store = AudioChunkMediaStore(storageRoot: root, storeID: try await queries.audioMediaStoreID())
+        let window = try await store.persistChunk(.init(streamID: UUID(), source: .microphone,
+            origin: base, startFrame: 0, pcmData: pcm()), previous: nil)
+        let raw = try await queries.registerRawAudioWindow(window)
+        let source = try await queries.pendingFirstPassSource(rawBatchID: raw, path: window.relativePath)
+        _ = try await queries.commitFirstPass(rawBatchID: raw, records: [
+            (nil, "Cedar playback", base.addingTimeInterval(0.5), base.addingTimeInterval(2.5),
+             .microphone, 0.9, [], window.relativePath, 1, window.relativePath, "transcribed", "en", "raw", nil)
+        ], originalSource: source)
+        let reader = try await database.makeAudioEvidenceStore()
+        let owner = AudioMediaPlaybackOwner(evidence: reader, media: store, configuration: { CaptureConfig() })
+        let rows = try await queries.getTranscriptions(from: base, to: base.addingTimeInterval(4))
+        let request = TranscriptAudioRequest(transcription: try XCTUnwrap(rows.first))
+        let ref = try XCTUnwrap(request.evidenceReference)
+        let playback = TranscriptAudioPlayback(resolve: { _ in
+            TranscriptAudioClip(lease: try await owner.acquire(ref))
+        }, isMuted: true)
+        playback.toggle(request)
+        try await waitUntil { playback.state.phase == .playing }
+        let native = try XCTUnwrap(playback.pcmPlayer)
+        XCTAssertEqual(native.volume, 0)
+        XCTAssertEqual(native.duration, 2, accuracy: 1.0 / 16_000)
+        playback.toggle(request)
+        XCTAssertEqual(playback.state.phase, .paused)
+        await playback.playFromStart(request)
+        XCTAssertTrue(native.isPlaying)
+        XCTAssertEqual(playback.state.phase, .playing)
+        await owner.invalidate()
+        try await waitUntil { playback.state.phase == .failed }
+        XCTAssertFalse(native.isPlaying)
+        await playback.stopAndDrain()
+        // A cancelled late media load must release the native file lease even
+        // before a player exists; close below joins that release.
+        let gate = TranscriptPlaybackGate()
+        let late = TranscriptAudioPlayback(resolve: { _ in
+            let clip = TranscriptAudioClip(lease: try await owner.acquire(ref))
+            await gate.wait()
+            return clip
+        }, isMuted: true)
+        late.toggle(request)
+        try await waitUntil { gate.isWaiting }
+        await late.stopAndDrain()
+        XCTAssertNil(late.pcmPlayer)
+        XCTAssertEqual(late.state.phase, .idle)
+        playback.toggle(request)
+        try await waitUntil { playback.state.phase == .playing }
+        let deletedPlayer = try XCTUnwrap(playback.pcmPlayer)
+        _ = try await queries.deleteTranscription(id: try XCTUnwrap(rows.first?.id))
+        await owner.revalidateActive()
+        try await waitUntil { playback.state.phase == .failed }
+        XCTAssertFalse(deletedPlayer.isPlaying)
+        await playback.stopAndDrain()
+        await owner.close(); await reader.close(); await store.close()
+        try await database.close()
+        try FileManager.default.removeItem(at: root)
+    }
 
     func testSQLiteSentenceSeeksInsideCanonicalAACAndStopsAtItsEnd() async throws {
         let fixture = try await makeRecording()
@@ -94,11 +159,11 @@ final class TranscriptAudioPlaybackTests: XCTestCase {
         let legacy = try await TranscriptAudioFileResolver.resolve(request: request, storageRoot: fixture.root)
         XCTAssertEqual(legacy.startTime, 0, accuracy: 0.002)
         XCTAssertEqual(legacy.endTime, 1, accuracy: 0.002)
-        try FileManager.default.removeItem(at: legacy.url)
+        try FileManager.default.removeItem(at: XCTUnwrap(legacy.url))
         let fallback = try await TranscriptAudioFileResolver.resolve(request: request, storageRoot: fixture.root)
         XCTAssertEqual(fallback.startTime, 1, accuracy: 0.002)
         XCTAssertEqual(fallback.endTime, 2, accuracy: 0.002)
-        XCTAssertEqual(fallback.url.lastPathComponent, URL(fileURLWithPath: fixture.path).lastPathComponent)
+        XCTAssertEqual(try XCTUnwrap(fallback.url).lastPathComponent, URL(fileURLWithPath: fixture.path).lastPathComponent)
     }
 
     func testMissingCorruptAndOutOfRangeRecordingsFailWithoutPlaying() async throws {
@@ -270,6 +335,65 @@ final class TranscriptAudioPlaybackTests: XCTestCase {
         TranscriptAudioRequest(transcription: AudioTranscription(id: id, sessionID: nil, text: "Authored fixture",
             startTime: base.addingTimeInterval(start), endTime: base.addingTimeInterval(end),
             source: .microphone, confidence: nil, createdAt: base, audioPath: path, batchAudioPath: batch))
+    }
+
+    func testWaveformReadsRealAACWithinBoundedSelectedRange() async throws {
+        let fixture = try await makeRecording()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let clip = try await TranscriptAudioFileResolver.resolve(
+            request: request(path: fixture.path, start: 0.5, end: 2.5), storageRoot: fixture.root)
+        let values = try await TranscriptWaveform.read(clip)
+        XCTAssertEqual(values.count, 80)
+        XCTAssertTrue(values.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 })
+        XCTAssertGreaterThan(values.max() ?? 0, 0.1)
+    }
+
+    func testPlaybackRateAndTranscriptReselectionSeekOneNativePlayer() async throws {
+        let fixture = try await makeRecording()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let request = request(path: fixture.path, start: 0.5, end: 2.5)
+        let playback = TranscriptAudioPlayback(resolve: {
+            try await TranscriptAudioFileResolver.resolve(request: $0, storageRoot: fixture.root)
+        }, isMuted: true)
+        defer { playback.stop(reason: .closed) }
+        playback.setRate(1.5)
+        playback.toggle(request)
+        try await waitUntil { playback.state.phase == .playing }
+        let player = try XCTUnwrap(playback.player)
+        XCTAssertEqual(player.rate, 1.5, accuracy: 0.01)
+        playback.toggle(request)
+        await playback.playFromStart(request)
+        XCTAssertTrue(playback.player === player)
+        XCTAssertEqual(playback.state.phase, .playing)
+        XCTAssertLessThan(player.currentTime().seconds, 0.85)
+        playback.setRate(.nan)
+        XCTAssertEqual(playback.playbackRate, 1.5)
+        playback.stop(reason: .closed)
+        XCTAssertTrue(playback.waveform.isEmpty)
+    }
+
+    func testRevokedWorkspaceAdmissionCannotStartAfterNativeClipResolution() async throws {
+        let fixture = try await makeRecording()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let request = request(path: fixture.path, start: 0.5, end: 2.5)
+        let gate = TranscriptPlaybackGate()
+        var admitted = true
+        var outcomes: [TranscriptAudioPlayback.Outcome] = []
+        let playback = TranscriptAudioPlayback(resolve: { request in
+            let clip = try await TranscriptAudioFileResolver.resolve(request: request, storageRoot: fixture.root)
+            await gate.wait()
+            return clip
+        }, isMuted: true, onEvent: { outcomes.append($0.outcome) })
+        defer { playback.stop(reason: .closed) }
+        await playback.playFromStart(request, isAdmitted: { admitted })
+        try await waitUntil { gate.isWaiting }
+        let pending = playback.preparationTask
+        admitted = false
+        gate.open()
+        await pending?.value
+        XCTAssertNil(playback.player)
+        XCTAssertEqual(playback.state.phase, .idle)
+        XCTAssertFalse(outcomes.contains(.started))
     }
 
     private func makeRecording() async throws -> (root: URL, path: String) {

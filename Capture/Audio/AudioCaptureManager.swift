@@ -47,6 +47,7 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     private var config: AudioCaptureConfig
     public private(set) var isCapturing: Bool = false
     private var currentMeetingState: MeetingState = .notInMeeting
+    private var meetingComparisonRequest = UUID()
 
     // Statistics
     private var statistics = AudioCaptureStatistics(
@@ -66,11 +67,12 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     private var microphoneStreamTask: Task<Void, Never>?
     private var systemAudioStreamTask: Task<Void, Never>?
 
-    public init(config: AudioCaptureConfig = .default) {
+    public init(config: AudioCaptureConfig = .default,
+                meetingCaptureConfig: (@Sendable () async -> MeetingCapturePolicySnapshot?)? = nil) {
         self.config = config
         self.microphoneCapture = MicrophoneAudioCapture(config: config)
         self.systemAudioCapture = SystemAudioCapture(config: config)
-        self.meetingDetector = MeetingDetector()
+        self.meetingDetector = MeetingDetector(captureConfig: meetingCaptureConfig)
     }
 
     // MARK: - AudioCaptureProtocol Implementation
@@ -86,6 +88,7 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     public func startCapture(config: AudioCaptureConfig) async throws {
         guard !isCapturing else { return }
 
+        meetingComparisonRequest = UUID()
         self.config = config
 
         // Create combined audio stream
@@ -95,13 +98,14 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         self._audioStream = stream
         self.audioContinuation = continuation
 
-        // Start meeting detection
-        await meetingDetector.startMonitoring(bundleIDs: config.meetingAppBundleIDs)
-        await meetingDetector.onStateChange { [weak self] state in
-            Task {
-                await self?.handleMeetingStateChange(state)
-            }
+        // Install the owned, awaited consumer before the first observation.
+        // Unknown/stale evidence must never release no-consent audio protection.
+        await meetingDetector.onStateChangeAsync { [weak self] state in
+            await self?.handleMeetingStateChange(state)
         }
+        await meetingDetector.setComparisonEnabled(config.meetingEvidenceComparisonEnabled)
+        await systemAudioCapture.setMuted(!config.hasConsentedToMeetingRecording)
+        await meetingDetector.startMonitoring(bundleIDs: config.meetingAppBundleIDs)
 
         // Start microphone capture if enabled
         if config.microphoneEnabled {
@@ -124,6 +128,8 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         // Start system audio capture if enabled (non-fatal if it fails)
         if config.systemAudioEnabled {
             do {
+                let beforeStart = await meetingDetector.getCurrentState()
+                await updateSystemAudioMuteState(meetingState: beforeStart)
                 try await systemAudioCapture.startCapture()
 
                 // Apply initial mute state based on current meeting state
@@ -155,8 +161,17 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     public func stopCapture() async throws {
-        guard isCapturing else { return }
+        guard isCapturing else {
+            // A consumer can acquire a stream before a failed/cancelled native
+            // start. Finish that exact stream so graceful drain cannot await a
+            // lazily created, device-less producer forever.
+            audioContinuation?.finish()
+            audioContinuation = nil
+            _audioStream = nil
+            return
+        }
 
+        await meetingDetector.stopMonitoring()
         await microphoneCapture.stopCapture()
         var systemStopError: Error?
         do {
@@ -164,8 +179,6 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         } catch {
             systemStopError = error
         }
-        await meetingDetector.stopMonitoring()
-
         // Source stop finishes its stream, including resampler tails. Cancelling
         // these consumers would discard queued audio instead of forwarding it.
         await AudioStreamForwarding.drain([microphoneStreamTask, systemAudioStreamTask])
@@ -192,6 +205,7 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     public func updateConfig(_ config: AudioCaptureConfig) async throws {
+        meetingComparisonRequest = UUID()
         let wasCapturing = isCapturing
 
         if wasCapturing {
@@ -210,11 +224,36 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     public func getMeetingState() async -> MeetingState {
-        return currentMeetingState
+        return await meetingDetector.getCurrentState()
+    }
+
+    /// App bridges existing transcription/speech-like-energy results. This does
+    /// not start audio or inspect a transcript; observations retain original times.
+    public func observeMeetingSpeech(_ observation: MeetingObservation) async {
+        await meetingDetector.observeSpeech(observation)
+    }
+
+    /// Updates only the comparison detector. Existing PCM streams, recording
+    /// choices and consent survive. Read getConfig() after ACK for accepted state.
+    public func setMeetingEvidenceComparisonEnabled(_ enabled: Bool) async {
+        let request = UUID()
+        meetingComparisonRequest = request
+        await meetingDetector.setComparisonEnabled(enabled)
+        let acknowledged = await meetingDetector.comparisonIsEnabled()
+        guard request == meetingComparisonRequest else { return }
+        config = config.withMeetingEvidenceComparisonEnabled(acknowledged)
+    }
+
+    /// Awaited by the detector; stop/reconfigure joins in-flight metric delivery.
+    /// A handler must not await this manager's stop from within its own delivery.
+    public func setMeetingOutcomeHandler(_ handler: (@Sendable (MeetingDetectionOutcome) async -> Void)?) async {
+        await meetingDetector.setOutcomeHandler(handler)
     }
 
     public func setSystemAudioMuted(_ muted: Bool) async {
-        await systemAudioCapture.setMuted(muted)
+        let permitted = MeetingAudioPrivacyPolicy.permitsSystemAudio(state: currentMeetingState, config: config,
+            uptime: ProcessInfo.processInfo.systemUptime)
+        await systemAudioCapture.setMuted(muted || !permitted)
     }
 
     public func isSystemAudioMuted() async -> Bool {
@@ -244,6 +283,11 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     private func receiveSystemAudio(_ audio: CapturedAudio) {
+        // The native source may be awaiting a slow observer/native call when a
+        // previously absent inventory expires. Enforce freshness again before
+        // delivering PCM, so an old unmute cannot outlive its evidence lease.
+        guard MeetingAudioPrivacyPolicy.permitsSystemAudio(state: currentMeetingState, config: config,
+            uptime: ProcessInfo.processInfo.systemUptime) else { return }
         audioContinuation?.yield(audio)
 
         // Update statistics
@@ -263,10 +307,11 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
 
     /// Handle meeting state changes and apply automatic muting logic
     private func handleMeetingStateChange(_ state: MeetingState) async {
+        let wasInMeeting = currentMeetingState.isInMeeting
         currentMeetingState = state
 
         // Update statistics
-        if state.isInMeeting {
+        if state.isInMeeting && !wasInMeeting {
             statistics = AudioCaptureStatistics(
                 microphoneSamplesRecorded: statistics.microphoneSamplesRecorded,
                 systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded,
@@ -283,37 +328,22 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     /// Update system audio mute state based on meeting state and user consent
-    /// PRIVACY LOGIC:
-    /// - IF in meeting AND no consent: MUTE system audio
-    /// - IF in meeting AND has consent: ALLOW system audio
-    /// - IF not in meeting: ALLOW system audio
+    /// Confidence and consent are separate. Possible/unknown/stale observations
+    /// protect audio; app presence alone never becomes a supported active call.
     private func updateSystemAudioMuteState(meetingState: MeetingState) async {
-        let shouldMute: Bool
-
-        if meetingState.isInMeeting {
-            // In a meeting - check consent
-            if config.hasConsentedToMeetingRecording {
-                // User has explicitly consented to recording during meetings
-                shouldMute = false
-            } else {
-                // No consent - automatically mute to protect privacy
-                shouldMute = true
-
-                // Update auto-mute count
-                statistics = AudioCaptureStatistics(
-                    microphoneSamplesRecorded: statistics.microphoneSamplesRecorded,
-                    systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded,
-                    microphoneDurationSeconds: statistics.microphoneDurationSeconds,
-                    systemAudioDurationSeconds: statistics.systemAudioDurationSeconds,
-                    captureStartTime: statistics.captureStartTime,
-                    lastSampleTime: statistics.lastSampleTime,
-                    meetingDetectedCount: statistics.meetingDetectedCount,
-                    autoMuteCount: statistics.autoMuteCount + 1
-                )
-            }
-        } else {
-            // Not in a meeting - allow system audio
-            shouldMute = false
+        let shouldMute = !MeetingAudioPrivacyPolicy.permitsSystemAudio(state: meetingState, config: config,
+            uptime: ProcessInfo.processInfo.systemUptime)
+        if shouldMute, !(await systemAudioCapture.getMuted()) {
+            statistics = AudioCaptureStatistics(
+                microphoneSamplesRecorded: statistics.microphoneSamplesRecorded,
+                systemAudioSamplesRecorded: statistics.systemAudioSamplesRecorded,
+                microphoneDurationSeconds: statistics.microphoneDurationSeconds,
+                systemAudioDurationSeconds: statistics.systemAudioDurationSeconds,
+                captureStartTime: statistics.captureStartTime,
+                lastSampleTime: statistics.lastSampleTime,
+                meetingDetectedCount: statistics.meetingDetectedCount,
+                autoMuteCount: statistics.autoMuteCount + 1
+            )
         }
 
         await systemAudioCapture.setMuted(shouldMute)

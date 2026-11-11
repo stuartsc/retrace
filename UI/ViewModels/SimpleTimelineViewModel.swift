@@ -55,6 +55,22 @@ public struct TimelineFrame: Identifiable, Equatable {
     public let videoInfo: FrameVideoInfo?
     /// Processing status: 0=pending, 1=processing, 2=completed, 3=failed, 4=not yet readable
     public let processingStatus: Int
+    let workspaceSourceGeneration: String?
+    let workspaceEvidenceReference: EvidenceRef?
+
+    public init(frame: FrameReference, videoInfo: FrameVideoInfo?, processingStatus: Int,
+                workspaceSourceGeneration: String? = nil, workspaceEvidenceReference: EvidenceRef? = nil) {
+        self.frame = frame; self.videoInfo = videoInfo; self.processingStatus = processingStatus
+        self.workspaceSourceGeneration = workspaceSourceGeneration
+        self.workspaceEvidenceReference = workspaceEvidenceReference
+    }
+
+    var workspaceSelection: WorkspaceTapeSelection? {
+        if let reference = workspaceEvidenceReference { return .evidence(reference) }
+        guard let proof = workspaceSourceGeneration else { return nil }
+        return .frame(DashboardScreenshotRow(value: FrameWithVideoInfo(frame: frame, videoInfo: videoInfo,
+            processingStatus: processingStatus), sourceGeneration: proof))
+    }
 
     public var id: FrameID { frame.id }
 
@@ -1821,6 +1837,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     let coordinator: AppCoordinator
     let evidence: EvidenceViewModel
+    /// The workspace owns exact selection while reusing this tape's layout and paging.
+    var workspaceFrameSelection: ((WorkspaceTapeSelection) -> Void)?
+    private let isWorkspace: Bool
     private let backgroundServicesEnabled: Bool
     private var evidenceNavigationGeneration: UInt64 = 0
     private var evidenceSelectionTask: Task<Void, Never>?
@@ -1852,15 +1871,20 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     // MARK: - Initialization
 
-    public init(coordinator: AppCoordinator) {
+    public init(coordinator: AppCoordinator, workspace: Bool = false) {
         self.coordinator = coordinator
+        self.isWorkspace = workspace
         self.evidence = EvidenceViewModel(client: .live(service: { try await coordinator.progressiveRecall() }))
         self.backgroundServicesEnabled = true
-        self.diskFrameBufferDirectoryURL = Self.defaultDiskFrameBufferDirectoryURL()
+        self.diskFrameBufferDirectoryURL = workspace
+            ? Self.defaultDiskFrameBufferDirectoryURL().appendingPathComponent("workspace", isDirectory: true)
+            : Self.defaultDiskFrameBufferDirectoryURL()
 
         // Restore search overlay visibility from last session
         // On first launch, default to showing the overlay (true)
-        if UserDefaults.standard.object(forKey: "searchOverlayVisible") == nil {
+        if workspace {
+            self.isSearchOverlayVisible = false
+        } else if UserDefaults.standard.object(forKey: "searchOverlayVisible") == nil {
             self.isSearchOverlayVisible = true
             UserDefaults.standard.set(true, forKey: "searchOverlayVisible")
         } else {
@@ -1879,6 +1903,7 @@ public class SimpleTimelineViewModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            guard !workspace else { return }
             Log.debug("[SimpleTimelineViewModel] Received dataSourceDidChange notification", category: .ui)
             Task { @MainActor in
                 Log.debug("[SimpleTimelineViewModel] About to call invalidateCachesAndReload, self is nil: \(self == nil)", category: .ui)
@@ -1891,7 +1916,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         setupDialogStateObserver()
 
         // Persist search overlay visibility preference
-        setupSearchOverlayPersistence()
+        if !workspace { setupSearchOverlayPersistence() }
         initializeDiskFrameBuffer()
         startDiskFrameBufferMemoryReporting()
     }
@@ -1899,8 +1924,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 #if DEBUG
     /// An authored-store test owner does not register observers, persist preferences,
     /// create the production disk buffer or start background service work.
-    init(coordinator: AppCoordinator, evidenceClient: EvidenceClient, transientDirectory: URL) {
+    init(coordinator: AppCoordinator, evidenceClient: EvidenceClient, transientDirectory: URL, workspace: Bool = false) {
         self.coordinator = coordinator
+        self.isWorkspace = workspace
         self.evidence = EvidenceViewModel(client: evidenceClient)
         self.backgroundServicesEnabled = false
         self.diskFrameBufferDirectoryURL = transientDirectory
@@ -1925,6 +1951,21 @@ public class SimpleTimelineViewModel: ObservableObject {
         let token = beginExactSelection()
         await evidence.openEvidence(reference)
         await anchorExactSelection(generation: token)
+    }
+
+    /// The exact image is already admitted by the workspace before neighbours load.
+    func anchorWorkspaceEvidence() async {
+        guard !Task.isCancelled, evidence.isPresentingEvidence else { return }
+        let token = beginExactSelection()
+        await anchorExactSelection(generation: token)
+    }
+
+    /// Discard both frame rows and their acquisition proofs before a source
+    /// replacement can publish another batch with colliding numeric IDs.
+    func invalidateWorkspaceTape() {
+        _ = beginExactSelection()
+        frames = []; currentIndex = 0
+        updateWindowBoundaries()
     }
 
     @discardableResult
@@ -2010,9 +2051,18 @@ public class SimpleTimelineViewModel: ObservableObject {
         // A verified target is always present, including beyond the bounded query.
         // Neighbourhood frames provide scrubbing context, never substitute evidence.
         filterCriteria = .none
-        frames = [TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2)]
+        frames = [TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2,
+            workspaceEvidenceReference: reference)]
         currentIndex = 0
         updateWindowBoundaries()
+        if isWorkspace {
+            var canLoad = backgroundServicesEnabled
+#if DEBUG
+            canLoad = canLoad || test_windowFetchHooks.getFramesWithVideoInfo != nil
+#endif
+            if canLoad { await anchorWorkspaceNeighbourhood(frame: frame, reference: reference, generation: token) }
+            return
+        }
         guard backgroundServicesEnabled else { return }
         let pending = Task { [weak self] in
             guard let self else { return }
@@ -2031,12 +2081,14 @@ public class SimpleTimelineViewModel: ObservableObject {
                 guard !Task.isCancelled, token == evidenceNavigationGeneration,
                       evidence.isPresentingEvidence, evidence.evidenceReference == reference else { return }
                 var context = nearby.filter { $0.frame.source == frame.source && $0.frame.id != frame.id }
-                    .map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus) }
+                    .map { TimelineFrame(frame: $0.frame, videoInfo: $0.videoInfo, processingStatus: $0.processingStatus,
+                        workspaceSourceGeneration: sourceGeneration) }
                 let target = nearby.first {
                     $0.frame.source == frame.source && $0.frame.id == frame.id &&
                     abs($0.frame.timestamp.timeIntervalSince(frame.timestamp)) < 0.001
                 }
-                context.append(TimelineFrame(frame: frame, videoInfo: target?.videoInfo, processingStatus: 2))
+                context.append(TimelineFrame(frame: frame, videoInfo: target?.videoInfo, processingStatus: 2,
+                    workspaceEvidenceReference: reference))
                 context.sort { $0.frame.timestamp == $1.frame.timestamp
                     ? $0.frame.id.value < $1.frame.id.value : $0.frame.timestamp < $1.frame.timestamp }
                 frames = context
@@ -2051,6 +2103,65 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
         evidenceNeighbourhoodTask = pending
         await pending.value
+        if token == evidenceNavigationGeneration { evidenceNeighbourhoodTask = nil }
+    }
+
+    /// The candidate admits each neighbouring capture before publishing its
+    /// app/window context. A raw source-generation bracket alone is not a
+    /// current privacy or deletion check. Keep this bounded and cancellable.
+    private func anchorWorkspaceNeighbourhood(frame: FrameReference, reference: EvidenceRef?, generation token: UInt64) async {
+        guard case .screen(let screen) = reference else { return }
+        let pending = Task { [weak self] in
+            guard let self else { return }
+            let began = CFAbsoluteTimeGetCurrent()
+            defer { Log.recordLatency("workspace.tape.admission", valueMs: (CFAbsoluteTimeGetCurrent() - began) * 1_000, category: .ui) }
+            do {
+                let before = try await evidence.presentationStamp(sources: [frame.source])
+                let proof = try await evidence.sourceGeneration(for: frame.source)
+                guard await evidence.retainedFrame(screen) != nil else {
+                    await evidence.refreshCurrentRevision(); return
+                }
+                guard !Task.isCancelled, token == evidenceNavigationGeneration else { return }
+                let nearby = try await fetchFramesWithVideoInfoLogged(
+                    from: frame.timestamp.addingTimeInterval(-300), to: frame.timestamp.addingTimeInterval(300),
+                    limit: 100, filters: .none, reason: "workspace.exactNeighbourhood")
+                var context: [TimelineFrame] = []
+                for row in nearby.prefix(100) where row.frame.source == frame.source && row.frame.id != frame.id {
+                    guard !Task.isCancelled, token == evidenceNavigationGeneration else { return }
+                    if let admitted = await evidence.admittedContextFrame(row.frame, sourceGeneration: proof) {
+                        context.append(TimelineFrame(frame: admitted, videoInfo: row.videoInfo,
+                            processingStatus: row.processingStatus, workspaceSourceGeneration: proof))
+                    }
+                }
+                guard !Task.isCancelled, token == evidenceNavigationGeneration,
+                      evidence.isPresentingEvidence, evidence.evidenceReference == reference,
+                      try await evidence.sourceGeneration(for: frame.source) == proof else { return }
+                guard await evidence.retainedFrame(screen) != nil else {
+                    await evidence.refreshCurrentRevision(); return
+                }
+                guard !Task.isCancelled, token == evidenceNavigationGeneration,
+                      evidence.evidenceReference == reference else { return }
+                context.append(TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2,
+                    workspaceEvidenceReference: reference))
+                context.sort { $0.frame.timestamp == $1.frame.timestamp
+                    ? $0.frame.id.value < $1.frame.id.value : $0.frame.timestamp < $1.frame.timestamp }
+                // This must follow the final selected-frame retained read as
+                // well as all neighbours: any earlier row may have changed
+                // while a later read was suspended.
+                let after = try await evidence.presentationStamp(sources: [frame.source])
+                guard before == after, !Task.isCancelled, token == evidenceNavigationGeneration,
+                      evidence.evidenceReference == reference else { return }
+                frames = context
+                currentIndex = context.firstIndex { $0.frame.id == frame.id && $0.frame.source == frame.source } ?? 0
+                updateWindowBoundaries()
+            } catch {
+                if !Task.isCancelled, token == evidenceNavigationGeneration {
+                    Log.warning("[WORKSPACE] Admitted timeline context unavailable", category: .ui)
+                }
+            }
+        }
+        evidenceNeighbourhoodTask = pending
+        await withTaskCancellationHandler(operation: { await pending.value }, onCancel: { pending.cancel() })
         if token == evidenceNavigationGeneration { evidenceNeighbourhoodTask = nil }
     }
 
@@ -6499,6 +6610,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Navigate to a specific index in the frames array
     public func navigateToFrame(_ index: Int, fromScroll: Bool = false) {
         let clampedIndex = max(0, min(frames.count - 1, index))
+        if let workspaceFrameSelection, frames.indices.contains(clampedIndex) {
+            if let selection = frames[clampedIndex].workspaceSelection { workspaceFrameSelection(selection) }
+            return
+        }
         closeExactEvidence(resumeHistory: clampedIndex == currentIndex)
         // Exit live mode on explicit navigation
         if isInLiveMode {

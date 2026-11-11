@@ -1,0 +1,76 @@
+{
+  "scope": "Authored synthetic speech and real PCM/AAC codec fixtures only; no human/ASR/performance acceptance",
+  "copiedFrom": "/tmp/retrace-unified-20260924/speech-comparison-draft",
+  "files": [
+    {
+      "path": "fixtures/au-names.wav",
+      "bytes": 384162,
+      "sha256": "e042a3a0d9f3d572541677c31d2602902396a86c8f1e64f26b2567cbf55cf060"
+    },
+    {
+      "path": "fixtures/au-names-padded.wav",
+      "bytes": 492110,
+      "sha256": "d3dd351ce1c78031896e2adadf1abbf8cff6d07c821a03d1611e76bdbd57ca5e"
+    },
+    {
+      "path": "fixtures/au-names-padded.m4a",
+      "bytes": 60598,
+      "sha256": "12d984dc71bad6e5bacab2f8fceb4423911a46e7ae5a23c9c1c41c349f8830dd"
+    },
+    {
+      "path": "fixtures/silence.wav",
+      "bytes": 256044,
+      "sha256": "190415015d40eef0cd797e1b59ffe00846b01873050b12d44b3a216de3faa2a9"
+    },
+    {
+      "path": "fixtures/silence.m4a",
+      "bytes": 4608,
+      "sha256": "cb718c0692c17a4f94a620703d9c20d00653d28757e1a2a161a98bd3b32a6402"
+    },
+    {
+      "path": "fixtures/overlap.wav",
+      "bytes": 380110,
+      "sha256": "d8cf07dd44e82d91e9caca3c6c26af266396d601257558c05840a4deeec409ef"
+    },
+    {
+      "path": "fixtures/overlap.m4a",
+      "bytes": 52889,
+      "sha256": "e27126ba7935b657ec532d17d8433d8a9bd38589fa6f299683f313b9fb1d5b7d"
+    },
+    {
+      "path": "fixtures/overlap-track-b.wav",
+      "bytes": 223158,
+      "sha256": "aa3568d952bb43a67d93395e4001aed6ed003795ddb6daf6f2c6782dea9f6d20"
+    },
+    {
+      "path": "oracles/au-names.txt",
+      "bytes": 185,
+      "sha256": "47f7f2b477a249d14ff059b1019077bdcf1b5fd3707beb20aef1037bd5d60125"
+    },
+    {
+      "path": "oracles/silence.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "oracles/overlap-track-b.txt",
+      "bytes": 109,
+      "sha256": "eededf9177a9dfeb5636c29d33c0404933e9ca49e4200cd4ab1c39965f0fec09"
+    },
+    {
+      "path": "oracles/provenance.json",
+      "bytes": 3742,
+      "sha256": "2db307c032604c01812e1da9acf1fa02139e02f7529aa590b1b46dbb4ed51a38"
+    },
+    {
+      "path": "receipts/pcm-files.json",
+      "bytes": 2894,
+      "sha256": "a5b03363214426568a5c5e81448183e757d6438c9bfddf8218c99c8f6595afc5"
+    },
+    {
+      "path": "receipts/aac-roundtrip.json",
+      "bytes": 4622,
+      "sha256": "70f41b3ec0eb58505149e74d74a61cfb77cdf8e8f9416aa3d4b7ed681ce9fca0"
+    }
+  ]
+}

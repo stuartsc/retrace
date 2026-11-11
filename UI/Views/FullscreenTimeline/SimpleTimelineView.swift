@@ -61,467 +61,11 @@ public struct SimpleTimelineView: View {
             let shouldRenderSearchHighlightControlsHint =
                 shouldShowSearchHighlightControlsHint && !isSearchHighlightControlsHintDismissed
 
-            ZStack {
-                // Full screen frame display
-                frameDisplay
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                // Search-result highlights should sit above the frame, but below timeline controls/tape.
-                if !evidence.isPresentingEvidence {
-                    searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
-                }
-
-                // Bottom blur + gradient backdrop (behind timeline controls)
-                VStack {
-                    Spacer()
-                    // Blur with built-in tint (NSVisualEffectView needs content to blur)
-                    PureBlurView(radius: 50)
-                        .frame(height: TimelineScaleFactor.blurBackdropHeight)
-                        .mask(
-                            LinearGradient(
-                                stops: [
-                                    .init(color: Color.white.opacity(0.0), location: 0.0),
-                                    .init(color: Color.white.opacity(0.03), location: 0.1),
-                                    .init(color: Color.white.opacity(0.08), location: 0.2),
-                                    .init(color: Color.white.opacity(0.15), location: 0.3),
-                                    .init(color: Color.white.opacity(0.35), location: 0.4),
-                                    .init(color: Color.white.opacity(0.6), location: 0.5),
-                                    .init(color: Color.white.opacity(0.85), location: 0.6),
-                                    .init(color: Color.white.opacity(0.95), location: 0.7),
-                                    .init(color: Color.white.opacity(1.0), location: 0.8),
-                                    .init(color: Color.white.opacity(0.85), location: 1.0)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                }
-                .allowsHitTesting(false)
-                .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
-                .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
-
-                // Dismiss overlay for date search panel (Cmd+G) - clicking outside closes it
-                // Must be BEFORE TimelineTapeView in ZStack so it's behind the panel
-                if viewModel.isDateSearchActive && !viewModel.isCalendarPickerVisible {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            viewModel.closeDateSearch()
-                        }
-                }
-
-                // Dismiss overlay for calendar picker - clicking outside closes it
-                // Must be BEFORE TimelineTapeView in ZStack so it's behind the picker
-                if viewModel.isCalendarPickerVisible {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                                viewModel.isCalendarPickerVisible = false
-                                viewModel.hoursWithFrames = []
-                                viewModel.selectedCalendarDate = nil
-                                viewModel.calendarKeyboardFocus = .dateGrid
-                                viewModel.selectedCalendarHour = nil
-                            }
-                        }
-                }
-
-                // Dismiss overlay for zoom slider - clicking outside closes it
-                if viewModel.isZoomSliderExpanded {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.easeOut(duration: 0.12)) {
-                                viewModel.isZoomSliderExpanded = false
-                            }
-                        }
-                }
-
-                // Timeline tape overlay at bottom
-                VStack {
-                    Spacer()
-                    TimelineTapeView(
-                        viewModel: viewModel,
-                        width: geometry.size.width,
-                        coordinator: coordinator
-                    )
-                    .padding(.bottom, TimelineScaleFactor.tapeBottomPadding)
-                }
-                .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
-                .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
-
-                // Persistent controls toggle button (stays visible when controls are hidden)
-                if viewModel.areControlsHidden {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            ControlsToggleButton(viewModel: viewModel)
-                        }
-                        .padding(.trailing, 24)
-                        .padding(.bottom, 24)
-                    }
-                    .transition(.opacity.animation(.easeInOut(duration: 0.2).delay(0.1)))
-                }
-
-                // Debug frame ID badge, OCR status indicator, and developer actions menu (top-left)
-                VStack {
-                    HStack(spacing: 8) {
-                        if viewModel.showFrameIDs {
-                            DebugFrameIDBadge(viewModel: viewModel)
-                        }
-                        // OCR status indicator (only visible when OCR is in progress)
-                        if !evidence.isPresentingEvidence { OCRStatusIndicator(viewModel: viewModel) }
-                        #if DEBUG
-                        DeveloperActionsMenu(viewModel: viewModel, onClose: onClose)
-                        #endif
-                        Spacer()
-                            .allowsHitTesting(false)
-                    }
-                    Spacer()
-                        .allowsHitTesting(false)
-                }
-                .padding(.spacingL)
-                .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
-                .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
-
-                #if DEBUG
-                if viewModel.showBrowserURLDebugWindow {
-                    DebugBrowserURLWindow(
-                        browserURL: currentBrowserURLForDebugWindow,
-                        panelPosition: $browserURLDebugWindowPosition,
-                        isPresented: $viewModel.showBrowserURLDebugWindow
-                    )
-                    .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
-                    .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
-                    .zIndex(110)
-                }
-                #endif
-
-                // Reset zoom button (top center)
-                if viewModel.isFrameZoomed {
-                    VStack {
-                        ResetZoomButton(viewModel: viewModel)
-                            .padding(.top, 12) // Extra margin for MacBook notch
-                        Spacer()
-                            .allowsHitTesting(false)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.spacingL)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    .animation(.easeInOut(duration: 0.2), value: viewModel.isFrameZoomed)
-                }
-
-                // Peek mode banner (top center, below reset zoom if both visible)
-                if viewModel.isPeeking {
-                    VStack {
-                        PeekModeBanner(viewModel: viewModel)
-                            .padding(.top, viewModel.isFrameZoomed ? 60 : 12) // Below reset zoom button if visible
-                        Spacer()
-                            .allowsHitTesting(false)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.spacingL)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.isPeeking)
-                }
-
-                // Persistent redaction reason banner (top center)
-                if let redactionContext = currentRedactionContext {
-                    VStack {
-                        RedactionReasonBanner(
-                            reason: redactionContext.reason,
-                            appBundleID: redactionContext.appBundleID
-                        )
-                            .padding(.top, redactionBannerTopPadding(topSafeAreaInset: geometry.safeAreaInsets.top))
-                            .padding(.horizontal, .spacingL)
-                        Spacer()
-                            .allowsHitTesting(false)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .opacity
-                    ))
-                    .animation(.spring(response: 0.28, dampingFraction: 0.82), value: redactionContext.reason)
-                }
-
-                // Top-right controls (in-frame search + close)
-                VStack {
-                    HStack {
-                        Spacer()
-                            .allowsHitTesting(false)
-                        topRightControls
-                    }
-                    Spacer()
-                        .allowsHitTesting(false)
-                }
-                .padding(.spacingL)
-                .padding(.top, 12) // Match ResetZoomButton vertical row alignment
-                .zIndex(100)
-
-
-                // Loading overlay
-                if viewModel.isLoading {
-                    loadingOverlay
-                }
-
-                // Error overlay
-                if let error = viewModel.error {
-                    errorOverlay(error)
-                        .transition(.scale(scale: 0.9).combined(with: .opacity))
-                        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: viewModel.error)
-                }
-
-                // Delete confirmation dialog
-                if viewModel.showDeleteConfirmation {
-                    DeleteConfirmationDialog(
-                        segmentFrameCount: viewModel.selectedSegmentFrameCount,
-                        onDeleteFrame: {
-                            viewModel.confirmDeleteSelectedFrame()
-                        },
-                        onDeleteSegment: {
-                            viewModel.confirmDeleteSegment()
-                        },
-                        onCancel: {
-                            viewModel.cancelDelete()
-                        }
-                    )
-                }
-
-                // Search overlay (Cmd+K) - uses persistent searchViewModel to preserve results
-                searchOverlay
-
-                // OCR debug overlay (dev setting)
-                ocrDebugOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
-
-                // Text selection hint toast (top center)
-                if viewModel.showTextSelectionHint {
-                    VStack {
-                        TextSelectionHintBanner(
-                            onDismiss: {
-                                viewModel.dismissTextSelectionHint()
-                            }
-                        )
-                        .fixedSize()
-                        .padding(.top, 60)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .top).combined(with: .opacity),
-                            removal: .opacity
-                        ))
-                        Spacer()
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.showTextSelectionHint)
-                }
-
-                // Search-highlight/timeline-controls hint toast (top center)
-                if shouldRenderSearchHighlightControlsHint {
-                    VStack {
-                        SearchHighlightControlsHintBanner(
-                            onDismiss: {
-                                isSearchHighlightControlsHintDismissed = true
-                            }
-                        )
-                            .fixedSize()
-                            .padding(.top, viewModel.showTextSelectionHint ? 118 : 60)
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .top).combined(with: .opacity),
-                                removal: .opacity
-                            ))
-                        Spacer()
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: shouldRenderSearchHighlightControlsHint)
-                }
-
-                // Scroll orientation hint toast (top center)
-                if viewModel.showScrollOrientationHintBanner {
-                    VStack {
-                        ScrollOrientationHintBanner(
-                            currentOrientation: viewModel.scrollOrientationHintCurrentOrientation,
-                            onSwitch: { viewModel.openTimelineScrollOrientationSettings() },
-                            onDismiss: { viewModel.dismissScrollOrientationHint() }
-                        )
-                        .fixedSize()
-                        .padding(
-                            .top,
-                            60 + (viewModel.showTextSelectionHint ? 58 : 0) + (shouldRenderSearchHighlightControlsHint ? 58 : 0)
-                        )
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .top).combined(with: .opacity),
-                            removal: .opacity
-                        ))
-                        Spacer()
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.showScrollOrientationHintBanner)
-                }
-
-                // Filter panel (floating, anchored to filter button position)
-                if viewModel.isFilterPanelVisible {
-                    // Dismiss overlay for filter panel and any open dropdown
-                    Color.black.opacity(0.001)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            if viewModel.activeFilterDropdown != .none {
-                                withAnimation(.easeOut(duration: 0.15)) {
-                                    viewModel.dismissFilterDropdown()
-                                }
-                            } else {
-                                withAnimation(.easeOut(duration: 0.15)) {
-                                    viewModel.dismissFilterPanel()
-                                }
-                            }
-                        }
-
-                    VStack {
-                        Spacer() 
-                        HStack {
-                            Spacer()
-                            FilterPanel(viewModel: viewModel)
-                                .fixedSize()
-                        }
-                    }
-                    .padding(.trailing, geometry.size.width / 2 + TimelineScaleFactor.controlSpacing + 60)
-                    .padding(.bottom, TimelineScaleFactor.tapeBottomPadding + TimelineScaleFactor.tapeHeight + 75)
-                    .transition(.opacity.combined(with: .offset(y: 10)))
-
-                    // Filter dropdowns - rendered at top level to avoid clipping issues
-                    FilterDropdownOverlay(viewModel: viewModel)
-                }
-
-                // Timeline segment context menu (for right-click on timeline tape)
-                // Placed at the end of ZStack to ensure it renders above all other content
-                if viewModel.showTimelineContextMenu {
-                    TimelineSegmentContextMenu(
-                        viewModel: viewModel,
-                        isPresented: $viewModel.showTimelineContextMenu,
-                        location: viewModel.timelineContextMenuLocation,
-                        containerSize: geometry.size
-                    )
-                }
-
-                if isCommentSubmenuMounted {
-                    Color.black.opacity(0.35)
-                        .opacity(commentSubmenuVisibility)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(viewModel.showCommentSubmenu)
-                        .onTapGesture {
-                            viewModel.dismissCommentSubmenu()
-                        }
-
-                    VStack {
-                        CommentSubmenu(viewModel: viewModel) {
-                            viewModel.dismissCommentSubmenu()
-                        }
-                        .frame(maxWidth: min(geometry.size.width - 40, 560))
-                    }
-                    .padding(.horizontal, 20)
-                    .opacity(commentSubmenuVisibility)
-                    .scaleEffect(0.98 + (0.02 * commentSubmenuVisibility))
-                    .allowsHitTesting(viewModel.showCommentSubmenu)
-                }
-
-                // Toast feedback overlay (centered, larger for errors)
-                if viewModel.toastMessage != nil {
-                    let isErrorToast = viewModel.toastTone == .error
-                    let toastAccentColor = isErrorToast ? Color.red : Color.green
-
-                    VStack {
-                        Spacer()
-                        HStack(spacing: 12) {
-                            if let icon = viewModel.toastIcon {
-                                Image(systemName: icon)
-                                    .font(.system(size: 22, weight: .semibold))
-                                    .foregroundColor(toastAccentColor)
-                            }
-                            if let message = viewModel.toastMessage {
-                                Text(message)
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
-                        }
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 18)
-                        .background(
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 16)
-                                    .fill(.ultraThinMaterial)
-                                    .environment(\.colorScheme, .dark)
-                                RoundedRectangle(cornerRadius: 16)
-                                    .fill(Color.black.opacity(0.5))
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(toastAccentColor.opacity(0.35), lineWidth: 1)
-                            }
-                        )
-                        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
-                        .scaleEffect(viewModel.toastVisible ? 1.0 : 0.85)
-                        .opacity(viewModel.toastVisible ? 1.0 : 0.0)
-                        Spacer()
-                    }
-                        .allowsHitTesting(false)
-                }
-
-                // Delete undo action banner (interactive)
-                if let undoMessage = viewModel.pendingDeleteUndoMessage {
-                    VStack {
-                        HStack(spacing: 10) {
-                            Image(systemName: "trash.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.orange.opacity(0.95))
-
-                            Text(undoMessage)
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.92))
-                                .lineLimit(1)
-
-                            Button("Undo") {
-                                viewModel.undoPendingDelete()
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                Capsule()
-                                    .fill(Color.white.opacity(0.18))
-                            )
-                            .overlay(
-                                Capsule()
-                                    .stroke(Color.white.opacity(0.26), lineWidth: 1)
-                            )
-
-                            Button(action: {
-                                viewModel.dismissPendingDeleteUndo()
-                            }) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.7))
-                                    .padding(6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.black.opacity(0.68))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                )
-                        )
-                        .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
-                        .padding(.top, max(geometry.safeAreaInsets.top + 18, 56))
-                        Spacer()
-                    }
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: undoMessage)
-                }
-
-            }
+            timelineLayers(
+                geometry: geometry,
+                actualFrameRect: actualFrameRect,
+                shouldRenderSearchHighlightControlsHint: shouldRenderSearchHighlightControlsHint
+            )
             .coordinateSpace(name: "timelineContent")
             .background(frameCanvasBackgroundColor)
             .ignoresSafeArea()
@@ -595,6 +139,583 @@ public struct SimpleTimelineView: View {
             }
             // Note: Keyboard shortcuts (Cmd+F, Option+F, Cmd+Shift+F, Escape) are handled by TimelineWindowController
             // at the window level for more reliable event handling
+        }
+    }
+
+    // MARK: - Timeline Layers
+
+    private func timelineLayers(
+        geometry: GeometryProxy,
+        actualFrameRect: CGRect,
+        shouldRenderSearchHighlightControlsHint: Bool
+    ) -> some View {
+        ZStack {
+            // Full screen frame display
+            frameDisplay
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // Search-result highlights should sit above the frame, but below timeline controls/tape.
+            if !evidence.isPresentingEvidence {
+                searchHighlightOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
+            }
+
+            timelineBottomBackdrop
+
+            timelineDateSearchDismissOverlay
+
+            timelineCalendarDismissOverlay
+
+            timelineZoomSliderDismissOverlay
+
+            timelineTapeOverlay(geometry: geometry)
+
+            timelineHiddenControlsToggleOverlay
+
+            timelineTopLeftStatusOverlay
+
+            #if DEBUG
+            timelineBrowserURLDebugOverlay
+            #endif
+
+            timelineResetZoomOverlay
+
+            timelinePeekModeOverlay
+
+            timelineRedactionReasonOverlay(geometry: geometry)
+
+            timelineTopRightControlsOverlay
+
+
+            // Loading overlay
+            if viewModel.isLoading {
+                loadingOverlay
+            }
+
+            // Error overlay
+            if let error = viewModel.error {
+                errorOverlay(error)
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+                    .animation(.spring(response: 0.35, dampingFraction: 0.75), value: viewModel.error)
+            }
+
+            timelineDeleteConfirmationOverlay
+
+            // Search overlay (Cmd+K) - uses persistent searchViewModel to preserve results
+            searchOverlay
+
+            // OCR debug overlay (dev setting)
+            ocrDebugOverlay(containerSize: geometry.size, actualFrameRect: actualFrameRect)
+
+            timelineTextSelectionHintOverlay
+
+            timelineSearchHighlightHintOverlay(shouldRenderSearchHighlightControlsHint: shouldRenderSearchHighlightControlsHint)
+
+            timelineScrollOrientationHintOverlay(shouldRenderSearchHighlightControlsHint: shouldRenderSearchHighlightControlsHint)
+
+            timelineFilterPanelOverlay(geometry: geometry)
+
+            timelineContextMenuOverlay(geometry: geometry)
+
+            timelineCommentSubmenuOverlay(geometry: geometry)
+
+            timelineToastFeedbackOverlay
+
+            timelineDeleteUndoOverlay(geometry: geometry)
+
+        }
+    }
+
+    @ViewBuilder
+    private var timelineBottomBackdrop: some View {
+        // Bottom blur + gradient backdrop (behind timeline controls)
+        VStack {
+            Spacer()
+            // Blur with built-in tint (NSVisualEffectView needs content to blur)
+            PureBlurView(radius: 50)
+                .frame(height: TimelineScaleFactor.blurBackdropHeight)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: Color.white.opacity(0.0), location: 0.0),
+                            .init(color: Color.white.opacity(0.03), location: 0.1),
+                            .init(color: Color.white.opacity(0.08), location: 0.2),
+                            .init(color: Color.white.opacity(0.15), location: 0.3),
+                            .init(color: Color.white.opacity(0.35), location: 0.4),
+                            .init(color: Color.white.opacity(0.6), location: 0.5),
+                            .init(color: Color.white.opacity(0.85), location: 0.6),
+                            .init(color: Color.white.opacity(0.95), location: 0.7),
+                            .init(color: Color.white.opacity(1.0), location: 0.8),
+                            .init(color: Color.white.opacity(0.85), location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        }
+        .allowsHitTesting(false)
+        .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
+        .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
+    }
+
+    @ViewBuilder
+    private var timelineDateSearchDismissOverlay: some View {
+        // Dismiss overlay for date search panel (Cmd+G) - clicking outside closes it
+        // Must be BEFORE TimelineTapeView in ZStack so it's behind the panel
+        if viewModel.isDateSearchActive && !viewModel.isCalendarPickerVisible {
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture {
+                    viewModel.closeDateSearch()
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var timelineCalendarDismissOverlay: some View {
+        // Dismiss overlay for calendar picker - clicking outside closes it
+        // Must be BEFORE TimelineTapeView in ZStack so it's behind the picker
+        if viewModel.isCalendarPickerVisible {
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                        viewModel.isCalendarPickerVisible = false
+                        viewModel.hoursWithFrames = []
+                        viewModel.selectedCalendarDate = nil
+                        viewModel.calendarKeyboardFocus = .dateGrid
+                        viewModel.selectedCalendarHour = nil
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var timelineZoomSliderDismissOverlay: some View {
+        // Dismiss overlay for zoom slider - clicking outside closes it
+        if viewModel.isZoomSliderExpanded {
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        viewModel.isZoomSliderExpanded = false
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func timelineTapeOverlay(geometry: GeometryProxy) -> some View {
+        // Timeline tape overlay at bottom
+        VStack {
+            Spacer()
+            TimelineTapeView(
+                viewModel: viewModel,
+                width: geometry.size.width,
+                coordinator: coordinator
+            )
+            .padding(.bottom, TimelineScaleFactor.tapeBottomPadding)
+        }
+        .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.hiddenControlsOffset : (viewModel.isTapeHidden ? TimelineScaleFactor.hiddenControlsOffset : 0))
+        .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
+    }
+
+    @ViewBuilder
+    private var timelineHiddenControlsToggleOverlay: some View {
+        // Persistent controls toggle button (stays visible when controls are hidden)
+        if viewModel.areControlsHidden {
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    ControlsToggleButton(viewModel: viewModel)
+                }
+                .padding(.trailing, 24)
+                .padding(.bottom, 24)
+            }
+            .transition(.opacity.animation(.easeInOut(duration: 0.2).delay(0.1)))
+        }
+    }
+
+    @ViewBuilder
+    private var timelineTopLeftStatusOverlay: some View {
+        // Debug frame ID badge, OCR status indicator, and developer actions menu (top-left)
+        VStack {
+            HStack(spacing: 8) {
+                if viewModel.showFrameIDs {
+                    DebugFrameIDBadge(viewModel: viewModel)
+                }
+                // OCR status indicator (only visible when OCR is in progress)
+                if !evidence.isPresentingEvidence { OCRStatusIndicator(viewModel: viewModel) }
+                #if DEBUG
+                DeveloperActionsMenu(viewModel: viewModel, onClose: onClose)
+                #endif
+                Spacer()
+                    .allowsHitTesting(false)
+            }
+            Spacer()
+                .allowsHitTesting(false)
+        }
+        .padding(.spacingL)
+        .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
+        .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
+    }
+
+    #if DEBUG
+    @ViewBuilder
+    private var timelineBrowserURLDebugOverlay: some View {
+        if viewModel.showBrowserURLDebugWindow {
+            DebugBrowserURLWindow(
+                browserURL: currentBrowserURLForDebugWindow,
+                panelPosition: $browserURLDebugWindowPosition,
+                isPresented: $viewModel.showBrowserURLDebugWindow
+            )
+            .offset(y: viewModel.areControlsHidden ? TimelineScaleFactor.closeButtonHiddenYOffset : 0)
+            .opacity(viewModel.areControlsHidden || viewModel.isDraggingZoomRegion ? 0 : 1)
+            .zIndex(110)
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private var timelineResetZoomOverlay: some View {
+        // Reset zoom button (top center)
+        if viewModel.isFrameZoomed {
+            VStack {
+                ResetZoomButton(viewModel: viewModel)
+                    .padding(.top, 12) // Extra margin for MacBook notch
+                Spacer()
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.spacingL)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            .animation(.easeInOut(duration: 0.2), value: viewModel.isFrameZoomed)
+        }
+    }
+
+    @ViewBuilder
+    private var timelinePeekModeOverlay: some View {
+        // Peek mode banner (top center, below reset zoom if both visible)
+        if viewModel.isPeeking {
+            VStack {
+                PeekModeBanner(viewModel: viewModel)
+                    .padding(.top, viewModel.isFrameZoomed ? 60 : 12) // Below reset zoom button if visible
+                Spacer()
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.spacingL)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.isPeeking)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineRedactionReasonOverlay(geometry: GeometryProxy) -> some View {
+        // Persistent redaction reason banner (top center)
+        if let redactionContext = currentRedactionContext {
+            VStack {
+                RedactionReasonBanner(
+                    reason: redactionContext.reason,
+                    appBundleID: redactionContext.appBundleID
+                )
+                    .padding(.top, redactionBannerTopPadding(topSafeAreaInset: geometry.safeAreaInsets.top))
+                    .padding(.horizontal, .spacingL)
+                Spacer()
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .transition(.asymmetric(
+                insertion: .move(edge: .top).combined(with: .opacity),
+                removal: .opacity
+            ))
+            .animation(.spring(response: 0.28, dampingFraction: 0.82), value: redactionContext.reason)
+        }
+    }
+
+    @ViewBuilder
+    private var timelineTopRightControlsOverlay: some View {
+        // Top-right controls (in-frame search + close)
+        VStack {
+            HStack {
+                Spacer()
+                    .allowsHitTesting(false)
+                topRightControls
+            }
+            Spacer()
+                .allowsHitTesting(false)
+        }
+        .padding(.spacingL)
+        .padding(.top, 12) // Match ResetZoomButton vertical row alignment
+        .zIndex(100)
+    }
+
+    @ViewBuilder
+    private var timelineDeleteConfirmationOverlay: some View {
+        // Delete confirmation dialog
+        if viewModel.showDeleteConfirmation {
+            DeleteConfirmationDialog(
+                segmentFrameCount: viewModel.selectedSegmentFrameCount,
+                onDeleteFrame: {
+                    viewModel.confirmDeleteSelectedFrame()
+                },
+                onDeleteSegment: {
+                    viewModel.confirmDeleteSegment()
+                },
+                onCancel: {
+                    viewModel.cancelDelete()
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var timelineTextSelectionHintOverlay: some View {
+        // Text selection hint toast (top center)
+        if viewModel.showTextSelectionHint {
+            VStack {
+                TextSelectionHintBanner(
+                    onDismiss: {
+                        viewModel.dismissTextSelectionHint()
+                    }
+                )
+                .fixedSize()
+                .padding(.top, 60)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .opacity
+                ))
+                Spacer()
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.showTextSelectionHint)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineSearchHighlightHintOverlay(shouldRenderSearchHighlightControlsHint: Bool) -> some View {
+        // Search-highlight/timeline-controls hint toast (top center)
+        if shouldRenderSearchHighlightControlsHint {
+            VStack {
+                SearchHighlightControlsHintBanner(
+                    onDismiss: {
+                        isSearchHighlightControlsHintDismissed = true
+                    }
+                )
+                    .fixedSize()
+                    .padding(.top, viewModel.showTextSelectionHint ? 118 : 60)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                Spacer()
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: shouldRenderSearchHighlightControlsHint)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineScrollOrientationHintOverlay(shouldRenderSearchHighlightControlsHint: Bool) -> some View {
+        // Scroll orientation hint toast (top center)
+        if viewModel.showScrollOrientationHintBanner {
+            VStack {
+                ScrollOrientationHintBanner(
+                    currentOrientation: viewModel.scrollOrientationHintCurrentOrientation,
+                    onSwitch: { viewModel.openTimelineScrollOrientationSettings() },
+                    onDismiss: { viewModel.dismissScrollOrientationHint() }
+                )
+                .fixedSize()
+                .padding(
+                    .top,
+                    60 + (viewModel.showTextSelectionHint ? 58 : 0) + (shouldRenderSearchHighlightControlsHint ? 58 : 0)
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .opacity
+                ))
+                Spacer()
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.showScrollOrientationHintBanner)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineFilterPanelOverlay(geometry: GeometryProxy) -> some View {
+        // Filter panel (floating, anchored to filter button position)
+        if viewModel.isFilterPanelVisible {
+            // Dismiss overlay for filter panel and any open dropdown
+            Color.black.opacity(0.001)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    if viewModel.activeFilterDropdown != .none {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            viewModel.dismissFilterDropdown()
+                        }
+                    } else {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            viewModel.dismissFilterPanel()
+                        }
+                    }
+                }
+
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    FilterPanel(viewModel: viewModel)
+                        .fixedSize()
+                }
+            }
+            .padding(.trailing, geometry.size.width / 2 + TimelineScaleFactor.controlSpacing + 60)
+            .padding(.bottom, TimelineScaleFactor.tapeBottomPadding + TimelineScaleFactor.tapeHeight + 75)
+            .transition(.opacity.combined(with: .offset(y: 10)))
+
+            // Filter dropdowns - rendered at top level to avoid clipping issues
+            FilterDropdownOverlay(viewModel: viewModel)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineContextMenuOverlay(geometry: GeometryProxy) -> some View {
+        // Timeline segment context menu (for right-click on timeline tape)
+        // Placed at the end of ZStack to ensure it renders above all other content
+        if viewModel.showTimelineContextMenu {
+            TimelineSegmentContextMenu(
+                viewModel: viewModel,
+                isPresented: $viewModel.showTimelineContextMenu,
+                location: viewModel.timelineContextMenuLocation,
+                containerSize: geometry.size
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func timelineCommentSubmenuOverlay(geometry: GeometryProxy) -> some View {
+        if isCommentSubmenuMounted {
+            Color.black.opacity(0.35)
+                .opacity(commentSubmenuVisibility)
+                .ignoresSafeArea()
+                .allowsHitTesting(viewModel.showCommentSubmenu)
+                .onTapGesture {
+                    viewModel.dismissCommentSubmenu()
+                }
+
+            VStack {
+                CommentSubmenu(viewModel: viewModel) {
+                    viewModel.dismissCommentSubmenu()
+                }
+                .frame(maxWidth: min(geometry.size.width - 40, 560))
+            }
+            .padding(.horizontal, 20)
+            .opacity(commentSubmenuVisibility)
+            .scaleEffect(0.98 + (0.02 * commentSubmenuVisibility))
+            .allowsHitTesting(viewModel.showCommentSubmenu)
+        }
+    }
+
+    @ViewBuilder
+    private var timelineToastFeedbackOverlay: some View {
+        // Toast feedback overlay (centered, larger for errors)
+        if viewModel.toastMessage != nil {
+            let isErrorToast = viewModel.toastTone == .error
+            let toastAccentColor = isErrorToast ? Color.red : Color.green
+
+            VStack {
+                Spacer()
+                HStack(spacing: 12) {
+                    if let icon = viewModel.toastIcon {
+                        Image(systemName: icon)
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundColor(toastAccentColor)
+                    }
+                    if let message = viewModel.toastMessage {
+                        Text(message)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.vertical, 18)
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(.ultraThinMaterial)
+                            .environment(\.colorScheme, .dark)
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color.black.opacity(0.5))
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(toastAccentColor.opacity(0.35), lineWidth: 1)
+                    }
+                )
+                .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+                .scaleEffect(viewModel.toastVisible ? 1.0 : 0.85)
+                .opacity(viewModel.toastVisible ? 1.0 : 0.0)
+                Spacer()
+            }
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineDeleteUndoOverlay(geometry: GeometryProxy) -> some View {
+        // Delete undo action banner (interactive)
+        if let undoMessage = viewModel.pendingDeleteUndoMessage {
+            VStack {
+                HStack(spacing: 10) {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.orange.opacity(0.95))
+
+                    Text(undoMessage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.92))
+                        .lineLimit(1)
+
+                    Button("Undo") {
+                        viewModel.undoPendingDelete()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.18))
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.26), lineWidth: 1)
+                    )
+
+                    Button(action: {
+                        viewModel.dismissPendingDeleteUndo()
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black.opacity(0.68))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                        )
+                )
+                .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+                .padding(.top, max(geometry.safeAreaInsets.top + 18, 56))
+                Spacer()
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: undoMessage)
         }
     }
 
@@ -7042,72 +7163,11 @@ struct CommentSubmenu: View {
         let isSearchHighlighted = row.id == highlightedCommentSearchResultID
         let isHoveringInteractiveRow = isNavigable && hoveredAllCommentsRowID == row.id
         let rowHeaderLabel = row.context?.appBundleID ?? row.comment.author
+        let hoverScale: CGFloat = isHoveringInteractiveRow ? 1.01 : 1.0
 
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(rowHeaderLabel)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.retracePrimary.opacity(0.9))
-                    .lineLimit(1)
-
-                if let tagName = row.primaryTagName {
-                    Text(tagName)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.retracePrimary.opacity(0.88))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule()
-                                .fill(Color.white.opacity(0.08))
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(Color.white.opacity(0.13), lineWidth: 1)
-                        )
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                Text(Self.threadDateFormatter.string(from: row.comment.createdAt))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.retraceSecondary.opacity(0.85))
-                    .lineLimit(1)
-            }
-
-            Text(commentPreviewText(from: row.comment.body))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.retracePrimary.opacity(0.95))
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let browserURL = row.context?.browserURL {
-                Text(browserURL)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.retraceSecondary.opacity(0.88))
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(
-                    isAnchor
-                    ? Color.retraceSubmitAccent.opacity(0.16)
-                    : (isSearchHighlighted ? Color.retraceSubmitAccent.opacity(0.12) : Color.white.opacity(0.05))
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(
-                    isAnchor
-                    ? Color.retraceSubmitAccent.opacity(0.42)
-                    : (isSearchHighlighted ? Color.retraceSubmitAccent.opacity(0.34) : Color.white.opacity(0.1)),
-                    lineWidth: 1
-                )
-        )
-        .scaleEffect(isHoveringInteractiveRow ? 1.01 : 1.0)
+        return allCommentsTimelineCardSurface(row, rowHeaderLabel: rowHeaderLabel,
+                                              isAnchor: isAnchor, isSearchHighlighted: isSearchHighlighted)
+        .scaleEffect(hoverScale)
         .animation(.easeOut(duration: 0.12), value: isHoveringInteractiveRow)
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture {
@@ -7126,6 +7186,73 @@ struct CommentSubmenu: View {
                 if isNavigable {
                     NSCursor.pop()
                 }
+            }
+        }
+    }
+
+    private func allCommentsTimelineCardSurface(_ row: CommentTimelineRow, rowHeaderLabel: String,
+                                                isAnchor: Bool, isSearchHighlighted: Bool) -> some View {
+        let backgroundColor: Color = isAnchor
+            ? Color.retraceSubmitAccent.opacity(0.16)
+            : (isSearchHighlighted ? Color.retraceSubmitAccent.opacity(0.12) : Color.white.opacity(0.05))
+        let borderColor: Color = isAnchor
+            ? Color.retraceSubmitAccent.opacity(0.42)
+            : (isSearchHighlighted ? Color.retraceSubmitAccent.opacity(0.34) : Color.white.opacity(0.1))
+        return allCommentsTimelineCardContent(row, rowHeaderLabel: rowHeaderLabel)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 12).fill(backgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(borderColor, lineWidth: 1))
+    }
+
+    private func allCommentsTimelineCardHeader(_ row: CommentTimelineRow, label rowHeaderLabel: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(rowHeaderLabel)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.retracePrimary.opacity(0.9))
+                .lineLimit(1)
+
+            if let tagName = row.primaryTagName {
+                Text(tagName)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.retracePrimary.opacity(0.88))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.13), lineWidth: 1)
+                    )
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text(Self.threadDateFormatter.string(from: row.comment.createdAt))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.retraceSecondary.opacity(0.85))
+                .lineLimit(1)
+        }
+    }
+
+    private func allCommentsTimelineCardContent(_ row: CommentTimelineRow, rowHeaderLabel: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            allCommentsTimelineCardHeader(row, label: rowHeaderLabel)
+
+            Text(commentPreviewText(from: row.comment.body))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.retracePrimary.opacity(0.95))
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let browserURL = row.context?.browserURL {
+                Text(browserURL)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.retraceSecondary.opacity(0.88))
+                    .lineLimit(1)
             }
         }
     }

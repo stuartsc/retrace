@@ -1,0 +1,364 @@
+[
+  {
+    "asset_preparation_seconds": 2.4014685,
+    "audio_seconds": 10.7316875,
+    "backend": "native",
+    "characters": 186,
+    "comparison": "batch_cold_start_excludes_asset_installation",
+    "expected_silence": false,
+    "hypothesis": "The blue proposal is still a draft. Do not prove the payment. The green proposal was approved yesterday. Please open the exact document and check the final amount before sending a reply.",
+    "hypothesis_words": 32,
+    "initialization_seconds": 0.010446167,
+    "real_time_factor": 0.05589866458560221,
+    "reference_available": true,
+    "reference_word_error_rate": 0.03125,
+    "reference_words": 32,
+    "source_start_seconds": 0,
+    "spans": [
+      {
+        "end": 0.24,
+        "start": 0,
+        "text": "The"
+      },
+      {
+        "end": 0.42,
+        "start": 0.24,
+        "text": "blue"
+      },
+      {
+        "end": 0.96,
+        "start": 0.42,
+        "text": "proposal"
+      },
+      {
+        "end": 1.14,
+        "start": 0.96,
+        "text": "is"
+      },
+      {
+        "end": 1.32,
+        "start": 1.14,
+        "text": "still"
+      },
+      {
+        "end": 1.44,
+        "start": 1.32,
+        "text": "a"
+      },
+      {
+        "end": 1.98,
+        "start": 1.44,
+        "text": "draft."
+      },
+      {
+        "end": 2.46,
+        "start": 2.04,
+        "text": "Do"
+      },
+      {
+        "end": 2.64,
+        "start": 2.46,
+        "text": "not"
+      },
+      {
+        "end": 2.94,
+        "start": 2.64,
+        "text": "prove"
+      },
+      {
+        "end": 3.12,
+        "start": 2.94,
+        "text": "the"
+      },
+      {
+        "end": 3.72,
+        "start": 3.12,
+        "text": "payment."
+      },
+      {
+        "end": 4.08,
+        "start": 3.9,
+        "text": "The"
+      },
+      {
+        "end": 4.26,
+        "start": 4.08,
+        "text": "green"
+      },
+      {
+        "end": 4.86,
+        "start": 4.26,
+        "text": "proposal"
+      },
+      {
+        "end": 5.04,
+        "start": 4.86,
+        "text": "was"
+      },
+      {
+        "end": 5.4,
+        "start": 5.04,
+        "text": "approved"
+      },
+      {
+        "end": 6,
+        "start": 5.4,
+        "text": "yesterday."
+      },
+      {
+        "end": 6.48,
+        "start": 6.06,
+        "text": "Please"
+      },
+      {
+        "end": 6.72,
+        "start": 6.48,
+        "text": "open"
+      },
+      {
+        "end": 7.02,
+        "start": 6.72,
+        "text": "the"
+      },
+      {
+        "end": 7.38,
+        "start": 7.02,
+        "text": "exact"
+      },
+      {
+        "end": 7.8,
+        "start": 7.38,
+        "text": "document"
+      },
+      {
+        "end": 8.22,
+        "start": 7.8,
+        "text": "and"
+      },
+      {
+        "end": 8.4,
+        "start": 8.22,
+        "text": "check"
+      },
+      {
+        "end": 8.64,
+        "start": 8.4,
+        "text": "the"
+      },
+      {
+        "end": 8.82,
+        "start": 8.64,
+        "text": "final"
+      },
+      {
+        "end": 9.12,
+        "start": 8.82,
+        "text": "amount"
+      },
+      {
+        "end": 9.6,
+        "start": 9.12,
+        "text": "before"
+      },
+      {
+        "end": 9.9,
+        "start": 9.6,
+        "text": "sending"
+      },
+      {
+        "end": 10.14,
+        "start": 9.9,
+        "text": "a"
+      },
+      {
+        "end": 10.56,
+        "start": 10.14,
+        "text": "reply."
+      }
+    ],
+    "timed_spans": 32,
+    "total_seconds": 0.610333167,
+    "transcription_seconds": 0.599887
+  },
+  {
+    "asset_preparation_seconds": 0,
+    "audio_seconds": 10.7316875,
+    "backend": "whisper_cpu",
+    "characters": 188,
+    "comparison": "batch_cold_start_excludes_asset_installation",
+    "expected_silence": false,
+    "hypothesis": "The blue proposal is still a draft. Do not approve the payment. The green proposal was approved yesterday. Please open the exact document and check the final amount before sending a reply.",
+    "hypothesis_words": 32,
+    "initialization_seconds": 0.263983667,
+    "real_time_factor": 1.0954446857495617,
+    "reference_available": true,
+    "reference_word_error_rate": 0,
+    "reference_words": 32,
+    "source_start_seconds": 0,
+    "spans": [
+      {
+        "end": 0.21,
+        "start": 0.02,
+        "text": "The"
+      },
+      {
+        "end": 0.58,
+        "start": 0.21,
+        "text": "blue"
+      },
+      {
+        "end": 1.13,
+        "start": 0.58,
+        "text": "proposal"
+      },
+      {
+        "end": 1.2,
+        "start": 1.13,
+        "text": "is"
+      },
+      {
+        "end": 1.55,
+        "start": 1.2,
+        "text": "still"
+      },
+      {
+        "end": 1.62,
+        "start": 1.55,
+        "text": "a"
+      },
+      {
+        "end": 2.24,
+        "start": 1.62,
+        "text": "draft."
+      },
+      {
+        "end": 2.39,
+        "start": 2.26,
+        "text": "Do"
+      },
+      {
+        "end": 2.65,
+        "start": 2.39,
+        "text": "not"
+      },
+      {
+        "end": 3.09,
+        "start": 2.65,
+        "text": "approve"
+      },
+      {
+        "end": 3.37,
+        "start": 3.09,
+        "text": "the"
+      },
+      {
+        "end": 3.94,
+        "start": 3.37,
+        "text": "payment."
+      },
+      {
+        "end": 4.12,
+        "start": 3.96,
+        "text": "The"
+      },
+      {
+        "end": 4.52,
+        "start": 4.12,
+        "text": "green"
+      },
+      {
+        "end": 4.9,
+        "start": 4.52,
+        "text": "proposal"
+      },
+      {
+        "end": 5.08,
+        "start": 4.9,
+        "text": "was"
+      },
+      {
+        "end": 5.56,
+        "start": 5.08,
+        "text": "approved"
+      },
+      {
+        "end": 6.32,
+        "start": 5.56,
+        "text": "yesterday."
+      },
+      {
+        "end": 6.73,
+        "start": 6.34,
+        "text": "Please"
+      },
+      {
+        "end": 6.97,
+        "start": 6.73,
+        "text": "open"
+      },
+      {
+        "end": 7.16,
+        "start": 6.97,
+        "text": "the"
+      },
+      {
+        "end": 7.48,
+        "start": 7.16,
+        "text": "exact"
+      },
+      {
+        "end": 8,
+        "start": 7.48,
+        "text": "document"
+      },
+      {
+        "end": 8.19,
+        "start": 8,
+        "text": "and"
+      },
+      {
+        "end": 8.56,
+        "start": 8.19,
+        "text": "check"
+      },
+      {
+        "end": 8.7,
+        "start": 8.56,
+        "text": "the"
+      },
+      {
+        "end": 9.08,
+        "start": 8.7,
+        "text": "final"
+      },
+      {
+        "end": 9.44,
+        "start": 9.08,
+        "text": "amount"
+      },
+      {
+        "end": 9.8,
+        "start": 9.44,
+        "text": "before"
+      },
+      {
+        "end": 10.25,
+        "start": 9.8,
+        "text": "sending"
+      },
+      {
+        "end": 10.31,
+        "start": 10.25,
+        "text": "a"
+      },
+      {
+        "end": 10.68,
+        "start": 10.31,
+        "text": "reply."
+      }
+    ],
+    "timed_spans": 32,
+    "total_seconds": 12.019953708,
+    "transcription_seconds": 11.755970041
+  }
+]

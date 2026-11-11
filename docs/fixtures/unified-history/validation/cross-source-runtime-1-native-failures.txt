@@ -1,0 +1,17 @@
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:165: error: -[CaptureTests.CaptureVisibleTextTests testAnIncompleteLargeNativeVisibilityTreeDoesNotReturnEarlierText] : XCTAssertTrue failed
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:199: error: -[CaptureTests.CaptureVisibleTextTests testCancelledPixelReadJoinsNativeObserverAndCannotPublishText] : XCTAssertEqual failed: ("0") is not equal to ("1") - Exercise cancellation of a successfully prepared native observer
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:93: error: -[CaptureTests.CaptureVisibleTextTests testDuplicateWindowGeometryAndTitleRefusesIdentityBeforeReadingText] : XCTAssertTrue failed
+/Users/stuartbond/backintime/Capture/Metadata/CaptureVisibleTextReader.swift:121: error: -[CaptureTests.CaptureVisibleTextTests testNativeNotificationABATextChangeCannotPassIdenticalPostRead] : failed: caught error: "Error Domain=NSCocoaErrorDomain Code=256 "The file couldn’t be opened.""
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:239: error: -[CaptureTests.CaptureVisibleTextTests testPriorNativeTextCannotAttachToALaterNativePixelAttempt] : XCTAssertFalse failed - Require a real admitted native observation
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:144: error: -[CaptureTests.CaptureVisibleTextTests testScrollingUsesElementLocalUTF16RangesAndRejectsHorizontallyClippedText] : XCTAssertTrue failed
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:178: error: -[CaptureTests.CaptureVisibleTextTests testSlowNativeTextReplyFailsClosedAndJoinsTheReader] : XCTAssertTrue failed
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:42: error: -[CaptureTests.CaptureVisibleTextTests testVisibleNativeTextKeepsExactUnicodeAndExcludesSecureHiddenAndOffscreenText] : XCTAssertFalse failed - Owned NSTextView must provide supported visible ranges
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:43: error: -[CaptureTests.CaptureVisibleTextTests testVisibleNativeTextKeepsExactUnicodeAndExcludesSecureHiddenAndOffscreenText] : XCTAssertEqual failed: ("nil") is not equal to ("Optional(Shared.CaptureTextConsistency.sameWindowBracketed)")
+/Users/stuartbond/backintime/Capture/Tests/CaptureVisibleTextTests.swift:45: error: -[CaptureTests.CaptureVisibleTextTests testVisibleNativeTextKeepsExactUnicodeAndExcludesSecureHiddenAndOffscreenText] : XCTAssertTrue failed
+CAPTURE_AX_DIAGNOSTIC phase=preparation operation=observerAdd status=-25204 nodes=0 registrations=0 runs=0 reasons=mutationObserverUnavailable
+CAPTURE_AX_DIAGNOSTIC phase=preparation operation=size status=0 nodes=0 registrations=6 runs=0 reasons=windowIdentityUnproved
+CAPTURE_AX_DIAGNOSTIC phase=preflight operation=preflight status=none nodes=0 registrations=0 runs=0 reasons=disabled
+CAPTURE_AX_DIAGNOSTIC phase=preparation operation=rangeForLine status=-25201 nodes=7 registrations=27 runs=0 reasons=visibilityUnverified
+CAPTURE_AX_DIAGNOSTIC phase=preparation operation=contextIdentity status=none nodes=0 registrations=0 runs=0 reasons=windowIdentityUnproved
+CAPTURE_AX_DIAGNOSTIC phase=preflight operation=preflight status=none nodes=0 registrations=0 runs=0 reasons=windowIdentityUnproved
+CAPTURE_AX_DIAGNOSTIC phase=preflight operation=preflight status=none nodes=0 registrations=0 runs=0 reasons=privacyMasked

@@ -8,6 +8,7 @@ You are responsible for the **Database** module of Retrace. Your job is to imple
 
 ```
 Database/
+├── ResourceUsagePersistence.swift # Content-free resource minute writes, bounded 30-day expiry and row cap
 ├── Migrations/
 │   ├── MigrationRunner.swift
 │   ├── V10_SegmentCommentSearchIndex.swift
@@ -24,6 +25,13 @@ Database/
 │   ├── V21_ProgressiveRecall.swift
 │   ├── V22_ScreenEvidenceFeed.swift
 │   ├── V23_ScreenEvidenceAdmission.swift
+│   ├── V24_OriginalFrameSources.swift # Store-qualified source aliases and deletion tombstones
+│   ├── V25_SemanticRecall.swift # Typed native vectors, source invalidation and independent fresh/backfill checkpoints
+│   ├── V26_CaptureGroups.swift # Additive group/attachment/member journal and revision/deletion guards
+│   ├── V28_AudioOriginalSources.swift # Immutable declared source and deletion/path fences
+│   ├── V27_LocalContextVisibility.swift # Indexed document hides and canonical revocation lookups
+│   ├── V29_JobEvents.swift # Additive exact categorical job receipts, tombstones and read revision
+│   ├── V30_AudioEvidence.swift # Exact transcript revisions, lineage deletion and bounded historical registration
 │   ├── V1_InitialSchema.swift
 │   ├── V2_UnfinalisedVideoTracking.swift
 │   ├── V3_TagSystem.swift
@@ -51,7 +59,11 @@ Database/
 │   │   └── AudioTranscriptionQueriesTests.swift
 │   ├── AsyncQueuePipelineTests.swift
 │   ├── ActivityPersistenceTests.swift
+│   ├── JobEventPersistenceTests.swift # Real SQLite live admission, exact replay/deletion, chronology, corruption and recovery
+│   ├── LocalContextVisibilityTests.swift # Real SQLite visibility, policy capability, correction acknowledgement and query-plan gates
 │   ├── ActivityScreenLinkTests.swift
+│   ├── AudioOriginalSourceTests.swift # Real SQLite receipts, retirement, rollback, reset and reopen
+│   ├── AudioEvidencePersistenceTests.swift # Separate committed SQLite readers, exact revisions, deletion, filters and bootstrap
 │   ├── AudioRepairPolicyTests.swift
 │   ├── AudioTranscriptionPaginationTests.swift
 │   ├── DatabaseManagerTests.swift
@@ -59,9 +71,13 @@ Database/
 │   ├── EdgeCaseTests.swift
 │   ├── FTSManagerTests.swift
 │   ├── FramePipelinePersistenceTests.swift
+│   ├── ResourceUsagePersistenceTests.swift # Real SQLite telemetry expiry, row cap and invalid metric rejection
 │   ├── IntegrationTests.swift
 │   ├── LegacyOCRBackfillPagingTests.swift
 │   ├── OCRPipelineTests.swift
+│   ├── CaptureGroupPersistenceTests.swift # Real SQLite begin, retries, membership, policy, rollback and deletion
+│   ├── OriginalFrameAliasTests.swift # Atomic capture identity, rollback and deletion-before-map recovery
+│   ├── CaptureTextPersistenceTests.swift # Real SQLite direct-text receipt admission, immutable OCR revisions and rollback
 │   ├── QueryBuilderTests.swift
 │   ├── ProgressivePersistenceTestAssertions.swift
 │   ├── RecallReadConnectionTests.swift
@@ -73,14 +89,19 @@ Database/
 │   ├── ScreenEvidenceFeedPublicationTests.swift
 │   ├── ScreenEvidenceFeedConsumerTests.swift
 │   ├── ScreenEvidenceAdmissionTests.swift
+│   ├── SemanticRecallPersistenceTests.swift
 │   ├── SearchRevisionCompatibilityTests.swift
 │   └── TestLogger.swift
 ├── DatabaseConfig.swift
+├── AudioEvidencePersistence.swift # Owned read-only native transcript store, exact stamps and fixed-boundary bootstrap
 ├── ActivityPersistence.swift
+├── JobEventPersistence.swift # Canonical bounded job writer, exact receipt resolution and policy-stamped chronology
+├── LocalContextVisibility.swift # Bounded current hide predicates, activity feed mutation fence and live policy identity
 ├── ActivityScreenLinkPersistence.swift
 ├── DatabaseConnection.swift
 ├── DatabaseManager.swift
 ├── FTSManager.swift
+├── CaptureGroupPersistence.swift  # Durable per-display attempts, exact admission and current-policy group reads
 ├── FramePipelinePersistence.swift
 ├── IDMappingService.swift
 ├── LegacyOCRBackfillPersistence.swift
@@ -90,6 +111,7 @@ Database/
 ├── ScreenEvidenceFeedPublication.swift
 ├── ScreenEvidenceFeedConsumerPersistence.swift
 ├── ScreenEvidenceAdmissionPersistence.swift
+├── SemanticRecallPersistence.swift
 └── Schema.swift
 ```
 
@@ -149,6 +171,10 @@ Frame deletion triggers remove all native snapshots and media receipts and creat
 ## Capture and retention persistence
 
 `FramePipelinePersistence.swift` owns atomic OCR publication, claim release and idempotent WAL recovery. `RetentionPersistence.swift` deletes bounded expired-frame batches and rechecks finalized, unreferenced video identity inside the same transaction as a guarded unlink callback. Never pass the SQLite pointer to App for deletion. No awaits are allowed inside these transactions.
+
+`originalFrameDisposition` is a single-transaction, native-store-qualified release proof for retained original pixels. Completed status alone does not prove extraction: require a committed OCR snapshot (including durable blank OCR), current finalized archive identity and dimensions, or a canonical deletion tombstone. Unknown/mismatched stores remain pending. `getFrameWithVideoInfoByID` restores immutable capture display/context identity from the observation while retaining current archive links and current privacy metadata. `FramePipelinePersistenceTests` covers skip-versus-extraction, rollback, blank OCR, deletion and recovery remapping.
+
+V24 records `(storeID, originalVideoPathID, sourceIndex)` aliases in the same transaction as new native capture. `insertCapturedFrame` owns that admission; do not split it into a generic insert plus an alias write. The deletion trigger retains a content-free tombstone even if a crash prevented filesystem frame-ID registration. `commitRecoveredFrames` rechecks and publishes aliases atomically so deletion during encoding cannot resurrect a source. Existing data is not backfilled or rewritten, and unqualified legacy journals are not automatically adopted.
 
 V19 adds non-unique indexes for queue frame IDs, document IDs and video paths. Preserve existing records; duplicates are consolidated on enqueue/claim, not silently discarded by migration. Runtime retention does not vacuum the database. Frame IDs, app-segment IDs, database video IDs and storage path IDs are distinct.
 
@@ -604,3 +630,47 @@ Trade-off: Slightly more complex writes (populate junction tables + text regions
 ### Structured screen observations (Phase 2)
 
 Canonical OCR commits append immutable optional structured payloads through `ScreenEvidencePersistence`; they retain original main-then-chrome block ordinals, exact flat-text parity, UTF16 channel ranges, frame-pixel geometry and explicit unknown block ownership. Incoherent legacy text remains an unstructured channel with no fabricated highlights. Old JSON decodes without rewriting retained revisions or requiring a schema migration. Chrome-only text must enter FTS just as main text does. `StructuredScreenObservationTests` uses real SQLite publication and rendered JPEG/Vision input; expansion itself remains a currently authorised service read with per-page access checks.
+
+## Capture groups (candidate)
+
+V26 does not group legacy or imported frames by time proximity. A native begin requires the current in-memory writer/active policy before every acknowledgement, including retries. It inserts every target atomically before native pixels. Each display retains its own attachment, attempt and real pixel interval. Sampling completion is separate from media admission; suppressed samples name an exact older attempt and keep that earlier evidence time. Missing, dropped, cancelled, deleted, excluded and interrupted members remain explicit.
+
+Fresh frame/alias admission requires the same active writer and epoch. Recovery may finish a durable exact candidate after writer restart, but can never rebind a member or revive a deletion. Failed fresh admission does not invoke recovery in the live loop. Read stamps include the journal revision, source and privacy/metadata fences; UI refreshes pinned groups before display navigation. The independent SCK-only switch defaults off. Journal bytes/day, physical capture and installed performance acceptance remain unmeasured; source tests do not establish promotion. Private in-memory database initialization no longer probes the user's Rewind archive.
+
+### Typed native semantic persistence (V25)
+
+`SemanticRecallStoreProtocol` is a separate typed local index. V22 work remains blocked and V23 receipts remain unpublished. V25 uses the same canonical input projector and current actor-owned admission capability, with independent durable coalesced source-state and fixed-boundary historical cursors. Fresh work precedes historical page continuation. A page is at most 4096 text bytes and 64 fragments; claim deadlines use wall and monotonic clocks, and publication revalidates source/revision/policy/metadata/input identity in one non-suspending transaction. Window ranges retain exact fragment/channel UTF16 spans and pinned model/projection identity; finite unit Float32 vectors are 384 dimensions. Incomplete observations never enter retrieval. Capture-before-OCR is distinct from an actually empty extraction.
+
+Source changes synchronously remove affected derivatives; context changes reset affected work, policy changes clear derivatives and reset coverage. Segment context invalidation starts from retained semantic documents and uses frame primary-key lookups, so unindexed legacy history is not enumerated; its work still scales with retained semantic documents and needs active-corpus profiling. Durable vectors survive writer restart only behind fresh active authority and current canonical checks. Time/app constraints, app exclusions, hidden-segment filters and current policy precede inspection/output limits; tag/visibility changes invalidate read generations without re-embedding; bounded reads return explicit continuation and a generation stamp that must be revalidated after ranking. Queue caught-up status is not complete coverage when observations were skipped. The index does not cover imports, audio, unmaterialized legacy text or direct AX text independently. App owns content-free worker/query metrics and native runtime lifecycle.
+
+`SemanticRecallPersistenceTests.swift` exercises real private SQLCipher, canonical capture/extraction publication, authored pinned MiniLM vectors, 10k-observation fresh preemption, durable page continuation, empty/pre-OCR distinction, source/policy/metadata invalidation, selective context-byte/claim purge and rollback behind 3,000 unindexed frames, read fences, filters and malformed vector/span rejection. The authored vector oracle is the repository Search fixture; tests never load a model or live history. Swift endpoint execution and installed quality/performance acceptance remain separate from source and isolated SQL-trigger checks.
+
+Local context visibility uses the canonical active V23 capability and policy epoch, current hidden tag name, and confirmed non-revoked selection/document hide semantics. V27 adds only the partial expression indexes needed to avoid scanning correction history. The activity feed sequence fences acknowledgement changes that activity health alone cannot detect. No context summary, model activation, job claim or audio authority is stored here.
+
+V28 records the original declared audio source in the raw-row INSERT statement. Its immutable alias survives only explicit processing retirement; ordinary raw/transcript deletion retains a path tombstone and invalidates refinement. Legacy adoption inspects at most two original raw rows using the partial path index. No old pass-one row is treated as original proof, because pipeline reset/restamping loses that distinction. Guarded publication checks the native store, recording identity and mutation generation while holding the serialized connection's recursive SQLite mutex; it refuses an already-open transaction and never awaits while locked. Guarded publication checks caller cancellation after acquiring connection ownership and again before COMMIT, rolling back rows, receipt generation and success metrics together. Failure metrics remain independently writable by a cancelled owning task. The bounded inspection endpoint seeks the existing pass/row-ID index before LIMIT and returns ineligible rows without candidate paths so the manager always advances. It grants no source proof; a 10,000-row VM-step/query-plan regression guards against regrouping the whole prefix. These new methods do not repair every legacy borrowed-pointer transaction. `AudioOriginalSourceTests` and Processing's `AudioRefinementSourceTests` require actual SQLite/AAC; the receipt establishes no consent, app attribution, canonical transcript revision or searchable audio coverage.
+
+`JobEventPersistence.swift` and V29 retain categorical explicit-command observation receipts, with no command text, arguments, path or output. Starts require the current in-memory V23 and job writer capabilities plus the exact App-owned master-generation admission. Terminal success/failure requires the same current policy; only content-free interruption may drain an already-admitted run after revocation. Eight unfinished runs are bounded; a new owner records pending old runs as interrupted without inventing completion time. Immutable exact references, validated retained policy hash/phase and job-state revision fence local resolve/keyset pages even while recording is paused; retained identity never restores writer capability; deletion tombstones deny replay. Receipt and categorical daily_metrics writes are atomic. `JobEventPersistenceTests.swift` uses private real SQLite; source review and native execution remain distinct.
+
+### Exact native audio evidence
+
+V30 keeps ordinary legacy transcript rows intact and stores at most one current immutable text snapshot per native row. Retained row aliases prevent deleted IDs from being rebound. INSERT/UPDATE/DELETE triggers call one transaction-local materializer; its request row is consumed before the original statement completes. V28 invalidation/tombstones purge every copied transcript in that lineage. An intentional raw-placeholder retirement preserves surviving transcript identity. Preferred-pass changes invalidate prior references without substituting text. Source proof means only the original declared recording source, never capture consent, app ownership, exclusions, ASR accuracy or verified media.
+
+`DatabaseManager.makeAudioEvidenceStore()` owns a separate read-only native connection and preserves the native encryption key policy. It rejects a borrowed writer handle. The reader lifetime is bound to the owning database's generation, which changes before any close suspension. Joined reader close waits for admitted calls/awaited categorical attempt metrics; no later call can emit. After every owner/metric suspension, one final canonical read checks the mutation stamp and exact references before text escapes. App still owns the independent local-history policy/source fence.
+
+Search inspects at most 512 descending native row IDs before filling at most 50 results; exact source/date/provenance checks precede the result limit. It uses safely quoted literal FTS phrases and bounds copied text to 64 KiB per row and 256 KiB per page. Excerpts preserve composed Unicode boundaries within 512 UTF16 units. Cursors bind query/filter identity, reader lifetime and mutation revision. App/window/URL/tag/comment/only-hidden/multiple-date filters and requested capture-policy attestation fail explicitly when unsupported. Coverage describes proven native transcripts and that bounded scan only. Media stays `notVerified`; no path, frame identity or word timing is invented.
+
+`advanceAudioEvidenceBootstrap` inspects at most 128 row IDs toward the fixed migration boundary. Fresh mutations register independently, and gaps/unavailable lineages still advance historical progress. Source-less legacy rows are never relabelled/adopted from a refined pass. Later source adoption alone does not imply a previously unavailable alias has a text snapshot; fresh mutations or explicit historical registration are still required. The source state and current row are always rechecked. VM progress budgets bound new read/write transactions and do not await while holding SQLite's recursive FULLMUTEX. Test and SQL receipts are scoped evidence, not installed playback/privacy/latency acceptance.
+
+### Pending ambient audio (V31)
+
+`audio_pending_raw_id` is a partial ID index for first-pass pending raw recordings. Recovery seeks at most 16 rows per live-worker page through this index; it never sorts the complete backlog. Capture-time `capture_probable_silence` is a scheduling hint only. Within each bounded page, three speech/unknown candidates precede one silence candidate when both are available; this is not global speech ordering or a reason to discard media. A joined 30-second worker wake retries exhausted failed sweeps. First-pass sentence publication and intentional raw retirement share one original-source-guarded, cancellation-checked transaction; no-text outcomes use the same source and pending-row fences. Private SQLite tests cover rollback, replay, stale/cancelled outcomes and a 10,000-row query-plan/VM-step bound.
+
+### Exact chunk audio registration (V32)
+
+`AudioChunkMediaPersistence.swift` registers immutable ten-second AAC chunk receipts and overlapping logical window ranges through `AudioTranscriptionQueries.registerRawAudioWindow`. The explicit `chunkWindowV1` discriminator and `.retraceaudio` namespace never impersonate legacy `batch_*.m4a` media. Native store identity, bounded manifests, source, contiguous ranges, non-overlapping chunk ownership and exact replay are checked before one mutex-guarded transaction publishes the pending row, V28 source lineage, chunk receipts and window references. Chunk descriptors are stored once; normalized ranges reuse them. Replays after raw retirement return the original raw identity without recreating work. Deleted/conflicting identities remain unavailable.
+
+Current window registration is revalidated inside first-pass and source-guarded refinement commits. Sentence rows must reference the registered window and remain within its newly owned interval; predecessor context cannot be published twice. Pending/repair queries admit registered active windows explicitly while retaining legacy files. `AudioTranscription.evidenceReference` is populated for registered media only after all returned transcript evidence fields match a current V30 snapshot. `NativeAudioEvidenceStore.readAudioMedia` returns the exact snapshot, window and read stamp, then rechecks revision and registration after awaited owner/metric callbacks. This is a database mapping, not a claim that AAC bytes have been verified; Storage independently verifies media and owns reader leases.
+
+Existing raw/transcript deletion and original-source tombstones invalidate window access transactionally. Immutable chunk/window/range receipts are retained and no filesystem cleanup or historical conversion occurs. `AudioChunkMediaPersistenceTests.swift` uses actual AAC receipts from Storage plus private SQLite for shared-chunk registration, replay/restart, late-write rollback, ownership bounds, manifest conflicts, stale references, deletion during reads, independent successor visibility and immutable metadata guards.
+
+`isAudioWindowCanonicallyDeleted` compares the exact retained window, chunk descriptors, ranges and manifest digest and requires its committed original-source tombstone. It permits recovery to acknowledge a leftover publication journal after deletion without resurrecting pending work. It grants no filesystem deletion authority; physical media stays retained.

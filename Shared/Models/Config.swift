@@ -106,10 +106,44 @@ public struct ShortcutConfig: Codable, Sendable, Equatable {
     )
 }
 
+// MARK: - Significant Job Observation
+
+/// Independent opt-in for explicit application-owned command lifecycle facts.
+/// This setting never enables command discovery, an external ingress, or audio.
+public struct JobObservationConfig: Codable, Equatable, Sendable {
+    public let enabled: Bool
+    public init(enabled: Bool = false) { self.enabled = enabled }
+    public static let `default` = JobObservationConfig()
+    private enum CodingKeys: String, CodingKey { case enabled }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(enabled: try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false)
+    }
+}
+
 // MARK: - Capture Configuration
 
 /// Configuration for screen capture behavior
+/// The new native backend remains an explicit comparison candidate until the
+/// installed multi-display/privacy/performance acceptance gates pass.
+public enum CaptureBackend: String, Codable, Sendable {
+    case legacy
+    case screenCaptureKitCandidate
+}
+
+public enum CaptureDisplayPolicy: String, Codable, Sendable {
+    case allDisplays
+    case activeDisplay
+}
+
 public struct CaptureConfig: Codable, Sendable {
+    /// Independently opt-in, bounded visible Accessibility text captured with pixels.
+    public let captureVisibleTextEnabled: Bool
+    /// SCK-only durable sampling receipts; independent candidate switch.
+    public let captureGroupReceiptsEnabled: Bool
+    public let backend: CaptureBackend
+    /// Applies to the ScreenCaptureKit candidate. Legacy follows active display.
+    public let displayPolicy: CaptureDisplayPolicy
     /// Interval between captures in seconds
     public let captureIntervalSeconds: Double
 
@@ -172,7 +206,11 @@ public struct CaptureConfig: Codable, Sendable {
         redactWindowTitlePatterns: [String] = [],
         redactBrowserURLPatterns: [String] = [],
         idleThresholdSeconds: Double = 120.0,
-        captureOnWindowChange: Bool = true
+        captureOnWindowChange: Bool = true,
+        backend: CaptureBackend = .legacy,
+        displayPolicy: CaptureDisplayPolicy = .allDisplays,
+        captureVisibleTextEnabled: Bool = false,
+        captureGroupReceiptsEnabled: Bool = false
     ) {
         self.captureIntervalSeconds = captureIntervalSeconds
         self.adaptiveCaptureEnabled = adaptiveCaptureEnabled
@@ -186,6 +224,39 @@ public struct CaptureConfig: Codable, Sendable {
         self.redactBrowserURLPatterns = redactBrowserURLPatterns
         self.idleThresholdSeconds = idleThresholdSeconds
         self.captureOnWindowChange = captureOnWindowChange
+        self.backend = backend
+        self.displayPolicy = displayPolicy
+        self.captureVisibleTextEnabled = captureVisibleTextEnabled
+        self.captureGroupReceiptsEnabled = captureGroupReceiptsEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case captureIntervalSeconds, adaptiveCaptureEnabled, deduplicationThreshold, maxResolution
+        case excludedAppBundleIDs, excludePrivateWindows, customPrivateWindowPatterns, showCursor
+        case redactWindowTitlePatterns, redactBrowserURLPatterns, idleThresholdSeconds, captureOnWindowChange
+        case backend, displayPolicy, captureVisibleTextEnabled, captureGroupReceiptsEnabled
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            captureIntervalSeconds: try values.decode(Double.self, forKey: .captureIntervalSeconds),
+            adaptiveCaptureEnabled: try values.decode(Bool.self, forKey: .adaptiveCaptureEnabled),
+            deduplicationThreshold: try values.decode(Double.self, forKey: .deduplicationThreshold),
+            maxResolution: try values.decode(Resolution.self, forKey: .maxResolution),
+            excludedAppBundleIDs: try values.decode(Set<String>.self, forKey: .excludedAppBundleIDs),
+            excludePrivateWindows: try values.decode(Bool.self, forKey: .excludePrivateWindows),
+            customPrivateWindowPatterns: try values.decode([String].self, forKey: .customPrivateWindowPatterns),
+            showCursor: try values.decode(Bool.self, forKey: .showCursor),
+            redactWindowTitlePatterns: try values.decode([String].self, forKey: .redactWindowTitlePatterns),
+            redactBrowserURLPatterns: try values.decode([String].self, forKey: .redactBrowserURLPatterns),
+            idleThresholdSeconds: try values.decode(Double.self, forKey: .idleThresholdSeconds),
+            captureOnWindowChange: try values.decode(Bool.self, forKey: .captureOnWindowChange),
+            backend: try values.decodeIfPresent(CaptureBackend.self, forKey: .backend) ?? .legacy,
+            displayPolicy: try values.decodeIfPresent(CaptureDisplayPolicy.self, forKey: .displayPolicy) ?? .allDisplays,
+            captureVisibleTextEnabled: try values.decodeIfPresent(Bool.self, forKey: .captureVisibleTextEnabled) ?? false,
+            captureGroupReceiptsEnabled: try values.decodeIfPresent(Bool.self, forKey: .captureGroupReceiptsEnabled) ?? false
+        )
     }
 
     /// Default deduplication threshold (99.85% similarity)
@@ -222,6 +293,11 @@ public struct Resolution: Codable, Sendable, Equatable {
 
 // MARK: - Storage Configuration
 
+/// Independently switchable, lossless original-pixel candidates. Archive HEVC is separate.
+public enum OriginalPixelCompression: String, CaseIterable, Codable, Sendable {
+    case disabled, lzfse, lz4
+}
+
 /// Configuration for data storage
 public struct StorageConfig: Codable, Sendable {
     /// Root directory for all stored data
@@ -236,19 +312,40 @@ public struct StorageConfig: Codable, Sendable {
     /// Duration of each video segment in seconds
     public let segmentDurationSeconds: Int
 
+    /// Default remains V2/raw until representative installed quality/latency acceptance.
+    public let originalPixelCompression: OriginalPixelCompression
+
     public init(
         storageRootPath: String = AppPaths.defaultStorageRoot,
         retentionDays: Int? = 90,
         maxStorageGB: Double? = 50.0,
-        segmentDurationSeconds: Int = 300  // 5 minutes
+        segmentDurationSeconds: Int = 300,  // 5 minutes
+        originalPixelCompression: OriginalPixelCompression = .disabled
     ) {
         self.storageRootPath = storageRootPath
         self.retentionDays = retentionDays
         self.maxStorageGB = maxStorageGB
         self.segmentDurationSeconds = segmentDurationSeconds
+        self.originalPixelCompression = originalPixelCompression
     }
 
     public static let `default` = StorageConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case storageRootPath, retentionDays, maxStorageGB, segmentDurationSeconds, originalPixelCompression
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            storageRootPath: try values.decode(String.self, forKey: .storageRootPath),
+            retentionDays: try values.decodeIfPresent(Int.self, forKey: .retentionDays),
+            maxStorageGB: try values.decodeIfPresent(Double.self, forKey: .maxStorageGB),
+            segmentDurationSeconds: try values.decode(Int.self, forKey: .segmentDurationSeconds),
+            originalPixelCompression: try values.decodeIfPresent(OriginalPixelCompression.self,
+                                                                 forKey: .originalPixelCompression) ?? .disabled
+        )
+    }
 
     public var expandedStorageRootPath: String {
         NSString(string: storageRootPath).expandingTildeInPath
@@ -326,6 +423,9 @@ public struct AudioCaptureConfig: Codable, Sendable {
     /// Meeting detection bundle IDs to monitor
     public let meetingAppBundleIDs: Set<String>
 
+    /// Independent native evidence comparison. Does not change recording consent.
+    public let meetingEvidenceComparisonEnabled: Bool
+
     public init(
         microphoneEnabled: Bool = true,
         systemAudioEnabled: Bool = false,
@@ -334,7 +434,8 @@ public struct AudioCaptureConfig: Codable, Sendable {
         bufferDurationSeconds: Double = 10.0,
         targetSampleRate: Int = 16000,
         targetChannels: Int = 1,
-        meetingAppBundleIDs: Set<String> = AudioCaptureConfig.defaultMeetingApps
+        meetingAppBundleIDs: Set<String> = AudioCaptureConfig.defaultMeetingApps,
+        meetingEvidenceComparisonEnabled: Bool = false
     ) {
         self.microphoneEnabled = microphoneEnabled
         self.systemAudioEnabled = systemAudioEnabled
@@ -344,6 +445,37 @@ public struct AudioCaptureConfig: Codable, Sendable {
         self.targetSampleRate = targetSampleRate
         self.targetChannels = targetChannels
         self.meetingAppBundleIDs = meetingAppBundleIDs
+        self.meetingEvidenceComparisonEnabled = meetingEvidenceComparisonEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case microphoneEnabled, systemAudioEnabled, voiceProcessingEnabled, hasConsentedToMeetingRecording
+        case bufferDurationSeconds, targetSampleRate, targetChannels, meetingAppBundleIDs, meetingEvidenceComparisonEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            microphoneEnabled: try container.decode(Bool.self, forKey: .microphoneEnabled),
+            systemAudioEnabled: try container.decode(Bool.self, forKey: .systemAudioEnabled),
+            voiceProcessingEnabled: try container.decode(Bool.self, forKey: .voiceProcessingEnabled),
+            hasConsentedToMeetingRecording: try container.decode(Bool.self, forKey: .hasConsentedToMeetingRecording),
+            bufferDurationSeconds: try container.decode(Double.self, forKey: .bufferDurationSeconds),
+            targetSampleRate: try container.decode(Int.self, forKey: .targetSampleRate),
+            targetChannels: try container.decode(Int.self, forKey: .targetChannels),
+            meetingAppBundleIDs: try container.decode(Set<String>.self, forKey: .meetingAppBundleIDs),
+            meetingEvidenceComparisonEnabled: try container.decodeIfPresent(Bool.self, forKey: .meetingEvidenceComparisonEnabled) ?? false
+        )
+    }
+
+    /// A comparison-only copy; recording and explicit consent are unchanged.
+    public func withMeetingEvidenceComparisonEnabled(_ enabled: Bool) -> Self {
+        Self(microphoneEnabled: microphoneEnabled, systemAudioEnabled: systemAudioEnabled,
+             voiceProcessingEnabled: voiceProcessingEnabled,
+             hasConsentedToMeetingRecording: hasConsentedToMeetingRecording,
+             bufferDurationSeconds: bufferDurationSeconds, targetSampleRate: targetSampleRate,
+             targetChannels: targetChannels, meetingAppBundleIDs: meetingAppBundleIDs,
+             meetingEvidenceComparisonEnabled: enabled)
     }
 
     public static let `default` = AudioCaptureConfig()

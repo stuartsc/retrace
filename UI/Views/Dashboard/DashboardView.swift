@@ -180,6 +180,13 @@ public struct DashboardView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let message = viewModel.captureHealthSummary {
+                Label(message, systemImage: viewModel.hasCaptureGap ? "exclamationmark.triangle.fill" : "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(viewModel.hasCaptureGap ? Color.orange : Color.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 32).padding(.top, 24)
+            }
             // Accessibility permission warning banner
             if viewModel.showAccessibilityWarning {
                 PermissionBanner(
@@ -1013,10 +1020,10 @@ public struct DashboardView: View {
             ),
             StatCardData(
                 icon: "externaldrive.fill",
-                title: "Total Storage Used",
-                value: formatStorageSize(viewModel.totalStorageBytes),
-                subtitle: formatStoragePerMonth(),
-                graphData: viewModel.dailyStorageData.isEmpty ? nil : viewModel.dailyStorageData,
+                title: "Total File Allocation",
+                value: viewModel.storageMeasuredAt == nil ? "Measuring…" : formatStorageSize(viewModel.totalStorageBytes),
+                subtitle: viewModel.storageMeasurementIsPartial ? "Last check incomplete · details in Storage" : "Recordings, models and copies · details in Storage",
+                graphData: nil,
                 graphColor: .cyan
             ),
             StatCardData(
@@ -1199,19 +1206,6 @@ public struct DashboardView: View {
             let mb = Double(bytes) / 1_000_000
             return String(format: "%.0f MB", mb)
         }
-    }
-
-    private func formatStoragePerMonth() -> String {
-        let dailyData = viewModel.dailyStorageData
-        guard !dailyData.isEmpty else { return "est. 0 GB/month" }
-
-        // Sum all daily values and extrapolate to 30 days
-        let totalBytes = dailyData.reduce(0) { $0 + $1.value }
-        let daysWithData = dailyData.count
-        let bytesPerDay = Double(totalBytes) / Double(daysWithData)
-        let bytesPerMonth = bytesPerDay * 30.0
-        let gbPerMonth = bytesPerMonth / 1_000_000_000
-        return String(format: "est. %.1f GB/month", gbPerMonth)
     }
 
     private func formatOldestDateSubtitle(_ date: Date?) -> String {
@@ -3441,6 +3435,7 @@ public struct DashboardView: View {
     }
 
     private func liveFrameDisplayAppName(_ frame: FrameReference) -> String {
+        if frame.metadata.redactionReason != nil { return "Recorded screen" }
         if let bundleID = frame.metadata.appBundleID,
            let resolvedName = liveFrameAppNamesByBundleID[bundleID] {
             return resolvedName

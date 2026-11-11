@@ -1,0 +1,80 @@
+[
+  {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/au-names-padded.wav",
+    "file_sha256": "d3dd351ce1c78031896e2adadf1abbf8cff6d07c821a03d1611e76bdbd57ca5e",
+    "pcm_sha256": "7dfb9b28435f773b2fa2ff2841b7ed1bded2ea763332f7ec9eddbb03bc7e02a0",
+    "bytes": 492110,
+    "pcm_frames": 246033,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "seconds": 15.3770625,
+    "peak_abs_pcm16": 24059,
+    "rms": 0.13700844643161605
+  },
+  {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/au-names.wav",
+    "file_sha256": "e042a3a0d9f3d572541677c31d2602902396a86c8f1e64f26b2567cbf55cf060",
+    "pcm_sha256": "fd0c5017627ce837e0212e13f2f536d7e1488a0a11499726962af7dbd7c3dd13",
+    "bytes": 384162,
+    "pcm_frames": 190033,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "seconds": 11.8770625,
+    "peak_abs_pcm16": 24059,
+    "rms": 0.15589403953360978
+  },
+  {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/existing-karen-authored.wav",
+    "file_sha256": "271a49fc227c083978627f4ea436d4f5c155514542d9089390a6885182c3cd00",
+    "pcm_sha256": "b1295d561ac7a320eec47d9f5e5ccb58ed4e1e20f52dc3119b445f1d88952b41",
+    "bytes": 347510,
+    "pcm_frames": 171707,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "seconds": 10.7316875,
+    "peak_abs_pcm16": 24028,
+    "rms": 0.15099051688438211
+  },
+  {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/overlap-track-b.wav",
+    "file_sha256": "aa3568d952bb43a67d93395e4001aed6ed003795ddb6daf6f2c6782dea9f6d20",
+    "pcm_sha256": "3659743959f0bfa1bc707549016c7d6545dcd8c488863dae711b16225e7c7eb4",
+    "bytes": 223158,
+    "pcm_frames": 109531,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "seconds": 6.8456875,
+    "peak_abs_pcm16": 24958,
+    "rms": 0.15465010323695078
+  },
+  {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/overlap.wav",
+    "file_sha256": "d8cf07dd44e82d91e9caca3c6c26af266396d601257558c05840a4deeec409ef",
+    "pcm_sha256": "012e666646a318e06d886648a82ac1f38ed9368ac670ae9c29f415d4b5781e5f",
+    "bytes": 380110,
+    "pcm_frames": 190033,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "seconds": 11.8770625,
+    "peak_abs_pcm16": 17870,
+    "rms": 0.08776830279849006
+  },
+  {
+    "path": "/tmp/retrace-unified-20260924/speech-comparison-draft/fixtures/silence.wav",
+    "file_sha256": "190415015d40eef0cd797e1b59ffe00846b01873050b12d44b3a216de3faa2a9",
+    "pcm_sha256": "24a046dc04fefdb652e4077b41162490b344a4dd45f918505477f84c592f3070",
+    "bytes": 256044,
+    "pcm_frames": 128000,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "bits_per_sample": 16,
+    "seconds": 8.0,
+    "peak_abs_pcm16": 0,
+    "rms": 0.0
+  }
+]

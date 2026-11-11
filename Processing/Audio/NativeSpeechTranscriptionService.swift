@@ -18,9 +18,9 @@ public actor NativeSpeechTranscriptionService: TranscriptionProtocol {
 
     // Use the same configuration for readiness, preparation, and analysis. Asset readiness
     // is per app/module configuration, so installedLocales alone is insufficient.
-    static func makeTranscriber(locale: Locale) -> SpeechTranscriber {
+    static func makeTranscriber(locale: Locale, streaming: Bool = false) -> SpeechTranscriber {
         SpeechTranscriber(
-            locale: locale, transcriptionOptions: [], reportingOptions: [],
+            locale: locale, transcriptionOptions: [], reportingOptions: streaming ? [.volatileResults] : [],
             attributeOptions: [.audioTimeRange, .transcriptionConfidence]
         )
     }
@@ -39,9 +39,41 @@ public actor NativeSpeechTranscriptionService: TranscriptionProtocol {
         installedLocale = locale
     }
 
-    public func cleanup() {
+    public func cleanup() async {
         installedLocale = nil
-        activeOperation?.cancel()
+        let operation = activeOperation
+        operation?.cancel()
+        _ = try? await operation?.value
+    }
+
+    /// Explicit developer comparison over supplied PCM, delivered as timed,
+    /// bounded chunks. It never records microphone audio or changes Whisper
+    /// routing. Volatile spans replace earlier guesses; only finals are joined.
+    public func compareStreaming(
+        _ audioData: Data,
+        chunkDuration: TimeInterval = 0.25,
+        paceRealTime: Bool = false,
+        onUpdate: (@Sendable (NativeSpeechStreamingUpdate) async -> Void)? = nil
+    ) async throws -> DetailedTranscriptionResult {
+        try Task.checkCancellation()
+        guard let locale = installedLocale else { throw TranscriptionError.notInitialized }
+        guard activeOperation == nil else { throw NativeSpeechError.alreadyTranscribing }
+        try NativeSpeechPCMConverter.validate(audioData)
+        guard chunkDuration.isFinite, (0.01...2).contains(chunkDuration) else {
+            throw TranscriptionError.audioFormatError
+        }
+        let comparison = NativeSpeechStreamingComparison(chunkDuration: chunkDuration,
+            paceRealTime: paceRealTime, onUpdate: onUpdate)
+        let operation = Task {
+            try await Self.analyze(audioData, locale: locale, wordLevel: true, comparison: comparison)
+        }
+        activeOperation = operation
+        defer { activeOperation = nil }
+        return try await withTaskCancellationHandler {
+            let result = try await operation.value
+            try Task.checkCancellation()
+            return result
+        } onCancel: { operation.cancel() }
     }
 
     public func transcribe(_ audioData: Data) async throws -> TranscriptionResult {
@@ -96,10 +128,12 @@ public actor NativeSpeechTranscriptionService: TranscriptionProtocol {
     private static func analyze(
         _ audioData: Data,
         locale: Locale,
-        wordLevel: Bool
+        wordLevel: Bool,
+        comparison: NativeSpeechStreamingComparison? = nil
     ) async throws -> DetailedTranscriptionResult {
         try Task.checkCancellation()
-        let transcriber = makeTranscriber(locale: locale)
+        let started = ContinuousClock.now
+        let transcriber = makeTranscriber(locale: locale, streaming: comparison != nil)
         guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
             throw NativeSpeechError.assetsNotInstalled(locale.identifier)
         }
@@ -117,6 +151,16 @@ public actor NativeSpeechTranscriptionService: TranscriptionProtocol {
             var words: [TranscriptionWord] = []
             for try await result in transcriber.results {
                 try Task.checkCancellation()
+                if let onUpdate = comparison?.onUpdate {
+                    let start = CMTimeGetSeconds(result.range.start)
+                    let end = CMTimeGetSeconds(CMTimeRangeGetEnd(result.range))
+                    guard start.isFinite, end.isFinite, start >= 0, end >= start,
+                          end <= duration + 0.1 else { throw TranscriptionError.audioFormatError }
+                    let elapsed = started.duration(to: .now)
+                    await onUpdate(NativeSpeechStreamingUpdate(text: String(result.text.characters),
+                        start: start, end: end, isFinal: result.isFinal,
+                        observedAfterSeconds: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18))
+                }
                 guard result.isFinal else { continue }
                 text += String(result.text.characters)
                 if wordLevel {
@@ -144,11 +188,18 @@ public actor NativeSpeechTranscriptionService: TranscriptionProtocol {
             do {
                 try Task.checkCancellation()
                 try await analyzer.prepareToAnalyze(in: format)
-                let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-                // Offsets remain relative to the original PCM sample zero. The caller owns its wall-clock anchor.
-                continuation.yield(AnalyzerInput(buffer: converted, bufferStartTime: .zero))
-                continuation.finish()
-                let lastSample = try await analyzer.analyzeSequence(stream)
+                let lastSample: CMTime?
+                if let comparison {
+                    let chunks = try NativeSpeechComparisonChunks(buffer: converted,
+                        chunkDuration: comparison.chunkDuration, paceRealTime: comparison.paceRealTime)
+                    lastSample = try await analyzer.analyzeSequence(chunks)
+                } else {
+                    let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+                    // Offsets remain relative to PCM sample zero; the caller owns the wall-clock anchor.
+                    continuation.yield(AnalyzerInput(buffer: converted, bufferStartTime: .zero))
+                    continuation.finish()
+                    lastSample = try await analyzer.analyzeSequence(stream)
+                }
                 try Task.checkCancellation() // analyzeSequence can return early without throwing on cancellation.
                 if let lastSample {
                     try await analyzer.finalizeAndFinish(through: lastSample)
@@ -161,12 +212,105 @@ public actor NativeSpeechTranscriptionService: TranscriptionProtocol {
             } catch {
                 results.cancel()
                 await analyzer.cancelAndFinishNow()
+                _ = try? await results.value
                 if Task.isCancelled { throw CancellationError() }
                 throw error
             }
         } onCancel: {
             results.cancel()
             Task { await analyzer.cancelAndFinishNow() }
+        }
+    }
+}
+
+public struct NativeSpeechStreamingUpdate: Sendable {
+    public let text: String
+    public let start: TimeInterval
+    public let end: TimeInterval
+    public let isFinal: Bool
+    public let observedAfterSeconds: TimeInterval
+}
+
+private struct NativeSpeechStreamingComparison: Sendable {
+    let chunkDuration: TimeInterval
+    let paceRealTime: Bool
+    let onUpdate: (@Sendable (NativeSpeechStreamingUpdate) async -> Void)?
+}
+
+/// Pull-based input: at most one new chunk is produced per analyzer request.
+/// The source is an immutable, privately converted buffer (bounded to 120 s).
+/// Each emitted buffer owns a copy; Speech never receives the shared source.
+struct NativeSpeechComparisonChunks: AsyncSequence, Sendable {
+    typealias Element = AnalyzerInput
+    fileprivate final class Source: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+        init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+    }
+    private let source: Source
+    private let framesPerChunk: AVAudioFrameCount
+    private let paceRealTime: Bool
+
+    init(buffer: AVAudioPCMBuffer, chunkDuration: TimeInterval, paceRealTime: Bool) throws {
+        let rate = buffer.format.sampleRate
+        guard buffer.frameLength > 0, rate.isFinite, rate > 0, rate <= Double(Int32.max),
+              rate.rounded() == rate, chunkDuration.isFinite, (0.01...2).contains(chunkDuration),
+              Double(buffer.frameLength) / rate <= NativeSpeechPCMConverter.maximumDuration,
+              buffer.format.streamDescription.pointee.mBytesPerFrame > 0 else {
+            throw TranscriptionError.audioFormatError
+        }
+        source = Source(buffer)
+        framesPerChunk = AVAudioFrameCount(Swift.max(1, floor(rate * chunkDuration)))
+        self.paceRealTime = paceRealTime
+    }
+
+    func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(source: source, framesPerChunk: framesPerChunk, paceRealTime: paceRealTime)
+    }
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        fileprivate let source: Source
+        let framesPerChunk: AVAudioFrameCount
+        let paceRealTime: Bool
+        private var offset: AVAudioFrameCount = 0
+        private let started = ContinuousClock.now
+
+        fileprivate init(source: Source, framesPerChunk: AVAudioFrameCount, paceRealTime: Bool) {
+            self.source = source; self.framesPerChunk = framesPerChunk; self.paceRealTime = paceRealTime
+        }
+
+        mutating func next() async throws -> AnalyzerInput? {
+            try Task.checkCancellation()
+            let input = source.buffer
+            guard offset < input.frameLength else { return nil }
+            let count = Swift.min(framesPerChunk, input.frameLength - offset)
+            if paceRealTime {
+                // All samples in a chunk must have arrived before it can be
+                // delivered. Its source timestamp still names the first sample.
+                try await Task.sleep(until: started.advanced(by: .seconds(Double(offset + count) / input.format.sampleRate)),
+                                     clock: .continuous)
+            }
+            guard let output = AVAudioPCMBuffer(pcmFormat: input.format, frameCapacity: count) else {
+                throw TranscriptionError.audioFormatError
+            }
+            output.frameLength = count
+            let bytesPerFrame = Int(input.format.streamDescription.pointee.mBytesPerFrame)
+            let bytes = Int(count) * bytesPerFrame
+            let byteOffset = Int(offset) * bytesPerFrame
+            // Core Audio exposes one mutable list wrapper; this privately owned
+            // source is read only here, and only the new chunk receives writes.
+            let from = UnsafeMutableAudioBufferListPointer(input.mutableAudioBufferList)
+            let to = UnsafeMutableAudioBufferListPointer(output.mutableAudioBufferList)
+            guard from.count == to.count else { throw TranscriptionError.audioFormatError }
+            for index in from.indices {
+                guard let sourceBytes = from[index].mData, let target = to[index].mData,
+                      Int(from[index].mDataByteSize) >= byteOffset + bytes,
+                      Int(to[index].mDataByteSize) >= bytes else { throw TranscriptionError.audioFormatError }
+                memcpy(target, sourceBytes.advanced(by: byteOffset), bytes)
+            }
+            let time = CMTime(value: Int64(offset), timescale: Int32(input.format.sampleRate))
+            offset += count
+            try Task.checkCancellation()
+            return AnalyzerInput(buffer: output, bufferStartTime: time)
         }
     }
 }

@@ -7,6 +7,7 @@ struct ExactEvidenceView: View {
     var showsImage = true
     var showsClose = true
     var onClose: (() -> Void)? = nil
+    var onOpenEvidence: ((EvidenceRef) async -> Void)? = nil
 
     var body: some View {
         ScrollView {
@@ -25,7 +26,7 @@ struct ExactEvidenceView: View {
                 else if let result = model.resolution {
                     resolved(result)
                 } else {
-                    Text("Select a screenshot to see its recorded context and extracted text.")
+                    Text("Select a moment to inspect its recorded evidence.")
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -36,6 +37,8 @@ struct ExactEvidenceView: View {
     @ViewBuilder private func resolved(_ resolution: EvidenceResolution) -> some View {
         switch resolution {
         case .activity(let event): activity(event)
+        case .job(let event): job(event)
+        case .audio(let transcript): audio(transcript)
         case .screen(let snapshot, let image): screen(snapshot, image: image)
         case .unavailable(let reason):
             Label(unavailable(reason), systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
@@ -46,13 +49,56 @@ struct ExactEvidenceView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     if retained.legacyContext { Text("Legacy metadata may describe the surrounding session.").font(.caption) }
                     revisionControls(retained)
+                    CaptureDirectTextView(snapshot: retained)
                     EvidenceTextView(reference: retained.ref, model: model)
                     citationControls()
                 }
             }
             if let reference = model.evidenceReference {
-                Button("Retry this evidence") { Task { await model.openEvidence(reference) } }
+                Button("Retry this evidence") { Task { await open(reference) } }
             }
+        }
+    }
+
+    private func audio(_ stored: AudioEvidenceSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recorded transcript").font(.headline)
+            Text(stored.text).textSelection(.enabled)
+            Text("\(stored.startTime.formatted(date: .abbreviated, time: .standard)) – \(stored.endTime.formatted(date: .omitted, time: .standard))")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Recording source: \(stored.recordingSource.rawValue)").font(.caption)
+            Text("This transcript has its own recorded time. Nearby screen context does not establish who was speaking.")
+                .font(.caption).foregroundStyle(.secondary)
+            citationControls()
+        }
+    }
+
+    private func job(_ stored: JobEventSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(stored.observation.kind.rawValue.capitalized + " event").font(.headline)
+            Text(jobSummary(stored.observation))
+            if let status = stored.observation.terminationStatus {
+                Text(stored.observation.outcome == .signalled ? "Termination signal: \(status)" : "Exit status: \(status)")
+                    .font(.callout)
+            }
+            Text("Observed \(stored.observation.observedAt.formatted(date: .abbreviated, time: .standard))")
+            if let outcome = stored.observation.outcome, [JobOutcome.succeeded, .failed, .signalled].contains(outcome) {
+                Text("The command's termination was observed. Build artifacts and test results need their own evidence.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            citationControls()
+        }.textSelection(.enabled)
+    }
+
+    private func jobSummary(_ observed: JobObservation) -> String {
+        if observed.phase == .started { return "Command observation started; completion is not yet known." }
+        if observed.phase == .gap { return "Observation ended before completion could be confirmed." }
+        switch observed.outcome {
+        case .succeeded: return "Command exited successfully."
+        case .failed: return "Command exited with a failure status."
+        case .signalled: return "Command ended after a signal."
+        case .launchFailed: return "Command could not start."
+        default: return "Completion is unavailable."
         }
     }
 
@@ -82,6 +128,11 @@ struct ExactEvidenceView: View {
             if let app = snapshot.frame.metadata.appName ?? snapshot.frame.metadata.appBundleID {
                 Text(app).font(.callout).foregroundStyle(.secondary)
             }
+            if let reason = snapshot.frame.metadata.redactionReason {
+                Label("Some areas were masked when recorded.", systemImage: "rectangle.dashed")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
             if let context = snapshot.frame.metadata.captureContext, !context.uncertainty.isEmpty {
                 Text(context.uncertainty.joined(separator: "; ")).font(.caption).foregroundStyle(.secondary)
             }
@@ -97,6 +148,7 @@ struct ExactEvidenceView: View {
             if let url = currentURL(snapshot.frame.metadata.browserURL) { currentDocumentButton(url) }
             revisionControls(snapshot)
             Divider()
+            CaptureDirectTextView(snapshot: snapshot)
             Text("Text extracted from this recorded screen").font(.headline)
             EvidenceTextView(reference: snapshot.ref, model: model)
         }
@@ -108,14 +160,14 @@ struct ExactEvidenceView: View {
                 let reference = ScreenEvidenceRef(storeID: snapshot.ref.storeID, source: snapshot.ref.source,
                     observationID: snapshot.ref.observationID, frameID: snapshot.ref.frameID,
                     extractionRevision: snapshot.ref.extractionRevision)
-                Task { await model.openEvidence(.screen(reference)) }
+                Task { await open(.screen(reference)) }
             }
         }
         if let newer = model.newerRevision {
             Button("Open newer extraction (revision \(newer))") {
                 let ref = ScreenEvidenceRef(storeID: snapshot.ref.storeID, source: snapshot.ref.source,
                     observationID: snapshot.ref.observationID, frameID: snapshot.ref.frameID, extractionRevision: newer)
-                Task { await model.openEvidence(.screen(ref)) }
+                Task { await open(.screen(ref)) }
             }
             Text("The saved citation continues to identify revision \(snapshot.ref.extractionRevision).").font(.caption).foregroundStyle(.secondary)
         }
@@ -128,6 +180,10 @@ struct ExactEvidenceView: View {
             Task { await model.track(.deepLinkCopied) }
         } label: { Label("Copy exact evidence link", systemImage: "link") }
         .disabled(model.evidenceReference == nil)
+    }
+    private func open(_ reference: EvidenceRef) async {
+        if let onOpenEvidence { await onOpenEvidence(reference) }
+        else { await model.openEvidence(reference) }
     }
     private func currentDocumentButton(_ url: URL) -> some View {
         Button {

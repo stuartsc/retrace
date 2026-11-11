@@ -9,15 +9,17 @@ actor ScreenEvidenceAdmissionCoordinator: CaptureConfigurationAdmissionProtocol 
 
     private let store: any ScreenEvidenceAdmissionStoreProtocol
     private let metric: MetricSink
+    private let jobs: JobIntegration?
     private var session: ScreenEvidenceWriterSession?
 
-    init(store: any ScreenEvidenceAdmissionStoreProtocol,
+    init(store: any ScreenEvidenceAdmissionStoreProtocol, jobs: JobIntegration? = nil,
          metric: @escaping MetricSink = { _, _ in }) {
-        self.store = store; self.metric = metric
+        self.store = store; self.metric = metric; self.jobs = jobs
     }
 
-    init(database: DatabaseManager) {
+    init(database: DatabaseManager, jobs: JobIntegration? = nil) {
         self.store = database
+        self.jobs = jobs
         self.metric = { action, outcome in
             let metadata: [String: Any] = ["action": action.rawValue, "outcome": outcome, "count": 1]
             if let bytes = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]),
@@ -28,7 +30,8 @@ actor ScreenEvidenceAdmissionCoordinator: CaptureConfigurationAdmissionProtocol 
     }
 
     func beginSession(config: CaptureConfig) async throws -> ScreenEvidencePolicyTransition {
-        try await measured(.evidencePolicySessionBegan) {
+        try await jobs?.policyWillChange()
+        return try await measured(.evidencePolicySessionBegan) {
             let transition = try await store.beginScreenEvidenceWriterSession(policy: .init(config: config))
             session = transition.session
             return transition
@@ -36,7 +39,8 @@ actor ScreenEvidenceAdmissionCoordinator: CaptureConfigurationAdmissionProtocol 
     }
 
     func prepareConfiguration(_ config: CaptureConfig) async throws -> ScreenEvidencePolicyTransition {
-        try await measured(.evidencePolicyPrepared) {
+        try await jobs?.policyWillChange()
+        return try await measured(.evidencePolicyPrepared) {
             guard let session else { throw ScreenEvidenceAdmissionError.inactive }
             return try await store.prepareScreenEvidencePolicy(session: session, policy: .init(config: config))
         }
@@ -46,10 +50,12 @@ actor ScreenEvidenceAdmissionCoordinator: CaptureConfigurationAdmissionProtocol 
         try await measured(.evidencePolicyActivated) {
             guard session == transition.session else { throw ScreenEvidenceAdmissionError.staleSession }
             try await store.activateScreenEvidencePolicy(transition)
+            try await jobs?.policyDidActivate(transition)
         }
     }
 
     func revoke(_ transition: ScreenEvidencePolicyTransition) async throws {
+        try await jobs?.policyWillChange(matching: transition)
         try await measured(.evidencePolicyRevoked) {
             // Forward the exact token even after a newer session was installed.
             // The writer makes stale cleanup harmless without revoking its owner.
@@ -59,6 +65,7 @@ actor ScreenEvidenceAdmissionCoordinator: CaptureConfigurationAdmissionProtocol 
 
     func endSession() async throws {
         guard let owningSession = session else { return }
+        try await jobs?.policyWillChange()
         try await measured(.evidencePolicySessionEnded) {
             try await store.endScreenEvidenceWriterSession(owningSession)
             // Keep a failed cleanup retryable and never clear a newer owner.

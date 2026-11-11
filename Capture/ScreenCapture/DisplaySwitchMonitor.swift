@@ -3,211 +3,176 @@ import AppKit
 import ApplicationServices
 import Shared
 
-/// Monitors active window changes and detects when user switches to a different display
-/// Uses NSWorkspace notifications and Accessibility API for real-time detection
+/// Owns workspace and focused-window observation while capture is active. The
+/// synchronous fence invalidates pixel attribution before the bounded async
+/// consumer can be delayed by a display switch or an immediate capture.
 actor DisplaySwitchMonitor {
-
-    // MARK: - Properties
-
     private let displayMonitor: DisplayMonitor
+    private let fence = CaptureNotificationFence()
+    private var generation: UUID?
     private var currentDisplayID: UInt32?
     private var notificationTask: Task<Void, Never>?
-    private var axObserver: AXObserver?
-    private var observedApp: NSRunningApplication?
-    private var refWrapper: DisplaySwitchMonitorRef?
+    private var signal: AsyncStream<Void>.Continuation?
+    private var registration: CaptureAXRegistration?
 
-    /// Callback when display switch is detected
     nonisolated(unsafe) var onDisplaySwitch: (@Sendable (UInt32, UInt32) async -> Void)?
-
-    /// Callback when accessibility permission is denied
     nonisolated(unsafe) var onAccessibilityPermissionDenied: (@Sendable () async -> Void)?
-
-    /// Callback when active window changes (app switch or window focus change within app)
-    /// Fires for immediate capture when captureOnWindowChange is enabled
     nonisolated(unsafe) var onWindowChange: (@Sendable () async -> Void)?
 
-    // MARK: - Initialization
+    init(displayMonitor: DisplayMonitor) { self.displayMonitor = displayMonitor }
 
-    init(displayMonitor: DisplayMonitor) {
-        self.displayMonitor = displayMonitor
-    }
-
-    // MARK: - Lifecycle
-
-    /// Start monitoring for display switches
-    func startMonitoring(initialDisplayID: UInt32) {
-        self.currentDisplayID = initialDisplayID
-
-        // Start listening to workspace notifications on main actor
-        notificationTask = Task { @MainActor in
-            let center = NSWorkspace.shared.notificationCenter
-
-            // Set up initial AX observer for frontmost app
-            await self.setupAXObserverForFrontmostApp()
-
-            // Observe when user switches to a different application
-            for await _ in center.notifications(named: NSWorkspace.didActivateApplicationNotification) {
-                // Notify window change for immediate capture (app switch)
-                if let callback = self.onWindowChange {
-                    await callback()
-                }
-                await self.checkForDisplaySwitch()
-                // Re-setup AX observer for the new frontmost app
-                await self.setupAXObserverForFrontmostApp()
+    /// Returns only after native notification fencing is installed. Unsupported
+    /// AX windows remain unattributed in the candidate's display-only captures.
+    func startMonitoring(initialDisplayID: UInt32) async {
+        await stopMonitoring()
+        let lifecycle = UUID()
+        generation = lifecycle
+        currentDisplayID = initialDisplayID
+        let center = await MainActor.run { NSWorkspace.shared.notificationCenter }
+        guard generation == lifecycle, !Task.isCancelled else { return }
+        let pair = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        signal = pair.continuation
+        let token = fence.start(workspaceCenter: center, displayCenter: .default) {
+            pair.continuation.yield(())
+        }
+        await setupAXObserver(lifecycle: lifecycle, token: token)
+        guard generation == lifecycle, !Task.isCancelled else { return }
+        notificationTask = Task { [weak self] in
+            for await _ in pair.stream {
+                guard !Task.isCancelled else { return }
+                await self?.handleChange(lifecycle: lifecycle, token: token)
             }
         }
     }
 
-    /// Stop monitoring
     func stopMonitoring() async {
-        notificationTask?.cancel()
-        notificationTask = nil
+        generation = nil
+        fence.stop()
+        signal?.finish(); signal = nil
+        notificationTask?.cancel(); notificationTask = nil
         currentDisplayID = nil
+        // Do not join a callback which may itself be queued behind the manager's
+        // stop operation. The fence closes admission synchronously, and every
+        // suspended observer operation checks its generation before resuming.
         await removeCurrentAXObserver()
     }
 
-    // MARK: - Accessibility Observer
+    private func isCurrent(_ lifecycle: UUID, token: UUID) -> Bool {
+        generation == lifecycle && fence.isActive(token) && !Task.isCancelled
+    }
 
-    /// Set up AX observer for the frontmost application to detect window moves
-    /// Uses safe wrappers to prevent crashes if permissions are revoked
-    private func setupAXObserverForFrontmostApp() async {
-        // Remove existing observer first
+    private func setupAXObserver(lifecycle: UUID, token: UUID) async {
+        guard isCurrent(lifecycle, token: token) else { return }
+        fence.suspendObservedProcess(token: token)
         await removeCurrentAXObserver()
-
-        // Check permission before attempting any AX operations
+        guard isCurrent(lifecycle, token: token) else { return }
         guard PermissionMonitor.shared.hasAccessibilityPermission() else {
-            if let callback = onAccessibilityPermissionDenied {
-                await callback()
-            }
+            await onAccessibilityPermissionDenied?()
             return
         }
-
-        // Get frontmost app on main actor
-        let app: NSRunningApplication? = await MainActor.run {
-            NSWorkspace.shared.frontmostApplication
+        let revision = ObservedWindowGenerations.shared.notificationRevision
+        let pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+        guard isCurrent(lifecycle, token: token), let pid,
+              let candidate = CaptureAXRegistration.make(pid: pid, fence: fence, token: token) else { return }
+        let installed = await MainActor.run {
+            guard candidate.reference.fence.isActive(token) else { return false }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(candidate.observer), .commonModes)
+            return true
         }
-
-        guard let app = app else {
+        guard installed, isCurrent(lifecycle, token: token) else {
+            if installed { await Self.remove(candidate) }
             return
         }
-
-        let pid = app.processIdentifier
-
-        // Use safe wrapper to create observer
-        guard let observer = PermissionMonitor.shared.safeCreateAXObserver(
-            pid: pid,
-            callback: { (observer, element, notification, refcon) in
-                // Callback when window moved or focused window changed
-                guard let refcon = refcon else { return }
-                let monitor = Unmanaged<DisplaySwitchMonitorRef>.fromOpaque(refcon).takeUnretainedValue()
-                Task {
-                    await monitor.monitor.handleWindowChangeFromAX()
-                }
-            }
-        ) else {
-            Log.warning("[DisplaySwitchMonitor] Failed to create AX observer for \(app.localizedName ?? "unknown") - permission may have been revoked", category: .capture)
-            return
+        registration = candidate
+        if candidate.hasWindowNotifications {
+            _ = fence.confirmObservedProcess(pid, token: token, revision: revision)
         }
-
-        let appElement = AXUIElementCreateApplication(pid)
-
-        // Create ref wrapper to pass self to callback
-        // Store it in the actor so it doesn't get deallocated
-        let wrapper = DisplaySwitchMonitorRef(monitor: self)
-        self.refWrapper = wrapper
-        let refPtr = Unmanaged.passUnretained(wrapper).toOpaque()
-
-        // Add notifications for window moved, focused window changed, and title changed
-        // These may fail if permission is revoked mid-setup, but won't crash
-        AXObserverAddNotification(observer, appElement, kAXMovedNotification as CFString, refPtr)
-        AXObserverAddNotification(observer, appElement, kAXFocusedWindowChangedNotification as CFString, refPtr)
-        AXObserverAddNotification(observer, appElement, kAXTitleChangedNotification as CFString, refPtr)
-
-        // Add observer to run loop on main actor
-        await MainActor.run {
-            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        }
-
-        self.axObserver = observer
-        self.observedApp = app
-
-        Log.debug("[DisplaySwitchMonitor] AX observer set up for \(app.localizedName ?? "unknown")", category: .capture)
     }
 
-    /// Remove the current AX observer
     private func removeCurrentAXObserver() async {
-        if let observer = self.axObserver {
-            await MainActor.run {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-            }
-        }
-        self.axObserver = nil
-        self.observedApp = nil
-        self.refWrapper = nil
+        let old = registration
+        registration = nil
+        if let old { await Self.remove(old) }
     }
 
-    // MARK: - Private Methods
+    private static func remove(_ registration: CaptureAXRegistration) async {
+        await MainActor.run {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(registration.observer), .commonModes)
+            // Keep the native refcon alive until removal finishes on its run loop.
+            withExtendedLifetime(registration.reference) {}
+        }
+    }
 
-    /// Handle window change from AX observer (window focus change within app)
-    /// Triggers immediate capture callback and then checks for display switch
-    func handleWindowChangeFromAX() async {
-        // Check permission first - if revoked, clean up and notify
+    private func handleChange(lifecycle: UUID, token: UUID) async {
+        guard isCurrent(lifecycle, token: token) else { return }
+        if fence.takeObserverRefresh(token: token) || registration == nil {
+            await setupAXObserver(lifecycle: lifecycle, token: token)
+        }
+        guard isCurrent(lifecycle, token: token) else { return }
         guard PermissionMonitor.shared.hasAccessibilityPermission() else {
-            Log.warning("[DisplaySwitchMonitor] AX callback received but permission revoked - cleaning up", category: .capture)
+            fence.suspendObservedProcess(token: token)
             await removeCurrentAXObserver()
-            if let callback = onAccessibilityPermissionDenied {
-                await callback()
-            }
+            guard isCurrent(lifecycle, token: token) else { return }
+            await onAccessibilityPermissionDenied?()
             return
         }
-
-        // Notify window change for immediate capture
-        if let callback = onWindowChange {
-            await callback()
-        }
-        // Then check for display switch
-        await checkForDisplaySwitch()
+        await checkForDisplaySwitch(lifecycle: lifecycle, token: token)
+        guard isCurrent(lifecycle, token: token) else { return }
+        await onWindowChange?()
     }
 
-    /// Check if the active window is on a different display
-    private func checkForDisplaySwitch() async {
+    private func checkForDisplaySwitch(lifecycle: UUID, token: UUID) async {
         guard let currentDisplay = currentDisplayID else { return }
-
-        // Get the active display ID
         let (newDisplayID, hasAXPermission) = await displayMonitor.getActiveDisplayIDWithPermissionStatus()
-
-        // Check if AX permission was denied
-        if !hasAXPermission {
-            if let callback = onAccessibilityPermissionDenied {
-                await callback()
-            }
-            // Continue with current display even if AX is denied
+        guard isCurrent(lifecycle, token: token) else { return }
+        guard hasAXPermission else {
+            fence.suspendObservedProcess(token: token)
+            await onAccessibilityPermissionDenied?()
             return
         }
-
-        // If display changed, notify
         if newDisplayID != currentDisplay {
-            // logger.info("Display switch detected: \(currentDisplay) → \(newDisplayID)")
             currentDisplayID = newDisplayID
-            if let callback = onDisplaySwitch {
-                await callback(currentDisplay, newDisplayID)
-            }
+            await onDisplaySwitch?(currentDisplay, newDisplayID)
         }
     }
 
-    /// Get current display ID
-    func getCurrentDisplayID() -> UInt32? {
-        currentDisplayID
-    }
+    func getCurrentDisplayID() -> UInt32? { currentDisplayID }
 }
 
-// MARK: - Helper for AX Callback
+private final class CaptureAXReference: @unchecked Sendable {
+    let fence: CaptureNotificationFence
+    let token: UUID
+    init(fence: CaptureNotificationFence, token: UUID) { self.fence = fence; self.token = token }
+}
 
-/// Reference wrapper to pass DisplaySwitchMonitor to AX callback
-private final class DisplaySwitchMonitorRef: @unchecked Sendable {
-    let monitor: DisplaySwitchMonitor
+private struct CaptureAXRegistration: @unchecked Sendable {
+    let observer: AXObserver
+    let reference: CaptureAXReference
+    let hasWindowNotifications: Bool
 
-    init(monitor: DisplaySwitchMonitor) {
-        self.monitor = monitor
+    static func make(pid: Int32, fence: CaptureNotificationFence, token: UUID) -> Self? {
+        let reference = CaptureAXReference(fence: fence, token: token)
+        guard let observer = PermissionMonitor.shared.safeCreateAXObserver(pid: pid, callback: { _, _, name, pointer in
+            guard let pointer else { return }
+            let reference = Unmanaged<CaptureAXReference>.fromOpaque(pointer).takeUnretainedValue()
+            reference.fence.noteWindowNotification(name as String, token: reference.token)
+        }) else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.1)
+        let pointer = Unmanaged.passUnretained(reference).toOpaque()
+        func subscribed(_ result: AXError) -> Bool { result == .success || result == .notificationAlreadyRegistered }
+        guard subscribed(AXObserverAddNotification(observer, app, kAXFocusedWindowChangedNotification as CFString, pointer)) else { return nil }
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value)
+        var windowNotifications = false
+        if result == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+            let window = value as! AXUIElement
+            AXUIElementSetMessagingTimeout(window, 0.1)
+            let results = [kAXTitleChangedNotification, kAXMovedNotification, kAXUIElementDestroyedNotification].map {
+                AXObserverAddNotification(observer, window, $0 as CFString, pointer)
+            }
+            windowNotifications = results.allSatisfy(subscribed)
+        }
+        return Self(observer: observer, reference: reference, hasWindowNotifications: windowNotifications)
     }
 }

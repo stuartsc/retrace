@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import XCTest
+import VideoToolbox
 import Shared
 @testable import Storage
 
@@ -41,9 +42,10 @@ final class HEVCEncoderTests: XCTestCase {
         do {
             try await encoder.initialize(width: 4, height: 4, config: config, outputURL: tempURL, segmentStartTime: startTime)
 
-            // Verify hardware acceleration status is determined
-            let isHardwareAccelerated = await encoder.isHardwareAccelerated()
-            print("Hardware acceleration: \(isHardwareAccelerated ? "✅ Enabled" : "⚠️ Not available (using software)")")
+            let status = await encoder.accelerationStatus()
+            XCTAssertEqual(status.selection, .automatic)
+            XCTAssertNil(status.actualHardwareUse, "AVAssetWriter does not expose its VTSession")
+            XCTAssertTrue(status.softwareFallbackPermitted)
 
             // Encode a few frames
             for i in 0..<5 {
@@ -88,14 +90,7 @@ final class HEVCEncoderTests: XCTestCase {
 
             let isHardwareAccelerated = await encoder.isHardwareAccelerated()
 
-            // On Apple Silicon, hardware encoding should be available
-            // On Intel Macs, it depends on the GPU
-            #if arch(arm64)
-            XCTAssertTrue(isHardwareAccelerated, "Hardware acceleration should be available on Apple Silicon")
-            print("✅ Hardware acceleration confirmed on Apple Silicon")
-            #else
-            print("ℹ️ Hardware acceleration status: \(isHardwareAccelerated)")
-            #endif
+            XCTAssertFalse(isHardwareAccelerated, "Encoder availability does not verify the AVAssetWriter session")
 
             await encoder.reset()
 
@@ -195,6 +190,51 @@ final class HEVCEncoderTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: url2.path), "File 2 should exist")
         XCTAssertGreaterThan(size1, 0, "File 1 should have content")
         XCTAssertGreaterThan(size2, 0, "File 2 should have content")
+    }
+
+    func testHardwareSelectionSettingsAndStatusRemainExplicit() async throws {
+        XCTAssertNil(HEVCEncoder.encoderSpecification(for: .automatic))
+        let require = try XCTUnwrap(HEVCEncoder.encoderSpecification(for: .requireHardware))
+        XCTAssertEqual(require[kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String] as? Bool, true)
+        let prefer = try XCTUnwrap(HEVCEncoder.encoderSpecification(for: .preferHardware))
+        XCTAssertEqual(prefer[kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String] as? Bool, true)
+        XCTAssertNil(prefer[kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String])
+        let software = try XCTUnwrap(HEVCEncoder.encoderSpecification(for: .softwareOnly))
+        XCTAssertEqual(software[kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String] as? Bool, false)
+        let encoder = HEVCEncoder(selection: .requireHardware)
+        let status = await encoder.accelerationStatus()
+        XCTAssertEqual(status.selection, .requireHardware)
+        XCTAssertNil(status.hardwareAvailable)
+        XCTAssertNil(status.actualHardwareUse)
+        XCTAssertFalse(status.softwareFallbackPermitted)
+    }
+
+    func testExplicitHardwarePreferenceEncodesAndDecodesWithoutClaimingVerifiedUse() async throws {
+        let encoder = HEVCEncoder(selection: .preferHardware)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hardware_request_\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await encoder.initialize(width: 64, height: 64, config: .default, outputURL: url, segmentStartTime: Date())
+        for i in 0..<3 {
+            let buffer = try FrameConverter.createPixelBuffer(from: createTestFrame(width: 64, height: 64, value: UInt8(i * 50)))
+            try await encoder.encode(pixelBuffer: buffer, timestamp: CMTime(value: Int64(i), timescale: 30))
+        }
+        try await encoder.finalize()
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        var actual = CMTime.invalid
+        let image = try generator.copyCGImage(at: .zero, actualTime: &actual)
+        XCTAssertEqual(image.width, 64)
+        XCTAssertEqual(image.height, 64)
+        XCTAssertEqual(actual, .zero)
+        let status = await encoder.accelerationStatus()
+        XCTAssertEqual(status.selection, .preferHardware)
+        XCTAssertNil(status.actualHardwareUse)
+        XCTAssertTrue(status.softwareFallbackPermitted)
+        await encoder.reset()
+        let resetStatus = await encoder.accelerationStatus()
+        XCTAssertNil(resetStatus.hardwareAvailable)
+        XCTAssertNil(resetStatus.actualHardwareUse)
     }
 
     private func createTestFrame(width: Int, height: Int, value: UInt8) -> CapturedFrame {

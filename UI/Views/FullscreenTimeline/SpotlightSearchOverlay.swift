@@ -711,74 +711,7 @@ public struct SpotlightSearchOverlay: View {
             ScrollView(.vertical, showsIndicators: rankedRecentEntriesCount > recentEntryVisibleCount) {
                 VStack(spacing: recentEntryRowSpacing) {
                     ForEach(Array(rankedRecentEntries.enumerated()), id: \.element.key) { index, entry in
-                        let isRowHovered = hoveredRecentEntryKey == entry.key
-                        HStack(alignment: .top, spacing: 8) {
-                            Button {
-                                selectRecentEntry(entry)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 7) {
-                                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                        Text(entry.query)
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundColor(RetraceMenuStyle.textColor)
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                        Spacer(minLength: 6)
-                                        Text(recentEntryRelativeTimeText(for: entry))
-                                            .font(.system(size: 11, weight: .medium))
-                                            .foregroundColor(RetraceMenuStyle.textColorMuted)
-                                            .lineLimit(1)
-                                            .fixedSize(horizontal: true, vertical: false)
-                                    }
-
-                                    recentEntryFilterSummaryRow(for: entry.filters)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            Button {
-                                removeRecentEntry(entry)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundColor(RetraceMenuStyle.textColorMuted)
-                            }
-                            .buttonStyle(.plain)
-                            .frame(width: 12, height: 12)
-                            .padding(.top, 2)
-                            .opacity(isRowHovered ? 1 : 0)
-                            .allowsHitTesting(isRowHovered)
-                            .accessibilityHidden(!isRowHovered)
-                            .help("Remove recent search")
-                        }
-                        .frame(maxWidth: .infinity, minHeight: recentEntryRowHeight, maxHeight: recentEntryRowHeight, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
-                                .fill(index == highlightedRecentEntryIndex ? RetraceMenuStyle.itemHoverColor : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
-                                .stroke(
-                                    index == highlightedRecentEntryIndex
-                                        ? RetraceMenuStyle.filterStrokeMedium
-                                        : Color.clear,
-                                    lineWidth: 1
-                                )
-                        )
-                        .contentShape(Rectangle())
-                        .id(entry.key)
-                        .onHover { hovering in
-                            if hovering {
-                                highlightedRecentEntryIndex = index
-                                hoveredRecentEntryKey = entry.key
-                            } else if hoveredRecentEntryKey == entry.key {
-                                hoveredRecentEntryKey = nil
-                            }
-                        }
+                        recentEntryRow(entry, index: index)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -799,6 +732,81 @@ public struct SpotlightSearchOverlay: View {
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.5), radius: 20, y: 10)
+    }
+
+    private func recentEntryRow(_ entry: SearchViewModel.RecentSearchEntry, index: Int) -> some View {
+        let isRowHovered = hoveredRecentEntryKey == entry.key
+        return HStack(alignment: .top, spacing: 8) {
+            Button {
+                selectRecentEntry(entry)
+            } label: {
+                recentEntryContent(entry)
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                removeRecentEntry(entry)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(RetraceMenuStyle.textColorMuted)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 12, height: 12)
+            .padding(.top, 2)
+            .opacity(isRowHovered ? 1 : 0)
+            .allowsHitTesting(isRowHovered)
+            .accessibilityHidden(!isRowHovered)
+            .help("Remove recent search")
+        }
+        .frame(maxWidth: .infinity, minHeight: recentEntryRowHeight, maxHeight: recentEntryRowHeight, alignment: .leading)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                .fill(index == highlightedRecentEntryIndex ? RetraceMenuStyle.itemHoverColor : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: RetraceMenuStyle.itemCornerRadius)
+                .stroke(
+                    index == highlightedRecentEntryIndex
+                        ? RetraceMenuStyle.filterStrokeMedium
+                        : Color.clear,
+                    lineWidth: 1
+                )
+        )
+        .contentShape(Rectangle())
+        .id(entry.key)
+        .onHover { hovering in
+            if hovering {
+                highlightedRecentEntryIndex = index
+                hoveredRecentEntryKey = entry.key
+            } else if hoveredRecentEntryKey == entry.key {
+                hoveredRecentEntryKey = nil
+            }
+        }
+    }
+
+    private func recentEntryContent(_ entry: SearchViewModel.RecentSearchEntry) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(entry.query)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(RetraceMenuStyle.textColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 6)
+                Text(recentEntryRelativeTimeText(for: entry))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(RetraceMenuStyle.textColorMuted)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            recentEntryFilterSummaryRow(for: entry.filters)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private func recentEntryRelativeTimeText(for entry: SearchViewModel.RecentSearchEntry) -> String {
@@ -1553,80 +1561,7 @@ private struct GalleryResultCard: View {
 
     var body: some View {
         Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 0) {
-                // A verified full-image preview; exact evidence owns immutable OCR highlighting.
-                thumbnailView
-
-                // Title bar with app icon
-                HStack(spacing: 8) {
-                    // App icon
-                    if let icon = appIcon {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 30, height: 30)
-                    } else {
-                        Circle()
-                            .fill(Color.segmentColor(for: result.appBundleID ?? ""))
-                            .frame(width: 30, height: 30)
-                    }
-
-                    // Title and timestamp
-                    VStack(alignment: .leading, spacing: 2) {
-                        // Title with source badge
-                        HStack(spacing: 6) {
-                            Text(displayTitle)
-                                .font(.retraceCaption2Medium)
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-
-                            // Source badge
-                            Text(result.source == .native ? "Retrace" : "Rewind")
-                                .font(.retraceTinyBold)
-                                .foregroundColor(result.source == .native ? RetraceMenuStyle.actionBlue : .purple)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(result.source == .native ? RetraceMenuStyle.actionBlue.opacity(0.2) : Color.purple.opacity(0.2))
-                                .cornerRadius(3)
-                        }
-
-                        // Timestamp and relevance
-                        HStack(spacing: 6) {
-                            Text(formatTimestamp(result.timestamp))
-                                .font(.retraceTiny)
-                                .foregroundColor(.white.opacity(0.5))
-
-                            Text("•")
-                                .font(.retraceTiny)
-                                .foregroundColor(.white.opacity(0.3))
-
-                            Text(String(format: "relevance: %.0f%%", result.relevanceScore * 100))
-                                .font(.retraceMonoSmall)
-                                .foregroundColor(.yellow.opacity(0.7))
-                        }
-                    }
-
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.3))
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.white.opacity(0.05))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(isHovered ? Color.white.opacity(0.3) : Color.white.opacity(0.1), lineWidth: isHovered ? 2 : 1)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color.retraceAccent, lineWidth: 2)
-                    .opacity(isKeyboardSelected ? 1 : 0)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .shadow(color: .black.opacity(isHovered ? 0.4 : 0.2), radius: isHovered ? 8 : 4, x: 0, y: 2)
+            resultCardContent
         }
         .buttonStyle(.plain)
         .scaleEffect(isHovered ? 1.02 : 1.0)
@@ -1641,6 +1576,87 @@ private struct GalleryResultCard: View {
                 service: { try await coordinator.progressiveRecall() })
         }
         .onDisappear { thumbnailPreview.hide() }
+    }
+
+    private var resultCardContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // A verified full-image preview; exact evidence owns immutable OCR highlighting.
+            thumbnailView
+
+            // Title bar with app icon
+            resultHeader
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isHovered ? Color.white.opacity(0.3) : Color.white.opacity(0.1), lineWidth: isHovered ? 2 : 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.retraceAccent, lineWidth: 2)
+                .opacity(isKeyboardSelected ? 1 : 0)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(isHovered ? 0.4 : 0.2), radius: isHovered ? 8 : 4, x: 0, y: 2)
+    }
+
+    private var resultHeader: some View {
+        HStack(spacing: 8) {
+            // App icon
+            if let icon = appIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 30, height: 30)
+            } else {
+                Circle()
+                    .fill(Color.segmentColor(for: result.appBundleID ?? ""))
+                    .frame(width: 30, height: 30)
+            }
+
+            // Title and timestamp
+            VStack(alignment: .leading, spacing: 2) {
+                // Title with source badge
+                HStack(spacing: 6) {
+                    Text(displayTitle)
+                        .font(.retraceCaption2Medium)
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+
+                    // Source badge
+                    Text(result.source == .native ? "Retrace" : "Rewind")
+                        .font(.retraceTinyBold)
+                        .foregroundColor(result.source == .native ? RetraceMenuStyle.actionBlue : .purple)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(result.source == .native ? RetraceMenuStyle.actionBlue.opacity(0.2) : Color.purple.opacity(0.2))
+                        .cornerRadius(3)
+                }
+
+                // Timestamp and relevance
+                HStack(spacing: 6) {
+                    Text(formatTimestamp(result.timestamp))
+                        .font(.retraceTiny)
+                        .foregroundColor(.white.opacity(0.5))
+
+                    Text("•")
+                        .font(.retraceTiny)
+                        .foregroundColor(.white.opacity(0.3))
+
+                    Text(String(format: "relevance: %.0f%%", result.relevanceScore * 100))
+                        .font(.retraceMonoSmall)
+                        .foregroundColor(.yellow.opacity(0.7))
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.3))
     }
 
     @ViewBuilder

@@ -183,9 +183,13 @@ final class AudioFormatConverterTests: XCTestCase {
             continuation.finish()
             var received: [CapturedAudio] = []
             for await audio in stream { received.append(audio) }
-            XCTAssertEqual(try XCTUnwrap(received.first).timestamp, Date(timeIntervalSince1970: 1_000))
+            let resumed = received.filter { $0.timestamp >= Date(timeIntervalSince1970: 1_000) }
+            XCTAssertEqual(try XCTUnwrap(resumed.first).timestamp, Date(timeIntervalSince1970: 1_000))
+            let prefixReference = AudioFormatConverter()
+            var expected = try prefixReference.convert(sampleBuffer: priming)
+            expected.append(try prefixReference.finish())
             let reference = AudioFormatConverter()
-            var expected = try reference.convert(sampleBuffer: valid)
+            expected.append(try reference.convert(sampleBuffer: valid))
             expected.append(try reference.finish())
             XCTAssertEqual(received.reduce(into: Data()) { $0.append($1.audioData) }, expected)
         }
@@ -195,7 +199,8 @@ final class AudioFormatConverterTests: XCTestCase {
         let priming = try Self.sampleBuffer(Self.tone(sampleRate: 48_000, frequency: 440, frames: 1))
         XCTAssertTrue(try AudioFormatConverter().convert(sampleBuffer: priming).isEmpty)
         let remainder = try Self.sampleBuffer(
-            Self.tone(sampleRate: 48_000, frequency: 440, frames: 47_999, offset: 1)
+            Self.tone(sampleRate: 48_000, frequency: 440, frames: 47_999, offset: 1),
+            presentation: CMTime(value: 1, timescale: 48_000)
         )
         for source in [AudioSource.microphone, .system] {
             let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(limit: 10)
@@ -257,11 +262,11 @@ final class AudioFormatConverterTests: XCTestCase {
         return buffer
     }
 
-    private static func sampleBuffer(_ input: AVAudioPCMBuffer, ready: Bool = true) throws -> CMSampleBuffer {
+    private static func sampleBuffer(_ input: AVAudioPCMBuffer, ready: Bool = true, presentation: CMTime = .zero) throws -> CMSampleBuffer {
         var sample: CMSampleBuffer?
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(input.format.sampleRate)),
-            presentationTimeStamp: .zero, decodeTimeStamp: .invalid
+            presentationTimeStamp: presentation, decodeTimeStamp: .invalid
         )
         let creation = CMSampleBufferCreate(
             allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,

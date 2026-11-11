@@ -70,6 +70,19 @@ final class ExactWALFrameTests: XCTestCase {
         await assertError(.integrityFailure) { _ = try await self.read(fixture, frameID: 502) }
     }
 
+    func testRegisteringAnotherIdentityCannotCorruptAnExistingOriginalMapping() async throws {
+        let fixture = try await makeWAL()
+        let map = fixture.session.sessionDir.appendingPathComponent("frame_id_map.bin")
+        let before = try Data(contentsOf: map)
+        do {
+            try await fixture.manager.registerFrameID(videoID: fixture.session.videoID, frameID: 599, frameIndex: 0)
+            XCTFail("An already mapped original cannot be assigned another database frame")
+        } catch { }
+        XCTAssertEqual(try Data(contentsOf: map), before)
+        let preserved = try await read(fixture, frameID: 501)
+        XCTAssertEqual(preserved.imageData, pixels(30))
+    }
+
     func testIncompleteMapTailRetainsProvedPrefixButCannotInventMissingIdentity() async throws {
         let fixture = try await makeWAL()
         let map = fixture.session.sessionDir.appendingPathComponent("frame_id_map.bin")
@@ -85,7 +98,7 @@ final class ExactWALFrameTests: XCTestCase {
         let fixture = try await makeWAL()
         var data = try Data(contentsOf: fixture.session.framesURL)
         var invalidSize = UInt32.max
-        withUnsafeBytes(of: &invalidSize) { data.replaceSubrange(20..<24, with: $0) }
+        withUnsafeBytes(of: &invalidSize) { data.replaceSubrange(36..<40, with: $0) }
         try data.write(to: fixture.session.framesURL)
         await assertError(.integrityFailure) { _ = try await self.read(fixture, frameID: 501) }
     }

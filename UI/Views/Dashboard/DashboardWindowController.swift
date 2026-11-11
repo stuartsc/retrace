@@ -6,8 +6,11 @@ import Shared
 private enum DashboardWindowSizing {
     static let defaultWidth = DashboardVoiceLayoutPolicy.defaultWindowWidth
     static let defaultHeight = DashboardVoiceLayoutPolicy.defaultWindowHeight
-    static let minWidth = DashboardVoiceLayoutPolicy.minWindowWidth
-    static let minHeight = DashboardVoiceLayoutPolicy.minWindowHeight
+    static var minWidth: CGFloat { workspaceEnabled ? UnifiedWorkspacePolicy.minimumWidth : DashboardVoiceLayoutPolicy.minWindowWidth }
+    static var minHeight: CGFloat { workspaceEnabled ? UnifiedWorkspacePolicy.minimumHeight : DashboardVoiceLayoutPolicy.minWindowHeight }
+    private static var workspaceEnabled: Bool {
+        (UserDefaults(suiteName: "io.retrace.app") ?? .standard).bool(forKey: UnifiedWorkspacePolicy.defaultsKey)
+    }
 }
 
 /// Manages the dashboard window as an on-demand window
@@ -184,6 +187,10 @@ public class DashboardWindowController: NSObject {
         window?.title = title
     }
 
+    func updateWorkspaceSizing() {
+        window?.minSize = NSSize(width: DashboardWindowSizing.minWidth, height: DashboardWindowSizing.minHeight)
+    }
+
     // MARK: - Window Creation
 
     private func createWindow(coordinator: AppCoordinator) -> NSWindow {
@@ -319,6 +326,10 @@ struct DashboardContentView: View {
     @State private var showFeedbackSheet = false
     @State private var showOnboarding: Bool? = nil
     @State private var hasLoadedDashboard = false
+    @AppStorage(UnifiedWorkspacePolicy.defaultsKey, store: UserDefaults(suiteName: "io.retrace.app") ?? .standard)
+    private var unifiedWorkspaceEnabled = false
+    @State private var showingVoice = false
+    @State private var workspaceSession: UnifiedWorkspaceSession?
     /// Forces a SwiftUI refresh when global appearance preferences change.
     @State private var appearanceRefreshTick = 0
 
@@ -370,6 +381,11 @@ struct DashboardContentView: View {
         }
         .onChange(of: navigation.selectedView) { _ in updateDashboardWindowTitle() }
         .onChange(of: navigation.currentSettingsTabTitle) { _ in updateDashboardWindowTitle() }
+        .onChange(of: unifiedWorkspaceEnabled) { _ in
+            showingVoice = false
+            if !unifiedWorkspaceEnabled { workspaceSession?.model.close(); workspaceSession = nil }
+            DashboardWindowController.shared.updateWorkspaceSizing()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .colorThemeDidChange)) { _ in
             appearanceRefreshTick &+= 1
         }
@@ -413,12 +429,40 @@ struct DashboardContentView: View {
         DashboardDestinationView(
             navigation: navigation,
             dashboard: {
-                DashboardView(
-                    viewModel: dashboardViewModel,
-                    coordinator: coordinator,
-                    launchOnLoginReminderManager: launchOnLoginReminderManager,
-                    hasLoadedInitialData: $hasLoadedDashboard
-                )
+                Group {
+                if unifiedWorkspaceEnabled && !showingVoice {
+                    if let workspaceSession {
+                    UnifiedWorkspaceView(coordinator: coordinator, dashboard: dashboardViewModel, session: workspaceSession,
+                        openSettings: { navigation.openSettings() }, openVoice: {
+                            showingVoice = true
+                            DashboardViewModel.recordSettingsUtilityAction(coordinator: coordinator, action: "workspace_voice_opened")
+                        })
+                        .environmentObject(coordinatorWrapper)
+                    } else {
+                        ProgressView("Opening workspace…").task {
+                            if workspaceSession == nil { workspaceSession = UnifiedWorkspaceSession(coordinator: coordinator) }
+                        }
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        if unifiedWorkspaceEnabled {
+                            HStack {
+                                Button("Return to workspace") {
+                                    showingVoice = false
+                                    DashboardViewModel.recordSettingsUtilityAction(coordinator: coordinator, action: "workspace_voice_closed")
+                                }
+                                Spacer()
+                            }.padding(.horizontal, 32).padding(.top, 32)
+                        }
+                        DashboardView(
+                            viewModel: dashboardViewModel,
+                            coordinator: coordinator,
+                            launchOnLoginReminderManager: launchOnLoginReminderManager,
+                            hasLoadedInitialData: $hasLoadedDashboard
+                        )
+                    }
+                }
+                }
             },
             settings: { destination in
                 SettingsView(

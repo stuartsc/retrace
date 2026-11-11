@@ -4,7 +4,8 @@ import Shared
 
 /// Recovers WAL records with bounded pixel memory and restart-safe publication.
 /// The original WAL is retained until every encoded chunk, database transaction,
-/// and OCR enqueue has succeeded. Damaged tails remain available for inspection.
+/// and durable OCR extraction has succeeded. Recovery confirms archives and
+/// enqueues work; the original spool reconciler owns later source cleanup.
 public actor RecoveryManager {
     private static let maximumFramesPerChunk = 150
     private let walManager: WALManager
@@ -63,6 +64,17 @@ public actor RecoveryManager {
     }
 
     private func recover(_ session: WALSession) async throws -> RecoveryResult {
+        try await walManager.withOriginalReadLease(videoID: session.videoID) {
+            try await self.recoverWithLease(session)
+        }
+    }
+
+    private func recoverWithLease(_ session: WALSession) async throws -> RecoveryResult {
+        let storeID = try await database.originalStoreID()
+        guard try await walManager.originalReceipt(for: session).sourceStoreID == storeID else {
+            throw failure(session, "Originals have no matching database-store attribution; source retained")
+        }
+        try await walManager.configureOriginalStore(storeID: storeID)
         let reader = try WALRecoveryReader(session: session)
         let scan = try await reader.scan()
         var journal = try loadJournal(session: session, sourceSize: scan.sourceSize)
@@ -88,6 +100,91 @@ public actor RecoveryManager {
                                                     startIndex: index, frameCount: records.count))
             }
 
+            var recoverable: [WALRecoveryRecord] = []
+            let deletions = try await walManager.originalReceipt(for: session).deleted
+            for sourceRecord in records {
+                var record = sourceRecord
+                let alias = try await database.lookupOriginalFrame(sourceStoreID: storeID,
+                    originalVideoPathID: session.videoID, sourceIndex: record.index)
+                if let deletion = deletions.first(where: { $0.sourceIndex == record.index }) {
+                    guard record.databaseFrameID == nil || record.databaseFrameID == deletion.frameID else {
+                        throw failure(session, "Deletion receipt conflicts with its persisted frame map")
+                    }
+                    switch alias {
+                    case .deleted(let frameID) where frameID.value == deletion.frameID:
+                        break
+                    case .unknown:
+                        guard record.databaseFrameID == deletion.frameID,
+                              case .deleted(let deletedStoreID) = try await database.originalFrameDisposition(
+                            frameID: FrameID(value: deletion.frameID)), deletedStoreID == storeID else {
+                            throw failure(session, "Deletion receipt has no canonical source proof")
+                        }
+                    default:
+                        throw failure(session, "Deletion receipt conflicts with its canonical source alias")
+                    }
+                    // A prior crash may have persisted the deletion before this
+                    // ID map. Repair it so the cleanup reader can acknowledge it.
+                    try await walManager.registerFrameID(videoID: session.videoID, frameID: deletion.frameID,
+                        frameIndex: record.index)
+                    continue
+                }
+                switch alias {
+                case .unknown:
+                    break
+                case .retained(let frameID):
+                    guard record.databaseFrameID == nil || record.databaseFrameID == frameID.value else {
+                        throw failure(session, "Original source alias conflicts with its persisted frame map")
+                    }
+                    try await walManager.registerFrameID(videoID: session.videoID, frameID: frameID.value,
+                                                         frameIndex: record.index)
+                    record = WALRecoveryRecord(frame: record.frame, index: record.index, offset: record.offset,
+                        nextOffset: record.nextOffset, databaseFrameID: frameID.value)
+                case .deleted(let frameID):
+                    guard record.databaseFrameID == nil || record.databaseFrameID == frameID.value else {
+                        throw failure(session, "Deleted original source alias conflicts with its persisted frame map")
+                    }
+                    try await walManager.registerFrameID(videoID: session.videoID, frameID: frameID.value,
+                                                         frameIndex: record.index)
+                    try await walManager.markOriginalDeleted(session: session, storeID: storeID,
+                        frameID: frameID.value, sourceIndex: record.index)
+                    continue
+                }
+                if let mappedID = record.databaseFrameID,
+                   try await database.getFrame(id: FrameID(value: mappedID)) == nil {
+                    // A previously published identity that disappeared was deleted.
+                    // Persist the skip before any output publication can recreate it.
+                    guard case .deleted(let deletedStoreID) = try await database.originalFrameDisposition(frameID: FrameID(value: mappedID)),
+                          deletedStoreID == storeID else {
+                        throw failure(session, "Missing mapped identity has no matching durable deletion receipt")
+                    }
+                    try await walManager.markOriginalDeleted(session: session, storeID: storeID,
+                                                             frameID: mappedID, sourceIndex: record.index)
+                    continue
+                }
+                recoverable.append(record)
+            }
+            if recoverable.isEmpty {
+                journal.chunks[chunkIndex].committed = true
+                try saveJournal(journal, session: session)
+                index += records.count
+                offset = last.nextOffset
+                chunkIndex += 1
+                continue
+            }
+            if let previousIndices = journal.chunks[chunkIndex].sourceIndices,
+               previousIndices != recoverable.map(\.index) {
+                guard Set(recoverable.map(\.index)).isSubset(of: Set(previousIndices)) else {
+                    throw failure(session, "Recovery checkpoint changed without a proved deletion")
+                }
+                // The previous output may already be published. Preserve it and
+                // replace only the journal checkpoint before encoding survivors
+                // into a fresh archive. The database rechecks immutable aliases
+                // when publishing, including a deletion arriving during encoding.
+                journal.chunks[chunkIndex] = RecoveryChunk(startOffset: offset, endOffset: last.nextOffset,
+                    startIndex: index, frameCount: records.count)
+                try saveJournal(journal, session: session)
+            }
+
             if journal.chunks[chunkIndex].video == nil {
                 // An incomplete output is never referenced by the database: video
                 // metadata is checkpointed before the database transaction starts.
@@ -101,7 +198,7 @@ public actor RecoveryManager {
                 journal.chunks[chunkIndex].outputID = await writer.segmentID
                 try saveJournal(journal, session: session)
                 do {
-                    for record in records {
+                    for record in recoverable {
                         try Task.checkCancellation()
                         guard let loaded = try await reader.readRecord(at: record.offset, index: record.index, loadPixels: true) else {
                             throw failure(session, "Missing frame during encoding")
@@ -109,8 +206,8 @@ public actor RecoveryManager {
                         try await writer.appendFrame(loaded.frame)
                     }
                     let encoded = try await writer.finalize()
-                    guard encoded.frameCount == records.count,
-                          try await storage.countFramesInSegment(id: encoded.id) == records.count,
+                    guard encoded.frameCount == recoverable.count,
+                          try await storage.countFramesInSegment(id: encoded.id) == recoverable.count,
                           try await storage.isVideoValid(id: encoded.id) else {
                         throw failure(session, "Encoded recovery output is incomplete or unreadable")
                     }
@@ -125,9 +222,10 @@ public actor RecoveryManager {
                     }
                     // Retain original capture times; writer startTime is recovery wall time.
                     journal.chunks[chunkIndex].video = VideoSegment(
-                        id: encoded.id, startTime: records[0].frame.timestamp, endTime: last.frame.timestamp,
+                        id: encoded.id, startTime: recoverable[0].frame.timestamp, endTime: recoverable[recoverable.count - 1].frame.timestamp,
                         frameCount: encoded.frameCount, fileSizeBytes: encoded.fileSizeBytes,
                         relativePath: encoded.relativePath, width: encoded.width, height: encoded.height)
+                    journal.chunks[chunkIndex].sourceIndices = recoverable.map(\.index)
                     try saveJournal(journal, session: session)
                     createdVideos += 1
                 } catch {
@@ -148,15 +246,21 @@ public actor RecoveryManager {
             }
             if !journal.chunks[chunkIndex].committed {
                 try Task.checkCancellation()
-                let references = records.enumerated().map { outputIndex, record in
+                let references = recoverable.enumerated().map { outputIndex, record in
                     FrameReference(id: FrameID(value: record.databaseFrameID ?? 0),
                                    timestamp: record.frame.timestamp, segmentID: AppSegmentID(value: 0),
                                    videoID: video.id, frameIndexInSegment: outputIndex,
                                    metadata: record.frame.metadata, source: .native)
                 }
                 let ids = try await database.commitRecoveredFrames(video: video,
-                    originalVideoPathID: session.videoID, originalFrameIndices: records.map(\.index), frames: references)
-                guard ids.count == records.count else { throw failure(session, "Database did not confirm every recovered frame") }
+                    originalVideoPathID: session.videoID, originalFrameIndices: recoverable.map(\.index), frames: references)
+                guard ids.count == recoverable.count else { throw failure(session, "Database did not confirm every recovered frame") }
+                journal.chunks[chunkIndex].frameIDs = ids
+                try saveJournal(journal, session: session)
+                for (position, id) in ids.enumerated() {
+                    try await walManager.registerFrameID(videoID: session.videoID, frameID: id,
+                                                         frameIndex: recoverable[position].index)
+                }
                 try Task.checkCancellation()
                 try await enqueue(ids)
                 try Task.checkCancellation()
@@ -164,6 +268,18 @@ public actor RecoveryManager {
                 try saveJournal(journal, session: session)
                 recoveredFrames += ids.count
             }
+            let ids = journal.chunks[chunkIndex].frameIDs ?? recoverable.compactMap(\.databaseFrameID)
+            guard ids.count == recoverable.count,
+                  let firstFrame = try await database.getFrame(id: FrameID(value: ids[0])),
+                  let publishedVideo = try await database.getVideoSegment(id: firstFrame.videoID) else {
+                throw failure(session, "Cannot prove committed recovery frame identities; originals retained")
+            }
+            for (position, id) in ids.enumerated() {
+                try await walManager.registerFrameID(videoID: session.videoID, frameID: id,
+                                                     frameIndex: recoverable[position].index)
+            }
+            try await walManager.confirmOriginalArchive(session: session, video: publishedVideo,
+                sourceIndices: recoverable.map(\.index), frameIDs: ids)
             index += records.count
             offset = last.nextOffset
             chunkIndex += 1
@@ -180,7 +296,7 @@ public actor RecoveryManager {
         }
         try Task.checkCancellation()
         try await walManager.finalizeSession(session)
-        Log.info("[Recovery] Confirmed \(scan.frameCount) frames for WAL \(session.videoID.value); source cleanup complete", category: .storage)
+        Log.info("[Recovery] Confirmed \(scan.frameCount) archive mappings for WAL \(session.videoID.value); originals retained for extraction", category: .storage)
         return RecoveryResult(sessionsRecovered: 1, framesRecovered: recoveredFrames, videoSegmentsCreated: createdVideos)
     }
 
@@ -261,6 +377,8 @@ private struct RecoveryChunk: Codable {
     let frameCount: Int
     var outputID: VideoSegmentID?
     var video: VideoSegment?
+    var sourceIndices: [Int]?
+    var frameIDs: [Int64]?
     var committed = false
 }
 

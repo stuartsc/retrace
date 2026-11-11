@@ -1,0 +1,233 @@
+{
+  "v1/InitializeParams.json": {
+    "sha256": "6f0094be9a65242ec779a40794cbd4fdfa32fca1e45084a16adfb50501d33ea2",
+    "required": [
+      "clientInfo"
+    ],
+    "fields": [
+      "capabilities",
+      "clientInfo"
+    ],
+    "experimentalFields": [],
+    "entireTypeExperimental": false
+  },
+  "v2/ThreadStartParams.json": {
+    "sha256": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de",
+    "required": [],
+    "fields": [
+      "allowProviderModelFallback",
+      "approvalPolicy",
+      "approvalsReviewer",
+      "baseInstructions",
+      "config",
+      "cwd",
+      "daybreakEnabled",
+      "developerInstructions",
+      "dynamicTools",
+      "environments",
+      "ephemeral",
+      "experimentalRawEvents",
+      "historyMode",
+      "mockExperimentalField",
+      "model",
+      "modelProvider",
+      "multiAgentMode",
+      "permissions",
+      "personality",
+      "projectId",
+      "runtimeWorkspaceRoots",
+      "sandbox",
+      "selectedCapabilityRoots",
+      "serviceName",
+      "serviceTier",
+      "sessionStartSource",
+      "threadSource"
+    ],
+    "experimentalFields": [
+      "allowProviderModelFallback",
+      "daybreakEnabled",
+      "dynamicTools",
+      "environments",
+      "experimentalRawEvents",
+      "historyMode",
+      "mockExperimentalField",
+      "multiAgentMode",
+      "permissions",
+      "projectId",
+      "runtimeWorkspaceRoots",
+      "selectedCapabilityRoots"
+    ],
+    "entireTypeExperimental": false
+  },
+  "v2/ThreadResumeParams.json": {
+    "sha256": "cc5bb3b25f82073d24af5b6c09e4804ac307467f8400ba5f263fa86f9f0349e6",
+    "required": [
+      "threadId"
+    ],
+    "fields": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "baseInstructions",
+      "config",
+      "cwd",
+      "developerInstructions",
+      "excludeTurns",
+      "history",
+      "initialTurnsPage",
+      "model",
+      "modelProvider",
+      "path",
+      "permissions",
+      "personality",
+      "runtimeWorkspaceRoots",
+      "sandbox",
+      "serviceTier",
+      "threadId"
+    ],
+    "experimentalFields": [
+      "history",
+      "initialTurnsPage",
+      "path",
+      "permissions",
+      "runtimeWorkspaceRoots"
+    ],
+    "entireTypeExperimental": false
+  },
+  "v2/TurnStartParams.json": {
+    "sha256": "07771223642e1b61bd9aac0069fc0f98143a1c047724ca02c7ceb13653442738",
+    "required": [
+      "input",
+      "threadId"
+    ],
+    "fields": [
+      "additionalContext",
+      "approvalPolicy",
+      "approvalsReviewer",
+      "clientUserMessageId",
+      "collaborationMode",
+      "cwd",
+      "cyberAccessProgram",
+      "disabledPluginIds",
+      "effort",
+      "environments",
+      "input",
+      "model",
+      "multiAgentMode",
+      "outputSchema",
+      "permissions",
+      "personality",
+      "responsesapiClientMetadata",
+      "runtimeWorkspaceRoots",
+      "sandboxPolicy",
+      "serviceTier",
+      "serviceTierForTurn",
+      "summary",
+      "threadId",
+      "toolOutput",
+      "turnTrigger"
+    ],
+    "experimentalFields": [
+      "additionalContext",
+      "collaborationMode",
+      "cyberAccessProgram",
+      "environments",
+      "multiAgentMode",
+      "permissions",
+      "responsesapiClientMetadata",
+      "runtimeWorkspaceRoots"
+    ],
+    "entireTypeExperimental": false
+  },
+  "v2/ThreadSettingsUpdateParams.json": {
+    "sha256": "749419634bb7ed66216d72bf9d8734ecf0e6efaa8cd46fe51a117d1b42ed9657",
+    "required": [
+      "threadId"
+    ],
+    "fields": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "collaborationMode",
+      "cwd",
+      "disabledPluginIds",
+      "effort",
+      "model",
+      "multiAgentMode",
+      "permissions",
+      "personality",
+      "sandboxPolicy",
+      "serviceTier",
+      "summary",
+      "threadId"
+    ],
+    "experimentalFields": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "collaborationMode",
+      "cwd",
+      "disabledPluginIds",
+      "effort",
+      "model",
+      "multiAgentMode",
+      "permissions",
+      "personality",
+      "sandboxPolicy",
+      "serviceTier",
+      "summary",
+      "threadId"
+    ],
+    "entireTypeExperimental": true
+  },
+  "DynamicToolCallParams.json": {
+    "sha256": "401bba20cfbd95762bef0467d840430c46be53369093ad9f26425ba757e34efc",
+    "required": [
+      "arguments",
+      "callId",
+      "threadId",
+      "tool",
+      "turnId"
+    ],
+    "fields": [
+      "arguments",
+      "callId",
+      "namespace",
+      "threadId",
+      "tool",
+      "turnId"
+    ],
+    "experimentalFields": [],
+    "entireTypeExperimental": false
+  },
+  "DynamicToolCallResponse.json": {
+    "sha256": "abb082cad67f11fcc98ba75f2eff75d7d1723af0c657655329b83ff160451a02",
+    "required": [
+      "contentItems",
+      "success"
+    ],
+    "fields": [
+      "contentItems",
+      "success"
+    ],
+    "experimentalFields": [],
+    "entireTypeExperimental": false
+  },
+  "v2/TurnInterruptParams.json": {
+    "sha256": "6dff382dae73d1dbc58406ed045605f647e7a49660e2540fbd2c6c24d60c5f2b",
+    "required": [
+      "threadId",
+      "turnId"
+    ],
+    "fields": [
+      "threadId",
+      "turnId"
+    ],
+    "experimentalFields": [],
+    "entireTypeExperimental": false
+  },
+  "v2/LoginAccountParams.json": {
+    "sha256": "48fb9bea54d7e0890052653ac06737efb3200ba2261515b2c4014027f36bea3d",
+    "required": [],
+    "fields": [],
+    "experimentalFields": [],
+    "entireTypeExperimental": false
+  }
+}

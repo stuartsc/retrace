@@ -1,0 +1,22 @@
+{
+  "scope": "Clean complete V30 XCTest run; App audio/job owner and mixed-source UI still staged, optional native/model comparisons remain separately gated",
+  "startedUTC": "2026-09-24T14:12:08.510106+00:00",
+  "argv": [
+    "swift",
+    "test",
+    "--jobs",
+    "2",
+    "--disable-automatic-resolution"
+  ],
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+    "SDKROOT": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+    "RETRACE_TEST_DISABLE_FILE_LOGGING": "1"
+  },
+  "sourceManifest": "clean-integrated-tests-3-v30-source.json",
+  "cleanExit": 0,
+  "pid": 38089,
+  "exit": 1,
+  "endedUTC": "2026-09-24T14:20:27.027538+00:00",
+  "sourceUnchanged": true
+}

@@ -1,0 +1,38 @@
+{
+  "recordedUTC": "2026-09-24T15:03:06.217134+00:00",
+  "scope": "Immutable completed diagnostic command/source receipts; failures and native acceptance gaps retained",
+  "files": [
+    {
+      "file": "clean-integrated-tests-3-v30-command.json",
+      "sha256": "9f0f575a97600eb7b0478c700168243a733410c09815967c447dbe87f297d419"
+    },
+    {
+      "file": "clean-integrated-tests-3-v30-source.json",
+      "sha256": "982f7a9593f24e90f2e29f5162ec9ef5a26e803dbce6be776d0b78476d978d61"
+    },
+    {
+      "file": "v30-runtime-focused-1-command.json",
+      "sha256": "d00efc405cfc6542138a223f2fcffcb0422c4dec4242a25902f287fc4a2cc3c8"
+    },
+    {
+      "file": "v30-runtime-focused-1-source.json",
+      "sha256": "9cd98d42a79a9998f8ff0218e31245f369ee6f79a10074f4a9bf83a48011dc4a"
+    },
+    {
+      "file": "clean-integrated-tests-4-cross-source-command.json",
+      "sha256": "d065813854fc027661e7cc8dc6025cc2fd7f6d8bc142aef4c31f74da98438270"
+    },
+    {
+      "file": "clean-integrated-tests-4-cross-source-source.json",
+      "sha256": "54dbb8b3ead40968727d1f0d5719cf96dcd59a05db14f55f871f8b369aa1b25a"
+    },
+    {
+      "file": "cross-source-runtime-1-command.json",
+      "sha256": "f2f752b3bd241e5cbbe04a3b61b9e22da655c7c2ea9b3ea8c6e788f48a0eab78"
+    },
+    {
+      "file": "cross-source-runtime-1-source.json",
+      "sha256": "12ef83dea7906dd070a058cbb82790d92cbc3c0687dae963f3524e5b10cf084d"
+    }
+  ]
+}

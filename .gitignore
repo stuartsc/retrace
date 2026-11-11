@@ -57,6 +57,10 @@ scripts/recall_benchmark/__pycache__/
 tmp/
 temp/
 
+# Rebuildable Python test bytecode
+__pycache__/
+*.py[cod]
+
 # Downloaded AI models (runtime downloads)
 # Models are downloaded on first launch, not bundled in repo
 /models/
@@ -80,6 +84,14 @@ temp/
 !/docs/capture-improvements-validation.md
 !/docs/progressive-recall-plan.md
 !/docs/capture-text-quality-plan.md
+!/docs/unified-history-plan.md
+!/docs/codex-assistance-boundary.md
+!/docs/responsiveness-storage-validation.md
+!/docs/performance-measurement.md
+!/scripts/performance_benchmark/README.md
+!/docs/installed-cpu-protection.md
+!/docs/superpowers/plans/2026-06-10-voice-first-dashboard.md
+!/docs/session-20261111-github-checkpoint.md
 
 # Xcode user-specific data
 .swiftpm/xcode/xcuserdata/

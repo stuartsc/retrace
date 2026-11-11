@@ -2,6 +2,7 @@ import XCTest
 import Database
 import Shared
 import Storage
+import SQLCipher
 @testable import Processing
 
 final class AudioProcessingBackpressureTests: XCTestCase {
@@ -26,6 +27,236 @@ final class AudioProcessingBackpressureTests: XCTestCase {
             try? FileManager.default.removeItem(at: tempDirectory)
         }
         tempDirectory = nil
+    }
+
+    func testPermitRevokedByPostCommitCallbackDoesNotRepeatAlreadyPublishedInference() async throws {
+        let queries = try await makeQueries()
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let governor = HeldAudioGovernor()
+        await governor.allow()
+        let committed = expectation(description: "committed callback revokes permit")
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries,
+            audioWriter: AudioSegmentWriter(storageRoot: tempDirectory),
+            config: AudioProcessingConfig(maxBufferDuration: 0.25, committedTranscriptionCallback: { _ in
+                await governor.pauseAndCancel()
+                committed.fulfill()
+            }), governor: governor)
+        let task = Task {
+            await manager.startProcessing(audioStream: AsyncStream { continuation in
+                continuation.yield(Self.audioSample(at: 425, textMarker: 1)); continuation.finish()
+            })
+        }
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        await fulfillment(of: [committed], timeout: 5)
+        await governor.waitForAdmissionRequest()
+        await governor.allow()
+        await task.value
+        let calls = await service.numberOfCalls
+        XCTAssertEqual(calls, 1, "A retired pending row must be rejected before repeated decoding or inference")
+        let rows = try await queries.getTranscriptionCount()
+        XCTAssertEqual(rows, 1)
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testGovernedMissingDatabaseSuspendsWithoutPCMQueueAndRecoversAfterInitialization() async throws {
+        let queries = try await makeQueries()
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let governor = HeldAudioGovernor()
+        let writer = AudioSegmentWriter(storageRoot: tempDirectory)
+        let manager = AudioProcessingManager(transcriptionService: service, audioWriter: writer,
+            config: AudioProcessingConfig(maxBufferDuration: 0.25), governor: governor)
+        let failure = AudioFailureReceipt()
+        await manager.setPersistenceFailureCallback { await failure.record() }
+        await manager.startProcessing(audioStream: AsyncStream { continuation in
+            for index in 0..<3 { continuation.yield(Self.audioSample(at: 450 + Double(index), textMarker: index)) }
+            continuation.finish()
+        })
+        let failed = await manager.hasPersistenceFailure
+        XCTAssertTrue(failed)
+        let failures = await failure.count
+        XCTAssertEqual(failures, 1)
+        let calls = await service.numberOfCalls
+        XCTAssertEqual(calls, 0)
+        let before = try await queries.getTranscriptionCount()
+        XCTAssertEqual(before, 0)
+        try await manager.initialize(transcriptionQueries: queries)
+        await governor.allow()
+        let restart = Task { await manager.startProcessing(audioStream: AsyncStream { $0.finish() }) }
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        await restart.value
+        let stillFailed = await manager.hasPersistenceFailure
+        XCTAssertFalse(stillFailed)
+        let rows = try await queries.getTranscriptions(from: Date(timeIntervalSince1970: 449), to: Date(timeIntervalSince1970: 454))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.startTime, Date(timeIntervalSince1970: 450))
+    }
+
+    func testBoundedRecoveryPagePrioritizesSpeechHintsAndStillAdmitsSilence() async throws {
+        let queries = try await makeQueries()
+        let writer = AudioSegmentWriter(storageRoot: tempDirectory)
+        for index in 0..<6 {
+            let input = Self.audioSample(at: 500 + Double(index), textMarker: index)
+            let pcm = index == 0 ? Data(repeating: 0, count: input.audioData.count) : input.audioData
+            let (path, size) = try await writer.writeFullBatch(audioData: pcm, sampleRate: input.sampleRate,
+                channels: input.channels, timestamp: input.timestamp, source: input.source)
+            _ = try await queries.insertRawBatch(startTime: input.timestamp,
+                endTime: input.timestamp.addingTimeInterval(input.duration), source: input.source,
+                audioPath: path, audioSize: size, probableSilenceHint: index == 0)
+        }
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let governor = HeldAudioGovernor()
+        await governor.allow()
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries,
+            audioWriter: writer, governor: governor)
+        let task = Task { await manager.startProcessing(audioStream: AsyncStream { $0.finish() }) }
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        await task.value
+        let kinds = await governor.kinds
+        XCTAssertEqual(kinds.map(\.rawValue), ["ambientSpeech", "ambientSpeech", "ambientSpeech", "ambientSilence", "ambientSpeech", "ambientSpeech"])
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testFailedInferenceRetriesDurablePendingWithoutNewCapture() async throws {
+        let queries = try await makeQueries()
+        let service = BlockingTranscriptionService(firstCallFails: true)
+        try await service.initialize()
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries,
+            audioWriter: AudioSegmentWriter(storageRoot: tempDirectory),
+            config: AudioProcessingConfig(maxBufferDuration: 0.25), pendingRetryInterval: .milliseconds(30))
+        let stream = AsyncStream<CapturedAudio>.makeStream()
+        let task = Task { await manager.startProcessing(audioStream: stream.stream) }
+        stream.continuation.yield(Self.audioSample(at: 550, textMarker: 1))
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        let deadline = Date().addingTimeInterval(3)
+        while await service.numberOfCalls < 2, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20), clock: .continuous)
+        }
+        stream.continuation.finish()
+        await task.value
+        let calls = await service.numberOfCalls
+        XCTAssertEqual(calls, 2)
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testSQLitePersistenceFailureSuspendsAndRetainsBatchForNextStart() async throws {
+        let queries = try await makeQueries()
+        let pointer = await database.getConnection()
+        let db = try XCTUnwrap(pointer)
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TRIGGER fail_raw BEFORE INSERT ON audio_captures WHEN NEW.batch_audio_path IS NULL BEGIN SELECT RAISE(ABORT,'fixture'); END", nil, nil, nil), SQLITE_OK)
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries,
+            audioWriter: AudioSegmentWriter(storageRoot: tempDirectory), config: AudioProcessingConfig(maxBufferDuration: 0.25))
+        let failure = AudioFailureReceipt()
+        await manager.setPersistenceFailureCallback { await failure.record() }
+        await manager.startProcessing(audioStream: AsyncStream { continuation in
+            continuation.yield(Self.audioSample(at: 600, textMarker: 1)); continuation.finish()
+        })
+        let failed = await manager.hasPersistenceFailure
+        XCTAssertTrue(failed)
+        let failures = await failure.count
+        XCTAssertEqual(failures, 1)
+        let calls = await service.numberOfCalls
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER fail_raw", nil, nil, nil), SQLITE_OK)
+        let restart = Task { await manager.startProcessing(audioStream: AsyncStream { $0.finish() }) }
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        await restart.value
+        let stillFailed = await manager.hasPersistenceFailure
+        XCTAssertFalse(stillFailed)
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(pending, 0)
+        let count = try await queries.getTranscriptionCount()
+        XCTAssertEqual(count, 1)
+    }
+
+    func testRenewedInteractionLeavesAACPendingAndRetriesWithoutDuplicateText() async throws {
+        let queries = try await makeQueries()
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let governor = HeldAudioGovernor()
+        await governor.allow()
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries,
+            audioWriter: AudioSegmentWriter(storageRoot: tempDirectory),
+            config: AudioProcessingConfig(maxBufferDuration: 0.25), governor: governor)
+        let stream = AsyncStream<CapturedAudio>.makeStream()
+        let task = Task { await manager.startProcessing(audioStream: stream.stream) }
+        stream.continuation.yield(Self.audioSample(at: 700, textMarker: 1))
+        await service.waitForFirstTranscription()
+        await governor.pauseAndCancel()
+        await service.releaseFirstTranscription()
+        await governor.waitForAdmissionRequest()
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(pending, 1)
+        let before = try await queries.getTranscriptionCount()
+        XCTAssertEqual(before, 1, "Only the retained raw placeholder may exist before renewed admission")
+        await governor.allow()
+        stream.continuation.finish()
+        await task.value
+        let remaining = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(remaining, 0)
+        let after = try await queries.getTranscriptionCount()
+        XCTAssertEqual(after, 1)
+    }
+
+    func testGovernorDefersModelWhileRecordingPersistsThenDrains() async throws {
+        let queries = try await makeQueries()
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let governor = HeldAudioGovernor()
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries,
+            audioWriter: AudioSegmentWriter(storageRoot: tempDirectory),
+            config: AudioProcessingConfig(maxBufferDuration: 0.25), governor: governor)
+        let stream = AsyncStream<CapturedAudio>.makeStream()
+        let task = Task { await manager.startProcessing(audioStream: stream.stream) }
+        stream.continuation.yield(Self.audioSample(at: 800, textMarker: 1))
+        await governor.waitForAdmissionRequest()
+        stream.continuation.yield(Self.audioSample(at: 801, textMarker: 2))
+        let pending = try await waitForPendingBatchCount(queries: queries, expectedCount: 2, timeoutSeconds: 2)
+        XCTAssertEqual(pending, 2)
+        let callsBeforeAdmission = await service.numberOfCalls
+        XCTAssertEqual(callsBeforeAdmission, 0)
+        await governor.allow()
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        stream.continuation.finish()
+        await task.value
+        let remaining = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(remaining, 0)
+        let releases = await governor.releaseCount
+        XCTAssertEqual(releases, 2)
+    }
+
+    func testEmptyStreamRecoversDurablePendingAACWithoutRefinement() async throws {
+        let queries = try await makeQueries()
+        let writer = AudioSegmentWriter(storageRoot: tempDirectory)
+        let input = Self.audioSample(at: 900, textMarker: 1)
+        let (path, size) = try await writer.writeFullBatch(audioData: input.audioData, sampleRate: input.sampleRate,
+            channels: input.channels, timestamp: input.timestamp, source: input.source)
+        _ = try await queries.insertRawBatch(startTime: input.timestamp,
+            endTime: input.timestamp.addingTimeInterval(input.duration), source: input.source,
+            audioPath: path, audioSize: size)
+        let service = BlockingTranscriptionService()
+        try await service.initialize()
+        let manager = AudioProcessingManager(transcriptionService: service, transcriptionQueries: queries, audioWriter: writer)
+        let task = Task { await manager.startProcessing(audioStream: AsyncStream { $0.finish() }) }
+        await service.waitForFirstTranscription()
+        await service.releaseFirstTranscription()
+        await task.value
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(pending, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDirectory.appendingPathComponent(path).path))
     }
 
     func testLiveIngestionPersistsCompletedBatchesWhileFirstTranscriptionIsBlocked() async throws {
@@ -224,6 +455,8 @@ final class AudioProcessingBackpressureTests: XCTestCase {
 private actor BlockingTranscriptionService: TranscriptionProtocol {
     private var isInitialized = false
     private var callCount = 0
+    private let firstCallFails: Bool
+    init(firstCallFails: Bool = false) { self.firstCallFails = firstCallFails }
     private var firstStartedContinuation: CheckedContinuation<Void, Never>?
     private var firstReleaseContinuation: CheckedContinuation<Void, Never>?
 
@@ -277,6 +510,7 @@ private actor BlockingTranscriptionService: TranscriptionProtocol {
             await withCheckedContinuation { continuation in
                 firstReleaseContinuation = continuation
             }
+            if firstCallFails { throw TranscriptionError.notInitialized }
         }
 
         let marker = "batch \(currentCall)"
@@ -294,6 +528,8 @@ private actor BlockingTranscriptionService: TranscriptionProtocol {
         )
     }
 
+    var numberOfCalls: Int { callCount }
+
     func waitForFirstTranscription() async {
         if callCount > 0 {
             return
@@ -307,4 +543,35 @@ private actor BlockingTranscriptionService: TranscriptionProtocol {
         firstReleaseContinuation?.resume()
         firstReleaseContinuation = nil
     }
+}
+
+private actor HeldAudioGovernor: BackgroundProcessingProtocol {
+    private var allowed = false
+    private var waiting: CheckedContinuation<Void, Never>?
+    private var requested: CheckedContinuation<Void, Never>?
+    private var hasRequest = false
+    private var current: BackgroundProcessingPermit?
+    private(set) var releaseCount = 0
+    private(set) var kinds: [BackgroundProcessingKind] = []
+    func acquire(_ kind: BackgroundProcessingKind) async throws -> BackgroundProcessingPermit {
+        kinds.append(kind)
+        hasRequest = true
+        requested?.resume(); requested = nil
+        if !allowed { await withCheckedContinuation { waiting = $0 } }
+        try Task.checkCancellation()
+        let permit = BackgroundProcessingPermit(threadCount: 2)
+        current = permit
+        return permit
+    }
+    func release(_ permit: BackgroundProcessingPermit) { releaseCount += 1 }
+    func waitForAdmissionRequest() async {
+        if !hasRequest { await withCheckedContinuation { requested = $0 } }
+    }
+    func pauseAndCancel() { allowed = false; hasRequest = false; current?.cancellation.cancel() }
+    func allow() { allowed = true; waiting?.resume(); waiting = nil }
+}
+
+private actor AudioFailureReceipt {
+    private(set) var count = 0
+    func record() { count += 1 }
 }

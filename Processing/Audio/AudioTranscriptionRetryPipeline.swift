@@ -30,7 +30,8 @@ public enum AudioTranscriptionRetryPipeline {
         transcriptionService: any TranscriptionProtocol,
         wordLevel: Bool,
         initialPrompt: String?,
-        profile: AudioTranscriptionProfile = .exhaustiveRepair
+        profile: AudioTranscriptionProfile = .exhaustiveRepair,
+        requireWordTimings: Bool = false
     ) async throws -> AudioTranscriptionDecision {
         let activity = AudioSpeechActivityPolicy.evaluate(
             audioData,
@@ -41,7 +42,10 @@ public enum AudioTranscriptionRetryPipeline {
         var bestDecision: AudioTranscriptionDecision?
         var attempts = 0
         let attemptPlan = attemptPlan(for: profile)
-        let requestedWordLevel = profile == .liveFirstPass ? false : wordLevel
+        // Exact media uses timed words to separate owned samples from context.
+        // Legacy first pass keeps its text-only path; ownership is an explicit
+        // requirement that applies to every raw/enhanced attempt.
+        let requestedWordLevel = requireWordTimings || (profile != .liveFirstPass && wordLevel)
         // Context helps offline repair, but it can make quiet live batches echo the
         // previous transcript and feed that hallucination into every later batch.
         let effectiveInitialPrompt = profile == .liveFirstPass ? nil : initialPrompt

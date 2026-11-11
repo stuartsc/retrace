@@ -1,5 +1,7 @@
 import XCTest
 import CoreGraphics
+import CoreMedia
+import CoreVideo
 import Shared
 import Database
 import Storage
@@ -72,6 +74,232 @@ final class EvidenceResolutionTests: XCTestCase {
             configuration: { CaptureConfig(excludedAppBundleIDs: ["com.microsoft.Word"]) },
             imageReader: { _ in XCTFail("Denied evidence must not decode"); throw EvidenceUnavailableReason.recordingMissing })
         assertUnavailable(await restricted.resolve(.screen(ref), for: .localUser), .notPermitted)
+    }
+
+    func testPresentationStampChangesOnNativeDeletionButNotEvidenceReadsOrMetrics() async throws {
+        let frameID = try await insertFrame()
+        let before = try await service.presentationStamp(sources: [.native])
+        let reference = try await service.reference(frameID: frameID, source: .native)
+        _ = await service.retainedScreen(reference, for: .localUser)
+        await service.track(.evidenceRequested, outcome: "success")
+        let afterRead = try await service.presentationStamp(sources: [.native])
+        XCTAssertEqual(before, afterRead, "Read/materialization and unrelated metrics must not starve presentation")
+        try await database.deleteFrame(id: frameID)
+        let afterDeletion = try await service.presentationStamp(sources: [.native])
+        XCTAssertNotEqual(before, afterDeletion, "Source identity alone cannot fence deletion")
+    }
+
+    func testPresentationStampIncludesCurrentPrivacyPolicy() async throws {
+        _ = try await insertFrame()
+        let restricted = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { CaptureConfig(excludedAppBundleIDs: ["com.microsoft.Word"]) },
+            imageReader: { _ in throw EvidenceUnavailableReason.recordingMissing })
+        let allowed = try await service.presentationStamp(sources: [.native])
+        let denied = try await restricted.presentationStamp(sources: [.native])
+        XCTAssertNotEqual(allowed, denied)
+    }
+
+    func testPresentationStampDetectsExternalImportedMutationAndReplacement() async throws {
+        let first = try importedStore(text: "contract original")
+        await configure(first)
+        let before = try await service.presentationStamp(sources: [.native, .rewind])
+        try first.writer.execute(sql: "DELETE FROM frame WHERE id=42")
+        let afterDeletion = try await service.presentationStamp(sources: [.native, .rewind])
+        XCTAssertNotEqual(before, afterDeletion)
+        let replacement = try importedStore(text: "contract original")
+        await configure(replacement)
+        let afterReplacement = try await service.presentationStamp(sources: [.native, .rewind])
+        XCTAssertNotEqual(before, afterReplacement)
+    }
+
+    func testPresentationStampFailsClosedForDisconnectedSource() async throws {
+        do {
+            _ = try await service.presentationStamp(sources: [.native, .rewind])
+            XCTFail("Unavailable history cannot receive a publication stamp")
+        } catch let reason as EvidenceUnavailableReason {
+            XCTAssertEqual(reason, .sourceDisconnected)
+        }
+    }
+
+    func testDirectTextHonorsExactScopeCurrentPrivacyAndDeletion() async throws {
+        let context = ActivityContext(appBundleID: "com.microsoft.Word", appName: "Word", processID: 123,
+            processGeneration: "owned-fixture-1", windowID: 7, windowGeneration: "owned-window-1", displayID: 42)
+        func interval(_ offset: Double) -> CaptureReadInterval {
+            CaptureReadInterval(startedAt: timestamp.addingTimeInterval(offset),
+                endedAt: timestamp.addingTimeInterval(offset + 0.005), startedUptime: 100 + offset,
+                endedUptime: 100 + offset + 0.005)
+        }
+        let receipt = CapturePixelReceipt(attemptID: UUID(), interval: interval(0))
+        let directString = "Approved amount 47001 ✅"
+        let direct = CaptureTextObservation(captureAttemptID: receipt.attemptID, sourceContext: context,
+            preRead: interval(-0.01), pixelRead: receipt.interval, postRead: interval(0.01),
+            availability: .available, reasons: [], consistency: .sameWindowBracketed,
+            runs: [CaptureTextRun(id: 0, elementOrdinal: 0, text: directString,
+                elementUTF16Range: EvidenceUTF16Range(location: 80, length: directString.utf16.count),
+                boundsInFramePixels: CGRect(x: 10, y: 10, width: 500, height: 40), role: .textArea,
+                ancestors: [.window, .scrollArea])])
+        let metadata = FrameMetadata(appBundleID: context.appBundleID, appName: context.appName,
+            windowName: "Cedar proposal", displayID: 42, captureContext: context, captureMonotonicTime: 100,
+            capturePolicySHA256: try ScreenEvidenceAccessPolicy(config: CaptureConfig()).fingerprintSHA256(),
+            pixelReceipt: receipt, captureText: direct)
+        let segment = try await database.insertSegment(bundleID: context.appBundleID, startDate: timestamp,
+            endDate: timestamp, windowName: "Cedar proposal", browserUrl: nil, type: 0)
+        let video = try await database.insertVideoSegment(VideoSegment(id: .init(value: 0), startTime: timestamp,
+            endTime: timestamp, frameCount: 1, fileSizeBytes: 1, relativePath: "authored-capture-text-fixture",
+            width: 640, height: 360))
+        let id = FrameID(value: try await database.insertFrame(FrameReference(id: .init(value: 0), timestamp: timestamp,
+            segmentID: .init(value: segment), videoID: .init(value: video), frameIndexInSegment: 0, metadata: metadata)))
+        _ = try await database.commitFrameOCR(frameID: id,
+            text: ExtractedText(frameID: id, timestamp: timestamp,
+                regions: [TextRegion(frameID: id, text: "OCR amount 47001", bounds: CGRect(x: 10, y: 10, width: 500, height: 40))],
+                metadata: metadata), frameWidth: 640, frameHeight: 360)
+        let full = try await service.reference(frameID: id, source: .native)
+        let scoped = ScreenEvidenceRef(storeID: full.storeID, source: full.source, observationID: full.observationID,
+            frameID: full.frameID, extractionRevision: full.extractionRevision, blockIDs: [0])
+        let narrow = await service.retainedScreen(scoped, for: .localUser)
+        XCTAssertNotNil(narrow)
+        XCTAssertNil(narrow?.validatedCaptureText, "An OCR-scoped citation cannot expand to a different text channel")
+        let complete = await service.retainedScreen(full, for: .localUser)
+        XCTAssertEqual(complete?.validatedCaptureText?.runs.map(\.text), [directString])
+        let deniedAgent = await service.retainedScreen(full, for: .agent(clientID: "ungranted-fixture"))
+        XCTAssertNil(deniedAgent)
+
+        let restricted = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { CaptureConfig(excludedAppBundleIDs: ["com.test.other-visible-app"]) },
+            imageReader: { _ in throw EvidenceUnavailableReason.recordingMissing })
+        let noLongerPermitted = await restricted.retainedScreen(full, for: .localUser)
+        XCTAssertNil(noLongerPermitted, "A later scene-policy change must remove direct text as well as pixels")
+        try await database.deleteFrame(id: id)
+        let deleted = await service.retainedScreen(full, for: .localUser)
+        XCTAssertNil(deleted)
+    }
+
+    func testCapturedPolicyRejectsLaterExclusionOfAnotherVisibleApp() async throws {
+        let capturedPolicy = ScreenEvidenceAccessPolicy(config: CaptureConfig())
+        let frameID = try await insertFrame(metadata: FrameMetadata(
+            appBundleID: "com.microsoft.Word", appName: "Word", windowName: "Cedar proposal",
+            capturePolicySHA256: try capturedPolicy.fingerprintSHA256()))
+        let ref = try await service.reference(frameID: frameID, source: .native)
+        let permitted = await service.retainedScreen(ref, for: .localUser)
+        XCTAssertNotNil(permitted)
+        let restricted = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { CaptureConfig(excludedAppBundleIDs: ["com.test.background-app"]) },
+            imageReader: { _ in XCTFail("A different policy must deny the complete retained scene"); throw EvidenceUnavailableReason.recordingMissing })
+        assertUnavailable(await restricted.resolve(.screen(ref), for: .localUser), .notPermitted)
+        let retained = await restricted.retainedScreen(ref, for: .localUser)
+        XCTAssertNil(retained, "Foreground metadata cannot prove other visible windows pass a later policy")
+    }
+
+    func testDisplayOnlyCapturePolicySurvivesDatabaseRoundTrip() async throws {
+        let policy = ScreenEvidenceAccessPolicy(config: CaptureConfig())
+        let fingerprint = try policy.fingerprintSHA256()
+        let frameID = try await insertFrame(metadata: FrameMetadata(displayID: 42, capturePolicySHA256: fingerprint))
+        let ref = try await service.reference(frameID: frameID, source: .native)
+        let snapshot = await service.retainedScreen(ref, for: .localUser)
+        XCTAssertEqual(snapshot?.frame.metadata.capturePolicySHA256, fingerprint)
+        XCTAssertEqual(snapshot?.frame.metadata.displayID, 42)
+        let next = CaptureConfig(customPrivateWindowPatterns: ["Protected workspace"])
+        let nextPolicy = ScreenEvidenceAccessPolicy(config: next)
+        XCTAssertFalse(nextPolicy.permits(try XCTUnwrap(snapshot).frame.metadata))
+    }
+
+    func testCaptureMaskedScreenResolvesExactRecordedPixelsAndSavedTextForLocalUser() async throws {
+        let video = try await makeMaskedRecording()
+        let metadata = FrameMetadata(redactionReason: "Excluded app: Brave Browser")
+        let frameID = try await insertFrame(metadata: metadata)
+        let bytes = try video.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        let videoID = try await database.insertVideoSegment(VideoSegment(id: .init(value: 0),
+            startTime: timestamp, endTime: timestamp.addingTimeInterval(2.0 / 30), frameCount: 3,
+            fileSizeBytes: Int64(try XCTUnwrap(bytes)),
+            relativePath: video.deletingLastPathComponent().lastPathComponent + "/" + video.lastPathComponent,
+            width: 640, height: 360))
+        try await database.updateFrameVideoLink(frameID: frameID, videoID: .init(value: videoID), frameIndex: 1)
+        let reader = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { CaptureConfig(excludedAppBundleIDs: ["com.brave.Browser"]) },
+            imageReader: { item in
+                XCTAssertEqual(item.frame.id, frameID)
+                XCTAssertEqual(item.frame.metadata, metadata, "Capture already removed excluded-window attribution")
+                let info = try XCTUnwrap(item.videoInfo)
+                XCTAssertEqual(info.frameIndex, 1, "The neighboring unmasked sample is not the selected recording")
+                return try await ExactFrameReader.readFrame(videoURL: URL(fileURLWithPath: info.videoPath),
+                    frameIndex: info.frameIndex, frameRate: info.frameRate,
+                    expectedWidth: try XCTUnwrap(info.width), expectedHeight: try XCTUnwrap(info.height))
+            })
+        let ref = try await reader.reference(frameID: frameID, source: .native)
+        guard case .screen(let snapshot, let image) = await reader.resolve(.screen(ref), for: .localUser) else {
+            return XCTFail("A capture-time mask must not hide the rest of the user's saved recording")
+        }
+        XCTAssertEqual(snapshot.ref, ref)
+        XCTAssertEqual(snapshot.frame.id, frameID)
+        XCTAssertEqual(snapshot.frame.timestamp, timestamp)
+        XCTAssertEqual(snapshot.frame.metadata, metadata)
+        XCTAssertEqual(snapshot.text?.fullText, "Amount 47000 Status SENT")
+        XCTAssertEqual(try Self.gray(image, x: 80, y: 180), 0, accuracy: 12, "The excluded area remains black")
+        XCTAssertEqual(try Self.gray(image, x: 480, y: 180), 220, accuracy: 15, "The selected sample remains visible")
+        let page = try await adapter.search(query: SearchQuery(text: "47000", limit: 5))
+        let hit = try XCTUnwrap(page.results.first(where: { $0.id == frameID }))
+        let searchRef = try await reader.reference(searchResult: hit)
+        XCTAssertEqual(searchRef, ref, "Search must open the same retained extraction as the timeline")
+    }
+
+    func testCaptureMaskedTextRemainsReadableLocallyWhenRecordingIsMissingButNeverForAgent() async throws {
+        let metadata = FrameMetadata(redactionReason: "Excluded app: Brave Browser")
+        let frameID = try await insertFrame(metadata: metadata)
+        let storeID = try await database.activityStoreID()
+        let saved = try await database.currentScreenEvidence(frameID: frameID, storeID: storeID)
+        let ref = try XCTUnwrap(saved?.ref)
+        let reader = ProgressiveRecallService(database: database, adapter: adapter,
+            configuration: { CaptureConfig(excludedAppBundleIDs: ["com.brave.Browser"]) },
+            imageReader: { _ in throw EvidenceUnavailableReason.recordingMissing })
+
+        assertUnavailable(await reader.resolve(.screen(ref), for: .localUser), .recordingMissing)
+        let retained = await reader.retainedScreen(ref, for: .localUser)
+        XCTAssertEqual(retained?.ref, ref)
+        XCTAssertEqual(retained?.text?.fullText, "Amount 47000 Status SENT")
+        let currentRevision = try await reader.currentRevision(ref)
+        XCTAssertEqual(currentRevision, ref.extractionRevision)
+        let expansion = try await reader.expandScreenEvidence(.init(reference: ref), for: .localUser)
+        XCTAssertEqual(expansion.reference, ref)
+        XCTAssertEqual(expansion.fragments.map(\.text).joined(), "Amount 47000 Status SENT")
+
+        assertUnavailable(await reader.resolve(.screen(ref), for: .agent(clientID: "masked-frame-test")), .notPermitted)
+        let agentText = await reader.retainedScreen(ref, for: .agent(clientID: "masked-frame-test"))
+        XCTAssertNil(agentText)
+        do {
+            _ = try await reader.expandScreenEvidence(.init(reference: ref), for: .agent(clientID: "masked-frame-test"))
+            XCTFail("Local access to already-masked history must not grant agent disclosure")
+        } catch let reason as EvidenceUnavailableReason { XCTAssertEqual(reason, .notPermitted) }
+        XCTAssertFalse(ScreenEvidenceAccessPolicy(config: CaptureConfig()).permits(metadata),
+                       "Automatic derivation admission remains separate from local presentation")
+    }
+
+    func testCaptureMaskDoesNotOverrideCurrentAppTitlePrivateWindowOrURLRestrictions() async throws {
+        let metadata = FrameMetadata(appBundleID: "com.microsoft.Word", appName: "Word",
+            windowName: "Cedar proposal (Private)", redactionReason: "Excluded app: Brave Browser")
+        let frameID = try await insertFrame(metadata: metadata)
+        let storeID = try await database.activityStoreID()
+        let saved = try await database.currentScreenEvidence(frameID: frameID, storeID: storeID)
+        let ref = try XCTUnwrap(saved?.ref)
+        let configurations = [
+            CaptureConfig(excludedAppBundleIDs: ["com.microsoft.Word"], excludePrivateWindows: false),
+            CaptureConfig(excludePrivateWindows: false, redactWindowTitlePatterns: ["CEDAR"]),
+            CaptureConfig(excludePrivateWindows: true),
+            CaptureConfig(excludePrivateWindows: false, redactBrowserURLPatterns: ["private.example"])
+        ]
+        for config in configurations {
+            let restricted = ProgressiveRecallService(database: database, adapter: adapter,
+                configuration: { config }, imageReader: { _ in
+                    XCTFail("A current restriction must stop decoding before any recorded pixels are read")
+                    throw EvidenceUnavailableReason.recordingMissing
+                })
+            assertUnavailable(await restricted.resolve(.screen(ref), for: .localUser), .notPermitted)
+            let retained = await restricted.retainedScreen(ref, for: .localUser)
+            XCTAssertNil(retained)
+            do {
+                _ = try await restricted.reference(frameID: frameID, source: .native)
+                XCTFail("Capture masking must not override independent current restrictions")
+            } catch let reason as EvidenceUnavailableReason { XCTAssertEqual(reason, .notPermitted) }
+        }
     }
 
     func testDeepLinkRoundTripPreservesStoreSourceObservationRevisionAndBlocks() {
@@ -564,10 +792,9 @@ final class EvidenceResolutionTests: XCTestCase {
         return try XCTUnwrap(context.makeImage())
     }
 
-    private func insertFrame() async throws -> FrameID {
-        let metadata = FrameMetadata(appBundleID: "com.microsoft.Word", appName: "Word", windowName: "Cedar proposal")
-        let segment = try await database.insertSegment(bundleID: "com.microsoft.Word", startDate: timestamp, endDate: timestamp,
-                                                       windowName: "Cedar proposal", browserUrl: nil, type: 0)
+    private func insertFrame(metadata: FrameMetadata = FrameMetadata(appBundleID: "com.microsoft.Word", appName: "Word", windowName: "Cedar proposal")) async throws -> FrameID {
+        let segment = try await database.insertSegment(bundleID: metadata.appBundleID ?? "", startDate: timestamp, endDate: timestamp,
+                                                       windowName: metadata.windowName, browserUrl: metadata.browserURL, type: 0)
         let frameID = FrameID(value: try await database.insertFrame(FrameReference(id: .init(value: 0), timestamp: timestamp,
             segmentID: .init(value: segment), frameIndexInSegment: 0, metadata: metadata)))
         _ = try await database.commitFrameOCR(frameID: frameID,
@@ -575,6 +802,46 @@ final class EvidenceResolutionTests: XCTestCase {
                                 regions: [TextRegion(frameID: frameID, text: "Amount 47000 Status SENT", bounds: CGRect(x: 10, y: 10, width: 500, height: 40))],
                                 metadata: metadata), frameWidth: 640, frameHeight: 360)
         return frameID
+    }
+
+    private func makeMaskedRecording() async throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("masked-history-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("recording.mp4")
+        let encoder = HEVCEncoder()
+        try await encoder.initialize(width: 640, height: 360, config: .default,
+                                     outputURL: file, segmentStartTime: timestamp)
+        for index in 0..<3 {
+            var optionalBuffer: CVPixelBuffer?
+            let status = CVPixelBufferCreate(kCFAllocatorDefault, 640, 360, kCVPixelFormatType_32BGRA,
+                [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &optionalBuffer)
+            XCTAssertEqual(status, kCVReturnSuccess)
+            let buffer = try XCTUnwrap(optionalBuffer)
+            CVPixelBufferLockBaseAddress(buffer, [])
+            let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer)).assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0..<360 {
+                for x in 0..<640 {
+                    let gray: UInt8 = index == 1 ? (x < 160 ? 0 : 220) : 30
+                    let offset = y * stride + x * 4
+                    base[offset] = gray; base[offset + 1] = gray; base[offset + 2] = gray; base[offset + 3] = 255
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            try await encoder.encode(pixelBuffer: buffer, timestamp: CMTime(value: Int64(index), timescale: 30))
+        }
+        try await encoder.finalize()
+        return file
+    }
+
+    private static func gray(_ image: CGImage, x: Int, y: Int) throws -> Double {
+        let crop = try XCTUnwrap(image.cropping(to: CGRect(x: x, y: y, width: 1, height: 1)))
+        var bytes = [UInt8](repeating: 0, count: 4)
+        let context = try XCTUnwrap(CGContext(data: &bytes, width: 1, height: 1, bitsPerComponent: 8,
+            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(crop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return Double(bytes[0])
     }
 
     private func assertUnavailable(_ result: EvidenceResolution, _ expected: EvidenceUnavailableReason,

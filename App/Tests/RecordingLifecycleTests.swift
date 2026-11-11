@@ -217,6 +217,27 @@ final class RecordingLifecycleTests: XCTestCase {
         } catch RecordingLifecycleError.shuttingDown {} catch { XCTFail("Unexpected error: \(type(of: error))") }
     }
 
+    func testStoppingDrainsFinishedCaptureOutputBeforeCancellingAudio() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureDrain-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let frames = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(2))
+        frames.continuation.yield(1); frames.continuation.yield(2); frames.continuation.finish()
+        let capture = Task.detached {
+            for await value in frames.stream {
+                if Task.isCancelled { return }
+                try? Data("retained".utf8).write(to: root.appendingPathComponent("frame-\(value)"))
+            }
+        }
+        let audioStream = AsyncStream<Void>.makeStream()
+        let audio = Task.detached { for await _ in audioStream.stream {} }
+        await RecordingLifecycle.finishCaptureAndCancelAudio(capture: capture, audio: audio)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("frame-1").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("frame-2").path))
+        XCTAssertTrue(audio.isCancelled)
+        audioStream.continuation.finish()
+    }
+
     func testRestartWaitsForCancelledStreamToFinalizeItsRecording() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("RecordingFinalization-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
