@@ -1,0 +1,20 @@
+{
+  "cause": "Read-only outbound audio sync held an lsof cwd record inside the library; previous guard mistook the directory reference for a writer.",
+  "scope": "Ignore only cwd descriptor; actual writable files/directories and unknown mappings still block.",
+  "guardTests": {
+    "tests": 6,
+    "failures": 0,
+    "seconds": 1.265
+  },
+  "installerTests": {
+    "tests": 4,
+    "failures": 0,
+    "seconds": 1.022
+  },
+  "advisoryReview": "approved; no material findings",
+  "failedInstallStage": "quiescence",
+  "failedAttemptChangedAppOrLibrary": false,
+  "oldAppReopenedDuringFix": true,
+  "helperSHA256": "87070ba97b774a4c9fc8c481ae6165ce46be1ebb9c215633cd24aafa61efc7d9",
+  "signedApplicationChanged": false
+}

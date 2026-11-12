@@ -594,13 +594,20 @@ def assert_no_writers(source, *, require_retrace_absent=True):
     with absolute_directory(source) as root_fd:
         cache_metadata(root_fd)
     access = None
+    descriptor = None
     for line in result.stdout.decode(errors='replace').splitlines():
         if line.startswith('f'):
+            descriptor = line[1:]
             access = None
         elif line.startswith('a'):
             access = line[1:]
         elif line.startswith('n'):
             name = line[1:]
+            # lsof's cwd record is a directory reference, not an open writer.
+            # Keep numeric descriptors and all other unknown-access mappings
+            # fail-closed, including writable directory descriptors.
+            if descriptor == 'cwd':
+                continue
             if name == root + '/' + VOLATILE_CACHE:
                 # A read-only database connection may hold a writable SHM
                 # mapping. The durable DB/WAL/journal handles still fail below.
