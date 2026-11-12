@@ -1,0 +1,12 @@
+{
+  "scope": "one authored fixture, not promotion",
+  "nativeDecodeFrames": 171707,
+  "originalBytes": 60047,
+  "compactedBytes": 37086,
+  "nativePCMIdentical": true,
+  "ffmpegPCM": {
+    "bytes": 343936,
+    "sha256": "83303a1f1d00c3703bb43e8fd389b40f34e3cc8d559145f2eb7954a2776e13e5"
+  },
+  "ffmpegPCMIdentical": true
+}

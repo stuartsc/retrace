@@ -17,6 +17,7 @@ public actor AudioChunkMediaStore: AudioChunkMediaStoreProtocol {
     public nonisolated let storeID: UUID
     private let ownerID = UUID()
     private let rootKey: String
+    private let compactContainerPadding: Bool
     private var closed = false
     private var operations = 0
     private var releasing = 0
@@ -26,10 +27,11 @@ public actor AudioChunkMediaStore: AudioChunkMediaStoreProtocol {
     private static let maximumManifestBytes = 32 * 1_024
     private static let maximumEncodedBytes = 2 * 1_024 * 1_024
 
-    public init(storageRoot: URL, storeID: UUID) {
+    public init(storageRoot: URL, storeID: UUID, compactContainerPadding: Bool = false) {
         self.storageRoot = storageRoot.resolvingSymlinksInPath().standardizedFileURL
         self.storeID = storeID
         self.rootKey = self.storageRoot.path + ":" + storeID.uuidString.lowercased()
+        self.compactContainerPadding = compactContainerPadding
     }
 
     public func persistChunk(_ input: AudioChunkInput, previous: AudioChunkDescriptor?) async throws -> StoredAudioWindow {
@@ -333,6 +335,7 @@ public actor AudioChunkMediaStore: AudioChunkMediaStoreProtocol {
         // complete raw journal remains the retry source until native verification.
         try removeFile(url)
         try Self.encodePCM(input.pcmData, to: url)
+        if compactContainerPadding { try AACContainerCompactor.compactNewFile(at: url) }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         try OriginalSpoolFiles.synchronizeFileAndParent(url)
         let encoded = try readRegular(url, maximum: Self.maximumEncodedBytes)

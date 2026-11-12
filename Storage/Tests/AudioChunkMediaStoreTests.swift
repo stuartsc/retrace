@@ -6,6 +6,33 @@ import XCTest
 @testable import Storage
 
 final class AudioChunkMediaStoreTests: XCTestCase {
+    func testOptInPaddingCompactionRetainsReceiptAndExactRangesAcrossRestart() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let writer = AudioChunkMediaStore(storageRoot: fixture.root, storeID: fixture.storeID,
+            compactContainerPadding: true)
+        let first = try await writer.persistChunk(fixture.input(start: 0, frames: 160_000), previous: nil)
+        let predecessor = try XCTUnwrap(first.manifest.ranges.last?.chunk)
+        let second = try await writer.persistChunk(fixture.input(start: 160_000, frames: 32_000), previous: predecessor)
+        for range in second.manifest.ranges {
+            let bytes = try Data(contentsOf: fixture.root.appendingPathComponent(range.chunk.relativePath))
+            XCTAssertNil(AACContainerCompactor.compact(bytes))
+            XCTAssertEqual(sha(bytes), range.chunk.encodedSHA256)
+            XCTAssertEqual(Int64(bytes.count), range.chunk.encodedBytes)
+        }
+        await writer.close()
+        // A reader does not need the writer's candidate setting to decode the
+        // same registered file or resume its pending publication.
+        let reader = AudioChunkMediaStore(storageRoot: fixture.root, storeID: fixture.storeID)
+        let reopened = try await reader.pendingWindows(limit: 8)
+        XCTAssertTrue(reopened.contains(second))
+        let lease = try await reader.readWindow(second)
+        XCTAssertEqual(lease.pcmData.count, (80_000 + 32_000) * 2)
+        XCTAssertEqual(second.manifest.endTime.timeIntervalSince(fixture.origin), 12, accuracy: 0.000_001)
+        await reader.release(lease)
+        await reader.close()
+    }
+
     func testExactDecodedLengthsAtAACPacketAndChunkBoundaries() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

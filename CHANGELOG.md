@@ -6,6 +6,13 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-11-13 — AAC container-padding candidate (default off)
+
+- Add strict, bounded removal of zero-filled padding from newly written native AAC containers, adjusting validated chunk offsets while retaining compressed packets and timing metadata. Unsupported layouts remain unchanged; failed replacement falls back only after complete-file verification.
+- Native Apple decoding of one retained authored fixture preserved all 171,707 samples bit-for-bit while reducing 60,047 bytes to 37,086 (38.24%). Independent FFmpeg decoding also matched before/after. This is a scoped smoke check, not codec promotion or installed savings.
+- Added native packet, priming, sample, seek, failed-write and malformed-input regressions. Full suites and the three-duration savings gate remain pending. Existing history is untouched. See `docs/aac-padding-smoke-20261113.json`.
+
+
 - **2026-10-01 — CPU monitoring and audio governor, local trial 2610.1.1:** the isolated V23-compatible hotfix from `f1551be` is installed. System Monitor now shows continuous one-core CPU windows and why audio preparation is waiting; saved audio remains pending during active use. The clean debug suite passed 1,137 tests (nine intentional skips), five explicit native/model checks passed, and a separate clean optimized build passed. Installed checks verified the UI, resumed screen/audio recording and unchanged schema, identity and settings. A subsequent one-minute CPU observation averaged 69.9%, with Vision OCR still active; this is not matched performance acceptance or the 20% target. The larger workspace candidate remains uninstalled. [Installed CPU repair ledger](docs/installed-cpu-protection.md).
 
 - **2026-09-30 — Measured CPU, storage and performance candidate:** automatic processing now uses actual monotonic app/host CPU samples, a 20%-of-one-core active-use target and recovery hysteresis. Fresh OCR has its own admission lane; historical work cannot claim it while waiting for quiet time, and cancellation retains pending originals. System Monitor shows CPU windows/coverage and preparation reasons. Storage settings and Dashboard use one periodic categorized scan with explicit incomplete results, allocated/logical totals and volume free space. Dashboard no longer launches repeated daily folder scans. Content-free CPU aggregates have bounded 30-day retention. An offline matched-run scorecard gates quality, latency, CPU, storage and recall improvements; [measurement policy](docs/performance-measurement.md) and [validation ledger](docs/responsiveness-storage-validation.md) distinguish source checks from installed acceptance.
