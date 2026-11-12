@@ -16,6 +16,7 @@ Storage/
 ├── ExactFrameReader.swift               # Exact evidence decoding and typed unavailable states
 ├── ImageExtractor.swift.bak             # Existing backup; not production source
 ├── Audio/
+│   ├── AACContainerCompactor.swift        # Strict new-file padding removal; unknown profiles unchanged
 │   ├── AudioFileDecoder.swift
 │   └── AudioSegmentWriter.swift
 ├── FileManager/
@@ -30,6 +31,7 @@ Storage/
 │   ├── WALRecoveryReader.swift          # Validated metadata scan and one-frame pixel reads
 │   └── RecoveryManager.swift            # Journaled recovery and atomic database publication
 └── Tests/
+    ├── AACContainerCompactorTests.swift
     ├── DirectoryManagerTests.swift
     ├── HEVCEncoderTests.swift
     ├── ExactFrameReaderTests.swift
@@ -69,3 +71,18 @@ Tests must use real binary WAL files, FileManager, SQLite and media encoding, in
 Only edit Storage unless an explicit cross-module assignment authorizes a narrow protocol change. Keep this file current when files or recovery semantics change.
 
 November repair: HEVC encoder inventory availability, explicit hardware preference and unverified actual usage are separate. `HEVCEncoderTests` exercises native encode/decode with a hardware preference without claiming verified hardware use. Automatic selection remains the production default.
+
+
+The V23 `AACContainerCompactor` removes only zero padding from the specific native
+M4A structure accepted by its strict parser, adjusting existing chunk offsets
+without decoding/re-encoding or changing packets, priming, metadata or timing.
+It runs only before a new writer output is published and before final size is
+returned. Unsupported formats are unchanged; denied atomic staging retains a
+verified complete original or complete compacted file. Library writer defaults
+remain off. The audio-delivery candidate's App-owned policy explicitly enables
+new production output and supplies one restart-scoped rollback setting; private
+test containers remain off. No historical compaction scan is introduced.
+`AACContainerCompactorTests` compares real native packet/cookie/priming data,
+decoded PCM and seeks, and checks malformed profiles, symlinks and denied staging.
+Component receipts are in `docs/fixtures/repair-20261113-aac`; whole-app integration
+acceptance is separate in `docs/audio-delivery-integration-20261113.md`.

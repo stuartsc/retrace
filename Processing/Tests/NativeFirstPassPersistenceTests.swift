@@ -1,8 +1,9 @@
 import Foundation
+import CryptoKit
 import XCTest
 import Database
 import Shared
-import Storage
+@testable import Storage
 @testable import Processing
 
 /// Controlled recognizer output, real AAC encoder/decoder and private SQLite.
@@ -66,6 +67,32 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
         XCTAssertGreaterThan(resumedCalls, 0)
         XCTAssertEqual(kinds.first, .ambientSpeech)
         await stop(resumed)
+    }
+
+    func testNativeProofBindsCompactedAACBeforeSearchablePublication() async throws {
+        let cpu = NativeReuseCPU(), governor = NativeReuseGovernor(), probe = NativeReuseProbe()
+        let run = await start(cpu: cpu, governor: governor, compactContainerPadding: true, provider: { batch in
+            await probe.receive(batch)
+            return .init(batch: batch, text: "Compacted audio retained its native text.")
+        })
+        run.continuation.yield(sample())
+        try await grantAfterPersisted(governor)
+        try await wait { await governor.releases == 1 }
+        let captured = await probe.batch
+        let proof = try XCTUnwrap(captured)
+        let url = root.appendingPathComponent(proof.relativePath)
+        let bytes = try Data(contentsOf: url)
+        XCTAssertNil(AACContainerCompactor.compact(bytes), "The saved file was compacted before proof registration")
+        XCTAssertEqual(proof.encodedSHA256, SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+        XCTAssertEqual(try AudioFileDecoder.decodeToPCM(fileURL: url).data.count, Int(proof.frameCount) * 2)
+        let pending = try await queries.getOldestRepairBatch()
+        XCTAssertEqual(pending?.id, proof.rawBatchID)
+        XCTAssertEqual(pending?.audioSize, Int64(bytes.count), "The durable row records the final file size")
+        let matches = try await queries.searchTranscriptions(query: "Compacted")
+        XCTAssertTrue(matches.contains { $0.id == proof.rawBatchID })
+        let calls = await cpu.calls
+        XCTAssertEqual(calls, 0)
+        await stop(run)
     }
 
     func testMissingCoverageAndSystemSourceUseCPUFallback() async throws {
@@ -182,9 +209,10 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
     }
 
     private func start(cpu: NativeReuseCPU, governor: NativeReuseGovernor,
+                       compactContainerPadding: Bool = false,
                        provider: AudioProcessingManager.NativeFirstPassProvider?) async -> NativeReuseRun {
         let manager = AudioProcessingManager(transcriptionService: cpu, transcriptionQueries: queries,
-            audioWriter: AudioSegmentWriter(storageRoot: root), governor: governor,
+            audioWriter: AudioSegmentWriter(storageRoot: root, compactContainerPadding: compactContainerPadding), governor: governor,
             config: .init(minimumConfidence: 0, maxBufferDuration: 1))
         let installed = await manager.setNativeFirstPassProvider(provider)
         XCTAssertTrue(installed)

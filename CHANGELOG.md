@@ -6,6 +6,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-11-13 — New-audio storage integration candidate (not installed)
+
+- Bring the validated V23 AAC padding compactor into the native-text branch. One immutable App policy enables lossless padding removal for new production audio and preserves normal output in private test containers.
+- The single `audioContainerPaddingCompactionDisabled` preference disables compaction for all writers created after restart, including refinement/backfill and model-upgrade paths. Writer library defaults and both native-transcription gates remain off; existing media is untouched.
+- Add private AAC policy/rollback tests and a native-text persistence check against the final compacted digest and byte count. Integrated Swift validation is queued; see [the delivery journal](docs/audio-delivery-integration-20261113.md).
+
 ### 2026-11-13 — Phased native text candidate (not installed, independently off)
 
 - Add exact microphone reuse from native streaming results into the durable searchable first-pass row, retaining quiet-time CPU correction. Explicit ordered finalization, complete sample coverage, unchanged AAC digest and native decoded frame count are required; missing coverage retains CPU fallback.

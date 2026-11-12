@@ -58,6 +58,7 @@ public actor ServiceContainer {
     private let captureConfig: CaptureConfig
     private let audioCaptureConfig: AudioCaptureConfig
     private let processingConfig: ProcessingConfig
+    private let audioWriterPolicy: AudioWriterPolicy
     private let audioProcessingConfig: AudioProcessingConfig
     private let searchConfig: SearchConfig
 
@@ -96,6 +97,8 @@ public actor ServiceContainer {
         audioProcessingConfig: AudioProcessingConfig = .default,
         searchConfig: SearchConfig = .default
     ) {
+        let audioWriterPolicy = AudioWriterPolicy.production()
+        self.audioWriterPolicy = audioWriterPolicy
         self.databasePath = databasePath
         self.storageConfig = storageConfig
         self.captureConfig = captureConfig
@@ -150,7 +153,7 @@ public actor ServiceContainer {
         }
 
         // Audio storage writer
-        let audioWriter = AudioSegmentWriter(storageRoot: storageRootURL)
+        let audioWriter = audioWriterPolicy.makeWriter(storageRoot: storageRootURL)
 
         // Store transcription service for backfill manager
         self.transcriptionService = transcriptionService
@@ -197,6 +200,8 @@ public actor ServiceContainer {
         let sharedMemoryPath = "file:memdb_test_\(UUID().uuidString)?mode=memory&cache=shared"
         let testStorageRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("retrace-services-\(UUID().uuidString)", isDirectory: true)
+        let audioWriterPolicy = AudioWriterPolicy.isolatedTest
+        self.audioWriterPolicy = audioWriterPolicy
         self.databasePath = sharedMemoryPath
         self.storageConfig = StorageConfig(storageRootPath: testStorageRoot.path)
         self.captureConfig = CaptureConfig()
@@ -221,7 +226,7 @@ public actor ServiceContainer {
         // Use mock transcription service in test mode to avoid loading heavy Whisper model
         let transcriptionService: any TranscriptionProtocol = MockTranscriptionService()
         self.transcriptionService = transcriptionService
-        let audioWriter = AudioSegmentWriter(storageRoot: testStorageRoot)
+        let audioWriter = audioWriterPolicy.makeWriter(storageRoot: testStorageRoot)
         self.audioProcessing = AudioProcessingManager(
             transcriptionService: transcriptionService,
             transcriptionQueries: nil,  // Set during initialization
@@ -371,7 +376,7 @@ public actor ServiceContainer {
             let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
             let dictationSessionQueries = DictationSessionQueries(db: audioDbPointer)
             let audioStorageRoot = await storage.getStorageDirectory()
-            let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
+            let audioWriter = audioWriterPolicy.makeWriter(storageRoot: audioStorageRoot)
             try await audioProcessing.initialize(
                 transcriptionQueries: audioTranscriptionQueries,
                 audioWriter: audioWriter
@@ -479,7 +484,7 @@ public actor ServiceContainer {
 
         let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
         let audioStorageRoot = await storage.getStorageDirectory()
-        let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
+        let audioWriter = audioWriterPolicy.makeWriter(storageRoot: audioStorageRoot)
         let turboNativeService = WhisperCppTranscriptionService(
             modelPath: turboPath.path,
             samplingStrategy: .beamSearch(beamSize: 5),
@@ -683,7 +688,7 @@ public actor ServiceContainer {
             }
             let audioTranscriptionQueries = AudioTranscriptionQueries(db: audioDbPointer)
             let audioStorageRoot = await storage.getStorageDirectory()
-            let audioWriter = AudioSegmentWriter(storageRoot: audioStorageRoot)
+            let audioWriter = audioWriterPolicy.makeWriter(storageRoot: audioStorageRoot)
             self.audioBackfill = AudioBackfillManager(
                 transcriptionService: BackgroundTranscriptionService(service: realService, governor: backgroundProcessing),
                 transcriptionQueries: audioTranscriptionQueries,

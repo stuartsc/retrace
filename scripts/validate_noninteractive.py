@@ -12,7 +12,8 @@ def validation_environment(source):
     # Native/visible/focus/input tests and benchmark exports require their own
     # scheduled session. Never inherit those switches from an agent shell.
     result = {key: value for key, value in source.items()
-              if not key.startswith("RETRACE_")}
+              if not key.startswith(("RETRACE_", "RUN_INTERACTIVE_"))
+              and key not in {"AX_VERBOSE", "TEST_SCREENSHOT_PATH"}}
     result["RETRACE_TEST_DISABLE_FILE_LOGGING"] = "1"
     result["RETRACE_TEST_NONINTERACTIVE"] = "1"
     result.setdefault("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")

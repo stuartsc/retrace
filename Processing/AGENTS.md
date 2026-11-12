@@ -218,3 +218,10 @@ joins finalization before releasing the native session. `NativeFirstPassPersiste
 uses real private AAC and SQLite with controlled native text; it does not establish
 Apple recognition quality, helper-process memory or whole-system energy savings.
 Both native preview and native reuse gates remain off pending that acceptance.
+
+The audio-delivery integration extends `NativeFirstPassPersistenceTests` with an
+explicitly compacting real AAC writer. The test checks the proof hashes the final
+compacted bytes, the durable row reports that final size, decoded frame count is
+preserved and text is searchable without fresh CPU inference. Ordinary tests
+retain the writer's default-off option; production configuration belongs to the
+App-owned `AudioWriterPolicy`.

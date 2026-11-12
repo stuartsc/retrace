@@ -664,3 +664,17 @@ Run `python3 scripts/validate_noninteractive.py debug` for routine tests, option
 `App/Tests/LiveTranscriptionNativeTests.swift` is a separate opt-in silent replay of the checked-in, hash-pinned Karen Australian English PCM fixture. Set `RETRACE_LIVE_DRAFT_NATIVE_TEST=1` for real native streaming timings and a critical-negation phrase check; unavailable assets skip without download. A passing authored replay is not physical speech p95 or whole-system energy acceptance.
 
 `Shared/Models/AudioPreparationStatus.swift` contains bounded first-pass/review queue observations with observation times and lower-bound counts. `AudioTranscriptionQueries.getPendingAudioSummary` reads at most 1001 indexed candidates per lane; `AudioProcessingManager` caches observations every 30 seconds. Live and operations snapshots consume this cache, never scan files or count an entire audio table in view code.
+
+
+`App/AudioWriterPolicy.swift` snapshots the single production rollback preference
+`audioContainerPaddingCompactionDisabled` when `ServiceContainer` is constructed.
+New production AAC output is compacted by default in the audio-delivery candidate;
+private in-memory/test containers explicitly retain ordinary AAC output. All five
+writer factories (startup, private tests, initialization/backfill, refinement and
+model-upgrade backfill) use the same immutable policy. `AudioSegmentWriter` itself
+still defaults the option off. `AudioWriterPolicyTests` uses private preferences
+and real AAC to check default, rollback, stable ownership and untouched existing
+files. `NativeFirstPassPersistenceTests` additionally binds the final compacted AAC
+digest and byte size to searchable pending native text. Native speech gates remain
+off. This source integration is not installed; see
+`docs/audio-delivery-integration-20261113.md` for the build/acceptance state.
