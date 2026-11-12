@@ -373,7 +373,7 @@ public actor WhisperCppTranscriptionService: TranscriptionProtocol {
         guard isInitialized else { return }
         unloadModel()
         Log.info(
-            "[WhisperCppTranscriptionService] Released on-demand model after refinement became idle",
+            "[WhisperCppTranscriptionService] Released on-demand model after inference became idle",
             category: .processing
         )
     }

@@ -75,6 +75,11 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     private let monitorDelayInterval: DispatchTimeInterval
     private let monitorDelayCheckpoint: (@Sendable (BackgroundProcessingMonitorDelay.Checkpoint) -> Void)?
     private var scheduler: (any BackgroundActivityScheduling)?
+    private var scheduledWindowStarted: TimeInterval?
+    private var activeUsesScheduledWindow = false
+    private var nextOverdueAdmission: TimeInterval = 0
+    private var monotonicNow: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    private static let scheduledWindowBudget: TimeInterval = 20
     private var memoryPressure: BackgroundMemoryPressureBridge?
     private var closing: [CheckedContinuation<Void, Never>] = []
 
@@ -85,11 +90,12 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         monitorDelayCheckpoint = nil
     }
 
-    init(scheduler: any BackgroundActivityScheduling) {
+    init(scheduler: any BackgroundActivityScheduling, monotonicNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         observeSystem = false; resourceUsage = nil
         monitorDelayInterval = .seconds(1)
         monitorDelayCheckpoint = nil
         self.scheduler = scheduler
+        self.monotonicNow = monotonicNow
     }
 
     /// Internal fixture boundary: tests still run the actual native timer and
@@ -110,12 +116,14 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         try Task.checkCancellation()
         guard !closed else { throw CancellationError() }
         let explicitRequest = BackgroundProcessingContext.explicitRequest
+        finishExpiredScheduledWindowIfIdle()
         guard active == nil, !waiters.contains(where: { mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest) }),
               mayProcess(kind: kind, explicitRequest: explicitRequest) else { return nil }
         let permit = BackgroundProcessingPermit(threadCount: threadCount(for: kind))
         active = permit
         activeKind = kind
         activeExplicitRequest = explicitRequest
+        beginScheduledWindowIfNeeded(kind: kind, explicitRequest: explicitRequest)
         consecutiveSpeech = kind == .ambientSpeech || kind == .freshTranscription ? min(consecutiveSpeech + 1, 3) : 0
         consecutiveFreshOCR = kind == .freshOCR ? min(consecutiveFreshOCR + 1, 3) : 0
         consecutivePreferred = kind.isFresh || kind == .ambientSpeech ? min(consecutivePreferred + 1, 3) : 0
@@ -159,11 +167,17 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         // Explicit/manual probes and fresh OCR never consume the native quiet-
         // time grant. Otherwise an empty manual lane could end every scheduler
         // window before the historical lane gets a chance to claim its work.
-        let usedScheduledWindow = !activeExplicitRequest && activeKind?.isFresh != true
+        let usedScheduledWindow = activeUsesScheduledWindow
+        if activeKind == .overdueTranscription { nextOverdueAdmission = monotonicNow() + 30 }
         active = nil
         activeKind = nil
         activeExplicitRequest = false
-        if usedScheduledWindow { scheduler?.finish(deferred: permit.cancellation.isCancelled) }
+        activeUsesScheduledWindow = false
+        if usedScheduledWindow && permit.cancellation.isCancelled {
+            finishScheduledWindow(deferred: true)
+        } else {
+            finishExpiredScheduledWindowIfIdle()
+        }
         if closed {
             let continuations = closing
             closing.removeAll()
@@ -181,10 +195,14 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         // it for raising the app average would repeatedly redo the same audio.
         let finishingFreshBurst = activeKind?.isFresh == true && value.pressureAllowsProcessing &&
             resourcePolicy.reason == .cpuBudget
-        if !finishingFreshBurst && !mayProcess(kind: activeKind, explicitRequest: activeExplicitRequest) {
+        let lostScheduledGrant = activeUsesScheduledWindow &&
+            (!value.idleSeconds.isFinite || value.idleSeconds < 300 ||
+             !value.systemAllowsProcessing || !(scheduler?.allowsProcessing ?? true))
+        if lostScheduledGrant || (!finishingFreshBurst && !mayProcess(kind: activeKind, explicitRequest: activeExplicitRequest)) {
             active?.cancellation.cancel()
         }
-        if active == nil && !mayProcess { scheduler?.finish(deferred: true) }
+        if active == nil && !mayProcess { finishScheduledWindow(deferred: true) }
+        finishExpiredScheduledWindowIfIdle()
         admit()
     }
 
@@ -239,6 +257,9 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             throw BackgroundProcessingAdmissionError.closeIncomplete
         }
         scheduler = nil
+        scheduledWindowStarted = nil
+        activeUsesScheduledWindow = false
+        nextOverdueAdmission = 0
         memoryPressure = nil
         environment = .init(idleSeconds: 0)
         resourcePolicy = ResourceProcessingPolicy()
@@ -271,17 +292,36 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     private func mayProcess(kind: BackgroundProcessingKind?, explicitRequest: Bool) -> Bool {
         guard !closed, environment.pressureAllowsProcessing else { return false }
         if processNow || explicitRequest { return true }
-        guard resourcePolicy.reason == nil else { return false }
+        // Recording itself can exceed the app-only soft target. First-pass text
+        // must still progress; host load, unknown measurements and native pressure
+        // continue to block it. Refinement and OCR retain the ordinary CPU policy.
+        guard resourcePolicy.reason == nil ||
+                (kind?.isFirstPass == true && resourcePolicy.reason == .cpuBudget) else { return false }
         if kind?.isFresh == true { return true }
-        return environment.idleSeconds.isFinite && environment.idleSeconds >= 300 && environment.systemAllowsProcessing
+        if kind == .overdueTranscription {
+            if quietWindowAvailable { return true }
+            // During active use an old or quiet first pass gets one bounded
+            // single-thread job per thirty seconds, never an idle-only gate.
+            return monotonicNow() >= nextOverdueAdmission
+        }
+        return environment.idleSeconds.isFinite && environment.idleSeconds >= 300 &&
+            environment.systemAllowsProcessing && (scheduler?.allowsProcessing ?? true)
     }
 
     private var waitReason: BackgroundProcessingWaitReason? {
         if closed { return .closed }
         if !environment.pressureAllowsProcessing { return .resourcePressure }
         if processNow || activeExplicitRequest { return nil }
-        if let reason = resourcePolicy.reason { return reason }
-        if activeKind?.isFresh == true || waiters.contains(where: { $0.kind.isFresh }) { return nil }
+        if let reason = resourcePolicy.reason, reason != .cpuBudget { return reason }
+        if !quietWindowAvailable && monotonicNow() < nextOverdueAdmission &&
+            !waiters.contains(where: { $0.kind.isFresh }) &&
+            waiters.contains(where: { $0.kind == .overdueTranscription }) { return .audioPacing }
+        if let reason = resourcePolicy.reason {
+            let progressingFirstPass = activeKind?.isFirstPass == true ||
+                waiters.contains { $0.kind.isFirstPass }
+            if reason != .cpuBudget || !progressingFirstPass { return reason }
+        }
+        if activeKind?.isFirstPass == true || activeKind?.isFresh == true || waiters.contains(where: { $0.kind.isFresh || $0.kind.isFirstPass }) { return nil }
         if !environment.idleSeconds.isFinite || environment.idleSeconds < 300 { return .activeUse }
         return environment.systemAllowsProcessing ? nil : .systemDeferral
     }
@@ -293,11 +333,39 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     }
 
     private func threadCount(for kind: BackgroundProcessingKind) -> Int {
+        if kind == .overdueTranscription { return 1 }
         if kind == .freshTranscription { return environment.lowPowerMode ? 1 : 2 }
         return environment.lowPowerMode ? 2 : 4
     }
 
+    private var quietWindowAvailable: Bool {
+        environment.idleSeconds.isFinite && environment.idleSeconds >= 300 &&
+            environment.systemAllowsProcessing && (scheduler?.allowsProcessing ?? true)
+    }
+
+    private var scheduledWindowExpired: Bool {
+        guard let started = scheduledWindowStarted else { return false }
+        return monotonicNow() - started >= Self.scheduledWindowBudget
+    }
+
+    private func beginScheduledWindowIfNeeded(kind: BackgroundProcessingKind, explicitRequest: Bool) {
+        activeUsesScheduledWindow = scheduler != nil && !kind.isFresh && !explicitRequest && !processNow && quietWindowAvailable
+        if activeUsesScheduledWindow && scheduledWindowStarted == nil { scheduledWindowStarted = monotonicNow() }
+    }
+
+    private func finishScheduledWindow(deferred: Bool) {
+        scheduledWindowStarted = nil
+        scheduler?.finish(deferred: deferred)
+    }
+
+    private func finishExpiredScheduledWindowIfIdle() {
+        // Do not repeatedly abort a bounded inference at the budget boundary.
+        // Finish the current job, then refuse more admissions on this grant.
+        if active == nil && scheduledWindowExpired { finishScheduledWindow(deferred: false) }
+    }
+
     private func admit() {
+        finishExpiredScheduledWindowIfIdle()
         guard active == nil, !closed, environment.pressureAllowsProcessing else { return }
         // Prioritize speech but force the oldest other work after at most three speech jobs.
         while !waiters.isEmpty {
@@ -325,6 +393,10 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
                           $0.kind != .freshOCR && mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest)
                       }) {
                 index = fresh
+            } else if let overdue = waiters.firstIndex(where: {
+                $0.kind == .overdueTranscription && mayProcess(kind: $0.kind, explicitRequest: $0.explicitRequest)
+            }) {
+                index = overdue
             } else if !mayProcess {
                 return
             } else if consecutiveSpeech >= 3, let other = waiters.firstIndex(where: { $0.kind != .ambientSpeech }) {
@@ -346,6 +418,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             active = permit
             activeKind = waiter.kind
             activeExplicitRequest = waiter.explicitRequest
+            beginScheduledWindowIfNeeded(kind: waiter.kind, explicitRequest: waiter.explicitRequest)
             waiter.continuation.resume(returning: permit)
             return
         }

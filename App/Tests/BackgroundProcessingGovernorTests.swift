@@ -102,9 +102,79 @@ final class BackgroundProcessingGovernorTests: XCTestCase {
         await governor.updateEnvironment(.init(idleSeconds: 600, systemAllowsProcessing: scheduler.allowsProcessing))
         let historical = try await governor.tryAcquire(.historicalOCR)
         await governor.release(try XCTUnwrap(historical))
-        XCTAssertFalse(scheduler.allowsProcessing, "Actual scheduled work discharges its native grant")
+        XCTAssertTrue(scheduler.allowsProcessing, "A completed job leaves the bounded quiet-time grant available for more work")
         await governor.close()
     }
+    func testQuietGrantProcessesMultipleJobsThenEndsAtBudgetWithoutAbortingInference() async throws {
+        let scheduler = ConsumableBackgroundGrant()
+        let clock = QuietGrantClock()
+        let governor = BackgroundProcessingGovernor(scheduler: scheduler, monotonicNow: { clock.now })
+        await governor.updateEnvironment(.init(idleSeconds: 600))
+        for _ in 0..<3 {
+            let optional = try await governor.tryAcquire(.refinement)
+            await governor.release(try XCTUnwrap(optional))
+            XCTAssertTrue(scheduler.allowsProcessing, "Multiple jobs must fit in one native grant")
+        }
+        let optional = try await governor.tryAcquire(.refinement)
+        let finishing = try XCTUnwrap(optional)
+        clock.advance(21)
+        await governor.updateEnvironment(.init(idleSeconds: 600))
+        XCTAssertFalse(finishing.cancellation.isCancelled, "Budget ends new admission, not a bounded inference already in flight")
+        await governor.release(finishing)
+        XCTAssertFalse(scheduler.allowsProcessing)
+        let denied = try await governor.tryAcquire(.refinement)
+        XCTAssertNil(denied, "Cached environment cannot reuse a finished native grant")
+        scheduler.grant()
+        let next = try await governor.tryAcquire(.refinement)
+        await governor.release(try XCTUnwrap(next))
+        XCTAssertTrue(scheduler.allowsProcessing, "A new native grant starts a new budget")
+        await governor.close()
+    }
+
+    func testQuietGrantDefersOnRenewedInputAndJoinsRunningInference() async throws {
+        let scheduler = ConsumableBackgroundGrant()
+        let governor = BackgroundProcessingGovernor(scheduler: scheduler)
+        await governor.updateEnvironment(.init(idleSeconds: 600))
+        let optional = try await governor.tryAcquire(.refinement)
+        let permit = try XCTUnwrap(optional)
+        await governor.updateEnvironment(.init(idleSeconds: 0))
+        XCTAssertTrue(permit.cancellation.isCancelled)
+        XCTAssertTrue(scheduler.allowsProcessing, "The native callback remains owned until the active inference exits")
+        await governor.release(permit)
+        XCTAssertFalse(scheduler.allowsProcessing)
+        await governor.close()
+    }
+
+    func testPacedOverdueFirstPassCannotBlockFreshSpeechAndEventuallyProgresses() async throws {
+        let scheduler = ConsumableBackgroundGrant()
+        let clock = QuietGrantClock()
+        let governor = BackgroundProcessingGovernor(scheduler: scheduler, monotonicNow: { clock.now })
+        let sample = ResourceUsageSnapshot(observedAt: Date(), sampleUptime: 1, cpuPercent: 40,
+            systemCPUPercent: 50, systemFiveSecondCPUPercent: 50, logicalCoreCount: 10,
+            oneMinute: .init(cpuPercent: 40, sampledSeconds: 60, elapsedSeconds: 60), isCurrent: true)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample))
+        let optional = try await governor.tryAcquire(.overdueTranscription)
+        let first = try XCTUnwrap(optional, "Old audio can progress above the app-only soft target")
+        XCTAssertEqual(first.threadCount, 1)
+        await governor.release(first)
+        let old = Task { try await governor.acquire(.overdueTranscription) }
+        try await waitForQueue(governor, count: 1)
+        let waiting = await governor.snapshot()
+        XCTAssertEqual(waiting.waitReason, .audioPacing)
+        let freshOptional = try await governor.tryAcquire(.freshTranscription)
+        await governor.release(try XCTUnwrap(freshOptional, "Fresh speech bypasses old-audio pacing"))
+        clock.advance(29)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample))
+        let before = await governor.snapshot()
+        XCTAssertFalse(before.isRunning)
+        clock.advance(1)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample))
+        let after = await governor.snapshot()
+        XCTAssertEqual(after.activeKind, .overdueTranscription)
+        await governor.release(try await old.value)
+        await governor.close()
+    }
+
     func testExplicitRequestRunsDuringInteractionAndCancellationReleasesSharedSlot() async throws {
         let governor = BackgroundProcessingGovernor(observeSystem: false)
         await governor.updateEnvironment(.init(idleSeconds: 0, systemAllowsProcessing: false))
@@ -692,4 +762,11 @@ private final class ConsumableBackgroundGrant: BackgroundActivityScheduling, @un
     func start() { }
     func finish(deferred: Bool) { lock.withLock { available = false } }
     func invalidate() { finish(deferred: true) }
+}
+
+private final class QuietGrantClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval = 0
+    var now: TimeInterval { lock.withLock { value } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { value += seconds } }
 }

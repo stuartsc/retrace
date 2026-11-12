@@ -2,10 +2,11 @@ import Foundation
 import Shared
 
 public enum BackgroundProcessingWaitReason: String, Sendable {
-    case measurementsUnavailable, cpuBudget, systemBusy, resourcePressure, activeUse, systemDeferral, closed
+    case audioPacing, measurementsUnavailable, cpuBudget, systemBusy, resourcePressure, activeUse, systemDeferral, closed
 
     public var summary: String {
         switch self {
+        case .audioPacing: return "Preparing older audio gradually"
         case .measurementsUnavailable: return "Waiting for current CPU measurements"
         case .cpuBudget: return "Waiting for CPU usage to fall"
         case .systemBusy: return "Waiting for the Mac to be less busy"

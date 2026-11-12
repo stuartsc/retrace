@@ -67,3 +67,5 @@ Use async/await and actors for I/O. Keep filesystem, SQLite, decoding and encodi
 Tests must use real binary WAL files, FileManager, SQLite and media encoding, including a valid sparse WAL above 512 MiB, corrupt/truncated tails, exact identity mapping and interrupted/retried publication. Run focused checks with `swift test --jobs 4 --filter WALRecoveryTests`, coordinating SwiftPM access with other agents. StorageTests also links Database for real integration checks; production Storage depends only on Shared.
 
 Only edit Storage unless an explicit cross-module assignment authorizes a narrow protocol change. Keep this file current when files or recovery semantics change.
+
+November repair: HEVC encoder inventory availability, explicit hardware preference and unverified actual usage are separate. `HEVCEncoderTests` exercises native encode/decode with a hardware preference without claiming verified hardware use. Automatic selection remains the production default.

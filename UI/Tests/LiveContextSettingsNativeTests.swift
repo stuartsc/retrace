@@ -17,7 +17,8 @@ import XCTest
 final class LiveContextSettingsNativeTests: XCTestCase {
     func testActualAudioAndCommandSettingsSurviveNativePopupAndNavigation() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["RETRACE_TEST_NATIVE_SETTINGS"] == "1" else {
+        guard environment["RETRACE_TEST_NONINTERACTIVE"] != "1",
+              environment["RETRACE_TEST_NATIVE_SETTINGS"] == "1" else {
             throw XCTSkip("Set RETRACE_TEST_NATIVE_SETTINGS=1 for the visible 90-second native settings fixture")
         }
         guard environment["RETRACE_TEST_DISABLE_FILE_LOGGING"] == "1" else {

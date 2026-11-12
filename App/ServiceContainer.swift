@@ -39,6 +39,7 @@ public actor ServiceContainer {
     private var transcriptionService: (any TranscriptionProtocol)?
     private var markerService: TimelineMarkerService?
     private var voiceMarkerOwner: VoiceMarkerController?
+    private var liveTranscriptionOwner: LiveTranscriptionController?
     private var audioSessionOwner: AudioSessionOwner?
     private var markerAudioMedia: MarkerAudioMediaService?
     private var markerAudioPlayback: MarkerAudioPlayback?
@@ -689,6 +690,7 @@ public actor ServiceContainer {
     public func shutdown() async throws {
         markerAccessClosed = true
         liveAudioContextClosing = true
+        await liveTranscriptionOwner?.close()
         await liveAudioContextReader?.close()
         // A failed drain keeps both owners and their databases available for a
         // joined cleanup retry. No processor/context close may pass it.
@@ -720,6 +722,7 @@ public actor ServiceContainer {
         isInitialized = false
         // Startup rollback also reaches this path without public shutdown().
         liveAudioContextClosing = true
+        await liveTranscriptionOwner?.close()
         await liveAudioContextReader?.close()
         var failures: [any Error] = []
         Log.info("Shutting down all services...", category: .app)
@@ -849,6 +852,34 @@ public actor ServiceContainer {
         if !installed { await owner.markMediaMappingIncomplete() }
         await owner.start()
         return owner
+    }
+
+    /// Trial is independent of voice rules; merely viewing status never creates a recognizer.
+    public func liveTranscription() async -> LiveTranscriptionController {
+        if let liveTranscriptionOwner { return liveTranscriptionOwner }
+        guard !markerAccessClosed else {
+            let closed = LiveTranscriptionController(); await closed.close(); return closed
+        }
+        let resource = resourceUsage
+        let owner = LiveTranscriptionController(underPressure: {
+            let snapshot = await resource.snapshot()
+            return ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical ||
+                (snapshot.isCurrent && (snapshot.systemFiveSecondCPUPercent ?? 0) > 85)
+        })
+        liveTranscriptionOwner = owner
+        await owner.setEnabled(UserDefaults.standard.bool(forKey: "liveMicrophoneDraftTrialEnabled"))
+        return owner
+    }
+
+    public func liveTranscriptionSnapshot() async -> LiveTranscriptionSnapshot {
+        await liveTranscriptionOwner?.snapshot() ?? LiveTranscriptionSnapshot()
+    }
+
+    public func setLiveTranscriptionEnabled(_ enabled: Bool) async {
+        guard !markerAccessClosed else { return }
+        UserDefaults.standard.set(enabled, forKey: "liveMicrophoneDraftTrialEnabled")
+        let owner = await liveTranscription()
+        await owner.setEnabled(enabled)
     }
 
     public func pauseVoiceMarkers() async { await voiceMarkerOwner?.setRecording(false) }

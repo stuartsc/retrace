@@ -106,6 +106,74 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         }
     }
 
+    func testNewSpeechInterruptsOverdueAdmissionWaitWithoutResettingOldestDebt() async throws {
+        let now = Date()
+        let old = try await seed(at: now.addingTimeInterval(-48 * 3_600))
+        for seconds in [90.0, 60.0, 30.0] { _ = try await seed(at: now.addingTimeInterval(-seconds)) }
+        let service = FreshnessTestTranscriber()
+        let governor = FreshnessTestGovernor()
+        let run = start(service: service, governor: governor)
+        for turn in 1...3 {
+            await governor.grantOne()
+            let completed = await eventually { await governor.releaseCount == turn }
+            XCTAssertTrue(completed)
+        }
+        let waiting = await eventually { await governor.requestedKinds.last == .overdueTranscription }
+        XCTAssertTrue(waiting)
+        var speech = try XCTUnwrap(fixturePCM)
+        if speech.count < 15 * 32_000 { speech.append(Data(count: 15 * 32_000 - speech.count)) }
+        run.continuation.yield(.init(timestamp: Date().addingTimeInterval(-15), audioData: speech,
+            duration: Double(speech.count) / 32_000, source: .microphone))
+        let requestedFresh = await eventually {
+            let kinds = await governor.requestedKinds
+            return kinds.count >= 5 && kinds.last == .freshTranscription
+        }
+        XCTAssertTrue(requestedFresh, "New saved speech passes the overdue wait after three recent turns")
+        await governor.grantOne()
+        let completed = await eventually { await governor.releaseCount == 4 }
+        XCTAssertTrue(completed)
+        let pending = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertEqual(pending.map(\.id), [old])
+        let returnedToOldest = await eventually { await governor.requestedKinds.last == .overdueTranscription }
+        XCTAssertTrue(returnedToOldest, "Fresh arrival must not erase the owed oldest-work turn")
+        await governor.grantOne()
+        let oldestCompleted = await eventually { await governor.releaseCount == 5 }
+        XCTAssertTrue(oldestCompleted)
+        await stop(run)
+        let remaining = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testNewSpeechCancelsRunningOverdueInferenceAndJoinsNativeExitBeforeFreshWork() async throws {
+        let old = try await seed(at: Date().addingTimeInterval(-48 * 3_600))
+        let service = FreshnessTestTranscriber(hold: true, holdCancellationCleanup: true)
+        let governor = FreshnessTestGovernor()
+        let run = start(service: service, governor: governor)
+        await governor.grantOne()
+        let entered = await eventually { await service.callCount == 1 }
+        XCTAssertTrue(entered)
+        var speech = try XCTUnwrap(fixturePCM)
+        if speech.count < 15 * 32_000 { speech.append(Data(count: 15 * 32_000 - speech.count)) }
+        run.continuation.yield(.init(timestamp: Date().addingTimeInterval(-15), audioData: speech,
+            duration: Double(speech.count) / 32_000, source: .microphone))
+        let cancellationEntered = await eventually { await service.cancellationCleanupEntered }
+        XCTAssertTrue(cancellationEntered, "New saved speech revokes the running overdue inference token")
+        let beforeExit = await governor.releaseCount
+        XCTAssertEqual(beforeExit, 0, "The owner must join native exit before admitting the next inference")
+        await service.allowCompletion()
+        await service.releaseCancellationCleanup()
+        let released = await eventually { await governor.releaseCount == 1 }
+        XCTAssertTrue(released)
+        let requested = await eventually { await governor.requestedKinds.last == .freshTranscription }
+        XCTAssertTrue(requested)
+        await governor.grantOne()
+        let completed = await eventually { await governor.releaseCount == 2 }
+        XCTAssertTrue(completed)
+        await stop(run)
+        let pending = try await queries.getUntranscribedBatches(limit: 10)
+        XCTAssertEqual(pending.map(\.id), [old], "Cancelled old recording stays pending while current speech completes")
+    }
+
     func testUncertainFirstPassQueuesDurableRepairForSeparateAdmissionAfterRestart() async throws {
         let now = Date()
         let saved = try await seed(at: now.addingTimeInterval(-30))
@@ -255,7 +323,7 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         }
     }
 
-    func testThreeNewestFirstPassAttemptsThenOldestAlternatesBothBacklogs() async throws {
+    func testThreeRecentFirstPassAttemptsThenOldestPendingBeforeHeavyRepair() async throws {
         let now = Date()
         let repair = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
         let oldestPending = try await seed(at: now.addingTimeInterval(-48 * 3_600))
@@ -265,7 +333,7 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         let governor = FreshnessTestGovernor()
         let run = start(service: service, governor: governor)
         var remaining = Set(recent + [repair, oldestPending])
-        for expected in [recent[0], recent[1], recent[2], repair, recent[3], recent[4], recent[5], oldestPending] {
+        for expected in [recent[0], recent[1], recent[2], oldestPending, recent[3], recent[4], recent[5], recent[7], recent[6], repair] {
             let before = remaining
             await governor.grantOne()
             let completed = await eventually { await governor.releaseCount >= 1 }
@@ -276,16 +344,16 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         }
         await stop(run)
         let calls = await service.callCount
-        XCTAssertEqual(calls, 8)
+        XCTAssertEqual(calls, 10)
         let threads = await service.observedThreads
-        XCTAssertEqual(threads, Array(repeating: 2, count: 8), "Selection must preserve the admitted CPU limit")
+        XCTAssertEqual(threads, Array(repeating: 2, count: 10), "Selection must preserve the admitted CPU limit")
         let peak = await governor.peakActivePermits
         XCTAssertEqual(peak, 1)
         let storedFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
         XCTAssertEqual(storedFiles.count, 10, "Scheduling never deletes saved recordings")
     }
 
-    func testNoRecentPendingFallsBackToOldestRepairAndPending() async throws {
+    func testOverdueFirstPassRemainsForegroundEligibleBeforeOldestRepair() async throws {
         let now = Date()
         let oldest = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
         let later = try await seed(at: now.addingTimeInterval(-48 * 3_600))
@@ -296,10 +364,12 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         XCTAssertTrue(completed)
         await stop(run)
         let pending = try await queries.getUntranscribedBatches(limit: 100)
-        XCTAssertEqual(pending.map(\.id), [later])
+        XCTAssertEqual(pending.map(\.id), [oldest])
+        let kinds = await governor.requestedKinds
+        XCTAssertEqual(kinds.first, .overdueTranscription, "Age changes pacing without forcing an unprocessed recording into idle-only admission")
         let completedRows = try await queries.getTranscriptions(from: now.addingTimeInterval(-80 * 3_600), to: now)
         XCTAssertEqual(completedRows.count, 1)
-        XCTAssertNotEqual(completedRows.first?.id, oldest)
+        XCTAssertNotEqual(completedRows.first?.id, later)
     }
 
     func testRecentSelectionStillWaitsForAdmission() async throws {

@@ -654,3 +654,13 @@ S1741 Dictation UX / OCR repair product-shape fix — hide legacy backfill from 
 
 Access 563k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>
+
+## Noninteractive validation (13 November repair)
+
+Run `python3 scripts/validate_noninteractive.py debug` for routine tests, optionally with `--filter`; run `release` for a separate optimised build. The runner clears all inherited Retrace opt-ins, disables live file logging, limits Swift concurrency to two and preserves 20 GiB disk headroom. Never use visible windows, native input, AppKit activation or computer use during ordinary validation. Schedule physical acceptance separately. `scripts/test_validate_noninteractive.py` checks environment isolation.
+
+`App/LiveTranscriptionController.swift`, `Shared/Models/LiveTranscription.swift` and `App/Tests/LiveTranscriptionControllerTests.swift` implement the independent default-off microphone draft preview. The controller consumes a bounded secondary subscription to existing PCM, joins native cancellation, and cannot write canonical transcripts or trigger markers. Its content-free notification wakes UI presentation; speech timing and quality acceptance remain separate from lifecycle tests.
+
+`App/Tests/LiveTranscriptionNativeTests.swift` is a separate opt-in silent replay of the checked-in, hash-pinned Karen Australian English PCM fixture. Set `RETRACE_LIVE_DRAFT_NATIVE_TEST=1` for real native streaming timings and a critical-negation phrase check; unavailable assets skip without download. A passing authored replay is not physical speech p95 or whole-system energy acceptance.
+
+`Shared/Models/AudioPreparationStatus.swift` contains bounded first-pass/review queue observations with observation times and lower-bound counts. `AudioTranscriptionQueries.getPendingAudioSummary` reads at most 1001 indexed candidates per lane; `AudioProcessingManager` caches observations every 30 seconds. Live and operations snapshots consume this cache, never scan files or count an entire audio table in view code.

@@ -44,6 +44,8 @@ final class TimelineOriginalFrameTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        model?.handleTimelineClosed()
+        await model?.test_joinCurrentHeadRefresh()
         await model?.test_stopForegroundImages()
         model = nil
         await adapter?.shutdown()
@@ -476,6 +478,7 @@ final class TimelineOriginalFrameTests: XCTestCase {
             panel.orderOut(nil); panel.close()
         }
         controller.show()
+        await model.test_joinCurrentHeadRefresh()
         await model.test_joinForegroundImages()
         XCTAssertNotNil(hosting.superview)
         XCTAssertFalse(panel.isKeyWindow)
@@ -485,6 +488,7 @@ final class TimelineOriginalFrameTests: XCTestCase {
         XCTAssertNil(model.currentImage)
         XCTAssertNotNil(hosting.superview, "Immediate reopen exercises the retained view, before delayed detachment")
         controller.show()
+        await model.test_joinCurrentHeadRefresh()
         await model.test_joinForegroundImages()
         try assertDisplayed(gray: 220)
     }
@@ -593,8 +597,91 @@ final class TimelineOriginalFrameTests: XCTestCase {
         XCTAssertFalse(model.isLoading)
     }
 
+    func testOrdinaryOpenRefreshesYesterdayCacheFromRealSavedHeadWithoutLiveCapture() async throws {
+        let rows = try await originals(status: 4, commitText: false,
+            distinctTimestamps: true, timestampStep: 86_400)
+        model.frames = [rows[0]]
+        model.handleTimelineClosed()
+        model.handleTimelineOpened(refreshCurrentHead: true)
+        await model.test_joinCurrentHeadRefresh()
+        XCTAssertEqual(model.currentFrame?.id, rows[1].frame.id)
+        XCTAssertEqual(model.currentTimestamp, timestamp.addingTimeInterval(86_400))
+        XCTAssertFalse(model.isInLiveMode)
+        XCTAssertNil(model.liveScreenshot)
+        XCTAssertNil(model.currentHeadRefreshError)
+        XCTAssertFalse(model.isRefreshingCurrentHead)
+        await model.test_loadForegroundImage()
+        try assertDisplayed(gray: 220)
+    }
+
+    func testHeldHeadRefreshCannotMovePlayheadAfterUserScrubsBack() async throws {
+        let rows = try await originals(status: 2, distinctTimestamps: true)
+        model.frames = rows
+        model.currentIndex = 1
+        let gate = OriginalReadGate(entered: expectation(description: "saved head held"))
+        let coordinator = coordinator!
+        model.test_refreshFrameDataHooks.getMostRecentFramesWithVideoInfo = { limit, filters in
+            let rows = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            await gate.holdFirstRead()
+            return rows
+        }
+        model.handleTimelineOpened(refreshCurrentHead: true)
+        await fulfillment(of: [gate.entered], timeout: 3)
+        model.currentIndex = 0
+        await gate.release()
+        await model.test_joinCurrentHeadRefresh()
+        model.resumeCurrentHead() // Wake must preserve deliberate historical browsing.
+        model.requestCurrentHeadRefresh() // Visible polling must preserve it too.
+        await model.test_joinCurrentHeadRefresh()
+        XCTAssertEqual(model.currentFrame?.id, rows[0].frame.id)
+        let reads = await gate.reads
+        XCTAssertEqual(reads, 1, "Wake/polling must not unpin deliberate historical browsing")
+    }
+
+    func testCloseAndReopenJoinsCancelledHeadReadBeforeRequestingCurrentData() async throws {
+        let rows = try await originals(status: 4, commitText: false, distinctTimestamps: true)
+        model.frames = [rows[0]]
+        let gate = OriginalReadGate(entered: expectation(description: "head close held"))
+        let coordinator = coordinator!
+        model.test_refreshFrameDataHooks.getMostRecentFramesWithVideoInfo = { limit, filters in
+            await gate.begin()
+            let rows = try await coordinator.getMostRecentFramesWithVideoInfo(limit: limit, filters: filters)
+            await gate.holdFirstRead()
+            await gate.end()
+            return rows
+        }
+        model.handleTimelineOpened(refreshCurrentHead: true)
+        await fulfillment(of: [gate.entered], timeout: 3)
+        model.handleTimelineClosed()
+        model.handleTimelineOpened(refreshCurrentHead: true)
+        model.requestCurrentHeadRefresh()
+        await gate.release()
+        await model.test_joinCurrentHeadRefresh()
+        XCTAssertEqual(model.currentFrame?.id, rows[1].frame.id)
+        let cancelled = await gate.firstReadWasCancelled
+        let reads = await gate.reads
+        let maxActive = await gate.maxActive
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(maxActive, 1)
+    }
+
+    func testEmptySavedHeadClearsOldRecordingAndExplainsUnavailability() async throws {
+        let rows = try await originals(status: 2)
+        model.frames = rows
+        await model.test_loadForegroundImage()
+        model.filterCriteria.selectedApps = ["com.test.missing"]
+        model.filterCriteria.appFilterMode = .include
+        model.handleTimelineOpened(refreshCurrentHead: true)
+        await model.test_joinCurrentHeadRefresh()
+        XCTAssertTrue(model.frames.isEmpty)
+        XCTAssertNil(model.currentImage)
+        XCTAssertNotNil(model.currentHeadRefreshError)
+        XCTAssertFalse(model.isInLiveMode)
+    }
+
     private func originals(status: Int, mapped: Bool = true, commitText: Bool = true,
-                           distinctTimestamps: Bool = false, values: [UInt8] = [30, 220]) async throws -> [TimelineFrame] {
+                           distinctTimestamps: Bool = false, values: [UInt8] = [30, 220], timestampStep: TimeInterval = 1) async throws -> [TimelineFrame] {
         let path = "chunks/202311/14/\(pathID.value)"
         let url = root.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -610,7 +697,7 @@ final class TimelineOriginalFrameTests: XCTestCase {
         var session = try await wal.createSession(videoID: pathID)
         var rows: [TimelineFrame] = []
         for (index, value) in values.enumerated() {
-            let capturedAt = distinctTimestamps ? timestamp.addingTimeInterval(Double(index)) : timestamp
+            let capturedAt = distinctTimestamps ? timestamp.addingTimeInterval(Double(index) * timestampStep) : timestamp
             var bytes = Data(repeating: value, count: 64 * 64 * 4)
             for offset in stride(from: 3, to: bytes.count, by: 4) { bytes[offset] = 255 }
             let raw = CapturedFrame(timestamp: capturedAt, imageData: bytes, width: 64, height: 64,

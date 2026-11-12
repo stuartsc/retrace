@@ -881,3 +881,19 @@ A non-nil `FrameMetadata.redactionReason` describes pixels masked before storage
 ### Live context candidate
 
 `TimelineMarkersViewModel` retains a bounded page and older/newer cursors; its text filter explicitly searches the displayed page. `TimelineMarkersPanel` routes title/note edits through the same revision-checked `TimelineMarkerService` command as MCP. `MarkerContextViewModel` clears both derived range payloads and the marker header on affected invalidation or failed refresh; the selected identity is retained separately while asynchronous refresh runs. Unsaved editor text stays in view state and never becomes source evidence. `MarkerContextViewModelTests` includes deletion while a detail view is open. Installed acceptance is tracked in the root Live execution ledger.
+
+Routine validation runs through `scripts/validate_noninteractive.py`; it clears native opt-ins and disables live logging. Native settings and AppKit observation loops explicitly reject the noninteractive profile. Visible/input tests require a separately scheduled session.
+
+`LiveContextWorkspaceModel` coalesces content-free saved-text and draft notifications, retaining the existing bounded fallback refresh. `LiveContextWorkspaceView` exposes the default-off microphone draft trial separately from canonical saved text. Trial previews have no copy/playback/evidence/action authority; system audio remains on the canonical transcription route. Hidden views cancel queued preview/read updates.
+
+### Saved Timeline head repair (13 November)
+
+Ordinary Timeline opens and Go to Now read the latest durable saved rows through
+`SimpleTimelineViewModel`'s coalesced current-head owner. Opening does not capture
+another screen or run live OCR. Close, scrubbing, exact selection and filtered/date
+handoffs invalidate pending reads; wake and visible polling follow only the Now
+position. Empty or failed reads remain explicit and cannot label old cached pixels
+as live. `TimelineOriginalFrameTests` adds real private SQLite/WAL coverage for
+overnight cache refresh, held-read navigation, joined close/reopen and empty heads.
+These checks need no visible window or physical capture. Source validation and
+installed latency/overnight acceptance remain separate.

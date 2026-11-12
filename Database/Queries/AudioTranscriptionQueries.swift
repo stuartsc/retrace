@@ -1081,8 +1081,8 @@ public actor AudioTranscriptionQueries {
     // MARK: - Backfill Queries
 
     /// A bounded chronological lane for newly captured speech-like or unclassified
-    /// audio. Low-energy hints and late work remain pending in the historical queue;
-    /// neither classification nor lane selection deletes or completes a recording.
+    /// audio. This narrow ordering window is not a first-pass eligibility expiry;
+    /// getFirstPassPendingBatch also supplies older and quiet retained recordings.
     public func getFreshPendingBatch(now: Date = Date()) throws -> UntranscribedBatch? {
         let lower = now.addingTimeInterval(-120).timeIntervalSince1970 * 1_000
         let upper = now.timeIntervalSince1970 * 1_000
@@ -1091,6 +1091,68 @@ public actor AudioTranscriptionQueries {
         }
         return try selectAutomaticBatch(status: "pending", newestFirst: false,
                                         timeRange: (Int64(lower), Int64(upper)), excludeLowEnergy: true)
+    }
+
+    /// Reads only the first limit + 1 indexed entries per status. It never counts
+    /// the whole library, decodes media, or treats a failed read as an empty queue.
+    public func getPendingAudioSummary(limit: Int = 1_000) throws -> AudioPreparationStatus {
+        guard (1...1_000).contains(limit) else {
+            throw DatabaseError.queryExecutionFailed("Audio summary limit must be between 1 and 1000")
+        }
+        func bounded(_ status: String) throws -> (Int, Bool, Date?) {
+            try Task.checkCancellation()
+            let sql = "SELECT start_time FROM audio_captures INDEXED BY idx_audio_captures_transcript_status WHERE transcript_status = ? ORDER BY start_time ASC LIMIT ?;"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, status, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(statement, 2, Int32(limit + 1))
+            var count = 0
+            var oldest: Date?
+            while true {
+                try Task.checkCancellation()
+                let step = sqlite3_step(statement)
+                if step == SQLITE_DONE { break }
+                guard step == SQLITE_ROW else {
+                    throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+                }
+                if count == 0 { oldest = Schema.timestampToDate(sqlite3_column_int64(statement, 0)) }
+                count += 1
+            }
+            return (min(count, limit), count > limit, oldest)
+        }
+        let pending = try bounded("pending")
+        let repair = try bounded("needs_repair")
+        return .init(observedAt: Date(), pendingCountLowerBound: pending.0, hasMorePending: pending.1,
+                     oldestPendingAt: pending.2, repairCountLowerBound: repair.0, hasMoreRepair: repair.1,
+                     oldestRepairAt: repair.2)
+    }
+
+    /// First-pass eligibility never expires. Three recent speech-like turns are
+    /// followed by an oldest pending turn in the owner, including quiet recordings.
+    /// A hint only changes ordering; it never completes or removes a recording.
+    public func getFirstPassPendingBatch(preferRecent: Bool = true, now: Date = Date()) throws -> UntranscribedBatch? {
+        if preferRecent {
+            if let fresh = try getFreshPendingBatch(now: now) { return fresh }
+            let lower = now.addingTimeInterval(-24 * 60 * 60).timeIntervalSince1970 * 1_000
+            let upper = now.timeIntervalSince1970 * 1_000
+            guard lower.isFinite, upper.isFinite, lower >= Double(Int64.min), upper < Double(Int64.max) else {
+                throw DatabaseError.queryExecutionFailed("First-pass audio selection requires a representable clock")
+            }
+            if let recent = try selectAutomaticBatch(status: "pending", newestFirst: true,
+                timeRange: (Int64(lower), Int64(upper)), excludeLowEnergy: true) {
+                return recent
+            }
+        }
+        return try selectAutomaticBatch(status: "pending", newestFirst: false)
+    }
+
+    /// Heavy repair owns a separate quiet-time admission; first-pass recordings
+    /// must not get trapped behind a repair merely because both retain media.
+    public func getOldestRepairBatch() throws -> UntranscribedBatch? {
+        try selectAutomaticBatch(status: "needs_repair", newestFirst: false)
     }
 
     /// New first-pass recordings get a recent lane without changing manual backfill order.

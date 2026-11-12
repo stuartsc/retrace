@@ -54,6 +54,7 @@ public struct RetraceOperationsSnapshot: Codable, Sendable {
     public let oldestPendingTextAt: Date?
     /// Unknown until a bounded saved-audio queue observation is available.
     public let pendingSavedAudio: Int?
+    public let audioPreparation: AudioPreparationStatus?
     public let audioProcessedAt: Date?
     public let background: Background
     public let cpu: ResourceUsageSnapshot
@@ -65,12 +66,14 @@ public struct RetraceOperationsSnapshot: Codable, Sendable {
     public init(observationStartedAt: Date, observedAt: Date, recording: Bool, recordingPersistenceFailed: Bool,
                 contextCollecting: Bool, contextDegraded: Bool, pendingText: Int?, processingText: Int?, failedText: Int?,
                 oldestPendingTextAt: Date?, pendingSavedAudio: Int?, audioProcessedAt: Date?, background: Background,
-                cpu: ResourceUsageSnapshot, companion: Companion?, voiceMarkers: VoiceMarkers?, unavailable: [Unavailable]) {
+                cpu: ResourceUsageSnapshot, companion: Companion?, voiceMarkers: VoiceMarkers?, unavailable: [Unavailable],
+                audioPreparation: AudioPreparationStatus? = nil) {
         self.observationStartedAt = observationStartedAt; self.observedAt = observedAt; liveLaptop = true
         self.recording = recording; self.recordingPersistenceFailed = recordingPersistenceFailed
         self.contextCollecting = contextCollecting; self.contextDegraded = contextDegraded
         self.pendingText = pendingText; self.processingText = processingText; self.failedText = failedText
         self.oldestPendingTextAt = oldestPendingTextAt; self.pendingSavedAudio = pendingSavedAudio
+        self.audioPreparation = audioPreparation
         self.audioProcessedAt = audioProcessedAt; self.background = background; self.cpu = cpu
         self.companion = companion; self.voiceMarkers = voiceMarkers; self.unavailable = unavailable
     }

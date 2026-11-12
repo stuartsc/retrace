@@ -297,6 +297,7 @@ public actor AudioRefinementManager {
                 batchAudioPath: batchPath,
                 with: transcriptionsBatch
             )
+            NotificationCenter.default.post(name: .retraceAudioTextCommitted, object: nil)
         } catch is CancellationError {
             return .deferred
         } catch {

@@ -122,6 +122,16 @@ final class LiveContextWorkspaceModel: ObservableObject {
     nonisolated static let maximumActionRecordings = 500
     nonisolated static let maximumScreens = 96
 
+    @Published private(set) var drafts = LiveTranscriptionSnapshot()
+    private let readDrafts: @Sendable () async -> LiveTranscriptionSnapshot
+    private let setDraftTrial: @Sendable (Bool) async -> Void
+    private var eventRefreshTask: Task<Void, Never>?
+    private var eventRefreshID = UUID()
+    private var eventRefreshPending = false
+    private var draftRefreshTask: Task<Void, Never>?
+    private var draftRefreshID = UUID()
+    private var draftRefreshPending = false
+
     @Published private(set) var transcripts: [AudioTranscription] = []
     @Published private(set) var speakers: [CompanionSpeakerPresentation] = []
     @Published private(set) var transcriptItems: [LiveTranscriptItem] = []
@@ -143,6 +153,7 @@ final class LiveContextWorkspaceModel: ObservableObject {
     @Published private(set) var followingLive = true
     @Published private(set) var hasNewerContent = false
     @Published private(set) var latestTranscriptAt: Date?
+    @Published private(set) var preparationStatus: AudioPreparationStatus?
     @Published private(set) var selectedAudioID: Int64?
     private var selectedExternalAudio: AudioTranscription?
     @Published private(set) var selectedScreenID: ScreenshotEvidenceSelection?
@@ -163,6 +174,7 @@ final class LiveContextWorkspaceModel: ObservableObject {
     private var taskGeneration: UInt64?
     private var taskLoadsOlder = false
     private var olderRefreshCompletions: UInt64 = 0
+    private let readPreparationStatus: @Sendable () async -> AudioPreparationStatus?
     private let loadAudio: @Sendable (DateInterval, AudioContextCursor?, String?) async throws -> AudioContextPage
     private let loadScreens: @Sendable (DateInterval) async throws -> LiveContextScreenPage
     private let readEntry: @Sendable (Int64) async throws -> AudioTranscription?
@@ -205,7 +217,10 @@ final class LiveContextWorkspaceModel: ObservableObject {
          sourceChanges: (@Sendable () async throws -> ContextRangePresentationService)? = nil,
          speakerChanges: (@Sendable () async throws -> CompanionController)? = nil,
          referenceRecordings: @escaping @Sendable ([AudioTranscription]) async throws -> [V23TranscriptReference] = { _ in [] },
-         recordOlderPage: @escaping @Sendable (Int, Bool) async -> Void = { _, _ in }) {
+         recordOlderPage: @escaping @Sendable (Int, Bool) async -> Void = { _, _ in },
+         readDrafts: @escaping @Sendable () async -> LiveTranscriptionSnapshot = { .init() },
+         setDraftTrial: @escaping @Sendable (Bool) async -> Void = { _ in },
+         readPreparationStatus: @escaping @Sendable () async -> AudioPreparationStatus? = { nil }) {
         self.loadAudio = loadAudio
         self.loadScreens = loadScreens
         self.readEntry = readEntry
@@ -213,9 +228,12 @@ final class LiveContextWorkspaceModel: ObservableObject {
         self.speakerChanges = speakerChanges
         self.referenceRecordings = referenceRecordings
         self.recordOlderPage = recordOlderPage
+        self.readDrafts = readDrafts; self.setDraftTrial = setDraftTrial
+        self.readPreparationStatus = readPreparationStatus
     }
 
     deinit {
+        eventRefreshTask?.cancel(); draftRefreshTask?.cancel()
         task?.cancel()
         if let observationID { observationOwner?.removeInvalidationObserver(observationID) }
         if let speakerObservationID { speakerObservationOwner?.removeSpeakerChangeObserver(speakerObservationID) }
@@ -249,7 +267,58 @@ final class LiveContextWorkspaceModel: ObservableObject {
            }, recordOlderPage: { count, failed in
                try? await coordinator.recordMetricEvent(metricType: .dashboardTranscriptLoadOlder,
                    metadata: "{\"surface\":\"live_scroll\",\"added\":\(count),\"failed\":\(failed)}")
-           })
+           }, readDrafts: { await coordinator.liveTranscriptionSnapshot() },
+              setDraftTrial: { await coordinator.setLiveTranscriptionEnabled($0) },
+              readPreparationStatus: { await coordinator.audioPreparationStatus() })
+    }
+
+    func setDraftsEnabled(_ enabled: Bool) async {
+        await setDraftTrial(enabled)
+        await refreshDrafts()
+    }
+
+    func refreshDrafts() async {
+        guard active, !Task.isCancelled else { return }
+        let token = generation
+        let snapshot = await readDrafts()
+        let preparation = await readPreparationStatus()
+        guard active, generation == token, !Task.isCancelled else { return }
+        drafts = snapshot
+        preparationStatus = preparation
+    }
+
+    /// A burst of commits is one joined read; a commit arriving during that read
+    /// requests one more pass so the latest publication cannot be missed.
+    func audioTextCommitted() {
+        guard active else { return }
+        eventRefreshPending = true
+        guard eventRefreshTask == nil else { return }
+        let id = UUID(); eventRefreshID = id
+        eventRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.eventRefreshID == id { self.eventRefreshTask = nil } }
+            while self.active && self.eventRefreshPending && !Task.isCancelled {
+                self.eventRefreshPending = false
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+                await self.refresh(forceAfterJoin: true)
+            }
+        }
+    }
+
+    func draftChanged() {
+        guard active else { return }
+        draftRefreshPending = true
+        guard draftRefreshTask == nil else { return }
+        let id = UUID(); draftRefreshID = id
+        draftRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.draftRefreshID == id { self.draftRefreshTask = nil } }
+            while self.active && self.draftRefreshPending && !Task.isCancelled {
+                self.draftRefreshPending = false
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                await self.refreshDrafts()
+            }
+        }
     }
 
     func setActive(_ value: Bool) {
@@ -257,6 +326,11 @@ final class LiveContextWorkspaceModel: ObservableObject {
         active = value
         presentationReady = false
         if !value {
+            eventRefreshTask?.cancel(); draftRefreshTask?.cancel()
+            eventRefreshTask = nil; draftRefreshTask = nil
+            eventRefreshID = UUID(); draftRefreshID = UUID()
+            eventRefreshPending = false; draftRefreshPending = false
+            drafts = .init()
             needsResumeValidation = hasPublishedTranscript || !transcripts.isEmpty || !speakers.isEmpty ||
                 selectedExternalAudio != nil || selectedTurn != nil
             if let observationID { observationOwner?.removeInvalidationObserver(observationID) }
@@ -367,7 +441,7 @@ final class LiveContextWorkspaceModel: ObservableObject {
         }
     }
 
-    func refresh(now: Date = Date(), loadOlder: Bool = false) async {
+    func refresh(now: Date = Date(), loadOlder: Bool = false, forceAfterJoin: Bool = false) async {
         guard active, !Task.isCancelled else { return }
         let generation = generation
         let olderCompletionsAtEntry = olderRefreshCompletions
@@ -378,7 +452,7 @@ final class LiveContextWorkspaceModel: ObservableObject {
             guard active, self.generation == generation, !Task.isCancelled else { return }
             // A head read cannot fulfil an explicit continuation request. Keep
             // one joined owner; multiple older callers still share one page.
-            if joinedGeneration == generation, !task.isCancelled,
+            if !forceAfterJoin, joinedGeneration == generation, !task.isCancelled,
                !loadOlder || joinedLoadsOlder || olderRefreshCompletions != olderCompletionsAtEntry { return }
         }
         guard !loadOlder || canLoadOlder else { return }

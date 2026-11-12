@@ -18,6 +18,41 @@ final class AutomaticAudioSelectionTests: XCTestCase {
 
     override func tearDown() async throws { try await database.close() }
 
+    func testPendingSummaryIsBoundedAndReportsOldestAndEmptySeparately() async throws {
+        let empty = try await queries.getPendingAudioSummary(limit: 2)
+        XCTAssertEqual(empty.pendingCountLowerBound, 0)
+        XCTAssertFalse(empty.hasMorePending)
+        XCTAssertNil(empty.oldestPendingAt)
+        for offset in [30.0, 20.0, 10.0] { _ = try await seed(at: now.addingTimeInterval(-offset)) }
+        _ = try await seed(at: now.addingTimeInterval(-60), status: "needs_repair")
+        _ = try await seed(at: now.addingTimeInterval(-90), status: "transcribed")
+        let summary = try await queries.getPendingAudioSummary(limit: 2)
+        XCTAssertEqual(summary.pendingCountLowerBound, 2)
+        XCTAssertTrue(summary.hasMorePending)
+        XCTAssertEqual(summary.oldestPendingAt, now.addingTimeInterval(-30))
+        XCTAssertEqual(summary.repairCountLowerBound, 1)
+        XCTAssertFalse(summary.hasMoreRepair)
+        XCTAssertEqual(summary.oldestRepairAt, now.addingTimeInterval(-60))
+        XCTAssertLessThanOrEqual(summary.observedAt, Date())
+        XCTAssertEqual(try scalar("SELECT COUNT(*) FROM audio_captures"), 5)
+    }
+
+    func testFirstPassEligibilitySurvivesAgeQuietHintsAndClockChanges() async throws {
+        let quiet = try await seed(at: now.addingTimeInterval(-72 * 3_600))
+        try exec("UPDATE audio_captures SET quality_flags = 'pending_low_energy_v1' WHERE id = \(quiet)")
+        let speech = try await seed(at: now.addingTimeInterval(-180))
+        let repair = try await seed(at: now.addingTimeInterval(-96 * 3_600), status: "needs_repair")
+        let recent = try await queries.getFirstPassPendingBatch(now: now)
+        XCTAssertEqual(recent?.id, speech, "A first pass older than two minutes remains eligible")
+        let fairTurn = try await queries.getFirstPassPendingBatch(preferRecent: false, now: now)
+        XCTAssertEqual(fairTurn?.id, quiet, "Quiet originals receive bounded fair first-pass turns")
+        let advanced = try await queries.getFirstPassPendingBatch(now: now.addingTimeInterval(7 * 86_400))
+        XCTAssertEqual(advanced?.id, quiet, "Even a week-old first pass remains eligible")
+        let heavy = try await queries.getOldestRepairBatch()
+        XCTAssertEqual(heavy?.id, repair)
+        XCTAssertEqual(try scalar("SELECT COUNT(*) FROM audio_captures"), 3, "Read selection preserves every recording")
+    }
+
     func testFreshLaneDefersLowEnergyHintWithoutCompletingOrLosingQuietAudio() async throws {
         let quiet = try await seed(at: now.addingTimeInterval(-90))
         try exec("UPDATE audio_captures SET quality_flags = 'pending_low_energy_v1' WHERE id = \(quiet)")

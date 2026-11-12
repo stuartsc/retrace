@@ -233,10 +233,13 @@ struct LiveContextWorkspaceView: View {
             guard isActive else { return }
             while isActive && !Task.isCancelled {
                 await model.refresh()
+                await model.refreshDrafts()
                 guard isActive, !Task.isCancelled else { return }
                 do { try await Task.sleep(for: .seconds(8)) } catch { return }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .retraceAudioTextCommitted)) { _ in model.audioTextCommitted() }
+        .onReceive(NotificationCenter.default.publisher(for: .retraceLiveDraftChanged)) { _ in model.draftChanged() }
         .task(id: evidenceRequest) { await showSelectedScreen() }
         .task(id: "\(isActive):\(model.requestRevision)") {
             guard isActive else { return }
@@ -540,6 +543,30 @@ struct LiveContextWorkspaceView: View {
             if let message = model.audioError {
                 HStack { Text(message); Button("Retry") { Task { await model.refresh() } } }
                     .font(.caption).foregroundStyle(Color.retraceWarning)
+            }
+            if let preparation = model.preparationStatus {
+                Text("Text waiting: \(preparation.pendingCountLowerBound)\(preparation.hasMorePending ? "+" : "") recordings · further review: \(preparation.repairCountLowerBound)\(preparation.hasMoreRepair ? "+" : "")")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let oldest = preparation.oldestPendingAt {
+                    Text("Oldest waiting: \(oldest.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Queue checked \(preparation.observedAt.formatted(date: .omitted, time: .standard))")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Toggle("Fast microphone drafts (trial)", isOn: Binding(get: { model.drafts.enabled }, set: { enabled in
+                Task { await model.setDraftsEnabled(enabled) }
+            })).toggleStyle(.switch).controlSize(.small)
+                .help("On-device microphone preview using installed speech assets. System audio and saved searchable text continue through the recording pipeline.")
+            if model.drafts.enabled && model.followingLive {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.drafts.notice).font(.caption).foregroundStyle(.secondary)
+                    if !model.drafts.text.isEmpty {
+                        Text(model.drafts.text).font(.callout).lineLimit(4)
+                            .accessibilityLabel("Provisional microphone preview: \(model.drafts.text)")
+                    }
+                }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.retraceAccent.opacity(0.08)).cornerRadius(8)
             }
             if let notice = model.audioScanNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
             if let message = model.speakerError { Text(message).font(.caption).foregroundStyle(Color.retraceWarning) }

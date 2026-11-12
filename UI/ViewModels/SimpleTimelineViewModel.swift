@@ -340,6 +340,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     @Published public var currentIndex: Int = 0 {
         didSet {
             if currentIndex != oldValue {
+                if !applyingCurrentHead {
+                    currentHeadGeneration &+= 1
+                    followsCurrentHead = followsCurrentHead && currentIndex == frames.count - 1
+                }
                 if Self.isVerboseTimelineLoggingEnabled {
                     Log.debug("[SimpleTimelineViewModel] currentIndex changed: \(oldValue) -> \(currentIndex)", category: .ui)
                     if let frame = currentTimelineFrame {
@@ -1665,6 +1669,9 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     deinit {
+        currentHeadRefreshTask?.cancel()
+        currentHeadReadTask?.cancel()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         evidenceSelectionTask?.cancel()
         evidenceNeighbourhoodTask?.cancel()
         commentSearchTask?.cancel()
@@ -1912,6 +1919,17 @@ public class SimpleTimelineViewModel: ObservableObject {
     private let evidenceClient: EvidenceClient
     private let backgroundServicesEnabled: Bool
     private var evidenceNavigationGeneration: UInt64 = 0
+    @Published public private(set) var isRefreshingCurrentHead = false
+    @Published public private(set) var currentHeadRefreshError: String?
+    private var followsCurrentHead = false
+    private var applyingCurrentHead = false
+    private var currentHeadGeneration: UInt64 = 0
+    private var lastHeadMetricGeneration: UInt64?
+    private var currentHeadRefreshRequested = false
+    private var currentHeadRefreshTask: Task<Void, Never>?
+    private var currentHeadReadTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+
     private var evidenceSelectionTask: Task<Void, Never>?
     private var evidenceNeighbourhoodTask: Task<Void, Never>?
 
@@ -2021,6 +2039,12 @@ public class SimpleTimelineViewModel: ObservableObject {
                 Log.debug("[SimpleTimelineViewModel] About to call invalidateCachesAndReload, self is nil: \(self == nil)", category: .ui)
                 self?.invalidateCachesAndReload()
             }
+        }
+
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.resumeCurrentHead() }
         }
 
         // Observe dialog states to update emergency escape tracking
@@ -2144,6 +2168,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     private func beginExactSelection() -> UInt64 {
+        stopFollowingCurrentHead()
         evidenceNavigationGeneration &+= 1
         evidenceNeighbourhoodTask?.cancel(); evidenceNeighbourhoodTask = nil
         stopPlayback()
@@ -2508,15 +2533,108 @@ public class SimpleTimelineViewModel: ObservableObject {
             || currentIndex >= (frames.count - 1 - Self.closeClearThreshold)
     }
 
-    public func handleTimelineOpened() {
+    public func handleTimelineOpened(refreshCurrentHead: Bool = false) {
         let wasClosed = !foregroundImagesActive
         foregroundImagesActive = true
         cancelDiskFrameBufferInactivityCleanup()
+        if refreshCurrentHead, !evidence.isPresentingEvidence {
+            evidenceNavigationGeneration &+= 1
+            cancelBoundaryLoadTasks(reason: "open saved head")
+            setLoadingState(false, reason: "saved head supersedes previous load")
+            currentHeadGeneration &+= 1
+            followsCurrentHead = true
+            isInLiveMode = false
+            liveScreenshot = nil
+            requestCurrentHeadRefresh()
+        }
         if wasClosed || currentImage == nil { loadImageIfNeeded() }
     }
 
+    /// Reads the durable head rather than taking another screenshot. One owned
+    /// read and one coalesced request bound repeated open/wake/timer events.
+    func resumeCurrentHead() {
+        guard foregroundImagesActive, followsCurrentHead, !evidence.isPresentingEvidence else { return }
+        currentHeadGeneration &+= 1
+        currentHeadReadTask?.cancel()
+        requestCurrentHeadRefresh()
+    }
+
+    private func stopFollowingCurrentHead() {
+        followsCurrentHead = false
+        currentHeadGeneration &+= 1
+        currentHeadRefreshRequested = false
+        currentHeadReadTask?.cancel()
+        currentHeadRefreshError = nil
+    }
+
+    func requestCurrentHeadRefresh() {
+        guard foregroundImagesActive, followsCurrentHead, !evidence.isPresentingEvidence else { return }
+        currentHeadRefreshRequested = true
+        guard currentHeadRefreshTask == nil else { return }
+        currentHeadRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while currentHeadRefreshRequested, !Task.isCancelled {
+                currentHeadRefreshRequested = false
+                let generation = currentHeadGeneration
+                let read = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.refreshSavedHead(generation: generation)
+                }
+                currentHeadReadTask = read
+                await read.value
+                currentHeadReadTask = nil
+            }
+            currentHeadRefreshTask = nil
+        }
+    }
+
+    private func refreshSavedHead(generation: UInt64) async {
+        guard foregroundImagesActive, followsCurrentHead, !evidence.isPresentingEvidence else { return }
+        let navigation = evidenceNavigationGeneration
+        let filters = filterCriteria
+        isRefreshingCurrentHead = true
+        currentHeadRefreshError = nil
+        defer { isRefreshingCurrentHead = false }
+        do {
+            let head = try await fetchMostRecentFramesWithVideoInfoLogged(
+                limit: WindowConfig.maxFrames, filters: filters, reason: "visible saved head")
+            guard !Task.isCancelled, foregroundImagesActive, followsCurrentHead,
+                  generation == currentHeadGeneration, navigation == evidenceNavigationGeneration,
+                  filters == filterCriteria, !evidence.isPresentingEvidence else { return }
+            applyingCurrentHead = true
+            pendingCurrentIndexAfterFrameReplacement = max(0, head.count - 1)
+            frames = Array(head.reversed())
+            updateWindowBoundaries()
+            hasMoreOlder = head.count >= WindowConfig.maxFrames
+            hasMoreNewer = false
+            applyingCurrentHead = false
+            if head.isEmpty {
+                currentImage = nil
+                currentHeadRefreshError = "No saved recordings are available for this view."
+            } else {
+                loadImageIfNeeded()
+            }
+            if backgroundServicesEnabled, lastHeadMetricGeneration != generation {
+                lastHeadMetricGeneration = generation
+                try? await coordinator.recordMetricEvent(metricType: .progressiveRecallAction,
+                    metadata: "{\"action\":\"timeline_head\",\"outcome\":\"ready\",\"count\":\(head.count)}")
+            }
+        } catch {
+            guard !Task.isCancelled, generation == currentHeadGeneration, foregroundImagesActive else { return }
+            currentHeadRefreshError = "Latest recording could not be checked. Showing the last loaded recording."
+        }
+    }
+
+#if DEBUG
+    func test_joinCurrentHeadRefresh() async { await currentHeadRefreshTask?.value }
+#endif
+
+
     /// Call this when the timeline view disappears.
     public func handleTimelineClosed() {
+        currentHeadGeneration &+= 1
+        currentHeadRefreshRequested = false
+        currentHeadReadTask?.cancel()
         closeExactEvidence(resumeHistory: false)
         foregroundImagesActive = false
         invalidateAnnotationSelection()
@@ -6246,6 +6364,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Apply deeplink search state from `retrace://search`.
     /// This resets stale query/filter state first, then applies deeplink values.
     public func applySearchDeeplink(query: String?, appBundleID: String?, source: String = "unknown") {
+        stopFollowingCurrentHead()
         let deeplinkID = String(UUID().uuidString.prefix(8))
         let normalizedQuery: String? = {
             guard let query else { return nil }
@@ -6505,6 +6624,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     }
 
     func loadFilteredFrames(criteria: FilterCriteria, clickStartTime: CFAbsoluteTime? = nil) async {
+        stopFollowingCurrentHead()
         guard !Task.isCancelled, !evidence.isPresentingEvidence else { return }
         // Supersede older startup, refresh and boundary reads before awaiting.
         // Their generation checks cannot publish unfiltered rows over this choice.
@@ -6777,6 +6897,7 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Run on main thread since Timer needs RunLoop
         statusRefreshTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.requestCurrentHeadRefresh()
                 await self?.refreshProcessingStatuses()
             }
         }
@@ -6794,6 +6915,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Navigate to a specific index in the frames array
     public func navigateToFrame(_ index: Int, fromScroll: Bool = false) {
         let clampedIndex = max(0, min(frames.count - 1, index))
+        followsCurrentHead = false
+        currentHeadGeneration &+= 1
+        currentHeadRefreshRequested = false
+        currentHeadReadTask?.cancel()
         closeExactEvidence(resumeHistory: clampedIndex == currentIndex)
         // Exit live mode on explicit navigation
         if isInLiveMode {
@@ -9691,11 +9816,8 @@ public class SimpleTimelineViewModel: ObservableObject {
             clearFilterState()
         }
 
-        // Always reload from DB to get the true most recent frame (unfiltered)
-        Task {
-            await loadMostRecentFrame()
-            await refreshProcessingStatuses()
-        }
+        // Use the same owned saved-head read as ordinary opening and wake.
+        handleTimelineOpened(refreshCurrentHead: true)
     }
 
     // MARK: - Date Search
@@ -9916,6 +10038,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Navigate to a specific date (start of day or specific time)
     private func navigateToDate(_ targetDate: Date) async {
+        stopFollowingCurrentHead()
         closeExactEvidence(resumeHistory: false)
         let evidenceGeneration = evidenceNavigationGeneration
         setLoadingState(true, reason: "navigateToDate")

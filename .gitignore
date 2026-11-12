@@ -129,3 +129,9 @@ local/
 .claude/
 .obsidian/
 .superpowers/
+
+# Isolated noninteractive validation products
+.build-validation/
+
+# Python validation caches
+**/__pycache__/

@@ -6,6 +6,14 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-11-13 — Responsiveness repair candidate (not installed)
+
+- Ordinary Timeline opening fetches the current saved head; wake and visible updates follow Now without replacing deliberate historical selections. Opening no longer takes another screenshot for OCR.
+- Pending audio retains bounded first-pass eligibility after two minutes. Fresh text updates wake Live immediately; historical repair stays separate. Quiet/overdue work is paced during interaction and gets bounded catch-up sessions while idle.
+- Add a separately selectable native microphone draft preview with bounded sample-timed replacement, clear fallback and joined shutdown. CPU first-pass persistence remains canonical; native latency/quality and system drafts are not accepted.
+- Separate HEVC hardware availability from actual-use claims. Add a noninteractive low-concurrency validation command which clears visible/input flags and keeps live logging disabled.
+- Source, validation and remaining delivery gates are recorded in [the repair journal](docs/repair-20261113-journal.md). No storage format or live history changes in this repair.
+
 ### 2026-10-22 — Restore transcript scrolling (source candidate)
 
 - Restore newest-first Live transcripts and automatic older-history loading as the user scrolls down, including across days and beyond the former 500-record stop. Remove manual transcript pages; date filters apply only to explicit search. Preserve pinned reading, saved pending recordings, speaker labels and exact playback. Validation and installed status are tracked in [the Live ledger](docs/live-context-markers-plan.md).

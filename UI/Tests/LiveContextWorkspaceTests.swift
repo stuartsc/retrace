@@ -675,6 +675,48 @@ final class LiveContextWorkspaceTests: XCTestCase {
         XCTAssertFalse(model.presentationReady)
     }
 
+    func testTextCommitWakeAfterAReadSnapshotFetchesNewCanonicalTextWithoutPolling() async throws {
+        let database = DatabaseManager(databasePath: ":memory:")
+        try await database.initialize()
+        let connection = await database.getConnection()
+        let queries = AudioTranscriptionQueries(db: try XCTUnwrap(connection))
+        let time = Date().addingTimeInterval(-60)
+        let initialID = try await queries.insertTranscription(sessionID: nil, text: "First authored sentence",
+            startTime: time, endTime: time.addingTimeInterval(3), source: .microphone, confidence: nil, words: [])
+        let gate = LiveContextReadGate(), counter = LiveContextReadCounter()
+        let model = LiveContextWorkspaceModel(loadAudio: { interval, cursor, query in
+            let attempt = await counter.recordAndReturn()
+            let page = try await queries.getContextPage(from: interval.start, to: interval.end,
+                limit: 100, before: cursor, query: query)
+            if attempt == 1 { await gate.wait() }
+            return page
+        }, loadScreens: { _ in .init(rows: [], hasMore: false) },
+           readEntry: { try await queries.getContextEntry(id: $0) })
+        model.setActive(true)
+        let initial = Task { await model.refresh() }
+        await gate.waitUntilEntered()
+        let newID = try await queries.insertTranscription(sessionID: nil, text: "Newly committed authored sentence",
+            startTime: time.addingTimeInterval(10), endTime: time.addingTimeInterval(13),
+            source: .microphone, confidence: nil, words: [])
+        for _ in 0..<20 { model.audioTextCommitted() }
+        // Ensure the event has joined the held old snapshot before releasing it.
+        try await Task.sleep(for: .milliseconds(200))
+        await gate.open(); await initial.value
+        for _ in 0..<100 {
+            if model.transcripts.contains(where: { $0.id == newID }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.transcripts.map(\.id), [newID, initialID])
+        let count = await counter.count
+        XCTAssertEqual(count, 2, "A burst coalesces to one fresh read after the old snapshot")
+        model.setActive(false)
+        model.audioTextCommitted()
+        try await Task.sleep(for: .milliseconds(200))
+        let hiddenCount = await counter.count
+        XCTAssertEqual(hiddenCount, count, "Hidden views must not schedule event reads")
+        try await database.close()
+    }
+
     private func makeModel(loadAudio: @escaping @Sendable (DateInterval, AudioContextCursor?) async throws -> AudioContextPage) -> LiveContextWorkspaceModel {
         LiveContextWorkspaceModel(loadAudio: { interval, cursor, _ in try await loadAudio(interval, cursor) },
             loadScreens: { _ in LiveContextScreenPage(rows: [], hasMore: false) })

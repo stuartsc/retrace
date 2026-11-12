@@ -36,6 +36,11 @@ final class NativeAppKitObservationLoop: NSObject {
     }
 
     @objc private func run(_ timer: Timer) {
+        guard ProcessInfo.processInfo.environment["RETRACE_TEST_NONINTERACTIVE"] != "1" else {
+            XCTFail("Interactive AppKit loop is prohibited in noninteractive validation")
+            finished()
+            return
+        }
         guard !NSApp.isRunning else {
             XCTFail("The isolated native diagnostic must own its AppKit run loop")
             finished()

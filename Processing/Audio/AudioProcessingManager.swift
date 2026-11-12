@@ -50,6 +50,7 @@ private struct PersistedAudioBatch: Sendable {
     let savedBatchPath: String?
     let savedBatchURL: URL?
     let pendingRecord: UntranscribedBatch?
+    var hasSpeechPriority = true
 
     var isSpooledToDisk: Bool {
         batch.audioData.isEmpty && savedBatchURL != nil
@@ -70,7 +71,8 @@ private struct PersistedAudioBatch: Sendable {
             rawBatchID: rawBatchID,
             savedBatchPath: savedBatchPath,
             savedBatchURL: savedBatchURL,
-            pendingRecord: pendingRecord
+            pendingRecord: pendingRecord,
+            hasSpeechPriority: hasSpeechPriority
         )
     }
 }
@@ -89,10 +91,15 @@ public actor AudioProcessingManager {
     private var ingestionTask: Task<Void, Never>?
     private var admissionTask: Task<BackgroundProcessingPermit, Error>?
     private var admissionKind: BackgroundProcessingKind?
+    private var activeAutomaticPermit: BackgroundProcessingPermit?
+    private var activeAutomaticKind: BackgroundProcessingKind?
     private var pendingGeneration: UInt64 = 0
     /// Attempt budget survives quiet-time revocation for this manager's lifetime. Durable
     /// rows remain the queue; a new process starts by giving current recordings a turn.
     private var consecutiveRecentAutomaticAttempts = 0
+    private var freshArrivalPending = false
+    public private(set) var preparationStatus: AudioPreparationStatus?
+    private var nextPreparationStatusRead = ContinuousClock.now
     public private(set) var isTranscribing = false
     public private(set) var hasPersistenceFailure = false
     /// Sticky disclosure: canonical recordings survive a failed optional context registration.
@@ -257,6 +264,7 @@ public actor AudioProcessingManager {
         var savedBatchURL: URL?
         var savedBatchSize: Int64?
         var pendingRecord: UntranscribedBatch?
+        var hasSpeechPriority = true
         if let writer = audioWriter {
             do {
                 let (batchPath, batchSize) = try await writer.writeFullBatch(
@@ -278,6 +286,7 @@ public actor AudioProcessingManager {
                         // every original remains pending and eligible for catch-up.
                         let activity = AudioSpeechActivityPolicy.evaluate(batch.audioData,
                             sampleRate: batch.sampleRate, channels: batch.channels)
+                        hasSpeechPriority = !activity.isProbablySilence
                         rawBatchID = try await queries.insertRawBatch(
                             startTime: batch.startTimestamp,
                             endTime: batch.endTimestamp,
@@ -319,7 +328,8 @@ public actor AudioProcessingManager {
             rawBatchID: rawBatchID,
             savedBatchPath: savedBatchPath,
             savedBatchURL: savedBatchURL,
-            pendingRecord: pendingRecord
+            pendingRecord: pendingRecord,
+            hasSpeechPriority: hasSpeechPriority
         )
     }
 
@@ -327,7 +337,15 @@ public actor AudioProcessingManager {
         pendingGeneration &+= 1
         if governor != nil, persistedBatch.pendingRecord != nil {
             // The legacy SQLite pending row is the queue. No deferred PCM or metadata array.
-            if admissionKind == .ambientSpeech { admissionTask?.cancel() }
+            if admissionKind == .ambientSpeech ||
+                (admissionKind == .overdueTranscription && persistedBatch.hasSpeechPriority) {
+                freshArrivalPending = persistedBatch.hasSpeechPriority
+                admissionTask?.cancel()
+            }
+            if activeAutomaticKind == .overdueTranscription && persistedBatch.hasSpeechPriority {
+                freshArrivalPending = true
+                activeAutomaticPermit?.cancellation.cancel()
+            }
             startLiveTranscriptionWorkerIfNeeded()
             return
         }
@@ -364,16 +382,32 @@ public actor AudioProcessingManager {
             }
             guard let governor, let queries = transcriptionQueries, let writer = audioWriter,
                   !(transcriptionService is MockTranscriptionService) else { return }
+            if ContinuousClock.now >= nextPreparationStatusRead {
+                nextPreparationStatusRead = ContinuousClock.now.advanced(by: .seconds(30))
+                do { preparationStatus = try await queries.getPendingAudioSummary() }
+                catch { Log.warning("Audio queue summary unavailable; retaining last successful observation", category: .processing) }
+            }
             let generation = pendingGeneration
             let fresh: UntranscribedBatch?
-            do { fresh = try await queries.getFreshPendingBatch() }
+            let kind: BackgroundProcessingKind
+            do {
+                let currentSpeech = try await queries.getFreshPendingBatch()
+                if freshArrivalPending, let currentSpeech {
+                    fresh = currentSpeech
+                } else {
+                    fresh = try await queries.getFirstPassPendingBatch(preferRecent: consecutiveRecentAutomaticAttempts < 3)
+                }
+                freshArrivalPending = false
+                if let fresh {
+                    kind = currentSpeech?.id == fresh.id ? .freshTranscription : .overdueTranscription
+                } else { kind = .ambientSpeech }
+            }
             catch {
                 if Task.isCancelled { break }
                 Log.warning("[AudioProcessingManager] Fresh queue read failed; retaining pending work", category: .processing)
                 try? await Task.sleep(for: .seconds(5))
                 continue
             }
-            let kind: BackgroundProcessingKind = fresh == nil ? .ambientSpeech : .freshTranscription
             let request = Task { try await governor.acquire(kind) }
             admissionKind = kind
             admissionTask = request
@@ -399,33 +433,37 @@ public actor AudioProcessingManager {
                 await governor.release(permit)
                 continue
             }
+            activeAutomaticPermit = permit
+            activeAutomaticKind = kind
             var retryDelay: Duration?
             var wasEmpty = false
             do {
                 wasEmpty = try await withTaskCancellationHandler {
                     try await BackgroundProcessingContext.$permit.withValue(permit) {
                         try BackgroundProcessingContext.checkCancellation()
-                        let recent: UntranscribedBatch?
-                        if kind == .freshTranscription {
-                            recent = try await queries.getFreshPendingBatch()
-                            // It may have aged out or been completed while waiting for
-                            // admission. Never use a fresh permit for old/repair work.
-                            guard recent != nil else { return false }
-                        } else if consecutiveRecentAutomaticAttempts < 3 {
-                            recent = try await queries.getRecentPendingBatch()
-                        } else {
-                            recent = nil
-                        }
                         let row: UntranscribedBatch
-                        if let recent {
-                            row = recent
-                        } else if let oldest = try await queries.getOldestUntranscribedBatch() {
-                            row = oldest
+                        if kind.isFirstPass {
+                            let preferRecent = consecutiveRecentAutomaticAttempts < 3
+                            let selected = kind == .freshTranscription
+                                ? try await queries.getFreshPendingBatch()
+                                : try await queries.getFirstPassPendingBatch(preferRecent: preferRecent)
+                            guard let firstPass = selected else { return false }
+                            if kind == .overdueTranscription,
+                               try await queries.getFreshPendingBatch()?.id == firstPass.id {
+                                return false // New speech gets a fresh admission, not a paced old turn.
+                            }
+                            row = firstPass
+                            // Count attempts so a failed oldest item cannot monopolise the queue.
+                            consecutiveRecentAutomaticAttempts = kind == .freshTranscription || preferRecent
+                                ? min(3, consecutiveRecentAutomaticAttempts + 1) : 0
+                        } else if let repair = try await queries.getOldestRepairBatch() {
+                            row = repair
                         } else { return true }
                         try BackgroundProcessingContext.checkCancellation()
-                        // Count selected attempts, not successes: a cancelled or broken oldest
-                        // recording must not repeatedly take every subsequent admitted turn.
-                        consecutiveRecentAutomaticAttempts = recent == nil ? 0 : consecutiveRecentAutomaticAttempts + 1
+                        let queueAge = Date().timeIntervalSince(row.endTime)
+                        if queueAge.isFinite && queueAge >= 0 {
+                            Log.recordLatency("audio_queue_wait", valueMs: queueAge * 1_000, category: .processing)
+                        }
                         let pending = PersistedAudioBatch(
                             batch: AudioBatch(audioData: Data(), source: row.source,
                                 startTimestamp: row.startTime, endTimestamp: row.endTime,
@@ -444,6 +482,8 @@ public actor AudioProcessingManager {
                 retryDelay = .seconds(5)
                 Log.error("[AudioProcessingManager] Pending transcription retained for retry: \(error)", category: .processing)
             }
+            activeAutomaticPermit = nil
+            activeAutomaticKind = nil
             await governor.release(permit)
             if wasEmpty && generation == pendingGeneration { return }
             if let retryDelay { try? await Task.sleep(for: retryDelay, clock: .continuous) }
@@ -743,6 +783,14 @@ public actor AudioProcessingManager {
     }
 
     private func publishCommittedBatch(_ persisted: PersistedAudioBatch) async {
+        // Local text publication must never wait for optional companion enrichment.
+        NotificationCenter.default.post(name: .retraceAudioTextCommitted, object: nil)
+        let latency = Date().timeIntervalSince(persisted.batch.endTimestamp)
+        if latency.isFinite && latency >= 0 {
+            Log.recordLatency(persisted.pendingRecord?.needsFirstPassRepair == true
+                ? "audio_repair_capture_to_text" : "audio_first_pass_capture_to_text",
+                valueMs: latency * 1_000, category: .processing)
+        }
         guard let callback = onCommittedBatch, let path = persisted.savedBatchPath,
               let queries = transcriptionQueries else { return }
         do {

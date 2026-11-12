@@ -727,66 +727,9 @@ public class TimelineWindowController: NSObject {
         liveModeCaptureTask = nil
         captureFocusRestoreTarget()
 
-        // Only capture/use live screenshot if playhead is at or near the latest frame (last 3 frames)
-        // Otherwise, user was viewing a historical frame and should see that instead
-        var shouldUseLiveMode = !preservingEvidence && timelineViewModel?.evidence.isPresentingEvidence != true
-
-        if let viewModel = timelineViewModel, !preservingEvidence, !viewModel.evidence.isPresentingEvidence {
-            let framesFromNewestBefore = max(0, viewModel.frames.count - 1 - viewModel.currentIndex)
-            let hiddenElapsedSeconds = lastHiddenAt.map { Date().timeIntervalSince($0) } ?? .infinity
-            let instantEligible = framesFromNewestBefore < Self.instantLiveReopenFrameThreshold
-            let nearEligible = framesFromNewestBefore < Self.nearLiveReopenFrameThreshold
-            let nearLiveExpiryElapsed = hiddenElapsedSeconds >= Self.nearLiveReopenExpirationSeconds
-            let cacheExpired = hiddenElapsedSeconds > Self.hiddenStateCacheExpirationSeconds
-            let hasActiveFilters = viewModel.filterCriteria.hasActiveFilters
-            let shouldAutoAdvanceNearLive = !hasActiveFilters && (instantEligible || (nearEligible && nearLiveExpiryElapsed))
-            let shouldSnapToNewestOnShow = cacheExpired || shouldAutoAdvanceNearLive
-            let shouldClearSearchForReopenPolicy = shouldSnapToNewestOnShow
-            let hiddenLabel = hiddenElapsedSeconds.isFinite ? String(format: "%.1f", hiddenElapsedSeconds) : "inf"
-
-            let snapReason: String
-            if cacheExpired {
-                snapReason = "cache_expired"
-            } else if instantEligible {
-                snapReason = "instant_near_edge"
-            } else if nearEligible && nearLiveExpiryElapsed {
-                snapReason = "near_live_expired"
-            } else {
-                snapReason = "none"
-            }
-
-            if shouldClearSearchForReopenPolicy {
-                let searchViewModel = viewModel.searchViewModel
-                if searchViewModel.hasResults || !searchViewModel.searchQuery.isEmpty {
-                    Log.info(
-                        "[TIMELINE-REOPEN] Clearing search state before show (reason=\(snapReason))",
-                        category: .ui
-                    )
-                    searchViewModel.clearSearchResults()
-                }
-            }
-
-            if shouldSnapToNewestOnShow, !viewModel.frames.isEmpty {
-                let newestIndex = max(0, viewModel.frames.count - 1)
-                let oldIndex = viewModel.currentIndex
-                if oldIndex != newestIndex {
-                    viewModel.currentIndex = newestIndex
-                    Log.info(
-                        "[TIMELINE-REOPEN] snapOnShow oldIndex=\(oldIndex) newIndex=\(newestIndex) reason=\(snapReason)",
-                        category: .ui
-                    )
-                }
-            }
-
-            let framesFromNewestAfter = max(0, viewModel.frames.count - 1 - viewModel.currentIndex)
-            shouldUseLiveMode = viewModel.isNearLatestLoadedFrame(within: Self.instantLiveReopenFrameThreshold)
-
-            Log.info(
-                "[TIMELINE-REOPEN] hidden=\(hiddenLabel)s framesFromNewestBefore=\(framesFromNewestBefore) framesFromNewestAfter=\(framesFromNewestAfter) instantEligible=\(instantEligible) nearEligible=\(nearEligible) nearExpiryElapsed=\(nearLiveExpiryElapsed) cacheExpired=\(cacheExpired) hasActiveFilters=\(hasActiveFilters) shouldSnapOnShow=\(shouldSnapToNewestOnShow) liveModeOnShow=\(shouldUseLiveMode)",
-                category: .ui
-            )
-        }
-
+        // Ordinary opens follow the latest saved recording. Exact/date/filter
+        // handoffs opt out explicitly; cached row age is never evidence of Now.
+        let shouldUseLiveMode = false
         // Remember if dashboard was the key window before we take over
         dashboardWasKeyWindow = DashboardWindowController.shared.isVisible &&
             NSApp.keyWindow == DashboardWindowController.shared.window
@@ -829,7 +772,6 @@ public class TimelineWindowController: NSObject {
                 showStartTime: showStartTime,
                 preservingEvidence: preservingEvidence
             )
-            startLiveModeCaptureIfNeeded(shouldUseLiveMode: shouldUseLiveMode, viewModel: viewModel)
             return
         }
 
@@ -877,12 +819,6 @@ public class TimelineWindowController: NSObject {
             showStartTime: showStartTime,
             preservingEvidence: preservingEvidence
         )
-        startLiveModeCaptureIfNeeded(shouldUseLiveMode: shouldUseLiveMode, viewModel: viewModel)
-
-        // Start async frame loading in background (non-blocking)
-        if !preservingEvidence {
-            Task { await viewModel.loadMostRecentFrame() }
-        }
     }
 
     @discardableResult
@@ -930,7 +866,12 @@ public class TimelineWindowController: NSObject {
 
         // A retained hosting view need not receive onAppear again. The window
         // owner resumes exact image reads after the final selection is ready.
-        timelineViewModel?.handleTimelineOpened()
+        if !preservingEvidence, let viewModel = timelineViewModel,
+           !viewModel.evidence.isPresentingEvidence {
+            viewModel.clearFiltersWithoutReload()
+            viewModel.searchViewModel.clearSearchResults()
+        }
+        timelineViewModel?.handleTimelineOpened(refreshCurrentHead: !preservingEvidence)
         timelineViewModel?.startPeriodicStatusRefresh()
 
         let isLive = timelineViewModel?.isInLiveMode ?? false
@@ -1456,7 +1397,7 @@ public class TimelineWindowController: NSObject {
 
     /// Show the timeline and navigate to a specific date
     public func showAndNavigate(to date: Date) {
-        show()
+        show(preservingEvidence: true)
 
         // Navigate after a brief delay to allow the view to initialize
         Task { @MainActor in
@@ -1477,7 +1418,7 @@ public class TimelineWindowController: NSObject {
         if let timestamp {
             showAndNavigate(to: timestamp)
         } else {
-            show()
+            show(preservingEvidence: true)
         }
 
         Task { @MainActor [weak self] in
@@ -1782,7 +1723,7 @@ public class TimelineWindowController: NSObject {
                 await request.viewModel.loadFilteredFrames(criteria: request.criteria, clickStartTime: request.startedAt)
                 guard !Task.isCancelled, request.generation == presentationGeneration,
                       timelineViewModel === request.viewModel, let coordinator else { return }
-                showPreparedWindow(coordinator: coordinator, openPath: "filtered", showStartTime: request.startedAt)
+                showPreparedWindow(coordinator: coordinator, openPath: "filtered", showStartTime: request.startedAt, preservingEvidence: true)
             }
             filteredReadTask = read
             await read.value

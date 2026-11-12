@@ -12,7 +12,6 @@ public struct SimpleTimelineView: View {
 
     @ObservedObject private var viewModel: SimpleTimelineViewModel
     @ObservedObject private var evidence: EvidenceViewModel
-    @State private var hasInitialized = false
     /// Forces a SwiftUI refresh when global appearance preferences change.
     @State private var appearanceRefreshTick = 0
     /// Tracks whether the live screenshot has been displayed, allowing AVPlayer to pre-mount underneath
@@ -524,14 +523,18 @@ public struct SimpleTimelineView: View {
             }
             .coordinateSpace(name: "timelineContent")
             .background(frameCanvasBackgroundColor)
+            .overlay(alignment: .top) {
+                if viewModel.isRefreshingCurrentHead || viewModel.currentHeadRefreshError != nil {
+                    Text(viewModel.currentHeadRefreshError ?? "Checking latest saved recording…")
+                        .font(.caption)
+                        .padding(8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.top, 12)
+                        .allowsHitTesting(false)
+                }
+            }
             .ignoresSafeArea()
             .onAppear {
-                if !hasInitialized {
-                    hasInitialized = true
-                    Task {
-                        await viewModel.loadMostRecentFrame()
-                    }
-                }
                 if viewModel.showCommentSubmenu {
                     isCommentSubmenuMounted = true
                     commentSubmenuVisibility = 1

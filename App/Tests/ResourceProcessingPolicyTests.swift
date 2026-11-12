@@ -74,6 +74,25 @@ final class ResourceProcessingPolicyTests: XCTestCase {
         await governor.close()
     }
 
+    func testFirstPassProgressesAboveAppSoftBudgetButHonoursHostPressure() async throws {
+        let governor = BackgroundProcessingGovernor(observeSystem: false)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample(1, cpu: 40)))
+        let optional = try await governor.tryAcquire(.freshTranscription)
+        let permit = try XCTUnwrap(optional, "Recording CPU above the soft target cannot suppress all first-pass text")
+        await governor.release(permit)
+        let refinement = try await governor.tryAcquire(.refinement)
+        XCTAssertNil(refinement)
+        let ocr = try await governor.tryAcquire(.freshOCR)
+        XCTAssertNil(ocr, "Only first-pass audio has the protected admission")
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample(2, cpu: 40, system: 85)))
+        let overloaded = try await governor.tryAcquire(.freshTranscription)
+        XCTAssertNil(overloaded, "System overload still prevents admission")
+        await governor.updateEnvironment(.init(idleSeconds: 0, pressureAllowsProcessing: false))
+        let pressure = try await governor.tryAcquire(.freshTranscription)
+        XCTAssertNil(pressure)
+        await governor.close()
+    }
+
     private func sample(_ time: Double, cpu: Double, system: Double = 50) -> ResourceUsageSnapshot {
         .init(observedAt: Date(), sampleUptime: time, cpuPercent: cpu,
               systemCPUPercent: system, systemFiveSecondCPUPercent: system,

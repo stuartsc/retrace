@@ -396,6 +396,10 @@ public actor AppCoordinator {
         await services.audioProcessing.hasPersistenceFailure
     }
 
+    public func audioPreparationStatus() async -> AudioPreparationStatus? {
+        await services.audioProcessing.preparationStatus
+    }
+
     public func resourceUsageSnapshot() async -> ResourceUsageSnapshot {
         await services.resourceUsage.snapshot()
     }
@@ -410,7 +414,9 @@ public actor AppCoordinator {
         let companion = await companionOwner?.status()
         let voice = await services.existingVoiceMarkerStatus()
         let persistenceFailed = await services.audioProcessing.hasPersistenceFailure
-        var unavailable: [RetraceOperationsSnapshot.Unavailable] = [.savedAudioQueue]
+        let audioPreparation = await services.audioProcessing.preparationStatus
+        var unavailable: [RetraceOperationsSnapshot.Unavailable] = []
+        if audioPreparation == nil { unavailable.append(.savedAudioQueue) }
         if health.pendingText == nil { unavailable.append(.textQueue) }
         if !cpu.isCurrent { unavailable.append(.cpuMeasurement) }
         if health.activity == nil { unavailable.append(.activityHealth) }
@@ -418,7 +424,8 @@ public actor AppCoordinator {
             recordingPersistenceFailed: persistenceFailed, contextCollecting: health.collecting,
             contextDegraded: health.degraded, pendingText: health.pendingText,
             processingText: health.processingText, failedText: health.failedText,
-            oldestPendingTextAt: health.oldestPendingTextAt, pendingSavedAudio: nil,
+            oldestPendingTextAt: health.oldestPendingTextAt,
+            pendingSavedAudio: audioPreparation.flatMap { $0.hasMorePending ? nil : $0.pendingCountLowerBound },
             audioProcessedAt: health.audioProcessedAt,
             background: .init(waitingCount: scheduler.waitingCount, running: scheduler.isRunning,
                 processNow: scheduler.processNow, waitingForQuietMoment: scheduler.isWaitingForQuietMoment,
@@ -427,7 +434,7 @@ public actor AppCoordinator {
             cpu: cpu, companion: companion.map { .init(state: $0.state.rawValue, pendingCount: $0.pendingCount,
                 partialDeliveryPossible: $0.partialDeliveryPossible) },
             voiceMarkers: voice.map { .init(state: $0.state, enabledRuleCount: $0.enabledRuleCount,
-                mediaMappingIncomplete: $0.mediaMappingIncomplete) }, unavailable: unavailable)
+                mediaMappingIncomplete: $0.mediaMappingIncomplete) }, unavailable: unavailable, audioPreparation: audioPreparation)
         if recordRead {
             try? await services.database.recordMetricEvent(metricType: .progressiveRecallAction,
                 metadata: "{\"action\":\"operationsRead\",\"count\":1,\"outcome\":\"partial\"}")
@@ -811,6 +818,16 @@ public actor AppCoordinator {
         return owner
     }
 
+    public func liveTranscriptionSnapshot() async -> LiveTranscriptionSnapshot {
+        await services.liveTranscriptionSnapshot()
+    }
+
+    public func setLiveTranscriptionEnabled(_ enabled: Bool) async {
+        await services.setLiveTranscriptionEnabled(enabled)
+        try? await recordMetricEvent(metricType: .audioPreparation,
+            metadata: "{\"action\":\"microphone_draft_trial\",\"enabled\":\(enabled)}")
+    }
+
     public func voiceMarkers() async throws -> VoiceMarkerController {
         try await services.voiceMarkers()
     }
@@ -852,6 +869,8 @@ public actor AppCoordinator {
         // draining consumer. Pause/close joins this start before its final revoke.
         guard !commandAccessClosed, masterCaptureRequested else { throw CancellationError() }
         await voiceMarkers?.setRecording(config.microphoneEnabled && runtime.microphone.state == .running)
+        let draft = await services.liveTranscription()
+        await draft.setRecording(config.microphoneEnabled && runtime.microphone.state == .running)
     }
 
     private func stopOwnedAudioPipeline() async throws {
@@ -2398,11 +2417,14 @@ public actor AppCoordinator {
         let dictationManager = services.dictation
         let voiceMarkers = try? await services.voiceMarkers()
         let markerInput = voiceMarkers?.input
+        let draft = await services.liveTranscription()
+        let draftInput = draft.input
         let (audioStream, continuation) = AudioPipelineBufferPolicy.makeStream()
         let bridgeTask = Task {
             for await audio in sourceAudioStream {
                 if Task.isCancelled { break }
                 markerInput?.offer(audio)
+                draftInput.offer(audio)
                 await dictationManager.ingest(audio)
                 continuation.yield(audio)
             }
@@ -2417,6 +2439,7 @@ public actor AppCoordinator {
         bridgeTask.cancel()
         await bridgeTask.value
         await voiceMarkers?.setRecording(false)
+        await draft.setRecording(false)
 
         Log.info("Audio pipeline processing completed", category: .app)
     }
