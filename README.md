@@ -17,6 +17,8 @@ Download or copy the entire `prototypes/retrace-clickthrough/` directory, then o
 
 The active direction is [one searchable computer history](docs/unified-history-plan.md), delivered in capture, workspace and recall stages. New macOS 26 capture/workspace/semantic candidates have independent switches and remain separate from the last installed trial. Activity context starts disabled and can be enabled with **Collect activity context while recording**; master pause applies. Exact saved evidence keeps its original source and revision. See [validation and Mac acceptance](docs/progressive-recall-validation.md); project assignment is outside the active scope.
 
+**13 November 2026 repair checkpoint:** installed local trial **2610.22.5** is unchanged. Signed candidate **2611.13.1**, on the separate [responsiveness repair branch](https://github.com/stuartsc/retrace/tree/repair/responsiveness-20261113), repairs Timeline freshness and first-pass transcription scheduling. It passed clean debug validation and a separate clean optimised build; installation awaits restart timing. Native transcription, audio-size reduction and original-image retention remain separate candidates with their own acceptance gates. See the [current repair handoff](docs/repair-20261113-handoff.md) for source branches, test receipts and remaining work; these repairs are not shipped or incorporated into this checkout.
+
 ## What is Retrace?
 
 Retrace is an open source alternative to Rewind AI that gives you photographic memory of everything you've seen on your screen. It continuously captures screenshots (every 2 seconds by default), extracts text using OCR, and stores everything in a searchable database—entirely on your Mac with no cloud dependencies.

@@ -1,10 +1,16 @@
 # Updates and changelog
 
-Last updated: 2026-10-01.
+Last updated: 2026-11-13.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+- **2026-11-13 — Signed responsiveness repair candidate, not installed:** build **2611.13.1** on the separate [repair branch](https://github.com/stuartsc/retrace/tree/repair/responsiveness-20261113) refreshes Timeline to the newest saved screen, preserves first-pass audio priority as recordings age, and refreshes Live after text commits. Routine validation avoids foreground automation. Clean debug validation passed **1,719 tests, 23 skips, zero failures**; a separate clean optimised build and signature checks passed. Installation awaits restart timing. Installed local trial **2610.22.5** and existing recordings remain unchanged. [Repair handoff](docs/repair-20261113-handoff.md).
+
+- **2026-11-13 — Native transcription and audio-size candidates:** the separate [native first-pass branch](https://github.com/stuartsc/retrace/tree/repair/phased-transcription-20261113) passed **1,733 tests, 24 skips, zero failures**. Both native speech options remain off; required Apple speech assets are missing, and the **2–5-second** draft target is unverified. The [AAC container-padding branch](https://github.com/stuartsc/retrace/tree/repair/aac-v23-20261113) passed **five native tests with zero failures**: three authored clip lengths were **24–40% smaller**, with identical packets, timing, decoded audio and seek results. Existing media was not rewritten. The integrated writer candidate still awaits Swift validation; these results do not establish installed performance or representative storage savings.
+
+- **2026-11-13 — Original-image retention repair candidate:** a separate V24-only candidate requires a durable processing or explicit skip record, a verified archive and finished readers before releasing originals. It addresses excluded-app originals remaining indefinitely, repeated spool scans, long archive-processing permits and hidden capture-gap notices. Clean validation is in progress; it is not installed. Native-resolution OCR and original compression remain off pending their acceptance checks. [Current scope and verification](docs/repair-20261113-handoff.md).
 
 - **2026-10-01 — CPU monitoring and audio governor, local trial 2610.1.1:** the isolated V23-compatible hotfix from `f1551be` is installed. System Monitor now shows continuous one-core CPU windows and why audio preparation is waiting; saved audio remains pending during active use. The clean debug suite passed 1,137 tests (nine intentional skips), five explicit native/model checks passed, and a separate clean optimized build passed. Installed checks verified the UI, resumed screen/audio recording and unchanged schema, identity and settings. A subsequent one-minute CPU observation averaged 69.9%, with Vision OCR still active; this is not matched performance acceptance or the 20% target. The larger workspace candidate remains uninstalled. [Installed CPU repair ledger](docs/installed-cpu-protection.md).
 

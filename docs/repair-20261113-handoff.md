@@ -6,7 +6,7 @@ The user authorised implementing the repair plan. Fast draft text target is 2–
 
 Workspace `/Users/stuartbond/backintime-responsiveness-20261113`, branch `repair/responsiveness-20261113`.
 
-- Frozen recovery baseline `25296e1`; repair `e90fcc7` pushed; validation/runner hardening `7b0ac80`; signed installer/receipts at `8193ebb`, cleanup receipt at `6e4c123`. Primary branch pushed through8193ebb; latest cleanup push in flight at this checkpoint.
+- Frozen recovery baseline `25296e1`; repair `e90fcc7` pushed; validation/runner hardening `7b0ac80`; signed installer/receipts at `8193ebb`, cleanup receipt at `6e4c123`. Primary branch pushed through6e4c123.
 - Source recovery matched 753/763 installed inputs. Nine changes and one removal are the previously authorised Live lazy-scroll restoration. Original audio/governor/Timeline sources match installed build2610.22.5. Recovery checkout was preserved.
 - Fixed recent/old first-pass fairness, paced single-thread overdue work, native cancellation when fresh speech arrives, coalesced durable-text notifications, cached bounded audio queue reporting, and Timeline current-head refresh that preserves intentional history browsing.
 - Default-off native microphone draft preview; CPU Whisper remains canonical. HEVC reporting distinguishes availability/requested selection from unverified actual hardware use. Existing periodic storage reporting remains.
@@ -64,7 +64,7 @@ Finish retention validation; address actual failures and retain receipts. Then v
 
 Root removed only completed owned primary debug scratch and AAC component build after no-open-handle check; free-space delta1,790,832,640bytes, with concurrent-work caveat. Signed candidate, release binary, source and receipts retained. Live recording library untouched. Free space was~45GiB before cleanup; preserve20GiB throughout.
 
-Main workspace has a pre-existing user modification to AGENTS.md; do not stage/revert it. This handoff's prior commit3488ed1 was pushed. Connected Jira search found no matching Retrace/backintime issue; no unrelated issue changed. Native and AAC branches pushed; primary latest cleanup push result needs polling (session17665).
+Main workspace has a pre-existing user modification to AGENTS.md; do not stage/revert it. This handoff's prior commit98e9a29 was pushed. Connected Jira search found no matching Retrace/backintime issue; no unrelated issue changed. Native and AAC branches pushed; primary cleanup commit6e4c123 is pushed.
 
 Full plan still includes two-source native streaming, unchanged-frame occurrence navigation, unique-chunk storage and representative quality/energy gates. Main already holds larger V24–V32 candidates and global performance tooling (`docs/performance-measurement.md`, `scripts/performance_benchmark`); do not reimplement or install that broad tree as a shortcut. Narrow current work remains separate.
 
