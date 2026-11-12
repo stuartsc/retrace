@@ -7,10 +7,47 @@ Isolated worktree `/Users/stuartbond/backintime-audio-delivery-20261113`, branch
 compactor commit `08ebb78` was cherry-picked as `7d3466a`. The two noninteractive
 runner files are inherited exactly from reviewed checkpoint `7b0ac80`.
 
-This is source integration, not installation or acceptance. No live preferences,
+Signed local candidate **2611.13.2** is ready; it is not installed or accepted against live workloads. No live preferences,
 recordings, models or app bundles were changed. No device or UI operation ran.
 Root owns build scheduling and the one bounded integration-policy review; the
 compactor and native-first-pass implementations already have their own reviews.
+
+## Signed candidate and app-only installer
+
+Candidate **2611.13.2** combines the Timeline/audio scheduling repair with new-file
+AAC padding removal. Both native speech trials remain off. The app is signed with
+the existing Developer ID; deep strict verification and the actual installer
+`--check` passed. The check created no files or receipts in the candidate directory.
+The installed app remains **2610.22.5**; its executable and Info.plist hashes did
+not change. No recording library, preference, model asset or visible UI was changed.
+
+The candidate directory is
+`~/Library/Application Support/Retrace Candidates/2026-11-13-audio-delivery`.
+`install_app_only.py --install` requires normal Quit, verifies that recording
+writers have stopped, retains the old application and swaps only the application.
+It does not copy or open the database. V23 and standard AAC/M4A remain compatible;
+rollback uses the current recording library. Restart timing is still awaiting the
+user's answer because it creates a recording gap. Do not launch the candidate
+alongside the installed application.
+
+Packaging verifies all **751** release inputs and **348** focused-test inputs.
+The latter are also matched against their tested Git commit and overlapping
+release inputs. The six native audio libraries are copied from the actual build
+inputs and individually signed. The retained Sparkle 2.8.1 framework's unsigned
+arm64 code matches the actual SwiftPM artifact. Bundle revision and source-manifest
+metadata now refer to the verified release, replacing inherited installed metadata.
+The ready receipt is written only after installer materials are complete.
+
+Four private installer tests passed, including rejection of stale source metadata,
+read-only preflight, preservation of an earlier attempt, and truthful post-swap
+failure reporting. The single advisory packaging review's two medium findings
+(source linkage and receipt order) were corrected before signing.
+
+Receipts: `docs/fixtures/repair-20261113-audio-integration-harness/` contains
+`candidate-2611.13.2.json`, `packaging-verification.json`, `packaging-review.json`
+and `app-only-compatibility.json`. Production code is `92dd2dc`; clean release
+input checkpoint `b495d4a`; release validation record `d68b4bc`; packaging recipe
+`8ff1b7b`. These are separate from installed acceptance.
 
 ## One policy for every writer
 

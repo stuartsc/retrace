@@ -1,0 +1,47 @@
+{
+  "audioPaddingCompactionDefaultEnabled": true,
+  "candidate": "/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-11-13-audio-delivery/Retrace 2611.13.2 candidate.app",
+  "codeInputManifestSHA256": "6c4e5adc9c27d63f47b5ebb2bfeabb9ccf0575403721fc9cfafc2119c4b67fb6",
+  "configuration": "release",
+  "existingMediaModified": false,
+  "focusedInputsMatchedTestedCommit": 348,
+  "focusedSourceManifestSHA256": "f77b57d472fb0af08fdb3b7ab121e4e07174875c1471d6284ff62b4ed4f888dd",
+  "focusedValidationSHA256": "9173729567fcafebd4d65da433c3d612b4762110fdf0d4ece39a03c7b7ca0ebf",
+  "installed": false,
+  "installedExecutableAndPlistUnchanged": true,
+  "installerMaterialSHA256": {
+    "Recovery helper/clone_native_library.py": "081da8b46b99eaef2375c283e775bc5dc82f4abbb0446f21d24d90ca7407d5ca",
+    "app-only-compatibility.json": "a22902c04ba23511b46d4e89e3083203a04f05b7947f0dd0c0a03d79646a4c2a",
+    "install_app_only.py": "343d48f73fc2d1d2b255250cb65d9ffe2de57f79d8232780844d6cd356e3e4dd"
+  },
+  "nativeLibraryInputSHA256": {
+    "libggml-base.dylib": "86ae45cafc861c92f939bb28215a446a401d2cee63b947eea175f7676db4c650",
+    "libggml-blas.dylib": "b7f54577a21aba5a37b22518f60f9bc3b1f4c9438c1876759330e58fa15bb490",
+    "libggml-cpu.dylib": "f17e57d4d4df1a34a06f3b204ae4c5f762860eee2f7846c56d1d033a2792e10c",
+    "libggml-metal.dylib": "9e1049b0ce4ed957d7724a3301c40853207b5caab027aa49a69d267e6da53692",
+    "libggml.dylib": "a611b8585b2afd0ea2b72c50968115cd8384075091ca6da34ea2a3fedd07c53f",
+    "libwhisper.1.dylib": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a"
+  },
+  "nativeSpeechLatencyAccepted": false,
+  "nativeSpeechTrialsDefaultEnabled": false,
+  "packagedExecutableSHA256": "a8dda3648d2e2d48016043b68b20b2b455926f465c31ba127ee9e4cab3255200",
+  "packagingInputCheck": "all 751 frozen code, resource, native and build inputs matched",
+  "packagingSourceRevision": "8ff1b7be0a691d1bb81ad5530475332f98bdcb5e",
+  "performanceAccepted": false,
+  "productionSourceCommit": "92dd2dc362a4400c33d0a89149b4cee39ffe19b1",
+  "releaseValidationSHA256": "ee839df2ad1ab34e58cdf3992e3f5ba7ddfb5713380a861f368dcec4c41bcdf8",
+  "retainedSparkleFramework": {
+    "matchedBuildArtifact": true,
+    "unsignedArm64SHA256": "ebb987d1ae41fb02d2f11bdc31b78b42de55b2b0511c5cf176785914d02b642c",
+    "version": [
+      "2.8.1",
+      "2050"
+    ]
+  },
+  "schemaVersion": 3,
+  "signatureVerified": true,
+  "sourceRoot": "/Users/stuartbond/backintime-audio-delivery-20261113",
+  "testedSourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "validationReceiptSHA256": "0d7e0f06fcb867556d300bfc156cd277387f383607cca288b1c0caf4c4e191b6",
+  "verifiedBuildBinarySHA256": "2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38"
+}
