@@ -1,0 +1,36 @@
+{
+  "tests": {
+    "executed": 5,
+    "failures": 0,
+    "skipped": 0
+  },
+  "sourceInputsMatchedBeforeAndAfter": true,
+  "logSHA256": "eb9728c78d9fb7ebcc06f71b79de498319fbe4aa90d7e978a79486d345dd628b",
+  "nativePacketTimingPCMAndSeekChecks": "passed",
+  "failedAtomicWriteRetainsOriginal": "passed",
+  "wholeAppIntegration": "pending",
+  "installed": false,
+  "savings": [
+    {
+      "samples": 160000,
+      "seconds": 10.0,
+      "beforeBytes": 57940,
+      "afterBytes": 34927,
+      "savedPercent": 39.719
+    },
+    {
+      "samples": 240000,
+      "seconds": 15.0,
+      "beforeBytes": 74109,
+      "afterBytes": 51448,
+      "savedPercent": 30.578
+    },
+    {
+      "samples": 339968,
+      "seconds": 21.248,
+      "beforeBytes": 92968,
+      "afterBytes": 70747,
+      "savedPercent": 23.902
+    }
+  ]
+}

@@ -6,9 +6,11 @@ import Shared
 /// Owner: STORAGE agent
 public actor AudioSegmentWriter {
     public nonisolated let storageRoot: URL
+    private let compactContainerPadding: Bool
 
-    public init(storageRoot: URL) {
+    public init(storageRoot: URL, compactContainerPadding: Bool = false) {
         self.storageRoot = storageRoot
+        self.compactContainerPadding = compactContainerPadding
     }
 
     /// Extract audio segment from buffer and save to M4A file
@@ -93,6 +95,8 @@ public actor AudioSegmentWriter {
             sampleRate: sampleRate,
             channels: channels
         )
+
+        if compactContainerPadding { try AACContainerCompactor.compactNewFile(at: outputURL) }
 
         // Get file size
         let attrs = try FileManager.default.attributesOfItem(atPath: outputURL.path)
@@ -222,6 +226,8 @@ public actor AudioSegmentWriter {
             sampleRate: sampleRate,
             channels: channels
         )
+
+        if compactContainerPadding { try AACContainerCompactor.compactNewFile(at: outputURL) }
 
         // Get file size
         let attrs = try FileManager.default.attributesOfItem(atPath: outputURL.path)
