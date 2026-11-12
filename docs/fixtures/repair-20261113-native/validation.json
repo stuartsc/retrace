@@ -1,0 +1,21 @@
+{
+  "sourceCommit": "0ea09c9",
+  "focused": {
+    "executed": 78,
+    "skipped": 2,
+    "failures": 0
+  },
+  "logs": {
+    "initial-compile": {
+      "sha256": "d6d2af073bd9b3fe6790e2cd54bb124535599970964cf1a343ee5499662f93f3",
+      "bytes": 753184
+    },
+    "focused": {
+      "sha256": "d98961f6b85ba12409919c6c490ead57233a3d63b0fda5073b5f22b1584ec535",
+      "bytes": 1199403
+    }
+  },
+  "advisoryReview": "no blocking findings",
+  "nativeAcceptance": "pending missing assets",
+  "installed": false
+}

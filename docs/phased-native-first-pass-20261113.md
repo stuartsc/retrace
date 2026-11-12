@@ -105,3 +105,7 @@ array removal called an instance helper, creating overlapping Swift exclusivity
 accesses. The stateless overlap helper is now static. The failed receipt remains
 at `/tmp/retrace-phased-native-clean.log`; the retry uses a separate log. This is
 a compile correction, not native acceptance.
+
+### Advisory review
+
+The one advisory review of `e90fcc7..0ea09c9` found no blocking correctness or additional medium-severity defects. It covered coverage/finalisation, exact AAC binding, cancellation, device inactivity, durable publication and deferred CPU correction. This is source review, not native acceptance. Both native gates remain disabled. Full logs are retained under `docs/fixtures/repair-20261113-native`.
