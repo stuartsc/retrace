@@ -35,3 +35,10 @@ Clean debug validation, independent optimised build, advisory review, measured n
 - Initial exploratory debug build was rejected because Timeline source changed during compilation. This is a build ownership failure, not a successful validation; `/tmp/retrace-repair-debug.log` is retained. Final source was frozen before a clean rebuild.
 - One advisory review found overdue inference could still delay fresh speech after acquiring a permit. The owner now cancels and joins the active overdue native token on a fresh speech arrival, retaining its original pending row. Held-exit and three-turn fairness regressions were added.
 - Live and operations now expose cached bounded queue counts, oldest pending time and observation time. Truncation is explicit; failed reads retain their last timestamp.
+
+- Clean debug build passed in1,320.27s at low-priority two-job concurrency. Focused suite passed187tests/1skip/0failures; full noninteractive suite passed1,719tests/23skips/0failures in392.979s. Frozen code inputs remained identical. Compressed complete receipts are under `docs/fixtures/repair-20261113`.
+- The separate real native streaming attempt skipped: configured Apple speech assets are not installed. Two-to-five-second performance remains unverified. User approval to download assets was requested; no download occurred.
+- Before the full suite, runner isolation was expanded to clear legacy `RUN_INTERACTIVE_*`, `AX_VERBOSE` and `TEST_SCREENSHOT_PATH` switches, in addition to Retrace flags. Isolation test passed; no such switches were inherited in the preceding focused run.
+- A fresh, separate optimised build is running in `.build-validation/release`. The app is still not installed.
+
+- Separate fresh optimised build passed in450.98s. Signing/preparation is next; installation is still pending.

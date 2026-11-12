@@ -10,6 +10,9 @@ class NoninteractiveValidationTests(unittest.TestCase):
             "RETRACE_TEST_NATIVE_LIVE_CONTEXT_VISIBLE": "1",
             "RETRACE_TEST_NATIVE_LIVE_CONTEXT_INPUT": "1",
             "RETRACE_OCR_QUALITY_EXPORT": "/live/path",
+            "RUN_INTERACTIVE_ACCESSIBILITY_INSPECTOR": "1",
+            "AX_VERBOSE": "1",
+            "TEST_SCREENSHOT_PATH": "/live/screenshot.png",
             "RETRACE_TEST_DISABLE_FILE_LOGGING": "0",
         })
         self.assertEqual(env, {"PATH": "/usr/bin", "DEVELOPER_DIR": "/test/sdk",

@@ -1,0 +1,49 @@
+{
+  "sourceCommit": "e90fcc7",
+  "sourceInputsUnchanged": true,
+  "cleanDebugBuildSeconds": 1320.27,
+  "focused": {
+    "executed": 187,
+    "skipped": 1,
+    "failures": 0
+  },
+  "full": {
+    "executed": 1719,
+    "skipped": 23,
+    "failures": 0
+  },
+  "nativeSpeech": {
+    "status": "skipped",
+    "reason": "configured on-device assets not installed",
+    "latencyAccepted": false
+  },
+  "optimizedBuild": {
+    "passed": true,
+    "cleanSeparateScratch": true,
+    "elapsedSeconds": 450.98,
+    "binarySHA256": "726982a68b5da47e39ad87e8b8c5dc5264282715ba09d52518fef143c8fa87e4"
+  },
+  "installed": "unchanged 2610.22.5",
+  "logs": {
+    "debug": {
+      "sha256": "e464c598e50b72debe34b2cb34e8d1ff3c33d7c139c59541ca781ee2b9332b16",
+      "bytes": 1119766,
+      "gzipBytes": 30006
+    },
+    "clean-debug": {
+      "sha256": "0c3fb73cfa8be83491a8cf546e7ae5150c7ab6f04fbc4d74d0b5eacc95e67242",
+      "bytes": 2700978,
+      "gzipBytes": 113763
+    },
+    "full-debug": {
+      "sha256": "53d4bbbb6934f7a5fde9f086fb1dc08aabe1dbbfbf31770f7879349f1c894259",
+      "bytes": 10599559,
+      "gzipBytes": 564396
+    },
+    "native-draft": {
+      "sha256": "23be9a7a45aee7c50ffb0dde56ace7c2790bc19a724824e51167bc7a2b532532",
+      "bytes": 2353,
+      "gzipBytes": 612
+    }
+  }
+}
