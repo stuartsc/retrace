@@ -1,49 +1,61 @@
-# Active responsiveness implementation — 13 November
+# Responsiveness repair handoff — 13 November 2026
 
-User authorised the full repair plan. Work is ongoing; do not treat the first source candidate as completion or installation. Do not use foreground computer control, visible tests or live capture devices. Preserve all recorded history.
+The user authorised implementing the repair plan. Fast draft text target is 2–5 seconds, followed by refinement. Routine testing must not take over the screen. No computer use, app restart, installation, live library mutation, history deletion or model download has occurred in this session.
 
-## Workspaces
+## Ready primary repair
 
-- Primary repair: `/Users/stuartbond/backintime-responsiveness-20261113`, branch `repair/responsiveness-20261113`, baseline commit `25296e1`. Responsiveness source commit `e90fcc7` is pushed to origin; validation is still in progress. Root owns integration, validation, packaging and journal.
-- Original recovery `/Users/stuartbond/backintime-live-context` was left unchanged. Its dirty source was copied and frozen before repair. Installed bundle manifest matches 753/763 inputs; other differences are nine approved lazy-scroll UI files and removed manual-page view. Governor/audio/Timeline originals match installed 2610.22.5 exactly.
-- Storage candidate: `/Users/stuartbond/backintime-storage-20261113`, branch `repair/storage-20261113`, baseline `4b5062b`. Storage source commit `ef3eeb2` implements optional AAC padding compaction and tests, default off. Full tests remain pending; do not enable V32. This is separate from the narrow installed-family repair.
-- Running `/Applications/Retrace.app` remains 2610.22.5; PID13811 at last check. Signing identity exists and installed app team is CC88WZ5SQ7. Do not use existing `build_and_sign.sh`: it automatically kills/replaces the installed app, contrary to the staged restart plan.
+Workspace `/Users/stuartbond/backintime-responsiveness-20261113`, branch `repair/responsiveness-20261113`.
 
-## Written implementation
+- Frozen recovery baseline `25296e1`; repair `e90fcc7` pushed; validation/runner hardening `7b0ac80` committed, push pending.
+- Source recovery matched 753/763 installed inputs. Nine changes and one removal are the previously authorised Live lazy-scroll restoration. Original audio/governor/Timeline sources match installed build2610.22.5. Recovery checkout was preserved.
+- Fixed recent/old first-pass fairness, paced single-thread overdue work, native cancellation when fresh speech arrives, coalesced durable-text notifications, cached bounded audio queue reporting, and Timeline current-head refresh that preserves intentional history browsing.
+- Default-off native microphone draft preview; CPU Whisper remains canonical. HEVC reporting distinguishes availability/requested selection from unverified actual hardware use. Existing periodic storage reporting remains.
+- Noninteractive runner removes inherited interactive switches, sets private diagnostic logging, uses nice15/jobs2 and a20GiB disk floor. No UI automation.
+- Clean debug:1,320.27s. Focused187tests/1skip/0failures. Full1,719tests/23skips/0failures in392.979s. All688 frozen code inputs matched.
+- Separate clean optimised build passed450.98s. Receipts and compressed logs in `docs/fixtures/repair-20261113`.
+- Native speech authored test skipped: Apple assets absent. User approval to download is pending; do not download without reply. No2–5s, CPU/energy or physical acceptance claim.
 
-- Audio priority no longer expires into idle-only work. Three recent turns alternate with oldest pending work. Old/quiet first passes are single-threaded and paced to one per30s during activity; quiet catch-up reuses a20s native grant. New speech cancels/joins both waiting and running overdue work. Raw pending recordings survive cancellation.
-- Committed text emits coalesced Live refresh notifications before optional companion work. Root also added notifications after pass2/pass3 durable replacements.
-- Timeline normal open/Now requests saved current head, rejects stale async results after browsing/deeplinks, refreshes after wake/visible polling only at Now, and no longer captures another screenshot/OCR on ordinary open.
-- Default-off native microphone draft trial uses existing sample-timed PCM, bounded partial replacement, clear fallback and joined teardown. CPU Whisper still owns canonical text. System-audio streaming remains outstanding; no identity is fabricated.
-- Bounded queue summaries (indexed LIMIT1001 per lane, cached30s) show lower-bound counts, oldest pending time and observation time in Live and operations. Unknown stays unknown. Root added optional audioPreparation to operations snapshots.
-- HEVC inventory availability/requested selection/actual-use-unverified reporting ported from main with real encode/decode tests. Production selection remains automatic.
-- `scripts/validate_noninteractive.py` strips all inherited RETRACE flags, disables live file logging, limits jobs2 with nice15, and preserves20GiB headroom. `debug --native-draft` explicitly runs silent real authoredPCM speech test. UI native settings/AppKit observer refuse noninteractive profile. Python environment-isolation test passed.
+Signed build2611.13.1 is prepared at:
+`/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-11-13-responsiveness/Retrace 2611.13.1 candidate.app`
 
-## Validation state and active command
+Binary matched the optimised-build receipt before RPATH/signing changes. Developer ID deep strict verification passed; installed executable/plist hashes unchanged. Packaging review findings were fixed. The new app-only installer `install_app_only.py --check` passed without mutation. `--install` has never run; installer advisory review is in progress. Retains only the old app, uses current library, no database copy or migration. Arrange a normal-quit restart after the concrete installer is verified. Do not use `build_and_sign.sh`, which kills/replaces the installed app automatically.
 
-- One advisory code review completed. Its high issue (running overdue inference blocks new speech) was fixed by audio worker with a held-exit regression. Earlier cooldown wait issue also fixed. Do not restart review loops.
-- Initial exploratory debug build FAILED because Timeline source changed during compilation, not a type error. Preserve `/tmp/retrace-repair-debug.log`.
-- All Swift repair source frozen before clean debug build. `docs/repair-20261113-code-freeze.json` records688 code inputs. Do not edit code during build.
-- Active exec session50125 runs the clean focused suite, log `/tmp/retrace-repair-clean-debug.log`:
-  `python3 scripts/validate_noninteractive.py debug --filter 'AutomaticAudioSelectionTests|AudioProcessingFreshnessTests|BackgroundProcessingGovernorTests|ResourceProcessingPolicyTests|TimelineOriginalFrameTests|TimelineEvidenceSelectionTests|TimelineBackgroundRefreshPolicyTests|LiveTranscriptionControllerTests|LiveContextWorkspaceTests|HEVCEncoderTests|StorageUsage|RetraceOperationsTests'`
-- Scratch `.build-validation/debug` was cleaned immediately before launch. Fresh optimised build must use `.build-validation/release` through runner, separately, after debug passes. Native speech test has not run. It uses tracked authored.wav hash271a49fc…, en-AU installed assets only, no recording/playback/download/UI. Firstdraft<=5s and critical negation phrase gate must pass; unavailable assets are a skip, never acceptance.
-- Disk free49GiB after initial build; preserve20GiB. No library copy was made. Source frozen~30MB.
+Primary packaging scripts/receipts/journal remain uncommitted until installer review. Running app is still2610.22.5. Signing team CC88WZ5SQ7. No credentials logged.
 
-## Remaining
+## Phased native text
 
-Finish debug, fix actual failures, retain receipts. Run native speech and separate optimised build, appropriate broader isolated regressions. Package a signed candidate with source/build manifests and app-only rollback; do not install/unannounced-restart before concrete reviewable candidate. No installed acceptance or measured CPU/energy claim yet. Update journal/changelog, commit and push branch after validation.
+Workspace `/Users/stuartbond/backintime-streaming-20261113`, branch `repair/phased-transcription-20261113`, basee90fcc7. Agent `phased_native_text` owns files and currently the sole Swift build slot.
 
-Full plan still includes native two-source streaming/canonical integration, representative accuracy/latency/energy, native original retention then OCR/archive release, unchanged-frame reuse with occurrence navigation, exact non-overlap audio storage gate. Main contains uninstalled V24–V32 candidates and must not replace V23 as a shortcut.
+Default-off covered native first-pass reuse binds source generation/continuity/sample ranges and encoded AAC SHA to ordered SpeechAnalyzer results-finalisation acknowledgements. Durable save callback does not wait for inference. Covered text becomes searchable needs_repair; one later CPU comparison retains native candidate provenance. Incomplete/late/system audio falls back to CPU. Microphone only. Preview latency differs from durable latency: governor delay beyond60s coverage retention falls back safely; no guarantee under prolonged pressure.
 
-## Sources and security
+Initial clean compile hit an exclusivity error; fixed with a stateless static helper. Failed log `/tmp/retrace-phased-native-clean.log` retained; retry `/tmp/retrace-phased-native-retry1.log`, session11436, now linking/compiling final tests. Source frozen. Worker must report result, commit checkpoint, then root arranges one advisory review. No native asset opt-in/download.
 
-Repair journal: `/Users/stuartbond/backintime-responsiveness-20261113/docs/repair-20261113-journal.md`. Source/installed comparison manifests beside it. Baseline scan found four exact copies of the previously classified public upstream Rewind compatibility constant, plus six tokenizer hashes; no new credential. Values never printed. Frozen baseline preserves one pre-existing EOF whitespace issue. Vendor external header links were materialised locally; repaired source is independent of those external links.
+## Original retention / OCR
 
-Memory used: MEMORY.md1260–1263 and1278–1281; final reply needs the required memory citation block. Rollouts01a15dce-680d-71f1-aaac-9f03713f0a29 and01a08fec-d782-7cd3-9801-2de32d112239. Do not update memory without user request.
+Workspace `/Users/stuartbond/backintime-retention-20261113`, branch `repair/original-retention-20261113`, basee90fcc7. Agent `original_retention` owns source; uncommitted and not compiled yet.
 
-## Storage follow-up checkpoint
+Bounded V24-only additive original-pixel alias/skip proofs. No V26+ migration or history rewrite. Raw originals retained until durable extraction or explicit policy skip, verified exact archive and drained readers. Legacy unattributed WAL remains visible/retained without blocking startup. Native OCR crops and LZFSE/LZ4 remain default off until gates.5GiB spool/20GiB headroom.
 
-- Agent storage implementation/review finished. Review high issue (staging failure orphaning valid saved audio) was fixed by full original-or-candidate readback fallback. No further review loop required.
-- Independent root smoke compiled the production compactor silently against a retained authored M4A: 60,047 to37,086bytes (38.238%), native AVAudioFile all171,707 PCM samples bit-identical. FFmpeg independent decode also identical before/after (343,936bytes, includes its own padding convention). Receipt `docs/aac-padding-smoke-20261113.json` in storage worktree. Not fullpromotion.
-- Native source/tests toport into V23repair: Storage/Audio/AACContainerCompactor.swift, AudioSegmentWriter smallinit/optionalcall diff, Storage/Tests/AACContainerCompactorTests.swift, and retained `docs/fixtures/responsiveness/2026-09-28/authored-codec-output/existing-quality-based.m4a` fixture. Keep optiondisabled until fullnative tests and savingsgates pass. No schema change needed.
-- Clean primary build now compiled app and is compiling RetraceTests; still no executable testresult yet at4:43AEST. Do notedit source until it finishes.
+One non-DB advisory review found: entire archive sweep held one freshOCR permit; every append rescanned all spool metadata; verification errors hid capture-gap notices. Worker is fixing resumable permit units, serial byte/source indexes, independent durable gap coverage.
+
+DB advisory review confirmed excluded-app frames pinned originals forever. `retention_database_review` implemented minimal DB/Shared skip proof +6 regressions: exact source binding, atomic completion, final archive requirement, proof revocation on reset, no fake OCR. Indexed originalFrameLocation added. Private SQLite migration/reset/deletion and EXPLAIN checks passed; Swift tests pending. Worker integrates Processing call and Storage lookup. No more duplicate reviews; run clean tests after changes freeze and build slot is free.
+
+## AAC storage
+
+Original candidate `/Users/stuartbond/backintime-storage-20261113`, branch `repair/storage-20261113`, commit `ef3eeb2` pushed. Default-off compactor removes only validated zero padding; packets/priming/timing preserved. Advisory high issue around staging failure was fixed with full original-or-candidate readback fallback.
+
+Independent smoke:60,047→37,086bytes (38.238% savings), all171,707 Apple-decoded PCM samples identical; independent FFmpeg before/after identical. This is one authored file, not promotion or historical cleanup.
+
+V23 port `/Users/stuartbond/backintime-aac-20261113`, branch `repair/aac-v23-20261113`, base7b0ac80. Root owns. Only compactor, AudioSegmentWriter option, native tests and retained fixture ported. `.aac-validation` contains exact copied production Shared +two audio files +real XCTest/fixtures for a clean component test without rebuilding unrelated UI. Prepared but not run; wait for native build slot. Tests require >=20% savings at3durations, exact packets/PCM/seeks/timing and filesystem failure handling. Option remains default off. Final integrated clean app build still required before rollout.
+
+## Next actions
+
+1. Finish installer review, address concrete findings, commit/push primary candidate records. Arrange restart separately; retain installed state until answered.
+2. Finish native focused tests and one advisory review. Native model download approval remains pending.
+3. Run isolated AAC native tests in next build slot; do not overlap CPU-heavy Swift builds.
+4. Freeze repaired retention source, run clean focused/full tests and separate clean release before promotion. Integrate validated slices deliberately, not by replacing V23 with the large main V24–V32 candidate.
+5. Retain source, test, signing, installation and physical acceptance as separate states. Full plan still includes two-source native streaming, unchanged-frame occurrence navigation, unique chunk storage and representative quality/energy gates.
+
+Disk available45GiB last check; preserve20GiB. Main workspace has a pre-existing user modification to AGENTS.md; do not stage/revert it. Commit only this owned handoff. Main handoff previous commit is local and push pending.
+
+Memory used: MEMORY.md1260–1263 and1278–1281. Final reply must include memory citation block; rollouts01a15dce-680d-71f1-aaac-9f03713f0a29 and01a08fec-d782-7cd3-9801-2de32d112239. No memory updates authorised.
