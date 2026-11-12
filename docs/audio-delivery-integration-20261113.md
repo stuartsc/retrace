@@ -83,3 +83,43 @@ Suggested focused filter after the source freeze:
 ```
 AudioWriterPolicyTests|AACContainerCompactorTests|NativeFirstPassPersistenceTests|NativeFirstPassCoverageTests|AudioProcessingFreshnessTests|AudioProcessingGovernorTests|PersistedAudioBatchCallbackTests|ExactAudioDecoderTests|MarkerAudioMediaTests|TranscriptAudioPlaybackTests
 ```
+
+
+## Focused real-product harness (prepared; not compiled)
+
+The bounded policy integration review passed with no findings. A private package
+is prepared at `.audio-integration-validation`, ignored with its build products.
+Its manifest declares only three test targets and a local path dependency on the
+unchanged production package. It imports the actual App, Processing, Storage,
+Shared and Database products; it does not declare replacement production targets
+or copy production implementation into the harness.
+
+Exact copies of the three selected XCTest files keep their `App/Tests`,
+`Processing/Tests` and `Storage/Tests` paths. Mirrored authored WAV/provenance/oracle
+and AAC fixtures preserve their existing `#filePath` lookups without editing any
+test source. The harness snapshots 348 production/test/fixture inputs, verifies
+seven exact copied inputs, preserves the three resolved dependency pins, and
+checks its own manifest and runner hashes. The production `Package.swift` is
+unchanged. Preparation verification and Python syntax checking passed; no Swift
+manifest evaluation, compilation or test execution has occurred in this harness.
+
+After the root releases the build slot, the explicit command is:
+
+```sh
+python3 .audio-integration-validation/run.py run --log /tmp/retrace-audio-integration-focused.log
+```
+
+The runner verifies source/copy/pin hashes, checks 20 GiB free headroom, cleans its
+private scratch directory and invokes the real SwiftPM products at nice 15 with
+two jobs. It inherits the reviewed noninteractive environment isolation, disables
+live file logging, and enables no model, device or UI test opt-ins. The log is
+created exclusively so prior failures cannot be overwritten. A second hash/pin
+check and a JSON exit-code/log-hash receipt follow execution. `verify` performs
+only the source/copy checks, without invoking Swift.
+
+Local-product unsafe flags have not yet been evaluated by SwiftPM. If the package
+manager rejects the real production dependency, retain that failure and use the
+ordinary safe runner; do not bypass the restriction using substitute App/Storage
+targets. Regardless of focused-test success, a separate clean optimised build of
+the full production application remains mandatory. The earlier native full suite
+and AAC component suite remain separate receipts, not this harness's results.

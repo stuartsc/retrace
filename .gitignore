@@ -138,3 +138,6 @@ local/
 
 # Isolated authored native AAC component validation
 .aac-validation/
+
+# Private focused integration harness and build products
+.audio-integration-validation/
