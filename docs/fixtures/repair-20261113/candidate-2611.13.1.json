@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "configuration": "release",
+  "sourceRoot": "/Users/stuartbond/backintime-responsiveness-20261113",
+  "testedSourceCommit": "e90fcc7",
+  "packagingSourceRevision": "7b0ac80f37558443936776d3b465226978c940e3",
+  "codeInputManifestSHA256": "52af355df11d8f2c567912ab63387b5c56c8c4d9359745d92b4a57aa76a8c2e3",
+  "verifiedBuildBinarySHA256": "726982a68b5da47e39ad87e8b8c5dc5264282715ba09d52518fef143c8fa87e4",
+  "validationReceiptSHA256": "69f41977bc6978571a75ac10dfd9198b136542d4535db858a25eed5c07a870a8",
+  "validationReceipt": "ValidationReceipt.json",
+  "packagingCodeInputCheck": "matched all frozen inputs",
+  "packagingInputHashes": {
+    "Package.swift": "709b1dc26a674ebff8a1b10234c9051c1705af5e2973f30f6763f0cc42850f56",
+    "Package.resolved": "beb207d5d10b5334d35400ea7ad2274e57b582cba8a10b18ac1dbaacb48c13e1",
+    "UI/Retrace.entitlements": "f8b7aa1d1b9668363582c72bf50a34467576c50b8867af5561ea7345a005d3e1"
+  },
+  "nativeSpeechLatencyAccepted": false,
+  "nativeSpeechMissingAssets": true,
+  "installed": false,
+  "candidate": "/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-11-13-responsiveness/Retrace 2611.13.1 candidate.app",
+  "packagedExecutableSHA256": "4e9e8f4491b40a5f59192cc89f854968795bda4218168b82352f32a6563469f6",
+  "signatureVerified": true,
+  "installedExecutableAndPlistUnchanged": true
+}

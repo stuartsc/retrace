@@ -42,3 +42,13 @@ Clean debug validation, independent optimised build, advisory review, measured n
 - A fresh, separate optimised build is running in `.build-validation/release`. The app is still not installed.
 
 - Separate fresh optimised build passed in450.98s. Signing/preparation is next; installation is still pending.
+
+## Signed candidate
+
+- Build2611.13.1 is packaged and Developer ID signed in Retrace Candidates/2026-11-13-responsiveness. Deep strict signature verification passed. Its unmodified executable matched the retained optimised-build SHA-256 before package RPATH adjustments/signing. The installed executable and Info.plist were unchanged. No launch or installation occurred.
+- Packaging review findings were addressed: explicit verified-binary check, non-bypassable guards, mutation-path symlink containment, and accurate code-input/build-versus-packaging provenance. The code-input manifest excludes build configuration and entitlements; their packaging hashes are recorded separately without claiming build-time verification.
+- App-only rollout remains pending. Native draft2–5s, CPU/energy and physical acceptance remain unverified.
+
+- App-only installer review found two medium operational issues. `--check` now suppresses Python cache writes; previous settings receipts are preflight blockers; incomplete installation reports the exact stage and installed/retained/staged identities, with a retained failure receipt. No automatic rollback is attempted against an unverified process state.
+- Three private-filesystem installer regressions passed: read-only check creates no files; a post-swap verification failure reports the two exact builds and preserves database metadata; an earlier settings receipt blocks before swapping. Signature checks in these failure simulations are fixtures; the real signed candidate independently passed deep strict verification and `--check`.
+- Restart timing was requested because installation briefly pauses recording. No install has occurred. Initial push of the validation commit was rejected by GitHub with `missing necessary objects`; a full-object retry follows. Source and test receipts remain local and intact.

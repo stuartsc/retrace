@@ -1,0 +1,9 @@
+{
+  "sourceCommit": "e90fcc7",
+  "releaseExecutableSHA256": "726982a68b5da47e39ad87e8b8c5dc5264282715ba09d52518fef143c8fa87e4",
+  "installedBaseBuild": "2610.22.5",
+  "schemaTransition": "none; remains V23",
+  "storageFormatTransition": "none",
+  "rollback": "application only; retain current library",
+  "nativeDraftTrial": "default off; missing assets; latency not accepted"
+}
