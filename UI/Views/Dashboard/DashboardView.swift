@@ -211,6 +211,29 @@ public struct DashboardView: View {
                 .padding(.top, (viewModel.showAccessibilityWarning || viewModel.showScreenRecordingWarning) ? 12 : 20)
             }
 
+            if let retention = viewModel.originalRetention,
+               retention.notice != nil || retention.coverageNotice != nil {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: retention.blocked ? "exclamationmark.triangle.fill" : "info.circle")
+                        .foregroundStyle(retention.blocked ? Color.orange : Color.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let notice = retention.notice { Text(notice).font(.callout) }
+                        if let coverage = retention.coverageNotice { Text(coverage).font(.callout) }
+                        if let spool = retention.spool {
+                            Text("Original images awaiting text and archive checks: \(ByteCountFormatter.string(fromByteCount: spool.retainedBytes, countStyle: .binary)) / 5 GiB")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .background(Color.orange.opacity(retention.blocked ? 0.14 : 0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .frame(maxWidth: dashboardMaxWidth)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 12)
+            }
+
             // Header
             header
                 .frame(maxWidth: dashboardMaxWidth)

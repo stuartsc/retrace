@@ -1,3 +1,9 @@
+
+### 2026-11-13 — Original-image retention and native OCR source candidate
+
+- Add an independent V24 original-frame alias and deletion ledger without reindexing history. Retain original pixels until durable text, exact archive proof and reader drain; show pressure and capture gaps while preserving 5 GiB / 20 GiB limits.
+- Move archive verification out of recording finalisation into one joined, governed owner. Use original or native decoded BGRA for saved-frame OCR. Keep native crop discovery and LZFSE/LZ4 compression independently disabled until representative acceptance.
+- Port real private-file/SQLite/Vision/HEVC regressions; syntax validation passes. Compiled test execution, optimised build and installation are pending in the [candidate ledger](docs/repair-20261113-original-retention.md).
 # Updates and changelog
 
 Last updated: 2026-10-22.

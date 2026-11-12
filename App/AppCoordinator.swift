@@ -352,6 +352,10 @@ public actor AppCoordinator {
     // Periodic task to finalize orphaned videos (processingState stuck at 1)
     private var orphanedVideoCleanupTask: Task<Void, Never>?
     private var startupRecoveryTask: Task<Void, Never>?
+    private var originalSpoolReconciliation: Task<Void, Never>?
+    private var originalRetentionClosed = false
+    private var originalCoverageJournal: OriginalCaptureCoverageJournal?
+    public nonisolated let originalRetentionStatus = OriginalRetentionStatusHolder()
     private static let pipelineMemoryLogInterval: TimeInterval = 5.0
 
     // MARK: - Initialization
@@ -1062,6 +1066,16 @@ public actor AppCoordinator {
     public func initialize() async throws {
         Log.info("Initializing AppCoordinator...", category: .app)
         try await services.initialize()
+        try await services.storage.configureOriginalStore(storeID: services.database.originalStoreID())
+        let coverageRoot = await services.storage.getStorageDirectory()
+        let coverage = OriginalCaptureCoverageJournal(url: coverageRoot.appendingPathComponent("diagnostics/original-capture-coverage.json"))
+        do {
+            originalRetentionStatus.restoreCoverage(try await coverage.read())
+            originalCoverageJournal = coverage
+        } catch {
+            originalRetentionStatus.noteUnverified()
+            Log.warning("Screen coverage receipt could not be read; existing receipt retained", category: .app)
+        }
         do { try await companionSettings().restore() }
         catch { Log.warning("Private companion unavailable; local recording remains independent", category: .app) }
         do { _ = try await commandAccess() }
@@ -1074,6 +1088,7 @@ public actor AppCoordinator {
         await applyPowerSettings()
         startFrameProcessingAfterRecovery { [self] in
             try await recoverFromCrash()
+            await requestOriginalSpoolReconciliation()
         }
 
         // Start periodic orphaned video cleanup (runs every 60s)
@@ -1622,12 +1637,41 @@ public actor AppCoordinator {
         startupRecoveryTask = nil
         await stopLegacyOCRNodeTextMaintenance()
 
-        // Stop periodic cleanup tasks
+        // Stop periodic cleanup tasks and join original-media readers before SQLite closes.
         stopOrphanedVideoCleanup()
+        originalRetentionClosed = true
+        originalSpoolReconciliation?.cancel()
+        await originalSpoolReconciliation?.value
+        originalSpoolReconciliation = nil
 
         Log.info("Shutting down AppCoordinator...", category: .app)
         try await services.shutdown()
         Log.info("AppCoordinator shutdown complete", category: .app)
+    }
+
+    /// One coalesced, joined owner performs expensive archive checks outside recording.
+    /// Each record proof and each decoded archive frame releases/reacquires admission.
+    /// Fresh transcription can run between units; no permit covers a whole spool sweep.
+    private func requestOriginalSpoolReconciliation() {
+        guard !originalRetentionClosed, originalSpoolReconciliation == nil else { return }
+        originalSpoolReconciliation = Task(priority: .utility) { [self, services] in
+            defer { originalSpoolReconciliation = nil }
+            do {
+                let status = try await services.storage.reconcileOriginalSpool(
+                    prepareArchives: true, governor: services.backgroundProcessing
+                ) { [services] frameID in
+                    try await services.database.originalFrameDisposition(frameID: frameID)
+                }
+                originalRetentionStatus.update(status)
+                await services.backgroundProcessing.setOriginalSpoolPressure(
+                    status.retainedBytes >= status.limitBytes || status.availableBytes < status.minimumFreeBytes)
+            } catch is CancellationError {
+                // Cancellation leaves source records intact for the next owned sweep.
+            } catch {
+                originalRetentionStatus.noteUnverified()
+                Log.warning("Original images retained: cleanup proof is incomplete", category: .app)
+            }
+        }
     }
 
     // MARK: - Power Settings
@@ -1721,7 +1765,8 @@ public actor AppCoordinator {
                 ocrAccuracyLevel: currentConfig.ocrAccuracyLevel,
                 recognitionLanguages: currentConfig.recognitionLanguages,
                 minimumConfidence: currentConfig.minimumConfidence,
-                preferBackgroundProcessing: preferBackground
+                preferBackgroundProcessing: preferBackground,
+                nativeResolutionOCR: currentConfig.nativeResolutionOCR
             )
             await services.processing.updateConfig(updatedConfig)
         }
@@ -1848,6 +1893,7 @@ public actor AppCoordinator {
 
     /// Finalize any orphaned videos that have processingState=1 but no active WAL session
     private func cleanupOrphanedVideos() async {
+        requestOriginalSpoolReconciliation()
         do {
             // Get active WAL sessions to exclude currently-being-written videos
             guard let storageManager = services.storage as? StorageManager else {
@@ -2046,7 +2092,9 @@ public actor AppCoordinator {
                     metadata: frame.metadata,
                     source: .native
                 )
-                let frameID = try await services.database.insertFrame(frameRef)
+                let originalVideoPathID = await writerState.writer.segmentID
+                let frameID = try await services.database.insertCapturedFrame(frameRef,
+                    originalVideoPathID: originalVideoPathID)
 
                 let storedFrame = FrameReference(id: FrameID(value: frameID), timestamp: frame.timestamp,
                     segmentID: frameRef.segmentID, videoID: frameRef.videoID,
@@ -2142,11 +2190,34 @@ public actor AppCoordinator {
                 maybeLogPipelineMemory(reason: "steady-state")
                 totalFramesProcessed += 1
                 statusHolder.incrementFrames()
+                originalRetentionStatus.noteCaptureResumed()
 
                 if totalFramesProcessed % 10 == 0 {
                     Log.debug("Pipeline processed \(totalFramesProcessed) frames, \(writersByResolution.count) active writers", category: .app)
                 }
 
+            } catch let pressure as OriginalSpoolPressure {
+                totalErrors += 1
+                statusHolder.incrementErrors()
+                let coverage = originalRetentionStatus.notePressure(pressure)
+                do { try await originalCoverageJournal?.persist(coverage) }
+                catch {
+                    Log.warning("Screen coverage gap is visible but its receipt could not be saved", category: .app)
+                }
+                await services.backgroundProcessing.setOriginalSpoolPressure(true)
+                // Seal each existing archive so extraction can release its originals.
+                // A pressure refusal does not discard the frames already saved.
+                for key in Array(writersByResolution.keys) {
+                    guard var existing = writersByResolution[key] else { continue }
+                    do {
+                        try await finalizeWriter(&existing, processingQueue: await services.processingQueue)
+                        writersByResolution.removeValue(forKey: key)
+                    } catch {
+                        Log.warning("Original images retained after pressure finalisation failed", category: .app)
+                    }
+                }
+                requestOriginalSpoolReconciliation()
+                continue
             } catch let error as StorageError {
                 totalErrors += 1
                 statusHolder.incrementErrors()
@@ -2349,6 +2420,7 @@ public actor AppCoordinator {
         defer { liveVideoWriterPaths.remove(finalizedWriterPath) }
         let fileSize = await writer.currentFileSize
         try await services.database.markVideoFinalized(id: videoDBID, frameCount: frameCount, fileSize: fileSize)
+        requestOriginalSpoolReconciliation()
     }
 
     private func finalizeWriter(_ writerState: inout VideoWriterState, processingQueue: FrameProcessingQueue?) async throws {

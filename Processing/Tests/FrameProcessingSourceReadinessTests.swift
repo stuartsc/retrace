@@ -13,14 +13,17 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
     private var storage: StorageManager!
     private var processor: FrameSourceRecordingProcessor!
     private var queue: FrameProcessingQueue!
+    private var captureTime = Date()
 
     override func setUp() async throws {
+        captureTime = Date()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("FrameSourceReadiness-\(UUID())")
         database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try await database.initialize()
         storage = StorageManager(storageRoot: root)
         try await storage.initialize(config: StorageConfig(storageRootPath: root.path))
+        try await storage.configureOriginalStore(storeID: database.originalStoreID())
         processor = FrameSourceRecordingProcessor()
         let search = SearchManager(database: database, ftsEngine: FTSManager(databasePath: root.appendingPathComponent("test.db").path))
         queue = FrameProcessingQueue(database: database, storage: storage, processing: processor, search: search,
@@ -167,27 +170,82 @@ final class FrameProcessingSourceReadinessTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: metadataURL), metadataBefore)
     }
 
+    func testExcludedAppCommitsSkipProofReleasesOriginalsAndCanLaterPrepareFromArchive() async throws {
+        let bundleID = "com.test.source-readiness"
+        let captured = CapturedFrame(timestamp: captureTime, imageData: rawFrame(value: 73).imageData,
+            width: 64, height: 64, bytesPerRow: 256, metadata: FrameMetadata(appBundleID: bundleID))
+        let writer = try await storage.createSegmentWriter()
+        let path = await writer.relativePath
+        let pathID = await writer.segmentID
+        let videoID = try await database.insertVideoSegment(VideoSegment(id: .init(value: 0),
+            startTime: captureTime, endTime: captureTime, frameCount: 0, fileSizeBytes: 0,
+            relativePath: path, width: 64, height: 64))
+        let segmentID = try await database.insertSegment(bundleID: bundleID, startDate: captureTime,
+            endDate: captureTime, windowName: nil, browserUrl: nil, type: 0)
+        try await writer.appendFrame(captured)
+        let id = try await database.insertCapturedFrame(FrameReference(id: .init(value: 0), timestamp: captureTime,
+            segmentID: .init(value: segmentID), videoID: .init(value: videoID), frameIndexInSegment: 0,
+            metadata: captured.metadata), originalVideoPathID: pathID)
+        let wal = await storage.getWALManager()
+        try await wal.registerFrameID(videoID: pathID, frameID: id, frameIndex: 0)
+        let video = try await writer.finalize()
+        try await database.markVideoFinalized(id: videoID, frameCount: 1, fileSize: video.fileSizeBytes)
+        try await database.markFrameReadable(frameID: id)
+        await queue.updatePowerConfig(ocrEnabled: true, pauseOnBattery: false, pauseOnLowPowerMode: false,
+            isLowPowerModeEnabled: false, currentPowerSource: .ac, maxFPS: 0, workerCount: 1,
+            taskPriority: .utility, excludedBundleIDs: [bundleID], includedBundleIDs: [])
+        try await queue.enqueue(frameID: id)
+        await queue.startWorkers()
+        let skippedStatus = try await waitForTerminalStatus(id)
+        await queue.stopWorkers()
+        XCTAssertEqual(skippedStatus, 2)
+        let delivered = await processor.frames
+        XCTAssertTrue(delivered.isEmpty, "Exclusion must not invent a blank OCR inference")
+        guard case .skippedByAppFilter = try await database.originalFrameDisposition(frameID: .init(value: id)) else {
+            return XCTFail("The actual exclusion path must publish its own durable disposition")
+        }
+        _ = try await storage.reconcileOriginalSpool(prepareArchives: true) { [database] frameID in
+            try await database!.originalFrameDisposition(frameID: frameID)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("wal/original_segment_\(pathID.value)/frames.bin").path))
+        // An explicit later preparation request invalidates skip authority and
+        // can still use the retained archive after settings permit the app.
+        try await database.updateFrameProcessingStatus(frameID: id, status: 0)
+        guard case .pending = try await database.originalFrameDisposition(frameID: .init(value: id)) else {
+            return XCTFail("Requeued extraction must invalidate the old skip proof")
+        }
+        await queue.updatePowerConfig(ocrEnabled: true, pauseOnBattery: false, pauseOnLowPowerMode: false,
+            isLowPowerModeEnabled: false, currentPowerSource: .ac, maxFPS: 0, workerCount: 1,
+            taskPriority: .utility, excludedBundleIDs: [], includedBundleIDs: [])
+        try await queue.enqueue(frameID: id)
+        await queue.startWorkers()
+        let preparedStatus = try await waitForTerminalStatus(id)
+        XCTAssertEqual(preparedStatus, 2)
+        let prepared = await processor.frames
+        XCTAssertEqual(prepared.count, 1)
+    }
+
     private func makeFinalizedFixture(createEmptyVideo: Bool, capturedAt: Date? = nil) async throws -> (frameID: Int64, pathID: VideoSegmentID, videoURL: URL) {
         let writer = try await storage.createSegmentWriter()
         let pathID = await writer.segmentID
         let relativePath = await writer.relativePath
         let videoURL = root.appendingPathComponent(relativePath)
         if createEmptyVideo { try Data().write(to: videoURL) }
-        let timestamp = capturedAt ?? Date()
+        let timestamp = capturedAt ?? captureTime
         let videoID = try await database.insertVideoSegment(VideoSegment(id: VideoSegmentID(value: 0), startTime: timestamp,
             endTime: timestamp, frameCount: 1, fileSizeBytes: 0, relativePath: relativePath, width: 64, height: 64))
         try await database.markVideoFinalized(id: videoID, frameCount: 1, fileSize: 0)
         let segmentID = try await database.insertSegment(bundleID: "com.test.source-readiness", startDate: timestamp,
             endDate: timestamp, windowName: nil, browserUrl: nil, type: 0)
-        let frameID = try await database.insertFrame(FrameReference(id: FrameID(value: 0), timestamp: timestamp,
+        let frameID = try await database.insertCapturedFrame(FrameReference(id: FrameID(value: 0), timestamp: timestamp,
             segmentID: AppSegmentID(value: segmentID), videoID: VideoSegmentID(value: videoID), frameIndexInSegment: 0,
-            metadata: FrameMetadata(appBundleID: "com.test.source-readiness")))
+            metadata: FrameMetadata(appBundleID: "com.test.source-readiness")), originalVideoPathID: pathID)
         try await database.markFrameReadable(frameID: frameID)
         return (frameID, pathID, videoURL)
     }
 
     private func rawFrame(value: UInt8) -> CapturedFrame {
-        CapturedFrame(timestamp: Date(), imageData: Data(repeating: value, count: 64 * 64 * 4),
+        CapturedFrame(timestamp: captureTime, imageData: Data(repeating: value, count: 64 * 64 * 4),
             width: 64, height: 64, bytesPerRow: 256, metadata: .empty)
     }
 

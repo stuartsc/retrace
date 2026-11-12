@@ -19,6 +19,7 @@ public actor FullFrameOCRCache {
 
     /// Current app bundle ID (cache invalidated on change)
     private var currentAppBundleID: String?
+    private var nativeResolutionOCR = false
 
     /// Statistics
     private var hitCount: Int = 0
@@ -31,9 +32,15 @@ public actor FullFrameOCRCache {
     public func validateForFrame(
         width: Int,
         height: Int,
-        appBundleID: String?
+        appBundleID: String?,
+        nativeResolutionOCR: Bool = false
     ) -> Bool {
         var invalidated = false
+        if self.nativeResolutionOCR != nativeResolutionOCR {
+            invalidateAll()
+            self.nativeResolutionOCR = nativeResolutionOCR
+            invalidated = true
+        }
 
         // Invalidate on resolution change
         if width != currentWidth || height != currentHeight {

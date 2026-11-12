@@ -897,3 +897,9 @@ as live. `TimelineOriginalFrameTests` adds real private SQLite/WAL coverage for
 overnight cache refresh, held-read navigation, joined close/reopen and empty heads.
 These checks need no visible window or physical capture. Source validation and
 installed latency/overnight acceptance remain separate.
+
+## 13 November original-image pressure candidate (not installed)
+
+Dashboard polls `OriginalRetentionStatusHolder` alongside existing cheap recording status. Its banner separates a blocked screen writer, resumed capture with an explicit missed-update count, and unattributed legacy originals awaiting verification. A later healthy storage scan does not erase a capture gap. No filesystem scan or archive decode runs in a view. This source candidate still needs compiled/offscreen validation; no visible computer-use test or installed acceptance was performed.
+
+Coverage notices are now independent of transient verification notices. The App owner persists categorical gap counts/reasons/times in a private diagnostic receipt and restores them on restart; the view only receives the cached snapshot. A failed verification or later healthy scan cannot overwrite a prior capture gap.

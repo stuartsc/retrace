@@ -77,6 +77,7 @@ public actor StorageManager: StorageProtocol {
         try await directoryManager.ensureBaseDirectories()
 
         // Initialize WAL
+        await walManager.configureOriginalPixelCompression(config.originalPixelCompression)
         try await walManager.initialize()
     }
 
@@ -121,6 +122,48 @@ public actor StorageManager: StorageProtocol {
     /// Get WAL manager for recovery operations
     public func getWALManager() -> WALManager {
         return walManager
+    }
+
+    public func configureOriginalStore(storeID: UUID) async throws {
+        try await walManager.configureOriginalStore(storeID: storeID)
+    }
+
+    public func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference,
+                                              originalVideoPathID: VideoSegmentID? = nil,
+                                              expectedWidth: Int, expectedHeight: Int) async throws -> CapturedFrame? {
+        try await walManager.readOriginalFrameForProcessing(sourceStoreID: sourceStoreID, frame: frame,
+            originalVideoPathID: originalVideoPathID, expectedWidth: expectedWidth, expectedHeight: expectedHeight)
+    }
+
+    public func confirmOriginalArchive(video: VideoSegment) async throws {
+        try await walManager.confirmOriginalArchive(video: video)
+    }
+
+    public func reconcileOriginalSpool(
+        prepareArchives: Bool = false,
+        governor: (any BackgroundProcessingProtocol)? = nil,
+        disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition
+    ) async throws -> OriginalSpoolStatus {
+        try await walManager.reconcileOriginalSpool(prepareArchives: prepareArchives, governor: governor, disposition: disposition)
+    }
+
+    /// OCR reads a fresh, exact decoded sample and preserves its saved context.
+    /// This is deliberately separate from the JPEG returned to presentation code.
+    public func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame {
+        try Task.checkCancellation()
+        guard frame.videoID == video.id, frame.source == .native, video.source == .native,
+              frame.frameIndexInSegment >= 0, frame.frameIndexInSegment < video.frameCount,
+              !video.relativePath.isEmpty, !video.relativePath.hasPrefix("/"),
+              !video.relativePath.split(separator: "/").contains("..") else {
+            throw ExactFrameReadError.integrityFailure
+        }
+        let root = storageRootURL.resolvingSymlinksInPath().standardizedFileURL
+        let url = root.appendingPathComponent(video.relativePath).resolvingSymlinksInPath().standardizedFileURL
+        guard url.path.hasPrefix(root.path + "/") else { throw ExactFrameReadError.integrityFailure }
+        let image = try await ExactFrameReader.readFrame(videoURL: url, frameIndex: frame.frameIndexInSegment,
+            frameRate: 30, expectedWidth: video.width, expectedHeight: video.height)
+        try Task.checkCancellation()
+        return try FrameConverter.createCapturedFrame(from: image, timestamp: frame.timestamp, metadata: frame.metadata)
     }
 
     /// Clear all WAL sessions (used when changing database location)

@@ -355,7 +355,7 @@ private func bootstrapDatabase(_ path: String) async throws {
     defer { sqlite3_close_v2(raw) }
     let migrations = MigrationRunner(db: raw)
     try await migrations.runMigrations()
-    try companionRequire(try await migrations.getCurrentVersion() == 23, "private_recording_schema_not_v23")
+    try companionRequire(try await migrations.getCurrentVersion() == 24, "private_recording_schema_not_v24")
     // DatabaseManager checks this row before consulting any Rewind location.
     try companionRequire(sqlite3_exec(raw, "INSERT INTO sqlite_sequence(name,seq) VALUES('frame',0)", nil, nil, nil) == SQLITE_OK,
                          "private_frame_sequence_bootstrap_failed")

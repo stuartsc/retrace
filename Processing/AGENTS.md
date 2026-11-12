@@ -193,3 +193,7 @@ with no first-pass prompt carryover; this does not measure recognition accuracy.
 authored AAC from the audio-visibility validation. An enabled AAC decode failure
 is a failure, never a skip; native AAC acceptance remains distinct from the WAV
 scheduling regression.
+
+## 13 November original-pixel/OCR candidate (not installed)
+
+Frame processing now resolves attributed retained BGRA before the current archive, preserving immutable capture metadata through the V23 snapshot. Archive fallback uses exact native pixels rather than presentation JPEG. Existing one-worker governor admission, cancellation and durable retry remain intact. `ProcessingConfig.nativeResolutionOCR` defaults false and old configurations decode false. The optional accurate candidate retains native detail and bounds additional crops, including seam reads, to twelve requests and twelve million pixels. Changing that switch invalidates the cache even for an unchanged frame. Compression is an independent Storage switch. Native OCR corpus comparisons and installed CPU/quality acceptance remain separate; see `docs/repair-20261113-original-retention.md`.

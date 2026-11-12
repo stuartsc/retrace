@@ -4,6 +4,23 @@ import Shared
 @testable import App
 
 final class BackgroundProcessingGovernorTests: XCTestCase {
+    func testFreshSpeechCanRunBetweenArchiveStyleFrameUnits() async throws {
+        let governor = BackgroundProcessingGovernor(observeSystem: false)
+        await governor.updateEnvironment(.init(idleSeconds: 0))
+        let currentFrame = try await governor.acquire(.freshOCR)
+        let speech = Task { try await governor.acquire(.freshTranscription) }
+        try await waitForQueue(governor, count: 1)
+        let nextFrame = Task { try await governor.acquire(.freshOCR) }
+        try await waitForQueue(governor, count: 2)
+        await governor.release(currentFrame)
+        let speechPermit = try await speech.value
+        let snapshot = await governor.snapshot()
+        XCTAssertEqual(snapshot.activeKind, .freshTranscription)
+        await governor.release(speechPermit)
+        await governor.release(try await nextFrame.value)
+        await governor.close()
+    }
+
     func testFreshTranscriptionRunsDuringInputAndKeepsNativeSchedulerGrant() async throws {
         let scheduler = ConsumableBackgroundGrant()
         let governor = BackgroundProcessingGovernor(scheduler: scheduler)

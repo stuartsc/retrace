@@ -111,7 +111,8 @@ actor MigrationRunner {
             V20_OCRBackfillState(),
             V21_ProgressiveRecall(),
             V22_ScreenEvidenceFeed(),
-            V23_ScreenEvidenceAdmission()
+            V23_ScreenEvidenceAdmission(),
+            V24_OriginalFrameSources()
         ]
     }
 

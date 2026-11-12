@@ -76,7 +76,7 @@ final class ScreenEvidenceAdmissionTests: XCTestCase {
         defer { sqlite3_trace_v2(legacy, 0, nil, nil) }
         try await MigrationRunner(db: legacy).runMigrations()
         sqlite3_trace_v2(legacy, 0, nil, nil)
-        XCTAssertEqual(try scalar(legacy, "SELECT MAX(version) FROM schema_migrations"), 23)
+        XCTAssertEqual(try scalar(legacy, "SELECT MAX(version) FROM schema_migrations"), 24)
         let names = try PipelineSQL.query(legacy, "SELECT name FROM sqlite_schema WHERE type='table'") { RecallSQL.string($0, 0) }
         XCTAssertTrue(names.contains("screen_evidence_admission_state"))
         XCTAssertTrue(names.contains("screen_evidence_derivation"))

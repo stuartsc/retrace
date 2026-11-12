@@ -3,6 +3,147 @@ import SQLCipher
 import Shared
 
 extension DatabaseManager {
+    /// Capture identity and deletion protection become durable together, before
+    /// the separate filesystem map can be interrupted by a crash.
+    public func insertCapturedFrame(_ frame: FrameReference, originalVideoPathID: VideoSegmentID) async throws -> Int64 {
+        let db = try requireRecallConnection()
+        guard frame.source == .native, frame.id.value == 0, originalVideoPathID.value > 0,
+              frame.frameIndexInSegment >= 0 else { throw PipelineSQL.failure("Invalid original capture identity") }
+        return try PipelineSQL.transaction(db) {
+            let storeID = try RecallSQL.nativeStore(db)
+            guard let video = try SegmentQueries.getByID(db: db, id: frame.videoID),
+                  video.source == .native,
+                  URL(fileURLWithPath: video.relativePath).deletingPathExtension().lastPathComponent == originalVideoPathID.stringValue else {
+                throw PipelineSQL.failure("Original source does not own the capture archive")
+            }
+            let id = try FrameQueries.insert(db: db, frame: frame)
+            try ScreenEvidenceSQL.capture(db, frameID: id, descriptor: frame)
+            try OriginalFrameSourceSQL.record(db, storeID: storeID, pathID: originalVideoPathID,
+                                              index: frame.frameIndexInSegment, frameID: id)
+            return id
+        }
+    }
+
+    public func lookupOriginalFrame(sourceStoreID: UUID, originalVideoPathID: VideoSegmentID,
+                                    sourceIndex: Int) async throws -> OriginalFrameAlias {
+        let db = try requireRecallConnection()
+        guard sourceStoreID == (try RecallSQL.nativeStore(db)), originalVideoPathID.value > 0,
+              sourceIndex >= 0 else { return .unknown }
+        return try OriginalFrameSourceSQL.lookup(db, storeID: sourceStoreID,
+                                                pathID: originalVideoPathID, index: sourceIndex)
+    }
+
+    public func originalStoreID() async throws -> UUID {
+        try RecallSQL.nativeStore(requireRecallConnection())
+    }
+
+    /// Indexed source hint for retained V24 originals. Legacy frames without an
+    /// alias are not adopted, and deleted sources never become reader targets.
+    public func originalFrameLocation(frameID: FrameID) async throws -> VideoSegmentID? {
+        let db = try requireRecallConnection()
+        let storeID = try RecallSQL.nativeStore(db)
+        return try PipelineSQL.integers(db, """
+            SELECT originalVideoPathID FROM original_frame_source
+            WHERE storeID=? AND frameID=? AND deleted=0
+              AND EXISTS(SELECT 1 FROM frame WHERE id=original_frame_source.frameID)
+            """, [.text(storeID.uuidString), .integer(frameID.value)]).first.map { VideoSegmentID(value: $0) }
+    }
+
+    /// Commit an explicit app-filter outcome with queue completion. The caller
+    /// supplies the captured app used for its decision; no OCR or text revision
+    /// is manufactured. A later processing reset revokes this proof by trigger.
+    public func recordOriginalExtractionSkipped(frameID: FrameID, expectedAppBundleID: String?) async throws {
+        let db = try requireRecallConnection()
+        try PipelineSQL.transaction(db) {
+            let storeID = try RecallSQL.nativeStore(db)
+            guard let frame = try FrameQueries.getByID(db: db, id: frameID) else {
+                throw PipelineSQL.failure("Cannot skip extraction of an absent frame")
+            }
+            let snapshot = try ScreenEvidenceSQL.current(db, frameID: frameID, storeID: storeID)
+            if let snapshot {
+                guard snapshot.ref.source == .native, snapshot.ref.storeID == storeID,
+                      snapshot.ref.frameID == frameID,
+                      Schema.dateToTimestamp(snapshot.frame.timestamp) == Schema.dateToTimestamp(frame.timestamp),
+                      snapshot.frame.metadata.appBundleID == expectedAppBundleID else {
+                    throw PipelineSQL.failure("App-filter decision conflicts with captured identity")
+                }
+            } else {
+                // Old, unattributed frames retain their previous skip behaviour,
+                // but cannot authorise release of attributed original pixels.
+                guard frame.metadata.appBundleID == expectedAppBundleID,
+                      try PipelineSQL.integers(db,
+                        "SELECT 1 FROM original_frame_source WHERE storeID=? AND frameID=? LIMIT 1",
+                        [.text(storeID.uuidString), .integer(frameID.value)]).isEmpty else {
+                    throw PipelineSQL.failure("Original skip has no immutable capture identity")
+                }
+            }
+            try PipelineSQL.execute(db, "UPDATE frame SET processingStatus=2,processedAt=? WHERE id=?",
+                [.integer(Schema.currentTimestamp()), .integer(frameID.value)])
+            try PipelineSQL.execute(db, "DELETE FROM processing_queue WHERE frameId=?", [.integer(frameID.value)])
+            if let snapshot {
+                try PipelineSQL.execute(db, """
+                    INSERT INTO original_frame_extraction_skip
+                      (frameID,storeID,observationID,captureTimestamp,reason,recordedAt)
+                    VALUES(?,?,?,?,'app_excluded',?)
+                    ON CONFLICT(frameID) DO UPDATE SET storeID=excluded.storeID,
+                      observationID=excluded.observationID,captureTimestamp=excluded.captureTimestamp,
+                      reason=excluded.reason,recordedAt=excluded.recordedAt
+                    """, [.integer(frameID.value), .text(storeID.uuidString),
+                           .text(snapshot.ref.observationID.uuidString),
+                           .integer(Schema.dateToTimestamp(snapshot.frame.timestamp)),
+                           .integer(Schema.currentTimestamp())])
+            }
+        }
+    }
+
+    /// Read all cleanup prerequisites in one writer transaction. Queue status
+    /// alone is insufficient: exclusion skips and blank OCR both use status 2.
+    public func originalFrameDisposition(frameID: FrameID) async throws -> OriginalFrameDisposition {
+        let db = try requireRecallConnection()
+        return try PipelineSQL.transaction(db) {
+            let storeID = try RecallSQL.nativeStore(db)
+            guard let current = try FrameQueries.getByIDWithVideoInfo(db: db, id: frameID) else {
+                let deleted = try PipelineSQL.integers(db,
+                    "SELECT 1 FROM screen_deleted WHERE storeID=? AND frameID=? LIMIT 1",
+                    [.text(storeID.uuidString), .integer(frameID.value)])
+                // An unrelated/empty database cannot authorize destruction.
+                return deleted.isEmpty ? .pending : .deleted(storeID: storeID)
+            }
+            guard current.processingStatus == 2, current.videoInfo?.isVideoFinalized == true,
+                  let archive = try SegmentQueries.getByID(db: db, id: current.frame.videoID),
+                  let snapshot = try ScreenEvidenceSQL.current(db, frameID: frameID, storeID: storeID),
+                  snapshot.ref.source == .native, snapshot.ref.frameID == frameID,
+                  Schema.dateToTimestamp(snapshot.frame.timestamp) == Schema.dateToTimestamp(current.frame.timestamp),
+                  snapshot.width == archive.width, snapshot.height == archive.height else { return .pending }
+            let original = try originalFrameForProcessing(current.frame)
+            if snapshot.text != nil, snapshot.observation.provenance.origin == .ocr {
+                return .extracted(storeID: storeID, frame: original, archive: archive)
+            }
+            let skipped = try PipelineSQL.integers(db, """
+                SELECT 1 FROM original_frame_extraction_skip
+                WHERE frameID=? AND storeID=? AND observationID=? AND captureTimestamp=? AND reason='app_excluded'
+                """, [.integer(frameID.value), .text(storeID.uuidString),
+                       .text(snapshot.ref.observationID.uuidString),
+                       .integer(Schema.dateToTimestamp(current.frame.timestamp))])
+            return skipped.isEmpty ? .pending : .skippedByAppFilter(storeID: storeID, frame: original, archive: archive)
+        }
+    }
+
+    /// Use immutable capture metadata while retaining the current archive mapping.
+    /// The legacy frame table does not contain display ID or captured window identity.
+    public func originalFrameForProcessing(_ frame: FrameReference) throws -> FrameReference {
+        let db = try requireRecallConnection()
+        let storeID = try RecallSQL.nativeStore(db)
+        guard let saved = try ScreenEvidenceSQL.current(db, frameID: frame.id, storeID: storeID) else { return frame }
+        guard saved.ref.source == frame.source, saved.ref.frameID == frame.id,
+              Schema.dateToTimestamp(saved.frame.timestamp) == Schema.dateToTimestamp(frame.timestamp) else {
+            throw PipelineSQL.failure("Conflicting original frame metadata")
+        }
+        return FrameReference(id: frame.id, timestamp: frame.timestamp, segmentID: frame.segmentID,
+            videoID: frame.videoID, frameIndexInSegment: frame.frameIndexInSegment,
+            encodingStatus: frame.encodingStatus, metadata: saved.frame.metadata, source: frame.source)
+    }
+
     /// Return an interrupted/deferred claim and its retry metadata in one transaction.
     /// A cancellation arriving after OCR commits must not reopen completed evidence.
     public func releaseFrameProcessingClaim(
@@ -47,6 +188,7 @@ extension DatabaseManager {
             throw PipelineSQL.failure("Invalid recovered chunk descriptors")
         }
         return try PipelineSQL.transaction(db) {
+            let storeID = try RecallSQL.nativeStore(db)
             let existingVideoIDs = try PipelineSQL.integers(db, "SELECT id FROM video WHERE path=?", [.text(video.relativePath)])
             guard existingVideoIDs.count <= 1 else { throw PipelineSQL.failure("Ambiguous recovery output path") }
             let videoID = try existingVideoIDs.first ?? SegmentQueries.insert(db: db, segment: video)
@@ -60,6 +202,14 @@ extension DatabaseManager {
             // retain their original identity and duration; retries do not create groups.
             var newGroup: (id: Int64, metadata: FrameMetadata, lastTimestamp: Date)?
             for (index, descriptor) in frames.enumerated() {
+                let alias = try OriginalFrameSourceSQL.lookup(db, storeID: storeID,
+                    pathID: originalVideoPathID, index: originalFrameIndices[index])
+                let aliasID: Int64?
+                switch alias {
+                case .unknown: aliasID = nil
+                case .retained(let id): aliasID = id.value
+                case .deleted: throw PipelineSQL.failure("Original frame was deleted")
+                }
                 let targetIDs = try PipelineSQL.integers(db, "SELECT id FROM frame WHERE videoId=? AND videoFrameIndex=?", [.integer(videoID), .integer(Int64(index))])
                 var originalIDs: [Int64] = []
                 for sourceID in sourceIDs where sourceID != videoID {
@@ -67,7 +217,7 @@ extension DatabaseManager {
                 }
                 guard targetIDs.count <= 1, originalIDs.count <= 1 else { throw PipelineSQL.failure("Ambiguous recovered frame identity") }
                 let mappedID = descriptor.id.value > 0 ? descriptor.id.value : nil
-                let candidates = Set(([mappedID, targetIDs.first, originalIDs.first]).compactMap { $0 })
+                let candidates = Set(([mappedID, aliasID, targetIDs.first, originalIDs.first]).compactMap { $0 })
                 guard candidates.count <= 1 else { throw PipelineSQL.failure("Conflicting recovered frame identities") }
                 let frameID: Int64
                 if let existingID = candidates.first {
@@ -75,8 +225,10 @@ extension DatabaseManager {
                     guard let existing = try FrameQueries.getByID(db: db, id: FrameID(value: existingID)),
                           Schema.dateToTimestamp(existing.timestamp) == Schema.dateToTimestamp(descriptor.timestamp),
                           existing.metadata.appBundleID == descriptor.metadata.appBundleID || descriptor.metadata.appBundleID == nil,
-                          existing.videoID.value == 0 || sourceIDs.contains(existing.videoID.value) || existing.videoID.value == videoID,
-                          existing.frameIndexInSegment == (existing.videoID.value == videoID ? index : originalFrameIndices[index]) else {
+                          aliasID == existingID || (
+                            (existing.videoID.value == 0 || sourceIDs.contains(existing.videoID.value) || existing.videoID.value == videoID) &&
+                            existing.frameIndexInSegment == (existing.videoID.value == videoID ? index : originalFrameIndices[index])
+                          ) else {
                         throw PipelineSQL.failure("Recovered frame mapping does not match its source")
                     }
                     frameID = existingID
@@ -107,11 +259,40 @@ extension DatabaseManager {
                     try ScreenEvidenceSQL.capture(db, frameID: frameID, descriptor: capturedDescriptor)
                 }
                 // Existing completed OCR remains valid for exactly the same recovered pixels.
+                try OriginalFrameSourceSQL.record(db, storeID: storeID, pathID: originalVideoPathID,
+                                                  index: originalFrameIndices[index], frameID: frameID)
                 try PipelineSQL.execute(db, "UPDATE frame SET processingStatus=CASE WHEN processingStatus=2 THEN 2 ELSE 0 END WHERE id=?", [.integer(frameID)])
                 recoveredIDs.append(frameID)
             }
             try SegmentQueries.markFinalized(db: db, id: videoID, frameCount: frames.count, fileSize: video.fileSizeBytes)
             return recoveredIDs
+        }
+    }
+}
+
+/// Synchronous helpers called only while DatabaseManager owns its connection.
+/// No suspension is permitted inside a transaction.
+private enum OriginalFrameSourceSQL {
+    static func lookup(_ db: OpaquePointer, storeID: UUID, pathID: VideoSegmentID,
+                       index: Int) throws -> OriginalFrameAlias {
+        try PipelineSQL.query(db,
+            "SELECT frameID,deleted FROM original_frame_source WHERE storeID=? AND originalVideoPathID=? AND sourceIndex=?",
+            [.text(storeID.uuidString), .integer(pathID.value), .integer(Int64(index))]) { statement in
+                let id = FrameID(value: sqlite3_column_int64(statement, 0))
+                return sqlite3_column_int(statement, 1) == 1
+                    ? OriginalFrameAlias.deleted(frameID: id) : .retained(frameID: id)
+            }.first ?? .unknown
+    }
+
+    static func record(_ db: OpaquePointer, storeID: UUID, pathID: VideoSegmentID,
+                       index: Int, frameID: Int64) throws {
+        switch try lookup(db, storeID: storeID, pathID: pathID, index: index) {
+        case .unknown:
+            try PipelineSQL.execute(db,
+                "INSERT INTO original_frame_source(storeID,originalVideoPathID,sourceIndex,frameID) VALUES(?,?,?,?)",
+                [.text(storeID.uuidString), .integer(pathID.value), .integer(Int64(index)), .integer(frameID)])
+        case .retained(let existing) where existing.value == frameID: return
+        default: throw PipelineSQL.failure("Conflicting or deleted original frame identity")
         }
     }
 }

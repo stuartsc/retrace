@@ -1,0 +1,50 @@
+{
+  "clean-focused-attempt1.log": {
+    "retainedArchive": "clean-focused-attempt1.log.gz",
+    "rawSHA256": "026e2c0af8c489b8136d56028455b19aa313210b17e99ee61e646c14bcb73295",
+    "rawBytes": 67323,
+    "archiveSHA256": "8a3691ca74cbf650703d70977e0615deb23840d047e8704218a1673236126bb4"
+  },
+  "clean-focused-attempt2.log": {
+    "retainedArchive": "clean-focused-attempt2.log.gz",
+    "rawSHA256": "1a82a48dfc8f595f2f20a6a3cf9e648393906b0df456b27b7f197e8c06ece49b",
+    "rawBytes": 2423502,
+    "archiveSHA256": "404d7b9d95714f47e3eeb62890e4c1d45dc0f7e2e56b0bca326e8bd6ebf66983"
+  },
+  "diagnostic-attempt3.log": {
+    "retainedArchive": "diagnostic-attempt3.log.gz",
+    "rawSHA256": "11dee483e711c91f1bcc32379da77c1287dfc577ad65531cadfae4defd31b51c",
+    "rawBytes": 96636,
+    "archiveSHA256": "3803496e0a1bd006bb3d421719ab1862349dddff310106c3acadf1ccbde2b44a"
+  },
+  "authored-quality-attempt5.log": {
+    "retainedArchive": "authored-quality-attempt5.log.gz",
+    "rawSHA256": "0f2a5fc06b5887575646a8d76f000a78bc6159b73dbae06935ccf73a36749b5e",
+    "rawBytes": 14768,
+    "archiveSHA256": "2b013bd5f24c66bee9bcaf4433f2cfa41129d3ec9f60c5c26e962624c253f5ea"
+  },
+  "startup-followup-attempt5.log": {
+    "retainedArchive": "startup-followup-attempt5.log.gz",
+    "rawSHA256": "5b1daff88c67cb7498f0a2b879a27fff1c4fd82fbeeacdba00fc61a77a6cf486",
+    "rawBytes": 195573,
+    "archiveSHA256": "227cd74b715fbe19fa019f35b2b5075de84287cedebe871763fd4f390018097e"
+  },
+  "full-attempt4.log": {
+    "retainedArchive": "full-attempt4.log.gz",
+    "rawSHA256": "c4b792dae26a1eff44f184f83a591f7f8f9d1f0daaf7e8d84027795c9ec8c3c2",
+    "rawBytes": 11171208,
+    "archiveSHA256": "01a3db3b3c4c86211f76489cb741770e20d2342ea0f8e13dd52dd81fffaf5607"
+  },
+  "clean-release-attempt5.log": {
+    "retainedArchive": "clean-release-attempt5.log.gz",
+    "rawSHA256": "e722bc340ea949c3ae0d21a74c7e73af63a351345cd27b873a9e05cfc65b57d8",
+    "rawBytes": 47669,
+    "archiveSHA256": "594eef0fc6b93b4ed4c90a401dfb6f55c15d715cf3d27594cdedaaaaa8ae223b"
+  },
+  "focused-attempt4.log": {
+    "retainedArchive": "focused-attempt4.log.gz",
+    "rawSHA256": "228c34bdb10e4dcd4aae98cddd2140670abcf912ccf8dbdabcb8fa4ebcd8543b",
+    "rawBytes": 1002531,
+    "archiveSHA256": "a070a268a4334bf0027ec5be8ecc033cfe635223b6af7d135c897fa2094ce781"
+  }
+}

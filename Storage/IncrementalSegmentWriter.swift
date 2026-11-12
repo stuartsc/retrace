@@ -123,7 +123,12 @@ public actor IncrementalSegmentWriter: SegmentWriter {
             try await encoder.finalize()
         }
 
-        // Clean up WAL - video is now complete and playable
+        if encoderInitialized {
+            try OriginalSpoolFiles.synchronizeFileAndParent(fileURL)
+        }
+
+        // Closing the encoder releases writer ownership, not original pixels.
+        // Database/archive acknowledgements and durable extraction govern cleanup.
         if let session = walSession {
             try await walManager.finalizeSession(session)
         }
@@ -148,7 +153,7 @@ public actor IncrementalSegmentWriter: SegmentWriter {
         await encoder.reset()
         try? FileManager.default.removeItem(at: fileURL)
 
-        // Clean up WAL
+        // Interrupted encoding must not destroy already durable originals.
         if let session = walSession {
             try? await walManager.finalizeSession(session)
         }

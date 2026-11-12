@@ -5,6 +5,26 @@ import Shared
 
 /// Converts CapturedFrame raw BGRA bytes into CVPixelBuffer.
 enum FrameConverter {
+    /// Rasterize an already decoded image directly to BGRA. No image codec runs.
+    static func createCapturedFrame(from image: CGImage, timestamp: Date, metadata: FrameMetadata) throws -> CapturedFrame {
+        let (stride, rowOverflow) = image.width.multipliedReportingOverflow(by: 4)
+        let (size, sizeOverflow) = stride.multipliedReportingOverflow(by: image.height)
+        guard image.width > 0, image.height > 0, !rowOverflow, !sizeOverflow,
+              size <= 256 * 1024 * 1024 else { throw ExactFrameReadError.integrityFailure }
+        var pixels = Data(count: size)
+        try pixels.withUnsafeMutableBytes { bytes in
+            guard let context = CGContext(data: bytes.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: stride, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+                throw ExactFrameReadError.integrityFailure
+            }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        try Task.checkCancellation()
+        return CapturedFrame(timestamp: timestamp, imageData: pixels, width: image.width, height: image.height,
+                             bytesPerRow: stride, metadata: metadata)
+    }
+
     static func createPixelBuffer(from frame: CapturedFrame) throws -> CVPixelBuffer {
         guard frame.width > 0, frame.height > 0 else {
             throw StorageModuleError.encodingFailed(underlying: "Invalid frame dimensions: \(frame.width)x\(frame.height)")

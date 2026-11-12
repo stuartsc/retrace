@@ -322,27 +322,60 @@ final class OrphanVideoFinalizationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = StorageManager(storageRoot: root)
         try await storage.initialize(config: StorageConfig(storageRootPath: root.path))
+        let database = try XCTUnwrap(database)
+        try await storage.configureOriginalStore(storeID: database.originalStoreID())
         let writer = try await storage.createSegmentWriter()
         let path = await writer.relativePath
+        let pathID = await writer.segmentID
         let now = Date()
         let id = try await coordinator.insertLiveVideoSegment(VideoSegment(
             id: VideoSegmentID(value: 0), startTime: now, endTime: now, frameCount: 0,
             fileSizeBytes: 0, relativePath: path, width: 64, height: 64))
-        try await writer.appendFrame(CapturedFrame(imageData: Data(repeating: 90, count: 64 * 64 * 4),
-            width: 64, height: 64, bytesPerRow: 256))
+        let pixels = CapturedFrame(timestamp: now, imageData: Data(repeating: 90, count: 64 * 64 * 4),
+            width: 64, height: 64, bytesPerRow: 256)
+        try await writer.appendFrame(pixels)
+        let segmentID = try await database.insertSegment(bundleID: "com.test.finished-writer",
+            startDate: now, endDate: now, windowName: nil, browserUrl: nil, type: 0)
+        let frameID = FrameID(value: try await database.insertCapturedFrame(FrameReference(
+            id: FrameID(value: 0), timestamp: now, segmentID: AppSegmentID(value: segmentID),
+            videoID: VideoSegmentID(value: id), frameIndexInSegment: 0, metadata: pixels.metadata),
+            originalVideoPathID: pathID))
+        let wal = await storage.getWALManager()
+        try await wal.registerFrameID(videoID: pathID, frameID: frameID.value, frameIndex: 0)
         try await database.executeFinalizationFailureSQL("CREATE TRIGGER fail_video_finish BEFORE UPDATE OF processingState ON video WHEN NEW.id=\(id) BEGIN SELECT RAISE(ABORT, 'injected finalization failure'); END")
         do {
             try await coordinator.finalizeLiveVideoWriter(writer, videoDBID: id, frameCount: 1)
             XCTFail("Expected the real SQLite update failure")
         } catch { }
-        let wal = await storage.getWALManager()
         let sessions = try await wal.listActiveSessions()
-        XCTAssertTrue(sessions.isEmpty, "The successful encoder finalization already removed its raw journal")
+        XCTAssertEqual(sessions.count, 1, "Finalised pixels stay retained until text and archive proof")
+        let live = await wal.isLiveSession(videoID: pathID)
+        XCTAssertFalse(live, "The sealed writer must release its live ownership reservation")
         try await database.executeFinalizationFailureSQL("DROP TRIGGER fail_video_finish")
-        let repaired = try await coordinator.finalizeOrphanedVideoSnapshot {
+        let protected = try await coordinator.finalizeOrphanedVideoSnapshot {
             try await wal.listActiveSessions()
         }
-        XCTAssertEqual(repaired, 1, "An idle finalized writer must not retain a live ownership reservation")
+        XCTAssertEqual(protected, 0, "Retained source recovery owns this placeholder until publication completes")
+
+        let recovery = RecoveryManager(walManager: wal, storage: storage, database: database)
+        await recovery.setFrameEnqueueCallback { _ in }
+        let result = try await recovery.recoverAll()
+        XCTAssertEqual(result.sessionsRecovered, 1)
+        XCTAssertEqual(result.framesRecovered, 1)
+        let saved = try await database.getFrame(id: frameID)
+        let current = try await database.originalFrameForProcessing(XCTUnwrap(saved))
+        let original = try await storage.readOriginalFrameForProcessing(sourceStoreID: database.originalStoreID(),
+            frame: current, originalVideoPathID: pathID, expectedWidth: 64, expectedHeight: 64)
+        XCTAssertEqual(original?.imageData, pixels.imageData)
+        _ = try await database.commitFrameOCR(frameID: frameID,
+            text: ExtractedText(frameID: frameID, timestamp: now, regions: []), frameWidth: 64, frameHeight: 64)
+        _ = try await storage.reconcileOriginalSpool { frame in
+            try await database.originalFrameDisposition(frameID: frame)
+        }
+        let remainingOriginals = try await wal.listActiveSessions()
+        XCTAssertTrue(remainingOriginals.isEmpty, "Only verified text and archive mapping release the original")
+        let repaired = try await coordinator.finalizeOrphanedVideoSnapshot { remainingOriginals }
+        XCTAssertEqual(repaired, 1, "The released writer reservation must not prevent eventual orphan repair")
         let remaining = try await database.getAllUnfinalisedVideos()
         XCTAssertFalse(remaining.contains { $0.id == id })
     }

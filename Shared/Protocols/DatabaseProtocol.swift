@@ -2,6 +2,12 @@ import Foundation
 import CoreGraphics
 
 public extension DatabaseProtocol {
+    func originalStoreID() async throws -> UUID {
+        throw DatabaseError.queryFailed(query: "originalStoreID", underlying: "Original retention identity is unsupported")
+    }
+    func originalFrameDisposition(frameID: FrameID) async throws -> OriginalFrameDisposition { .pending }
+    func lookupOriginalFrame(sourceStoreID: UUID, originalVideoPathID: VideoSegmentID,
+                             sourceIndex: Int) async throws -> OriginalFrameAlias { .unknown }
     func recordFrameMediaUnavailable(frameID: FrameID, reason: EvidenceUnavailableReason) async throws {
         throw DatabaseError.queryFailed(query: "recordFrameMediaUnavailable", underlying: "Media receipts are unsupported")
     }
@@ -78,6 +84,12 @@ public protocol DatabaseProtocol: Actor {
     /// Persist a failed media-repair receipt without deleting retained text or provenance.
     func recordFrameMediaUnavailable(frameID: FrameID, reason: EvidenceUnavailableReason) async throws
     func frameMediaUnavailable(frameID: FrameID) async throws -> EvidenceUnavailableReason?
+
+    /// Native store identity and transactional release proof for original pixels.
+    func originalStoreID() async throws -> UUID
+    func originalFrameDisposition(frameID: FrameID) async throws -> OriginalFrameDisposition
+    func lookupOriginalFrame(sourceStoreID: UUID, originalVideoPathID: VideoSegmentID,
+                             sourceIndex: Int) async throws -> OriginalFrameAlias
 
     // MARK: - Video Segment Operations (Video Files)
 

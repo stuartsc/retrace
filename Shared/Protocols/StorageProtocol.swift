@@ -24,6 +24,25 @@ public protocol StorageProtocol: Actor {
     /// Frame index is the position in the video (0-based), encoded at fixed 30 FPS
     func readFrame(segmentID: VideoSegmentID, frameIndex: Int) async throws -> Data
 
+    /// Exact native archive pixels for OCR, without presentation JPEG encoding.
+    /// The supplied frame and video must belong to the same saved source.
+    func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame
+
+    /// Original pixels located by exact frame identity, even after archive recovery
+    /// changes the video path. A corrupt/conflicting retained identity must throw.
+    func configureOriginalStore(storeID: UUID) async throws
+
+    func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference, originalVideoPathID: VideoSegmentID?, expectedWidth: Int,
+                                       expectedHeight: Int) async throws -> CapturedFrame?
+
+    /// Called only after the finalized archive mapping is durable in SQLite.
+    func confirmOriginalArchive(video: VideoSegment) async throws
+
+    /// Revalidate durable extraction and current archive mapping before releasing
+    /// originals. Pending, unreadable, and unacknowledged work remains retained.
+    func reconcileOriginalSpool(prepareArchives: Bool, governor: (any BackgroundProcessingProtocol)?, disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition)
+        async throws -> OriginalSpoolStatus
+
     /// Get the file path for a segment
     func getSegmentPath(id: VideoSegmentID) async throws -> URL
 
@@ -60,6 +79,38 @@ public protocol StorageProtocol: Actor {
 }
 
 public extension StorageProtocol {
+    func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference,
+        expectedWidth: Int, expectedHeight: Int) async throws -> CapturedFrame? {
+        try await readOriginalFrameForProcessing(sourceStoreID: sourceStoreID, frame: frame,
+            originalVideoPathID: nil, expectedWidth: expectedWidth, expectedHeight: expectedHeight)
+    }
+
+    func reconcileOriginalSpool(prepareArchives: Bool,
+        disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition) async throws -> OriginalSpoolStatus {
+        try await reconcileOriginalSpool(prepareArchives: prepareArchives, governor: nil, disposition: disposition)
+    }
+
+    func reconcileOriginalSpool(disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition)
+        async throws -> OriginalSpoolStatus {
+        try await reconcileOriginalSpool(prepareArchives: false, governor: nil, disposition: disposition)
+    }
+
+    func configureOriginalStore(storeID: UUID) async throws {}
+
+    func readOriginalFrameForProcessing(sourceStoreID: UUID, frame: FrameReference, originalVideoPathID: VideoSegmentID?, expectedWidth: Int,
+                                       expectedHeight: Int) async throws -> CapturedFrame? { nil }
+
+    func confirmOriginalArchive(video: VideoSegment) async throws {}
+
+    func reconcileOriginalSpool(prepareArchives: Bool, governor: (any BackgroundProcessingProtocol)?, disposition: @escaping @Sendable (FrameID) async throws -> OriginalFrameDisposition)
+        async throws -> OriginalSpoolStatus {
+        throw StorageError.fileReadFailed(path: "original spool", underlying: "Original retention is unavailable")
+    }
+
+    func readFrameForProcessing(frame: FrameReference, video: VideoSegment) async throws -> CapturedFrame {
+        throw StorageError.fileReadFailed(path: video.relativePath, underlying: "Native processing pixels are unavailable")
+    }
+
     func createRecoverySegmentWriter() async throws -> SegmentWriter {
         throw StorageError.fileWriteFailed(path: "WAL recovery", underlying: "Recovery writer is not implemented")
     }

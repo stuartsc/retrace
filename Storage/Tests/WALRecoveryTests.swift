@@ -38,7 +38,10 @@ final class WALRecoveryTests: XCTestCase {
         let root = try temporaryRoot()
         let storage = StorageManager(storageRoot: root)
         try await storage.initialize(config: StorageConfig(storageRootPath: root.path))
+        let database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
+        try await database.initialize()
         let manager = await storage.getWALManager()
+        try await manager.configureOriginalStore(storeID: database.originalStoreID())
         let session = try await manager.createSession(videoID: VideoSegmentID(value: 101))
         let handle = try FileHandle(forWritingTo: session.framesURL)
         defer { try? handle.close() }
@@ -66,14 +69,13 @@ final class WALRecoveryTests: XCTestCase {
         let record = try await reader.readRecord(at: UInt64(16) * (UInt64(pixelBytes) + 36), index: 16, loadPixels: true)
         XCTAssertEqual(record?.frame.imageData.count, Int(pixelBytes))
         XCTAssertEqual(record?.frame.timestamp, Date(timeIntervalSince1970: 1_700_000_016))
-        let database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
-        try await database.initialize()
         let recovery = RecoveryManager(walManager: WALManager(walRoot: root.appendingPathComponent("wal")), storage: storage, database: database)
         await recovery.setFrameEnqueueCallback { _ in }
         let result = try await recovery.recoverAll()
         XCTAssertEqual(result.sessionsRecovered, 1)
         XCTAssertEqual(result.framesRecovered, 17)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: session.framesURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.framesURL.path),
+                      "Archive publication and enqueue retain original pixels until durable extraction")
         let frames = try await database.getFrames(from: .distantPast, to: .distantFuture, limit: 20)
         XCTAssertEqual(frames.count, 17)
         XCTAssertEqual(Set(frames.map(\.frameIndexInSegment)), Set(0..<17))
@@ -108,7 +110,7 @@ final class WALRecoveryTests: XCTestCase {
         let truncated = try await WALRecoveryReader(session: session).scan()
         XCTAssertEqual(truncated.frameCount, 0)
         XCTAssertNotNil(truncated.tailError)
-        data.replaceSubrange(20..<24, with: [255, 255, 255, 255])
+        data.replaceSubrange(36..<40, with: [255, 255, 255, 255])
         try data.write(to: session.framesURL)
         let corrupt = try await WALRecoveryReader(session: session).scan()
         XCTAssertEqual(corrupt.frameCount, 0)
@@ -143,6 +145,7 @@ final class WALRecoveryTests: XCTestCase {
         let database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
         try await database.initialize()
         let wal = await storage.getWALManager()
+        try await wal.configureOriginalStore(storeID: database.originalStoreID())
         var session = try await wal.createSession(videoID: VideoSegmentID(value: 105))
         let timestamp = Date().addingTimeInterval(-100)
         for index in 0..<151 {
@@ -173,7 +176,8 @@ final class WALRecoveryTests: XCTestCase {
         XCTAssertEqual(countAfter, 151)
         XCTAssertEqual(videosAfter.count, 2)
         XCTAssertTrue(Set(videosBefore.map(\.id)).isSubset(of: Set(videosAfter.map(\.id))))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: session.framesURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.framesURL.path),
+                      "Unprocessed recovered frames still own their originals")
         let ids = await delivered.ids
         XCTAssertEqual(Set(ids).count, 150)
         XCTAssertFalse(ids.contains(alreadyIndexed.id.value))
@@ -189,6 +193,7 @@ final class WALRecoveryTests: XCTestCase {
         let database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
         try await database.initialize()
         let captureWAL = await storage.getWALManager()
+        try await captureWAL.configureOriginalStore(storeID: database.originalStoreID())
         var session = try await captureWAL.createSession(videoID: VideoSegmentID(value: 108))
         try await captureWAL.appendFrame(frame(at: Date().addingTimeInterval(-100)), to: &session)
         let recoveryWAL = WALManager(walRoot: root.appendingPathComponent("wal"))
@@ -240,7 +245,8 @@ final class WALRecoveryTests: XCTestCase {
         XCTAssertEqual(framesAfter.map(\.id), framesBefore.map(\.id))
         XCTAssertEqual(videosAfter.map(\.id), videosBefore.map(\.id))
         XCTAssertEqual(deliveredIDs, framesBefore.map { $0.id.value })
-        XCTAssertFalse(FileManager.default.fileExists(atPath: session.framesURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.framesURL.path),
+                      "A successful retry confirms archives but does not acknowledge extraction")
         try await database.close()
     }
 
@@ -251,6 +257,7 @@ final class WALRecoveryTests: XCTestCase {
         let database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
         try await database.initialize()
         let captureWAL = await storage.getWALManager()
+        try await captureWAL.configureOriginalStore(storeID: database.originalStoreID())
         var session = try await captureWAL.createSession(videoID: VideoSegmentID(value: 109))
         try await captureWAL.appendFrame(frame(), to: &session)
         let recovery = RecoveryManager(walManager: WALManager(walRoot: root.appendingPathComponent("wal")), storage: storage, database: database)
@@ -281,21 +288,51 @@ final class WALRecoveryTests: XCTestCase {
         try await storage.initialize(config: StorageConfig(storageRootPath: root.path))
         let database = DatabaseManager(databasePath: root.appendingPathComponent("test.db").path)
         try await database.initialize()
+        let storeID = try await database.originalStoreID()
         let wal = await storage.getWALManager()
+        try await wal.configureOriginalStore(storeID: storeID)
         var session = try await wal.createSession(videoID: VideoSegmentID(value: 106))
-        try await wal.appendFrame(frame(), to: &session)
+        let source = frame(at: Date(timeIntervalSince1970: 1_780_000_000), value: 70)
+        try await wal.appendFrame(source, to: &session)
         let handle = try FileHandle(forWritingTo: session.framesURL)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data([1, 2, 3]))
         try handle.close()
-        for _ in 0..<2 {
-            let recovery = RecoveryManager(walManager: WALManager(walRoot: root.appendingPathComponent("wal")), storage: storage, database: database)
-            await recovery.setFrameEnqueueCallback { _ in }
+        let damagedSource = try Data(contentsOf: session.framesURL)
+        let delivered = RecoveredIDs()
+        for launch in 0..<2 {
+            let restarted = WALManager(walRoot: root.appendingPathComponent("wal"))
+            let recovery = RecoveryManager(walManager: restarted, storage: storage, database: database)
+            await recovery.setFrameEnqueueCallback { ids in await delivered.append(ids) }
             let result = try await recovery.recoverAll()
             XCTAssertEqual(result.sessionsRecovered, 0)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: session.framesURL.path))
-            let count = try await database.getFrameCount()
-            XCTAssertEqual(count, 1)
+            XCTAssertEqual(result.framesRecovered, launch == 0 ? 1 : 0)
+            XCTAssertEqual(result.videoSegmentsCreated, launch == 0 ? 1 : 0)
+            XCTAssertEqual(try Data(contentsOf: session.framesURL), damagedSource)
+            let frames = try await database.getFrames(from: .distantPast, to: .distantFuture, limit: 10)
+            XCTAssertEqual(frames.count, 1)
+            let saved = try XCTUnwrap(frames.first)
+            let hydrated = try await database.getFrameWithVideoInfoByID(id: saved.id)
+            let exact = try XCTUnwrap(hydrated).frame
+            let ids = await delivered.ids
+            XCTAssertEqual(ids, [saved.id.value], "A valid prefix must reach OCR before restart; retries must not duplicate enqueue")
+            let original = try await restarted.readOriginalFrameForProcessing(sourceStoreID: storeID,
+                frame: try await database.originalFrameForProcessing(exact), expectedWidth: 64, expectedHeight: 64)
+            XCTAssertEqual(original?.imageData, source.imageData)
+            let mapped = try await restarted.readFrame(videoID: session.videoID,
+                frameID: saved.id.value, fallbackFrameIndex: 99)
+            XCTAssertEqual(mapped.imageData, source.imageData)
+            let receipt = try await restarted.originalReceipt(for: session)
+            XCTAssertFalse(receipt.archiveComplete, "A damaged tail cannot acknowledge the entire original session")
+            XCTAssertEqual(receipt.mappings.count, 1, "The recovered prefix still requires a durable archive acknowledgement")
+            let mapping = try XCTUnwrap(receipt.mappings.first)
+            XCTAssertEqual(mapping.frameID, saved.id.value)
+            XCTAssertEqual(mapping.sourceIndex, 0)
+            XCTAssertEqual(mapping.archiveIndex, 0)
+            XCTAssertEqual(mapping.archive.id, saved.videoID)
+            let videos = try await database.getVideoSegments(from: .distantPast, to: .distantFuture)
+            XCTAssertEqual(videos.count, 1)
+            XCTAssertEqual(mapping.archive.relativePath, videos.first?.relativePath)
         }
         try await database.close()
     }

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "createdAt": "2026-11-12T20:35:57.366918+00:00",
+  "candidateOnly": true,
+  "installed": false,
+  "featurePromotion": false,
+  "sourceManifest": "source-attempt5.json",
+  "sourceManifestSHA256": "1e117462144371f1be37368ade83239feeb040956b0ac7f312b11daaf4463424",
+  "inputCount": 770,
+  "changedInputs": [],
+  "debugLineage": "Fresh clean attempt 2; subsequent method-body and fixture changes only; no actor/protocol layout changes. Failed attempts preserved.",
+  "focused": {
+    "log": "focused-attempt4.log",
+    "tests": 188,
+    "skips": 1,
+    "failures": 0,
+    "seconds": 154.514,
+    "exitCode": 0
+  },
+  "full": {
+    "log": "full-attempt4.log",
+    "tests": 1808,
+    "skips": 24,
+    "failedAssertions": 3,
+    "failedTests": 1,
+    "seconds": 417.97,
+    "exitCode": 1,
+    "failure": "Old fixture expected raw deletion immediately after encoder finalisation; no other tests failed."
+  },
+  "startupFollowup": {
+    "log": "startup-followup-attempt5.log",
+    "tests": 16,
+    "skips": 0,
+    "failures": 0,
+    "seconds": 52.222,
+    "exitCode": 0,
+    "changedFile": "App/Tests/StartupRecoverySequencingTests.swift",
+    "productionUnchangedSinceFocusedAndFull": true
+  },
+  "authoredQuality": {
+    "log": "authored-quality-attempt5.log",
+    "output": "authored-quality-attempt5.json",
+    "tests": 1,
+    "skips": 0,
+    "failures": 0,
+    "seconds": 17.707,
+    "exitCode": 0,
+    "promotion": false
+  },
+  "release": {
+    "log": "clean-release-attempt5.log",
+    "cleanScratch": true,
+    "seconds": 604.18,
+    "exitCode": 0,
+    "binarySHA256": "f5e6475720557dde0480f0ec456aab287cfc8ba627a26c1df61a8f9b0e3c49ff",
+    "binaryBytes": 62979800
+  },
+  "checks": {
+    "gitDiffCheck": true,
+    "validationRunnerPythonTests": 1
+  },
+  "noLiveAccess": [
+    "recorded library",
+    "application settings",
+    "capture devices",
+    "UI automation"
+  ]
+}

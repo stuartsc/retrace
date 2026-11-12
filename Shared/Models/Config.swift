@@ -222,6 +222,11 @@ public struct Resolution: Codable, Sendable, Equatable {
 
 // MARK: - Storage Configuration
 
+/// Independently switchable, lossless original-pixel candidates. Archive HEVC is separate.
+public enum OriginalPixelCompression: String, CaseIterable, Codable, Sendable {
+    case disabled, lzfse, lz4
+}
+
 /// Configuration for data storage
 public struct StorageConfig: Codable, Sendable {
     /// Root directory for all stored data
@@ -236,19 +241,40 @@ public struct StorageConfig: Codable, Sendable {
     /// Duration of each video segment in seconds
     public let segmentDurationSeconds: Int
 
+    /// Default remains V2/raw until representative installed quality/latency acceptance.
+    public let originalPixelCompression: OriginalPixelCompression
+
     public init(
         storageRootPath: String = AppPaths.defaultStorageRoot,
         retentionDays: Int? = 90,
         maxStorageGB: Double? = 50.0,
-        segmentDurationSeconds: Int = 300  // 5 minutes
+        segmentDurationSeconds: Int = 300,  // 5 minutes
+        originalPixelCompression: OriginalPixelCompression = .disabled
     ) {
         self.storageRootPath = storageRootPath
         self.retentionDays = retentionDays
         self.maxStorageGB = maxStorageGB
         self.segmentDurationSeconds = segmentDurationSeconds
+        self.originalPixelCompression = originalPixelCompression
     }
 
     public static let `default` = StorageConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case storageRootPath, retentionDays, maxStorageGB, segmentDurationSeconds, originalPixelCompression
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            storageRootPath: try values.decode(String.self, forKey: .storageRootPath),
+            retentionDays: try values.decodeIfPresent(Int.self, forKey: .retentionDays),
+            maxStorageGB: try values.decodeIfPresent(Double.self, forKey: .maxStorageGB),
+            segmentDurationSeconds: try values.decode(Int.self, forKey: .segmentDurationSeconds),
+            originalPixelCompression: try values.decodeIfPresent(OriginalPixelCompression.self,
+                                                                 forKey: .originalPixelCompression) ?? .disabled
+        )
+    }
 
     public var expandedStorageRootPath: String {
         NSString(string: storageRootPath).expandingTildeInPath
@@ -274,21 +300,44 @@ public struct ProcessingConfig: Codable, Sendable {
     /// Hint to Vision to prefer background processing (lower resource usage)
     public let preferBackgroundProcessing: Bool
 
+    /// Native discovery and bounded crops are an independently selectable quality candidate.
+    /// Retained original pixels remain available regardless of this switch.
+    public let nativeResolutionOCR: Bool
+
     public init(
         accessibilityEnabled: Bool = true,
         ocrAccuracyLevel: OCRAccuracyLevel = .accurate,
         recognitionLanguages: [String] = ["en-US"],
         minimumConfidence: Float = 0.5,
-        preferBackgroundProcessing: Bool = false
+        preferBackgroundProcessing: Bool = false,
+        nativeResolutionOCR: Bool = false
     ) {
         self.accessibilityEnabled = accessibilityEnabled
         self.ocrAccuracyLevel = ocrAccuracyLevel
         self.recognitionLanguages = recognitionLanguages
         self.minimumConfidence = minimumConfidence
         self.preferBackgroundProcessing = preferBackgroundProcessing
+        self.nativeResolutionOCR = nativeResolutionOCR
     }
 
     public static let `default` = ProcessingConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case accessibilityEnabled, ocrAccuracyLevel, recognitionLanguages, minimumConfidence
+        case preferBackgroundProcessing, nativeResolutionOCR
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            accessibilityEnabled: try values.decode(Bool.self, forKey: .accessibilityEnabled),
+            ocrAccuracyLevel: try values.decode(OCRAccuracyLevel.self, forKey: .ocrAccuracyLevel),
+            recognitionLanguages: try values.decode([String].self, forKey: .recognitionLanguages),
+            minimumConfidence: try values.decode(Float.self, forKey: .minimumConfidence),
+            preferBackgroundProcessing: try values.decode(Bool.self, forKey: .preferBackgroundProcessing),
+            nativeResolutionOCR: try values.decodeIfPresent(Bool.self, forKey: .nativeResolutionOCR) ?? false
+        )
+    }
 }
 
 public enum OCRAccuracyLevel: String, Codable, Sendable {

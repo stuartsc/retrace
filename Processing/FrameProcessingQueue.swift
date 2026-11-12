@@ -561,13 +561,15 @@ public actor FrameProcessingQueue {
             Log.error("[Queue-DIAG] Frame \(frameID) not found in database!", category: .processing)
             throw DatabaseError.queryFailed(query: "getFrame", underlying: "Frame \(frameID) not found")
         }
-        let frameRef = frameWithInfo.frame
+        let frameRef = try await databaseManager.originalFrameForProcessing(frameWithInfo.frame)
 
         // Check app filter - skip OCR for excluded apps (bundleID is in metadata from JOIN)
         let bundleID = frameRef.metadata.appBundleID
         if !shouldProcessOCR(forBundleID: bundleID) {
-            // Mark as completed (no OCR needed for this app)
-            try await updateFrameProcessingStatus(frameID, status: .completed)
+            // Durable policy skip is distinct from an empty OCR result. It may
+            // release originals only after the same exact archive is verified.
+            try await databaseManager.recordOriginalExtractionSkipped(
+                frameID: FrameID(value: frameID), expectedAppBundleID: bundleID)
             Log.debug("[Queue] Frame \(frameID) skipped - app \(bundleID ?? "unknown") excluded from OCR", category: .processing)
             return .skippedByAppFilter
         }
@@ -589,13 +591,28 @@ public actor FrameProcessingQueue {
         let capturedFrame: CapturedFrame
         let isVideoFinalized = frameWithInfo.videoInfo?.isVideoFinalized ?? true
         let storageRoot = await storage.getStorageDirectory()
-        let walFramesURL = storageRoot.appendingPathComponent("wal/active_segment_\(actualSegmentID.value)/frames.bin")
-        let hasWALSource = storage is StorageManager && FileManager.default.fileExists(atPath: walFramesURL.path)
-        var walFrame: CapturedFrame?
-        if hasWALSource || !isVideoFinalized {
-            walFrame = try await readFrameFromWAL(
-                frameID: frameID, segmentID: actualSegmentID, frameIndex: frameRef.frameIndexInSegment
-            )
+        // Recovery can move the archive into a new video while the original
+        // remains in its source WAL. Locate original pixels by verified frame
+        // identity, not the mutable archive path or an ordinal fallback.
+        let walFrame: CapturedFrame?
+        do {
+            if let pathID = try await databaseManager.originalFrameLocation(frameID: frameRef.id) {
+                walFrame = try await storage.readOriginalFrameForProcessing(
+                    sourceStoreID: databaseManager.originalStoreID(), frame: frameRef,
+                    originalVideoPathID: pathID,
+                    expectedWidth: videoSegment.width, expectedHeight: videoSegment.height)
+            } else {
+                // Legacy archive rows have no immutable original alias; do not
+                // scan today's original sessions looking for an unrelated ID.
+                walFrame = nil
+            }
+        } catch let error as ExactFrameReadError {
+            switch error {
+            case .cancelled: throw CancellationError()
+            case .frameFinalising: return .deferredSourceNotReady
+            case .recordingMissing: throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
+            case .integrityFailure: throw FrameProcessingFailure.mediaUnavailable(.integrityFailure)
+            }
         }
         if let walFrame {
             capturedFrame = walFrame
@@ -616,17 +633,16 @@ public actor FrameProcessingQueue {
                 throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
             }
 
-            // Read from finalized video and convert JPEG payload for OCR.
-            let frameData = try await storage.readFrame(
-                segmentID: actualSegmentID,
-                frameIndex: frameRef.frameIndexInSegment
-            )
-
-            guard let convertedFrame = try convertJPEGToCapturedFrame(frameData, frameRef: frameRef) else {
-                Log.error("[Queue-DIAG] Frame \(frameID) image conversion failed!", category: .processing)
-                throw ProcessingError.imageConversionFailed
+            do {
+                capturedFrame = try await storage.readFrameForProcessing(frame: frameRef, video: videoSegment)
+            } catch let error as ExactFrameReadError {
+                switch error {
+                case .cancelled: throw CancellationError()
+                case .recordingMissing: throw FrameProcessingFailure.mediaUnavailable(.recordingMissing)
+                case .frameFinalising: throw FrameProcessingFailure.mediaUnavailable(.frameFinalising)
+                case .integrityFailure: throw FrameProcessingFailure.mediaUnavailable(.integrityFailure)
+                }
             }
-            capturedFrame = convertedFrame
         }
 
         // The database already claimed the frame atomically when it was dequeued.
@@ -650,56 +666,12 @@ public actor FrameProcessingQueue {
         Log.recordLatency("ocr_frame_processing", valueMs: (tDone - t0) * 1000, category: .processing)
         // Separate the backlog from current capture latency; timestamps contain no screen text.
         let ageMs = max(0, Date().timeIntervalSince(frameRef.timestamp) * 1000)
+        Log.recordLatency("capture_to_search_all_completed", valueMs: ageMs, category: .processing)
         Log.recordLatency(ageMs < 60_000 ? "capture_to_search_recent" : "capture_to_search_backlog",
                           valueMs: ageMs, category: .processing)
         Log.info("[Queue-TIMING] Frame \(frameID): prep=\(String(format: "%.0f", (tPrep-t0)*1000))ms frame=\(String(format: "%.0f", (tFrame-tPrep)*1000))ms ocr=\(String(format: "%.0f", (tOCR-tFrame)*1000))ms index=\(String(format: "%.0f", (tDone-tOCR)*1000))ms total=\(String(format: "%.0f", (tDone-t0)*1000))ms size=\(capturedFrame.width)x\(capturedFrame.height)", category: .processing)
 
         return .success
-    }
-
-    /// Convert JPEG data back to CapturedFrame for OCR
-    private func convertJPEGToCapturedFrame(_ jpegData: Data, frameRef: FrameReference) throws -> CapturedFrame? {
-        autoreleasepool {
-            guard let nsImage = NSImage(data: jpegData),
-                  let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-                return nil
-            }
-
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerRow = width * 4
-
-            // Create BGRA bitmap context
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-
-            var pixelData = Data(count: bytesPerRow * height)
-
-            pixelData.withUnsafeMutableBytes { ptr in
-                guard let context = CGContext(
-                    data: ptr.baseAddress,
-                    width: width,
-                    height: height,
-                    bitsPerComponent: 8,
-                    bytesPerRow: bytesPerRow,
-                    space: colorSpace,
-                    bitmapInfo: bitmapInfo.rawValue
-                ) else {
-                    return
-                }
-
-                context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-            }
-
-            return CapturedFrame(
-                timestamp: frameRef.timestamp,
-                imageData: pixelData,
-                width: width,
-                height: height,
-                bytesPerRow: bytesPerRow,
-                metadata: frameRef.metadata
-            )
-        }
     }
 
     private func parseActualSegmentID(from relativePath: String) throws -> VideoSegmentID {
@@ -709,56 +681,6 @@ public actor FrameProcessingQueue {
             throw ProcessingError.invalidVideoPath(path: relativePath)
         }
         return VideoSegmentID(value: actualSegmentID)
-    }
-
-    /// Returns nil when WAL data is not ready yet and frame should be deferred.
-    private func readFrameFromWAL(frameID: Int64, segmentID: VideoSegmentID, frameIndex: Int) async throws -> CapturedFrame? {
-        guard let storageManager = storage as? StorageManager else {
-            throw StorageError.fileReadFailed(
-                path: "WAL(\(segmentID.value))",
-                underlying: "Storage manager does not expose WAL manager"
-            )
-        }
-
-        let walManager = await storageManager.getWALManager()
-        do {
-            return try await walManager.readFrame(
-                videoID: segmentID,
-                frameID: frameID,
-                fallbackFrameIndex: frameIndex
-            )
-        } catch {
-            if shouldDeferWALRead(error) {
-                Log.debug(
-                    "[Queue] Frame \(frameID) WAL source not ready (segment \(segmentID.value), index \(frameIndex)): \(error.localizedDescription)",
-                    category: .processing
-                )
-                return nil
-            }
-            throw error
-        }
-    }
-
-    private func shouldDeferWALRead(_ error: Error) -> Bool {
-        if let storageError = error as? StorageError {
-            switch storageError {
-            case .fileNotFound:
-                return true
-            case .fileReadFailed(_, let underlying):
-                let lower = underlying.lowercased()
-                return lower.contains("out of range")
-                    || lower.contains("incomplete")
-                    || lower.contains("empty")
-                    || lower.contains("cannot open") // WAL may disappear as finalization completes.
-            default:
-                return false
-            }
-        }
-
-        let lower = error.localizedDescription.lowercased()
-        return lower.contains("out of range")
-            || lower.contains("incomplete")
-            || lower.contains("empty")
     }
 
     // MARK: - Status Management

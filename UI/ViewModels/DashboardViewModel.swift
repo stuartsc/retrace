@@ -15,6 +15,7 @@ public class DashboardViewModel: ObservableObject {
 
     // Recording status
     @Published public var isRecording = false
+    @Published public var originalRetention: OriginalRetentionSnapshot?
     @Published public var isRecordingPaused = false
     @Published public var recordingPauseRemainingSeconds: Int?
 
@@ -119,6 +120,8 @@ public class DashboardViewModel: ObservableObject {
         guard force || !isRecordingToggleInFlight else { return }
         // Read from thread-safe holder to avoid actor hops and keep UI updates responsive.
         isRecording = coordinator.statusHolder.status.isRunning
+        let retained = coordinator.originalRetentionStatus.snapshot
+        if originalRetention != retained { originalRetention = retained }
     }
 
     private func updatePauseStatus() {
