@@ -7,13 +7,14 @@ moment. The user selected fast draft text in 2–5 seconds followed by refinemen
 Improve CPU/load control, native processing and storage without weakening recorded
 history. Routine testing must not take over the screen.
 
-**Signed candidate 2611.13.2 is ready, not installed. Installed app remains
-2610.22.5.** No CUA, visible testing, app restart, installation, model download,
-recording-library mutation or settings change occurred in this session. Two user
-questions remain unanswered: normal restart timing and permission to download
-missing Apple speech assets. Do not treat elapsed time as either answer.
+**Local trial 2611.13.2 is installed and running.** The user explicitly authorised
+installation in the next turn. New saved screen frames and microphone files are
+verified; recording/privacy/native/Quit settings checked unchanged. Only normal
+Quit confirmations used CUA; no visible acceptance walkthrough or model download.
+Speech asset approval remains unanswered. Live transcription latency and matched
+performance remain unaccepted. See the installation outcome below.
 
-## Ready delivery
+## Installed delivery
 
 Workspace `/Users/stuartbond/backintime-audio-delivery-20261113`, branch
 `repair/audio-delivery-20261113`. Production integration `92dd2dc`, release input
@@ -50,7 +51,7 @@ Candidate folder:
 `/Users/stuartbond/Library/Application Support/Retrace Candidates/2026-11-13-audio-delivery`
 
 `install_app_only.py --check` passed and created no candidate files or receipts.
-`--install` has NOT run. It requires normal Quit and no recording writer, verifies
+`--install` completed successfully after the guard correction below; do not rerun it. It requires normal Quit and no recording writer, verifies
 old/new identities and signatures, retains only the old app and swaps only the app.
 No database copy, schema transition or media-format transition; rollback uses the
 current V23 library. Do not launch a candidate alongside the installed app. Do not
@@ -89,12 +90,38 @@ Receipts and compressed logs:
 Delivery journal:
 `/Users/stuartbond/backintime-audio-delivery-20261113/docs/audio-delivery-integration-20261113.md`
 
+## Installation outcome and corrected guard
+
+Signed app source and binary are unchanged. Installer helper fix `6ea8fa6` skips
+only lsof `cwd` records. The first attempt had stopped before mutation because an
+outbound read-only audio sync held its working directory inside the library. No
+sync process was signalled or modified. The old app was reopened during the fix.
+Six private guard tests, four installer tests and independent review passed.
+Previous helper/candidate receipt and failed-install receipt remain preserved.
+
+The authorised retry completed, reopened `/Applications/Retrace.app` in the
+background, and verified new microphone files and new saved screen frames without
+controlling its views. Database metadata was unchanged during swap; old app retained,
+no database copy. New AAC files match their database sizes and have no top-level
+padding `free` atom. Initial screen-context deferral resolved; identical screens
+were then deduplicated. This does not establish exhaustive capture coverage.
+
+Recorded microphone interval gaps: **371.817 seconds** during the first failed
+attempt/recovery and **60.939 seconds** during the final restart. Record both; never
+claim uninterrupted/gap-free recording. Full local observations are private in the
+candidate directory. Sanitised source receipt is
+`docs/fixtures/repair-20261113-audio-integration-harness/installed-verification.json`
+in the audio delivery worktree. Its candidate receipt also records the helper
+amendment; app manifest/binary remain the verified 2611.13.2 release.
+
+Native fast speech is still disabled, and the pre-existing system-audio restriction
+was observed in Settings before update. No assets downloaded or privacy bypass used.
+
 ## Separate checkpoints retained
 
 - Primary responsiveness: `/Users/stuartbond/backintime-responsiveness-20261113`,
   pushed `6e4c123`. Clean debug 1,719 tests/23 skips/zero failures; clean release
-  passed. Earlier signed 2611.13.1 remains preserved, superseded for proposed
-  installation by 2611.13.2. Installed source recovery matched 753/763 inputs; the
+  passed. Earlier signed 2611.13.1 remains preserved, superseded by installed 2611.13.2. Installed source recovery matched 753/763 inputs; the
   nine UI changes and one removal are the authorised Live lazy-scroll restoration.
   Original recovery checkout and history preserved.
 - Native first pass: `/Users/stuartbond/backintime-streaming-20261113`, pushed
@@ -125,9 +152,10 @@ Delivery journal:
 
 ## Remaining work and boundaries
 
-1. Await the user's normal restart timing. After authorised installation, reopen
-   in the background and verify recording/text advancement and installed identity
-   without foreground control. Preserve/measure the recording gap.
+1. Installation and background recording checks are complete. New audio text was
+   pending/probable silence in the scoped check; actual speech latency/accuracy and
+   normal-user Timeline/Live behaviour still need acceptance. Do not force a visible
+   walkthrough. System audio remains unavailable under the existing exclusion policy.
 2. Await speech-asset download approval, preserve 20 GiB free, then run authored
    native en-AU accuracy/coverage/latency checks. Both native flags remain off until
    evidence supports a scoped trial; physical microphone acceptance is separate.
@@ -146,7 +174,7 @@ recordings deleted. Free space stayed above 20 GiB throughout (~42 GiB after bui
 
 Main `/Users/stuartbond/backintime` retains the user's pre-existing AGENTS.md edit;
 do not stage or revert it. Main README/changelog describe separate repair branches,
-not incorporation into main or installed acceptance. Connected Jira search found no
+not incorporation into main or full performance acceptance. Connected Jira search found no
 matching Retrace/backintime issue; no unrelated issue or external message changed.
 
 Memory used: MEMORY.md1260–1263 and1278–1281; final reply needs one memory citation
