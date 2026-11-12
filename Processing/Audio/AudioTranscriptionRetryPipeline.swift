@@ -34,7 +34,8 @@ public enum AudioTranscriptionRetryPipeline {
         wordLevel: Bool,
         initialPrompt: String?,
         profile: AudioTranscriptionProfile = .exhaustiveRepair,
-        retainedFirstPass: DetailedTranscriptionResult? = nil
+        retainedFirstPass: DetailedTranscriptionResult? = nil,
+        retainedFirstPassRequiresRawInference: Bool = false
     ) async throws -> AudioTranscriptionDecision {
         try BackgroundProcessingContext.checkCancellation()
         let activity = AudioSpeechActivityPolicy.evaluate(
@@ -51,7 +52,8 @@ public enum AudioTranscriptionRetryPipeline {
                 audioVariant: .raw, languageHint: .english, qualityFlags: assessment.flags, attempts: 0)
         }
         var attempts = 0
-        let attemptPlan = attemptPlan(for: profile, hasRetainedFirstPass: retained != nil)
+        let requiresRawComparison = retained != nil && retainedFirstPassRequiresRawInference && profile == .deferredFirstPassRepair
+        let attemptPlan = attemptPlan(for: profile, hasRetainedFirstPass: retained != nil && !requiresRawComparison)
         let requestedWordLevel = profile != .exhaustiveRepair ? false : wordLevel
         // Context helps offline repair, but it can make quiet live batches echo the
         // previous transcript and feed that hallucination into every later batch.
@@ -65,9 +67,10 @@ public enum AudioTranscriptionRetryPipeline {
             // Explicit exhaustive repair still begins with its original auto
             // attempt, even when a saved candidate seeds ranking. Do not expand
             // the raw variant into four language calls merely because it exists.
-            let hints: [AudioTranscriptionLanguageHint] = profile == .exhaustiveRepair && variant == .raw
-                ? [.auto]
-                : languageHints(for: bestDecision, continueAfterTranscribed: shouldKeepSearching, profile: profile)
+            let hints: [AudioTranscriptionLanguageHint]
+            if variant == .raw, requiresRawComparison { hints = [.english] }
+            else if profile == .exhaustiveRepair && variant == .raw { hints = [.auto] }
+            else { hints = languageHints(for: bestDecision, continueAfterTranscribed: shouldKeepSearching, profile: profile) }
             guard !hints.isEmpty else { break }
 
             let candidateAudio = AudioEnhancer.enhance(

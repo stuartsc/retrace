@@ -10,6 +10,44 @@ import Speech
 public actor NativeStreamingSpeechService: VoiceRecognitionProtocol {
     private let localeIdentifier: String
     private var running = false
+    private var session: (id: UUID, analyzer: SpeechAnalyzer, identity: VoiceStreamIdentity)?
+    private var finalizationTask: Task<Void, Never>?
+    private var requestedThrough: Int64?
+
+    /// Coalesces requests while capture keeps feeding the independent input task.
+    /// The ordered result consumer, never this return, acknowledges coverage.
+    public func requestFinalization(source: LiveAudioSampleIdentity, throughSample: Int64) async throws {
+        try Task.checkCancellation()
+        guard let session, let original = session.identity.get(),
+              original.recordingGeneration == source.recordingGeneration,
+              original.continuityID == source.continuityID,
+              original.approximateOrigin == source.approximateOrigin,
+              source.isValid, throughSample > source.startSample,
+              throughSample <= (session.identity.lastEnd() ?? -1) else {
+            throw VoiceRecognitionError.invalidInput
+        }
+        requestedThrough = max(requestedThrough ?? throughSample, throughSample)
+        guard finalizationTask == nil else { return }
+        let id = session.id
+        finalizationTask = Task { await self.finalizeRequested(id: id) }
+    }
+
+    private func finalizeRequested(id: UUID) async {
+        while !Task.isCancelled, let session, session.id == id, let through = requestedThrough {
+            requestedThrough = nil
+            do { try await session.analyzer.finalize(through: CMTime(value: through, timescale: 16_000)) }
+            catch { break } // No acknowledgement: the durable worker retains CPU fallback.
+        }
+        if session?.id == id { finalizationTask = nil; requestedThrough = nil }
+    }
+
+    private func joinFinalization(id: UUID) async {
+        guard session?.id == id else { return }
+        let task = finalizationTask
+        task?.cancel()
+        await task?.value
+        if session?.id == id { session = nil; finalizationTask = nil; requestedThrough = nil }
+    }
     public init(localeIdentifier: String = "en-AU") { self.localeIdentifier = localeIdentifier }
 
     /// Explicit Settings action only. Recognition never initiates a download.
@@ -57,6 +95,8 @@ public actor NativeStreamingSpeechService: VoiceRecognitionProtocol {
         let (nativeInput, nativeContinuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingOldest(16))
         let (events, eventContinuation) = AsyncThrowingStream<VoiceRecognitionEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
         let identity = VoiceStreamIdentity()
+        let sessionID = UUID()
+        session = (sessionID, analyzer, identity)
         // Finalization is read from the same ordered result consumer below.
         // Analyzer callbacks can race that consumer and must never confirm text.
         do {
@@ -79,17 +119,13 @@ public actor NativeStreamingSpeechService: VoiceRecognitionProtocol {
                             if result.resultsFinalizationTime.isNumeric {
                                 let through = CMTimeConvertScale(result.resultsFinalizationTime,
                                     timescale: 16_000, method: .roundTowardZero).value
-                                if through >= 0, case .dropped = eventContinuation.yield(.finalized(
+                                guard through <= (identity.lastEnd() ?? -1) else { throw VoiceRecognitionError.invalidInput }
+                                if through >= source.startSample, case .dropped = eventContinuation.yield(.finalized(
                                     recordingGeneration: source.recordingGeneration,
                                     continuityID: source.continuityID, throughSample: through)) {
                                     throw VoiceRecognitionError.droppedInput
                                 }
                             }
-                        }
-                        // Explicit finalization settles unchanged volatile results as well.
-                        if let source = identity.get(), let through = identity.lastEnd() {
-                            eventContinuation.yield(.finalized(recordingGeneration: source.recordingGeneration,
-                                continuityID: source.continuityID, throughSample: through))
                         }
                         eventContinuation.finish()
                     } catch {
@@ -101,7 +137,13 @@ public actor NativeStreamingSpeechService: VoiceRecognitionProtocol {
                     do {
                         let last = try await analyzer.analyzeSequence(nativeInput)
                         try Task.checkCancellation()
-                        if let last { try await analyzer.finalizeAndFinish(through: last) }
+                        if let last {
+                            try await analyzer.finalizeAndFinish(through: last)
+                            if last.isNumeric, let end = identity.lastEnd() {
+                                identity.setCompletedThrough(min(end, CMTimeConvertScale(last,
+                                    timescale: 16_000, method: .roundTowardZero).value))
+                            }
+                        }
                         else { await analyzer.cancelAndFinishNow() }
                     } catch {
                         await analyzer.cancelAndFinishNow()
@@ -145,10 +187,19 @@ public actor NativeStreamingSpeechService: VoiceRecognitionProtocol {
                     throw error
                 }
             }
+            await joinFinalization(id: sessionID)
+            try Task.checkCancellation()
+            // Only successful, joined analyzer completion may settle the tail.
+            // Result-stream termination alone can also follow native failure.
+            if let source = identity.get(), let through = identity.completedThrough(), through >= source.startSample {
+                try await receive(.finalized(recordingGeneration: source.recordingGeneration,
+                    continuityID: source.continuityID, throughSample: through))
+            }
         } catch {
             nativeContinuation.finish()
             eventContinuation.finish(throwing: error)
             await analyzer.cancelAndFinishNow()
+            await joinFinalization(id: sessionID)
             if Task.isCancelled { throw CancellationError() }
             throw error
         }
@@ -187,6 +238,9 @@ private final class VoiceStreamIdentity: @unchecked Sendable {
     private let lock = NSLock()
     private var source: LiveAudioSampleIdentity?
     private var end: Int64?
+    private var completed: Int64?
+    func completedThrough() -> Int64? { lock.lock(); defer { lock.unlock() }; return completed }
+    func setCompletedThrough(_ value: Int64) { lock.lock(); completed = value; lock.unlock() }
     func get() -> LiveAudioSampleIdentity? { lock.lock(); defer { lock.unlock() }; return source }
     func set(_ value: LiveAudioSampleIdentity) { lock.lock(); source = value; lock.unlock() }
     func lastEnd() -> Int64? { lock.lock(); defer { lock.unlock() }; return end }

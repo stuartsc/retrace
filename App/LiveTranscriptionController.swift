@@ -7,14 +7,20 @@ public final class LiveTranscriptionInput: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: AsyncStream<CapturedAudio>.Continuation?
     private var dropped = false
+    private var packetSerial: UInt64 = 0
+    private var packetTime: ContinuousClock.Instant?
+    var packetActivity: (serial: UInt64, time: ContinuousClock.Instant?) {
+        lock.lock(); defer { lock.unlock() }; return (packetSerial, packetTime)
+    }
     public func offer(_ audio: CapturedAudio) {
         guard audio.source == .microphone else { return }
         lock.lock(); defer { lock.unlock() }
-        guard let continuation else { return }
         guard let identity = audio.sampleIdentity, identity.isValid,
               audio.audioData.count <= 32_000, audio.audioData.count == identity.sampleCount * 2 else {
-            dropped = true; self.continuation = nil; continuation.finish(); return
+            dropped = true; let old = continuation; self.continuation = nil; old?.finish(); return
         }
+        packetSerial &+= 1; packetTime = .now
+        guard let continuation else { return }
         if case .dropped = continuation.yield(audio) {
             dropped = true; self.continuation = nil; continuation.finish()
         }
@@ -30,23 +36,28 @@ public final class LiveTranscriptionInput: @unchecked Sendable {
     var didDrop: Bool { lock.lock(); defer { lock.unlock() }; return dropped }
 }
 
-/// Explicitly enabled candidate. Preview text cannot trigger markers or replace canonical Whisper text.
+/// Explicit preview candidate; separately gated exact native reuse can prepare saved text for idle CPU correction.
 public actor LiveTranscriptionController {
     public nonisolated let input = LiveTranscriptionInput()
     private let makeRecognizer: @Sendable () throws -> any VoiceRecognitionProtocol
     private let underPressure: @Sendable () async -> Bool
     private let changed: @Sendable () -> Void
+    private let sourceIdleTimeout: Duration
     private var value = LiveTranscriptionSnapshot()
     private var recording = false
     private var terminal = false
     private var revision = UUID()
-    private var active: (id: UUID, task: Task<Void, Never>)?
+    private var active: (id: UUID, task: Task<Void, Never>, recognizer: any VoiceRecognitionProtocol, started: ContinuousClock.Instant)?
+    private var awaitingPacketAfter: UInt64?
+    private var nativeFirstPassEnabled = false
+    private var coverage = NativeFirstPassCoverage()
     private var retiring: [UUID: Task<Void, Never>] = [:]
     private var timer: Task<Void, Never>?
     private var closing: Task<Void, Never>?
     private var retryAfter = ContinuousClock.now
 
     public init(underPressure: @escaping @Sendable () async -> Bool = { false },
+                sourceIdleTimeout: Duration = .seconds(5),
                 changed: @escaping @Sendable () -> Void = {
                     NotificationCenter.default.post(name: .retraceLiveDraftChanged, object: nil)
                 }, makeRecognizer: @escaping @Sendable () throws -> any VoiceRecognitionProtocol = {
@@ -54,6 +65,7 @@ public actor LiveTranscriptionController {
                     throw VoiceRecognitionError.unavailable
                 }) {
         self.underPressure = underPressure; self.changed = changed; self.makeRecognizer = makeRecognizer
+        self.sourceIdleTimeout = max(.milliseconds(20), sourceIdleTimeout)
     }
     public func snapshot() -> LiveTranscriptionSnapshot {
         var current = value
@@ -64,6 +76,34 @@ public actor LiveTranscriptionController {
         }
         return current
     }
+    /// Separate promotion gate, off until native accuracy/asset acceptance.
+    public func setNativeFirstPassEnabled(_ enabled: Bool) {
+        nativeFirstPassEnabled = enabled
+        coverage.reset()
+        value.nativeFirstPassEnabled = enabled
+        changed()
+    }
+
+    /// Invoked by the durable first-pass worker, never the capture/write callback.
+    /// Missing, late, partial or stopped coverage returns nil for CPU fallback.
+    public func firstPass(for batch: NativeFirstPassBatch) async throws -> NativeFirstPassText? {
+        try Task.checkCancellation()
+        guard nativeFirstPassEnabled, value.enabled, recording, !terminal,
+              value.state == .listening, let active else { return nil }
+        if let result = coverage.result(for: batch) { return result }
+        do { try await active.recognizer.requestFinalization(source: batch.range.source,
+            throughSample: batch.range.source.startSample + batch.frameCount) }
+        catch { try Task.checkCancellation(); return nil }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            guard self.active?.id == active.id, nativeFirstPassEnabled, !terminal, !input.didDrop else { return nil }
+            if let result = coverage.result(for: batch) { return result }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return nil
+    }
+
     public func setEnabled(_ enabled: Bool) async {
         guard !terminal else { return }
         value.enabled = enabled; revision = UUID(); retryAfter = .now
@@ -97,6 +137,7 @@ public actor LiveTranscriptionController {
         closing = drain; await drain.value
     }
     private func retire() async {
+        coverage.reset()
         input.stop()
         if let old = active { active = nil; retiring[old.id] = old.task; old.task.cancel() }
         let pending = retiring
@@ -124,11 +165,22 @@ public actor LiveTranscriptionController {
                     await self?.finished(id: id, error: nil)
                 } catch { await self?.finished(id: id, error: error) }
             }
-            active = (id, task)
+            awaitingPacketAfter = nil
+            active = (id, task, recognizer, .now)
         } catch { value.state = .unavailable; retryAfter = .now.advanced(by: .seconds(30)); changed() }
     }
-    private func checkConditions() async {
+    func checkConditions() async {
         guard !terminal, value.enabled, recording else { return }
+        let activity = input.packetActivity
+        if let active, ContinuousClock.now - max(active.started, activity.time ?? active.started) > sourceIdleTimeout {
+            revision = UUID(); let next = revision
+            awaitingPacketAfter = activity.serial
+            await retire()
+            guard next == revision, !terminal else { return }
+            value.spans = []; value.state = .waitingForMicrophone; changed()
+            return
+        }
+        if let previous = awaitingPacketAfter, previous == activity.serial { return }
         let token = revision, pressure = await underPressure()
         guard token == revision, !terminal else { return }
         if pressure && active != nil {
@@ -141,10 +193,11 @@ public actor LiveTranscriptionController {
     private func receive(_ event: VoiceRecognitionEvent, id: UUID) throws {
         try Task.checkCancellation()
         guard !terminal, active?.id == id, !input.didDrop else { throw CancellationError() }
+        if nativeFirstPassEnabled { try coverage.receive(event) }
         switch event {
         case .ready: value.state = .listening
         case .discontinuity: throw VoiceRecognitionError.discontinuity
-        case .finalized: return // Native finality is not canonical saved-transcript acceptance.
+        case .finalized: return // Saved publication also requires exact persisted source/media proof.
         case .update(let update):
             guard update.source.isValid, update.startSample >= 0, update.endSample > update.startSample,
                   update.text.utf8.count <= 8_192 else { throw VoiceRecognitionError.invalidInput }
@@ -169,7 +222,7 @@ public actor LiveTranscriptionController {
     }
     private func finished(id: UUID, error: Error?) {
         guard active?.id == id else { return }
-        active = nil; input.stop(); value.spans = []
+        active = nil; input.stop(); value.spans = []; coverage.reset()
         value.state = (error as? VoiceRecognitionError) == .missingAssets ? .missingAssets : .interrupted
         retryAfter = .now.advanced(by: .seconds(30)); changed()
     }

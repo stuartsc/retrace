@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Shared
 import Database
 import Storage
@@ -104,6 +105,11 @@ public actor AudioProcessingManager {
     public private(set) var hasPersistenceFailure = false
     /// Sticky disclosure: canonical recordings survive a failed optional context registration.
     public private(set) var hasPersistedBatchCallbackFailure = false
+    public typealias NativeFirstPassProvider = @Sendable (NativeFirstPassBatch) async throws -> NativeFirstPassText?
+    private var nativeFirstPassProvider: NativeFirstPassProvider?
+    /// Optimisation metadata only. SQLite and AAC remain the recoverable queue.
+    private var nativeFirstPassBatches: [Int64: NativeFirstPassBatch] = [:]
+    private var nativeFirstPassOrder: [Int64] = []
     private var onPersistedBatch: PersistedBatchHandler?
     private var onCommittedBatch: CommittedBatchHandler?
     public private(set) var hasCommittedBatchCallbackFailure = false
@@ -169,6 +175,14 @@ public actor AudioProcessingManager {
     public func setCommittedBatchHandler(_ handler: CommittedBatchHandler?) -> Bool {
         guard !isProcessing else { return false }
         onCommittedBatch = handler
+        return true
+    }
+
+    @discardableResult
+    public func setNativeFirstPassProvider(_ provider: NativeFirstPassProvider?) -> Bool {
+        guard !isProcessing else { return false }
+        nativeFirstPassProvider = provider
+        nativeFirstPassBatches.removeAll(); nativeFirstPassOrder.removeAll()
         return true
     }
 
@@ -309,6 +323,17 @@ public actor AudioProcessingManager {
             }
         }
 
+        // Hash only a new, bounded canonical AAC; never await inference here.
+        // Registration is independent of the optional voice-marker callback.
+        if nativeFirstPassProvider != nil, let rawBatchID, let path = savedBatchPath,
+           let fileURL = savedBatchURL, let digest = Self.nativeFileDigest(fileURL),
+           let proof = NativeFirstPassBatch(rawBatchID: rawBatchID, relativePath: path,
+               encodedSHA256: digest, frameCount: Int64(batch.audioData.count / (max(batch.channels, 1) * 2)),
+               source: batch.source, sampleRate: batch.sampleRate, channels: batch.channels,
+               ranges: batch.sourceRanges, mappingIncomplete: batch.sourceMappingIncomplete) {
+            nativeFirstPassBatches[rawBatchID] = proof; nativeFirstPassOrder.append(rawBatchID)
+            while nativeFirstPassOrder.count > 64 { nativeFirstPassBatches[nativeFirstPassOrder.removeFirst()] = nil }
+        }
         if let rawBatchID, let path = savedBatchPath, let fileURL = savedBatchURL,
            let fileSize = savedBatchSize, !batch.sourceRanges.isEmpty || batch.sourceMappingIncomplete, let onPersistedBatch {
             let receipt = PersistedAudioBatchReceipt(rawBatchID: rawBatchID, relativePath: path,
@@ -508,17 +533,14 @@ public actor AudioProcessingManager {
     private func processPersistedBatch(_ persistedBatch: PersistedAudioBatch) async throws {
         try BackgroundProcessingContext.checkCancellation()
         let service = transcriptionService
-        guard governor == nil || !(service is MockTranscriptionService) else {
-            throw PendingAudioCompletionError.modelUnavailable
-        }
         isTranscribing = true
         defer { isTranscribing = false }
-        if governor != nil {
-            try await service.initialize()
-            try BackgroundProcessingContext.checkCancellation()
-        }
         let startTime = Date()
         let batch: AudioBatch
+        if let id = persistedBatch.rawBatchID, let proof = nativeFirstPassBatches[id],
+           let url = persistedBatch.savedBatchURL, Self.nativeFileDigest(url) != proof.encodedSHA256 {
+            nativeFirstPassBatches[id] = nil; nativeFirstPassOrder.removeAll { $0 == id }
+        }
         do {
             batch = try loadBatchForTranscription(persistedBatch)
         } catch {
@@ -534,11 +556,28 @@ public actor AudioProcessingManager {
             }
             return
         }
+        if try await reuseNativeFirstPass(persistedBatch, decoded: batch) { return }
+        guard governor == nil || !(service is MockTranscriptionService) else {
+            throw PendingAudioCompletionError.modelUnavailable
+        }
+        if governor != nil {
+            try await service.initialize()
+            try BackgroundProcessingContext.checkCancellation()
+        }
         let savedBatchPath = persistedBatch.savedBatchPath
         let canDeferRepair = governor != nil && persistedBatch.pendingRecord != nil
         let profile: AudioTranscriptionProfile = canDeferRepair && persistedBatch.pendingRecord?.needsFirstPassRepair != true
             ? .liveFirstPass : .deferredFirstPassRepair
 
+        var nativeFirstPassNeedsCPU = false
+        if let pending = persistedBatch.pendingRecord, pending.needsFirstPassRepair,
+           let queries = transcriptionQueries,
+           let current = try await queries.getRetainedFirstPassEntry(id: pending.id),
+           current.audioPath == pending.audioPath, current.source == pending.source,
+           current.text == pending.retainedFirstPass?.text {
+            nativeFirstPassNeedsCPU = current.qualityFlags?.split(separator: ",")
+                .contains(Substring(AudioPreparationMetadata.nativeFirstPassPending)) == true
+        }
         do {
             // Step 1: Always attempt transcription. Silence/junk detection is metadata,
             // never a pre-transcription gate, because missed speech is worse than junk.
@@ -550,7 +589,8 @@ public actor AudioProcessingManager {
                 wordLevel: config.enableWordLevelTimestamps,
                 initialPrompt: nil,
                 profile: profile,
-                retainedFirstPass: persistedBatch.pendingRecord?.retainedFirstPass
+                retainedFirstPass: persistedBatch.pendingRecord?.retainedFirstPass,
+                retainedFirstPassRequiresRawInference: nativeFirstPassNeedsCPU
             )
             try BackgroundProcessingContext.checkCancellation()
             let transcription = decision.transcription
@@ -766,6 +806,40 @@ public actor AudioProcessingManager {
         } catch {
             throw error
         }
+    }
+
+    private static func nativeFileDigest(_ url: URL) -> String? {
+        // Bounded even if the path has been replaced since registration.
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.intValue,
+              size > 0, size <= 2 * 1_024 * 1_024,
+              let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count == size else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func reuseNativeFirstPass(_ persisted: PersistedAudioBatch, decoded: AudioBatch) async throws -> Bool {
+        guard governor != nil, let pending = persisted.pendingRecord, !pending.needsFirstPassRepair,
+              let proof = nativeFirstPassBatches.removeValue(forKey: pending.id) else { return false }
+        nativeFirstPassOrder.removeAll { $0 == pending.id }
+        guard let provider = nativeFirstPassProvider, let url = persisted.savedBatchURL,
+              pending.audioPath == proof.relativePath, pending.source == .microphone,
+              decoded.sampleRate == 16_000, decoded.channels == 1,
+              decoded.audioData.count == proof.frameCount * 2,
+              Self.nativeFileDigest(url) == proof.encodedSHA256 else { return false }
+        // Decoding and file identity must both agree with the capture-time proof.
+        // The wait is in admitted work and cancellation preserves the pending row.
+        let result: NativeFirstPassText?
+        do { result = try await provider(proof) }
+        catch { try BackgroundProcessingContext.checkCancellation(); return false }
+        try BackgroundProcessingContext.checkCancellation()
+        guard let result, result.batch == proof,
+              !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              result.text.utf8.count <= 32_768,
+              Self.nativeFileDigest(url) == proof.encodedSHA256 else { return false }
+        try await updatePendingOutcome(persisted, text: result.text, transcriptStatus: "needs_repair",
+            detectedLanguage: nil, audioVariant: AudioEnhancementVariant.raw.rawValue,
+            qualityFlags: AudioPreparationMetadata.nativeFirstPassPending + "," + AudioPreparationMetadata.firstPassRepairPending)
+        return true
     }
 
     private func updatePendingOutcome(_ persisted: PersistedAudioBatch, text: String,

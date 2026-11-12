@@ -23,6 +23,7 @@ Processing/
 │   ├── AudioTranscriptionRetryPipeline.swift
 │   ├── MockTranscriptionService.swift
 │   ├── NativeSpeechTranscriptionService.swift
+│   ├── NativeStreamingSpeechService.swift
 │   ├── SentenceSegmenter.swift
 │   └── WhisperCppTranscriptionService.swift
 ├── OCR/
@@ -54,6 +55,7 @@ Processing/
 │   ├── FrameProcessingSourceReadinessTests.swift
 │   ├── HistoricalOCREvidenceTests.swift
 │   ├── NativeSpeechTranscriptionServiceTests.swift
+│   ├── NativeFirstPassPersistenceTests.swift
 │   ├── TestLogger.swift
 │   ├── VisionOCRIncrementalTests.swift
 │   └── WhisperModelResidencyTests.swift
@@ -193,3 +195,26 @@ with no first-pass prompt carryover; this does not measure recognition accuracy.
 authored AAC from the audio-visibility validation. An enabled AAC decode failure
 is a failure, never a skip; native AAC acceptance remains distinct from the WAV
 scheduling regression.
+
+### November 13 phased native first-pass candidate (independently off)
+
+`AudioProcessingManager.setNativeFirstPassProvider` is configured before recording,
+separately from persisted-media and committed-text callbacks. At most 64 ephemeral
+proofs bind one complete microphone source range to its new AAC digest and pending
+row. Only an admitted worker waits (at most one second in App) for explicit ordered
+native coverage; capture never awaits recognition. Native decoding/frame count and
+file digests bracket acceptance. Nonempty covered text uses the existing atomic
+pending-row update, FTS hooks and committed notification, retaining
+`first_pass_repair_pending_v1` for quiet-time CPU correction. Missing/partial/source-
+mismatched proof, a changed file, restart or a stopped native owner falls back to
+CPU. The candidate does not infer silent coverage or invent system-audio identity.
+
+`NativeStreamingSpeechService.requestFinalization` coalesces `finalize(through:)`
+requests without closing the input stream. Method return is not result delivery;
+only the ordered native `resultsFinalizationTime` event confirms continuous
+coverage. Tail confirmation occurs only after successful joined analyzer/results
+completion and is bounded by the analyzer's consumed sample endpoint. Cancellation
+joins finalization before releasing the native session. `NativeFirstPassPersistenceTests`
+uses real private AAC and SQLite with controlled native text; it does not establish
+Apple recognition quality, helper-process memory or whole-system energy savings.
+Both native preview and native reuse gates remain off pending that acceptance.

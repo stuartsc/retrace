@@ -64,8 +64,17 @@ public struct VoiceMarkerStatus: Sendable, Codable, Equatable {
 
 /// The owner shares existing captured buffers; implementations never open a device.
 public protocol VoiceRecognitionProtocol: Actor {
+    /// Schedules a bounded finalization request. Completion is not coverage:
+    /// callers must still observe an ordered `.finalized` event.
+    func requestFinalization(source: LiveAudioSampleIdentity, throughSample: Int64) async throws
     func run(input: AsyncStream<CapturedAudio>,
              receive: @escaping @Sendable (VoiceRecognitionEvent) async throws -> Void) async throws
+}
+
+public extension VoiceRecognitionProtocol {
+    func requestFinalization(source: LiveAudioSampleIdentity, throughSample: Int64) async throws {
+        throw VoiceRecognitionError.unavailable
+    }
 }
 
 public enum VoiceRecognitionError: Error, Sendable, Equatable {

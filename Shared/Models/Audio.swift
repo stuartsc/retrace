@@ -8,6 +8,8 @@ import Foundation
 /// Versioned queue metadata in the existing audio quality_flags column. These
 /// flags never authorize recording deletion or claim a successful transcript.
 public enum AudioPreparationMetadata {
+    /// Native first-pass text has not yet had its raw CPU comparison.
+    public static let nativeFirstPassPending = "native_first_pass_pending_v1"
     public static let lowEnergyPending = "pending_low_energy_v1"
     public static let firstPassRepairPending = "first_pass_repair_pending_v1"
 }

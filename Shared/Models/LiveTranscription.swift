@@ -13,6 +13,7 @@ public enum LiveTranscriptionState: String, Sendable {
 /// Ephemeral preview only, never an evidence reference, search result or voice action.
 public struct LiveTranscriptionSnapshot: Sendable, Equatable {
     public var enabled: Bool = false
+    public var nativeFirstPassEnabled: Bool = false
     public var state: LiveTranscriptionState = .disabled
     public var spans: [VoiceRecognitionUpdate] = []
     public var firstUpdateMilliseconds: Double?
@@ -23,7 +24,9 @@ public struct LiveTranscriptionSnapshot: Sendable, Equatable {
         case .disabled: return "Fast microphone drafts are off"
         case .waitingForMicrophone: return "Waiting for microphone recording"
         case .preparing: return "Preparing on-device microphone drafts"
-        case .listening: return "Microphone draft · saved text is prepared separately"
+        case .listening: return nativeFirstPassEnabled
+            ? "Microphone draft · covered recordings get native text, then quiet-time correction"
+            : "Microphone draft · saved text is prepared separately"
         case .missingAssets: return "Speech assets unavailable · using saved-audio transcription"
         case .unavailable: return "Streaming unavailable · using saved-audio transcription"
         case .interrupted: return "Draft interrupted · recording continues"

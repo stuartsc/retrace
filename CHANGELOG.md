@@ -6,6 +6,12 @@ This file records meaningful Retrace bug fixes and improvements. Dates under **U
 
 ## Unreleased
 
+### 2026-11-13 — Phased native text candidate (not installed, independently off)
+
+- Add exact microphone reuse from native streaming results into the durable searchable first-pass row, retaining quiet-time CPU correction. Explicit ordered finalization, complete sample coverage, unchanged AAC digest and native decoded frame count are required; missing coverage retains CPU fallback.
+- Keep recording independent of finalization waits, bound ephemeral proof metadata, and join native shutdown when microphone packets stop while screen recording continues.
+- Fix terminal native coverage being published on result-stream end before analyzer success was known. Controlled lifecycle/private AAC/SQLite tests and an explicit framework continuous-coverage gate are added; assets, accuracy, latency and energy acceptance remain open. See [the candidate journal](docs/phased-native-first-pass-20261113.md).
+
 ### 2026-11-13 — Responsiveness repair candidate (not installed)
 
 - Ordinary Timeline opening fetches the current saved head; wake and visible updates follow Now without replacing deliberate historical selections. Opening no longer takes another screenshot for OCR.

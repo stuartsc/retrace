@@ -12,6 +12,17 @@ final class LiveTranscriptionNativeTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["RETRACE_LIVE_DRAFT_NATIVE_TEST"] == "1" else {
             throw XCTSkip("Opt-in authored on-device streaming comparison")
         }
+        try await validateAuthoredPCM(requireContinuousCoverage: false)
+    }
+
+    func testNativeFinalizationCoversAuthoredPCMWhileInputRemainsOpen() async throws {
+        guard ProcessInfo.processInfo.environment["RETRACE_NATIVE_FIRST_PASS_COVERAGE_TEST"] == "1" else {
+            throw XCTSkip("Opt-in native continuous coverage gate; no automatic asset download")
+        }
+        try await validateAuthoredPCM(requireContinuousCoverage: true)
+    }
+
+    private func validateAuthoredPCM(requireContinuousCoverage: Bool) async throws {
         guard #available(macOS 26.0, *), SpeechTranscriber.isAvailable,
               let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-AU")) else {
             throw XCTSkip("Native Australian English speech unavailable")
@@ -36,8 +47,9 @@ final class LiveTranscriptionNativeTests: XCTestCase {
         let generation = UUID(), continuity = UUID()
         let (stream, continuation) = AsyncStream<CapturedAudio>.makeStream(bufferingPolicy: .bufferingOldest(32))
         let collector = DraftNativeReceipt()
+        let recognizer = NativeStreamingSpeechService()
         let recognition = Task {
-            try await NativeStreamingSpeechService().run(input: stream) { try await collector.receive($0) }
+            try await recognizer.run(input: stream) { try await collector.receive($0) }
         }
         let deadline = Task {
             do { try await Task.sleep(for: .seconds(45)) } catch { return }
@@ -66,6 +78,27 @@ final class LiveTranscriptionNativeTests: XCTestCase {
                 if case .dropped = result { throw VoiceRecognitionError.droppedInput }
                 sample += count
                 try await ContinuousClock().sleep(until: started.advanced(by: .seconds(Double(sample) / 16_000)), tolerance: .milliseconds(2))
+            }
+            if requireContinuousCoverage {
+                let source = LiveAudioSampleIdentity(recordingGeneration: generation, continuityID: continuity,
+                    startSample: 0, sampleCount: Int64(sample), sampleRate: 16_000, approximateOrigin: origin)
+                // Packet delivery and finalization are independent native tasks.
+                // Request readiness is not coverage and does not close input.
+                var requested = false
+                for _ in 0..<100 {
+                    do {
+                        try await recognizer.requestFinalization(source: source, throughSample: Int64(sample))
+                        requested = true; break
+                    } catch VoiceRecognitionError.invalidInput { try await Task.sleep(for: .milliseconds(10)) }
+                }
+                XCTAssertTrue(requested, "Native source must accept the exact durable-batch boundary")
+                let limit = ContinuousClock.now.advanced(by: .seconds(1))
+                while ContinuousClock.now < limit, await collector.finalizedThrough < Int64(sample) {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                let covered = await collector.finalizedThrough
+                XCTAssertGreaterThanOrEqual(covered, Int64(sample),
+                    "Native reuse requires ordered full coverage within the worker's bounded wait, before stream end")
             }
             continuation.finish()
             try await recognition.value
@@ -97,12 +130,13 @@ private actor DraftNativeReceipt {
     private var finals = 0
     private var finalElapsed: Double?
     private var finalText = ""
+    var finalizedThrough: Int64 = -1
     func begin(_ clock: ContinuousClock.Instant) { started = clock }
     func receive(_ event: VoiceRecognitionEvent) throws {
         switch event {
         case .ready: ready = true
         case .discontinuity: throw VoiceRecognitionError.discontinuity
-        case .finalized: break
+        case .finalized(_, _, let through): finalizedThrough = max(finalizedThrough, through)
         case .update(let update):
             guard let started else { throw VoiceRecognitionError.invalidInput }
             let d = started.duration(to: .now)

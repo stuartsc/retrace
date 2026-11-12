@@ -297,6 +297,14 @@ public actor ServiceContainer {
             do { try await database.recordResourceUsageMinute(minute) }
             catch { Log.warning("Could not save CPU usage aggregate", category: .app) }
         }
+        // Independent default-off promotion gate. No provider means no proof work.
+        // Never replace the voice-marker persisted-media registration callback.
+        if UserDefaults.standard.bool(forKey: "nativeFirstPassReuseTrialEnabled") {
+            await audioProcessing.setNativeFirstPassProvider { [weak self] batch in
+                guard let owner = await self?.liveTranscriptionOwner else { return nil }
+                return try await owner.firstPass(for: batch)
+            }
+        }
         Log.info("✓ Database initialized", category: .app)
         await storageUsage.start()
         try? await database.recordMetricEvent(metricType: .storageUsage, metadata: "{\"action\":\"started\"}")
@@ -867,6 +875,7 @@ public actor ServiceContainer {
                 (snapshot.isCurrent && (snapshot.systemFiveSecondCPUPercent ?? 0) > 85)
         })
         liveTranscriptionOwner = owner
+        await owner.setNativeFirstPassEnabled(UserDefaults.standard.bool(forKey: "nativeFirstPassReuseTrialEnabled"))
         await owner.setEnabled(UserDefaults.standard.bool(forKey: "liveMicrophoneDraftTrialEnabled"))
         return owner
     }
