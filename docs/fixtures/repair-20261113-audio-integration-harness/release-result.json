@@ -1,0 +1,21 @@
+{
+  "state": "clean whole-app optimised release passed",
+  "sourceCheckpoint": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "productionSourceCommit": "92dd2dc362a4400c33d0a89149b4cee39ffe19b1",
+  "swiftBuildSeconds": 3736.19,
+  "runnerSeconds": 3742.1126036669593,
+  "wholeAppInputsMatchedBeforeAfter": 751,
+  "focusedInputsMatchedBeforeAfter": 348,
+  "exactCopiesMatchedBeforeAfter": 7,
+  "dependencyPinsMatchedBeforeAfter": true,
+  "binary": "/Users/stuartbond/backintime-audio-delivery-20261113/.build-validation/release/arm64-apple-macosx/release/Retrace",
+  "binarySHA256": "2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38",
+  "binaryBytes": 62443944,
+  "inputSnapshotSHA256": "c662e716095a2c97d5960a65472625edfc649d4c5414282965a98f40348275dc",
+  "logSHA256": "2df54e6fd72e46c4af41248ea402245bb16e69a399a3caed49ae3212166ae3fb",
+  "nativeMicrophoneDraftDefaultEnabled": false,
+  "nativeFirstPassReuseDefaultEnabled": false,
+  "actualNativeModelInference": false,
+  "installed": false,
+  "validationScope": "15 focused integration tests plus separate clean optimised whole-app build; inherited native full suite remains a separate receipt"
+}

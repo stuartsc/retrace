@@ -1,0 +1,24 @@
+{
+  "state": "clean focused actual-product integration passed",
+  "sourceCheckpoint": "b495d4a",
+  "productionSourceCommit": "92dd2dc362a4400c33d0a89149b4cee39ffe19b1",
+  "testSuites": {
+    "AACContainerCompactorTests": 5,
+    "AudioWriterPolicyTests": 2,
+    "NativeFirstPassPersistenceTests": 8
+  },
+  "tests": 15,
+  "skips": 0,
+  "failures": 0,
+  "testSeconds": 3.453,
+  "cleanBuildSeconds": 314.73,
+  "logSHA256": "48b20789779fd1d7d89cd6363ddb56c8242d9936da9c220d9621016bd5be2293",
+  "compressedLogSHA256": "643a5d16ae01180de90e3635d36ebb0980791d008359e75d0948596e4a1583e6",
+  "productionInputsMatchedBeforeAfter": 348,
+  "exactCopiesMatchedBeforeAfter": 7,
+  "dependencyPinsMatchedBeforeAfter": true,
+  "productionPackageManifestChanged": false,
+  "actualNativeModelInference": false,
+  "installedAcceptance": false,
+  "wholeAppRelease": "separate clean optimised whole-app release passed; see release-result.json"
+}

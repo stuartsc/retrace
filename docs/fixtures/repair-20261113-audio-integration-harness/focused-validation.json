@@ -1,0 +1,86 @@
+{
+  "productionSourceCommit": "92dd2dc362a4400c33d0a89149b4cee39ffe19b1",
+  "before": {
+    "productionInputsMatched": 348,
+    "exactCopiesMatched": 7,
+    "actualLocalProducts": [
+      "App",
+      "Processing",
+      "Storage",
+      "Shared",
+      "Database"
+    ],
+    "dependencyPinsMatched": true
+  },
+  "compilationAttempted": true,
+  "actualNativeModelInference": false,
+  "wholeAppOptimizedBuild": "still required",
+  "commands": [
+    {
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "15",
+        "/usr/bin/swift",
+        "package",
+        "--package-path",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/.audio-integration-validation",
+        "--scratch-path",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/.audio-integration-validation/.build",
+        "clean"
+      ],
+      "exitCode": 0,
+      "interruptedSignal": null,
+      "elapsedSeconds": 1.7483418330084532,
+      "leaderReaped": true,
+      "groupDrained": true,
+      "forcedKill": false,
+      "observedGroupPIDs": [],
+      "remainingActivePIDs": [],
+      "remainingZombiePIDs": [],
+      "cleanupErrors": []
+    },
+    {
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "15",
+        "/usr/bin/swift",
+        "test",
+        "--package-path",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/.audio-integration-validation",
+        "--scratch-path",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/.audio-integration-validation/.build",
+        "--jobs",
+        "2"
+      ],
+      "exitCode": 0,
+      "interruptedSignal": null,
+      "elapsedSeconds": 329.2139346249169,
+      "leaderReaped": true,
+      "groupDrained": true,
+      "forcedKill": false,
+      "observedGroupPIDs": [],
+      "remainingActivePIDs": [],
+      "remainingZombiePIDs": [],
+      "cleanupErrors": []
+    }
+  ],
+  "interruptedSignal": null,
+  "error": null,
+  "after": {
+    "productionInputsMatched": 348,
+    "exactCopiesMatched": 7,
+    "actualLocalProducts": [
+      "App",
+      "Processing",
+      "Storage",
+      "Shared",
+      "Database"
+    ],
+    "dependencyPinsMatched": true
+  },
+  "completed": true,
+  "log": "/tmp/retrace-audio-integration-focused.log",
+  "logSHA256": "48b20789779fd1d7d89cd6363ddb56c8242d9936da9c220d9621016bd5be2293"
+}

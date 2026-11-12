@@ -1,0 +1,91 @@
+{
+  "sourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "wholeAppOptimizedBuild": true,
+  "before": {
+    "wholeAppInputs": 751,
+    "harnessInputs": {
+      "productionInputsMatched": 348,
+      "exactCopiesMatched": 7,
+      "actualLocalProducts": [
+        "App",
+        "Processing",
+        "Storage",
+        "Shared",
+        "Database"
+      ],
+      "dependencyPinsMatched": true
+    },
+    "inputSnapshot": "release-inputs-20261112T205343667848Z.json",
+    "inputSnapshotSHA256": "c662e716095a2c97d5960a65472625edfc649d4c5414282965a98f40348275dc"
+  },
+  "nativeMicrophoneDraftDefaultEnabled": false,
+  "nativeFirstPassReuseDefaultEnabled": false,
+  "actualNativeModelInference": false,
+  "runtimeSpeechAssets": "en-AU unavailable according to root check; not rechecked or downloaded here",
+  "installed": false,
+  "commands": [
+    {
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "15",
+        "/usr/bin/swift",
+        "package",
+        "--scratch-path",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/.build-validation/release",
+        "clean"
+      ],
+      "exitCode": 0,
+      "interruptedSignal": null,
+      "elapsedSeconds": 1.2765492090256885,
+      "leaderReaped": true,
+      "groupDrained": true,
+      "forcedKill": false,
+      "observedGroupPIDs": [],
+      "remainingActivePIDs": [],
+      "remainingZombiePIDs": [],
+      "cleanupErrors": []
+    },
+    {
+      "argv": [
+        "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/scripts/validate_noninteractive.py",
+        "release"
+      ],
+      "exitCode": 0,
+      "interruptedSignal": null,
+      "elapsedSeconds": 3742.1126036669593,
+      "leaderReaped": true,
+      "groupDrained": true,
+      "forcedKill": false,
+      "observedGroupPIDs": [],
+      "remainingActivePIDs": [],
+      "remainingZombiePIDs": [],
+      "cleanupErrors": []
+    }
+  ],
+  "interruptedSignal": null,
+  "error": null,
+  "after": {
+    "wholeAppInputsMatched": 751,
+    "harnessInputs": {
+      "productionInputsMatched": 348,
+      "exactCopiesMatched": 7,
+      "actualLocalProducts": [
+        "App",
+        "Processing",
+        "Storage",
+        "Shared",
+        "Database"
+      ],
+      "dependencyPinsMatched": true
+    },
+    "inputSnapshotSHA256": "c662e716095a2c97d5960a65472625edfc649d4c5414282965a98f40348275dc",
+    "binary": "/Users/stuartbond/backintime-audio-delivery-20261113/.build-validation/release/arm64-apple-macosx/release/Retrace",
+    "binarySHA256": "2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38",
+    "binaryBytes": 62443944
+  },
+  "completed": true,
+  "log": "/tmp/retrace-audio-delivery-release-20261112T205343667848Z.log",
+  "logSHA256": "2df54e6fd72e46c4af41248ea402245bb16e69a399a3caed49ae3212166ae3fb"
+}

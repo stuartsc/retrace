@@ -1,0 +1,78 @@
+{
+  "before": {
+    "productionInputsMatched": 348,
+    "exactCopiesMatched": 7,
+    "actualLocalProducts": [
+      "App",
+      "Processing",
+      "Storage",
+      "Shared",
+      "Database"
+    ],
+    "dependencyPinsMatched": true
+  },
+  "sourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "wholeAppOptimizedBuild": true,
+  "actualNativeModelInference": false,
+  "commands": [
+    {
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "15",
+        "/usr/bin/swift",
+        "package",
+        "--scratch-path",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/.build-validation/release",
+        "clean"
+      ],
+      "exitCode": 0,
+      "interruptedSignal": null,
+      "elapsedSeconds": 0.7970597080420703,
+      "leaderReaped": true,
+      "groupDrained": true,
+      "forcedKill": false,
+      "observedGroupPIDs": [],
+      "remainingActivePIDs": [],
+      "remainingZombiePIDs": [],
+      "cleanupErrors": []
+    },
+    {
+      "argv": [
+        "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+        "/Users/stuartbond/backintime-audio-delivery-20261113/scripts/validate_noninteractive.py",
+        "release"
+      ],
+      "exitCode": -15,
+      "interruptedSignal": 2,
+      "elapsedSeconds": 106.51426816696767,
+      "leaderReaped": true,
+      "groupDrained": true,
+      "forcedKill": false,
+      "observedGroupPIDs": [
+        47317,
+        47318
+      ],
+      "remainingActivePIDs": [],
+      "remainingZombiePIDs": [],
+      "cleanupErrors": []
+    }
+  ],
+  "interruptedSignal": 2,
+  "error": null,
+  "after": {
+    "productionInputsMatched": 348,
+    "exactCopiesMatched": 7,
+    "actualLocalProducts": [
+      "App",
+      "Processing",
+      "Storage",
+      "Shared",
+      "Database"
+    ],
+    "dependencyPinsMatched": true
+  },
+  "completed": false,
+  "log": "/tmp/retrace-audio-delivery-release-clean.log",
+  "logSHA256": "4c72b6d5524197923c46c3060991a08c3812e30b5ee23c6c1d2fd4c26cb3e354"
+}

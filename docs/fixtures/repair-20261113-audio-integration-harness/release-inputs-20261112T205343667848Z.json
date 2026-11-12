@@ -1,0 +1,4532 @@
+{
+  "sourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "roots": [
+    "Shared",
+    "Database",
+    "Storage",
+    "Capture",
+    "Processing",
+    "Search",
+    "Migration",
+    "App",
+    "UI",
+    "Sources",
+    "Vendors"
+  ],
+  "explicitInputs": [
+    "Package.swift",
+    "Package.resolved",
+    "scripts/validate_noninteractive.py",
+    "scripts/create-release.sh",
+    "scripts/release.sh",
+    "docs/fixtures/repair-20261113-audio-integration-harness/release.py"
+  ],
+  "files": [
+    {
+      "path": "App/ActivityTimelineProjection.swift",
+      "bytes": 10667,
+      "sha256": "2aa4e369bdd1415ba962a7d23b09b51212fb68bd9c3b63d1960e51571d128b8b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/AppCoordinator.swift",
+      "bytes": 179671,
+      "sha256": "82bdb74bfbaf70781e8b72528a4909076d2fbea7123af6a89e1785d5dc0f1bd4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/AppLifecycle.swift",
+      "bytes": 8143,
+      "sha256": "b50c23e3c116467823ad03cae2330ac7b4b9f51babd0a075ac20c2523aa0463d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Audio/WhisperConfigLoader.swift",
+      "bytes": 3302,
+      "sha256": "edaba1a0455a07145b60cfd1a4dae079431267d46ae12ef8679ca452b7d8c437",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/AudioSearch.swift",
+      "bytes": 7172,
+      "sha256": "30a737fbeae77c295f09df874f92108ec24cd8e03ca60faf36b28a46f1194efe",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/AudioSessionOwner.swift",
+      "bytes": 10819,
+      "sha256": "67e7bee49bf4a305cc704bfab258b13dac57e5029e7e7d43e1cdcc341ff9cfa1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/AudioWriterPolicy.swift",
+      "bytes": 1047,
+      "sha256": "118bbae93f875dcb26c8500635df665ce131ad99854fdd9feca77292eb11099c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/BackgroundProcessingGovernor.swift",
+      "bytes": 30290,
+      "sha256": "9a73f58c7662bf1a5ef180ace97e9a65f41cde0c20cd03669ae3bdee0f3d210a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/BackgroundTranscriptionService.swift",
+      "bytes": 1577,
+      "sha256": "ebba23d0de843f571218f9cf5e8f38d19dbfaf6fc821e16ce7cf98a7da129d04",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/CaptureSettingsPersistence.swift",
+      "bytes": 3314,
+      "sha256": "45e99d9b2a75cfda5576855bce8e51bfeef7904e88df40c737b97a797ce1e0a7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionAdmissionGate.swift",
+      "bytes": 1559,
+      "sha256": "b7acdadba73151759913543267c123e7d462f1b20f5c056181c263305919c275",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionBatchPlan.swift",
+      "bytes": 3953,
+      "sha256": "9c30547c3a5c46ef78f819a9287f7f127a6d7f9d00cf8ada05b6fe859fad2b11",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionBatchReconciler.swift",
+      "bytes": 2071,
+      "sha256": "b88817c32b8e9f3e8a69d223d6c8993492d55acb428f2e945c8c4ca129912d6f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionContextCollector.swift",
+      "bytes": 3898,
+      "sha256": "29220793700f714c97bb798b219a7a20b9038d11185e762865d0435783d0ec9a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionController.swift",
+      "bytes": 45042,
+      "sha256": "5762962964c6c9761d02e32516d9d43fab771f213a694f808cbff82fb87844cb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionEnrichmentService.swift",
+      "bytes": 24364,
+      "sha256": "aa73b7794e00af54e3ce20e0ef8d6fa66078aab87fdda39c31dc20c225de4933",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionEvidenceReader.swift",
+      "bytes": 14745,
+      "sha256": "f34ad5cf17a6f5047b52334caa468ea9d71eb611273fc82876d7441b7efbca3f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionHTTPTransport.swift",
+      "bytes": 8687,
+      "sha256": "f34783d3a9f3a3b510be97bf0e18d087210ab923e4d21af2b25f25a813609086",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionRefreshPass.swift",
+      "bytes": 1933,
+      "sha256": "4e1d5aaa48074ff4f8ef15b541cc6024e43184e9f38a1c30a1b686228cb266a5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionSettingsService.swift",
+      "bytes": 9325,
+      "sha256": "47c1c01fdc2365597538f32d6b38793b66519ea7bfc3c02109757ce6755cfbc7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerCatalog.swift",
+      "bytes": 8645,
+      "sha256": "0068d45f7a514183d1b71febaf74366c9a98f6ebff1e3c6dcb9bffa2c320a550",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerChanges.swift",
+      "bytes": 1724,
+      "sha256": "f8cac12e82e9cd2ea6ba1276471ae316a03b4b7ce632498ff3e4f2bbeb129339",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerCorrectionStore.swift",
+      "bytes": 6232,
+      "sha256": "51342e549c5e61c7a56683fad27cb0c6e46bfc68ab5def0fb20b2787cd2bec2b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerWindow.swift",
+      "bytes": 2310,
+      "sha256": "18181b1296e654f9ee18b087172b60237185c10d1f377e50dfa7f037959d7b8d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionSpool.swift",
+      "bytes": 10120,
+      "sha256": "84b732dc1a96dc3b8aa7b671ffe648a98f25d12d2fee2406222013c183fa0990",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionTranscriptSnapshot.swift",
+      "bytes": 3777,
+      "sha256": "a242736c1b81cf724c1e8065c42d9c64e7e8905852369a29bad533f7086982db",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionTurnPlayback.swift",
+      "bytes": 11324,
+      "sha256": "0c0797353820f1a402ccf6bff5da93a83056ac6c43fbbd3e2bebf8e31a0815f6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionTurnResolver.swift",
+      "bytes": 2825,
+      "sha256": "92eac2fba9fd50d92c348fc4d2b3fa3cb940f2ac84a809d62aefbfd28e26bc94",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/CompanionWire.swift",
+      "bytes": 6277,
+      "sha256": "c8cfe38d81b209606b73f38f19e14131e9c039f2e67ad59b3c8433b3e8b1bce0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Companion/ContextRangePresentationService.swift",
+      "bytes": 10872,
+      "sha256": "2f4b99c6cbf32fb5b91df0698db9db0e6638ee4d7038202f5d993605be5a4d1f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/DataAdapter.swift",
+      "bytes": 186716,
+      "sha256": "f509543cf941bd107d0953e125d0f2c3c60aaacb013ee14912f144d0e00af545",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Dictation/DictationAudioBuffer.swift",
+      "bytes": 5480,
+      "sha256": "105ffb3cf625ccd89363174d2557272b6dfeafa7924bf7f0a712a0a55a7ec758",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Dictation/DictationInsertionService.swift",
+      "bytes": 4858,
+      "sha256": "343c3995a9b5a30ad1822ea16a09cca668ba3719f4a075596f2841d51d97e3bc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Dictation/DictationManager.swift",
+      "bytes": 9174,
+      "sha256": "bd29aebd4edb859a4d7a97baff305bb3e09093136be79b3554636641a5714212",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Dictation/DictationSessionStoreAdapter.swift",
+      "bytes": 79,
+      "sha256": "936d634547ec1713132c6b0695379ec246dee1c00bd922943fde460e9f6f4958",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Dictation/DictationTargetContextProvider.swift",
+      "bytes": 1206,
+      "sha256": "cd270d5397f6bcc1ed20a9f07063199cb46acbec101c9eaa67d1dd5a2b271dba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Dictation/DictationTextFormatter.swift",
+      "bytes": 3375,
+      "sha256": "15958d038dc4854ef38ada9865703654450c528afca678dff4a702cc4a5c1fc3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ExactOCRRepairPixels.swift",
+      "bytes": 1762,
+      "sha256": "f0fdba33b160db8a58097f16976b075d1127bfa54f959102b04058cfc3c36fd8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ExactOCRRepairService.swift",
+      "bytes": 7391,
+      "sha256": "96c95f353b76a5eecb42aed759432668cb55abf2a5d8767b9fdee52b87ae0e60",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/LiveAudioContextReader.swift",
+      "bytes": 3743,
+      "sha256": "4ce514cd09ec48c6d2ad4968aaeba0c3d09d75c13efce654e8f6eba60006840e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/LiveContextSearchService.swift",
+      "bytes": 30573,
+      "sha256": "b0fc9c0c2ef793de10c59b4db7ed110ed18ad0f59cc80b605a6004b8bead5023",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/LiveTranscriptionController.swift",
+      "bytes": 11707,
+      "sha256": "377123b282c1754444e355841cec62bdefc2bb87fd8177d8ff9975c0b9d0505a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ManualAudioWorkOwner.swift",
+      "bytes": 1851,
+      "sha256": "32e5067fd6ad2bf29f9f7354781d257b2609aeaff27d4dddae4b931c5d84bc6e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ModelManager.swift",
+      "bytes": 9949,
+      "sha256": "b215b2e8c29a4a45e00ed3bf874ae444d590f6baa49d2d7f95710c8e88306421",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/NativeAnnotationService.swift",
+      "bytes": 5325,
+      "sha256": "dec5917d1549e59182df506aa0e241e62329a91d1491ba3220b9f380fa264e76",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/NativeFirstPassCoverage.swift",
+      "bytes": 4427,
+      "sha256": "b96e823f31c0f2d29558c514eda9723ac2f4992b4d9a54fc12c9bd55db9ddef2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/OnboardingManager.swift",
+      "bytes": 8914,
+      "sha256": "838c0c346c6bd41415309fe147408b88931413bcf525b8c76b4bcd225b293b62",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ProgressiveRecallService.swift",
+      "bytes": 34564,
+      "sha256": "a5e3848e385be09a270d3f47a936c38c566c4b6d0f4815686cd9b518a90d8baa",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/README.md",
+      "bytes": 1646,
+      "sha256": "f9f02e434def2250f6e957a3875e9c812a820d0cf88090ab7b8ecda898c14018",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RecordingLifecycle.swift",
+      "bytes": 5601,
+      "sha256": "67149e8e9e1d674b84c57b4fe04112f0872f3bea39062e7ae29f6214e7cff692",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ResourceProcessingPolicy.swift",
+      "bytes": 2933,
+      "sha256": "b83b7fc2f788599ba2da3cb84c8e3ca956953945ba9470a6761178392ed3fd03",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ResourceUsageMonitor.swift",
+      "bytes": 10230,
+      "sha256": "8975013d510ab16c42bc38907a4ff6b0a81daa3c79dd0ea7e7b5d960887f001b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetentionCommandService.swift",
+      "bytes": 13964,
+      "sha256": "ccde214c1adb00e20172f7c533ef5eb415e8c31d2aa25695f8e0d722aab0d2b7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetentionManager.swift",
+      "bytes": 14491,
+      "sha256": "ba9862e4c5d3ded098ddba11bf80d067550f696916956fc29982a83e445fdf9e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceAnnotationCommands.swift",
+      "bytes": 8364,
+      "sha256": "ac237241c7841dd47c19ab46f751b100611a460b1a932221d443b519266f98e4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceAudioSettingsCommands.swift",
+      "bytes": 1478,
+      "sha256": "a3e17bc3c43263a3aa904c90fd1c340c8407740eff9ad7b858ac100b81480038",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceCommandAccessService.swift",
+      "bytes": 11533,
+      "sha256": "459fc3835f1e3fb99e54dd41bb96f324ba5d70a19127f27d9f79ac7383e93530",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceCommandDispatcher.swift",
+      "bytes": 23810,
+      "sha256": "2ff442e2867d5876575a9500cc07bb48e8c22fbbf1f82114193242ed1e93bbb0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceCommandLedger.swift",
+      "bytes": 9631,
+      "sha256": "179ad504eb7bd7451659975e8a27902af67ccb5ddff38bacb6eaf8220fd0110b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceContextCommands.swift",
+      "bytes": 11715,
+      "sha256": "245247dc82f9bcb7db54600c24a60d6ac5cdc050f7aeba90b5bf86dac84525c5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceContextRangeCommands.swift",
+      "bytes": 1403,
+      "sha256": "db80fef01df3dc0bdcaaeb3d4c38aca4e31b5d1555a390fd6869d5db59dc16cf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceForegroundCommands.swift",
+      "bytes": 7824,
+      "sha256": "7d7f4cc01fcb5cf74b120a297d075df64a63df1ffa58b0e42a5e762c85171758",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceForegroundRouter.swift",
+      "bytes": 4134,
+      "sha256": "432f746f3b66cf2f1ddbe76a7d950aaebe672e016bb5fb4e43e7901daec79d38",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceNativeBridge.swift",
+      "bytes": 8611,
+      "sha256": "2154426d227a5b0c719ea5cfe4a6838fe885e2be0fea6cd2458d1618746c0f32",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceNativeCommandHandlers.swift",
+      "bytes": 16252,
+      "sha256": "1f9fae933141f7965c6171f36f9de7eaa27a2518c8c221ee7c762f1a2e0b2a97",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceRetentionCommands.swift",
+      "bytes": 6008,
+      "sha256": "f4ab3b8bd992b699785e8812e8dec382e8a6373086befbfd6f0991c64111937b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceScreenshotCommands.swift",
+      "bytes": 2938,
+      "sha256": "e599df6360a9da3411dfcc0b2fa1efd56827104f0376a07873674c7fcab0a9b9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceSourceCommands.swift",
+      "bytes": 4939,
+      "sha256": "70e0a828860e7aa4de7fcbf99fcadbe536aa841c1d11644d136c4552d43d7d73",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceSpeakerCommands.swift",
+      "bytes": 4255,
+      "sha256": "84b52fb5cbf11743e7d2fcedb898a88a1971c7cd910a33a11779d88bca3fe757",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceTimelineCommands.swift",
+      "bytes": 4694,
+      "sha256": "3fd969e414a440248a84f6cb0646a5a186b3ef73881cfad0ee64111c4547914e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceCommands/RetraceTranscriptCommands.swift",
+      "bytes": 9622,
+      "sha256": "63d50e1321223e1c4f452167308b11e867f72a1af17fec0dbfda57c1f9875821",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/RetraceOperationsService.swift",
+      "bytes": 1529,
+      "sha256": "10faae6d4737ddd6ee8d9922921b119e56bb65168c47f023b6e7e882dbeba4da",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ScreenEvidenceAdmissionCoordinator.swift",
+      "bytes": 3908,
+      "sha256": "17029091d0d4a47dea9b215984e6765859f9e299d07d78c1eff7b9c430e00866",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/ServiceContainer.swift",
+      "bytes": 56320,
+      "sha256": "58d0ebb29993da28d54baa5903b6e27f286ee0359e5232c308505784e022cff1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/SourceConfigurationService.swift",
+      "bytes": 17659,
+      "sha256": "c56ddd46798abc4d2423a0fd57914e56ae3d8a2195fa73311280f950a4c81397",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/StorageUsageService.swift",
+      "bytes": 4132,
+      "sha256": "8ce3b60c85d423bbccec329779eaff7c90dd3e5dcb13defbdc72faa3b8a7a4dd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ActivityTimelineProjectionTests.swift",
+      "bytes": 12410,
+      "sha256": "5e835e096b4bd169a79fb1fc320a474917022a0d05912d8d4809d0bd2e10b299",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/AudioCaptureConfigPrivacyTests.swift",
+      "bytes": 323,
+      "sha256": "e0a2d513639c1d41418a42ecfcc90514174b3e04da66c0085945b73396b39497",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/AudioPipelineBufferPolicyTests.swift",
+      "bytes": 1290,
+      "sha256": "0d171a6affb02ae50fbbef56e8fcea56807ab5eaa9f934521c40c832e9ab3c1e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/AudioSessionOwnerTests.swift",
+      "bytes": 15452,
+      "sha256": "8334be2dcbb1e8e62780dff52b91931492345a608f08c737d505cf9c01acf9c1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/AudioWriterPolicyTests.swift",
+      "bytes": 3915,
+      "sha256": "a9f098cf87d5df86275f3c843e7af6b1f3218155c2834836cc0ddf0f233ea65f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/BackgroundProcessingGovernorTests.swift",
+      "bytes": 41531,
+      "sha256": "1c10c2c7413b319407367222441dfdab69ee7214fdde07c3f945c9bf790a7f01",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/BackgroundProcessingMonitorDelayTests.swift",
+      "bytes": 12615,
+      "sha256": "4b788178bc40f15eca0847c22a60473c0e32faada4102d3859f35315b34fbffd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CaptureSettingsPersistenceTests.swift",
+      "bytes": 1935,
+      "sha256": "79b0f7bb14ab306f5433b5729e6193ff562862b83d154df57af949011e2ca24e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionCorrectionTests.swift",
+      "bytes": 8520,
+      "sha256": "590491c4b85b532d8009ad069c4127e44830b0b5091461ee46a5263525ff0731",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionDeliveryRecoveryTests.swift",
+      "bytes": 16080,
+      "sha256": "524d6f6d1e1ec9380c25b077173a5ae0714cc3310bd3d2fd24f02f8d541a631f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionEnrichmentTests.swift",
+      "bytes": 12655,
+      "sha256": "1a02e1710406ac105dfed99a1ecaa8856411f2a300789992ea7f1ca057dadf1a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionLifecycleTests.swift",
+      "bytes": 20605,
+      "sha256": "9741109256248aaab0c4ca14bdcb1b70f87b1c3842ec214d5b81e516892119cc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionOfflineSpeakerPagingTests.swift",
+      "bytes": 9346,
+      "sha256": "fa8a8dc5fd0111fcb85f44bb303411e91a5206e2f9c9715a0393fc270723413e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionPrivateTransportAcceptanceTests.swift",
+      "bytes": 36282,
+      "sha256": "bba3813c6603e434211f2ce6d7e66ef534e3688ccb8be96c4553ac6a3223cd68",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionProposalRecoveryTests.swift",
+      "bytes": 12014,
+      "sha256": "8889fa7b9ae89a31fcb3b645e96960147db323751b3f2729b2b0e7f2faeb884f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionSettingsTests.swift",
+      "bytes": 18736,
+      "sha256": "d9ae98b1b11735db60890b229edd59132b72e6f17f73fecfc2da901ecb81f5a6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionSourceProofTests.swift",
+      "bytes": 13476,
+      "sha256": "4956834f962353b036f701d1ea9284833eedc086d6997b65c895aa22807f06a4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionSpeakerWindowTests.swift",
+      "bytes": 3041,
+      "sha256": "94111d7714e33a7dc22bbe02b39e7b61e310405d6e73e0b847e4d0d929913eb3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionSpoolRecoveryTests.swift",
+      "bytes": 4792,
+      "sha256": "2996865cf055888d1096204a18cc0d16d7f1b7445d401f3c6fdbdf60ada297d5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionTurnPlaybackTests.swift",
+      "bytes": 15715,
+      "sha256": "5c62294f42d4c54772d7e7878f548161fb9f4d56b5dd7077a45e4654297c6f9b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/CompanionTurnReferenceTests.swift",
+      "bytes": 4288,
+      "sha256": "08cedf0933cefe4b858df6bb2000d04e21c8aab567c6aea9bb23f006d8116400",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ContextRangePresentationTests.swift",
+      "bytes": 7406,
+      "sha256": "3d517bafa9b5d6d9a79e2c132ceddad3e753ee1a92636494da716ee7e277a3b2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/DiagnosticFileLoggingTests.swift",
+      "bytes": 4249,
+      "sha256": "b9115a056c37d35e553bcfa5ab2cdaeefc74c79cb61a2cef24eee74be171da43",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/DictationAudioBufferTests.swift",
+      "bytes": 2897,
+      "sha256": "9de96508dd9fafa9e3ff605a10210549779437646776ba436e45328551b290e8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/DictationManagerTests.swift",
+      "bytes": 14006,
+      "sha256": "187ddce2ef46785264e56000520d8b8ad9e4a44409299f5d1304a3dfa9909b35",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/DictationTextFormatterTests.swift",
+      "bytes": 1122,
+      "sha256": "06d5a3a0e70fe950fc789b636a11cd4aca235180866879b3a2dcc3a0ce156cfc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/EvidenceResolutionTests.swift",
+      "bytes": 45555,
+      "sha256": "96e67ea995d14d0a0de5404334bb5e909f4ed6754d6ede5e458a17351b8693ca",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ExactOCRRepairServiceTests.swift",
+      "bytes": 11330,
+      "sha256": "98b82700b8c7aefc31e2856e0231ad98fd7d86a3af0d6613dfca2528e8677d03",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/FrameDeletionRoutingTests.swift",
+      "bytes": 11174,
+      "sha256": "79df6b61e6b593ba79e004900c5f59358f0b0d21696ee0e581645507e41014ba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ImportedSourceLifecycleTests.swift",
+      "bytes": 6814,
+      "sha256": "4979998494d6dd722ec70b2dc7c62d61ce8f4c0fd0f4f4229ae2668731ae4a40",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/InstalledCPUGovernorTests.swift",
+      "bytes": 1163,
+      "sha256": "0be38045f3e23daa2a0afa221624187d65fe42a096daf65065d87415c4ef537c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/InstalledManualRefinementTests.swift",
+      "bytes": 8026,
+      "sha256": "0ce849285311973c57c056659634b71272129549ad84aa8ffc0e1a447267d019",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/LiveAudioContextReaderTests.swift",
+      "bytes": 10784,
+      "sha256": "4142102038f4f5b90587f8cea3156d19de5d736cb90e2e7871f5b7cfbd7f26a6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/LiveContextSearchTests.swift",
+      "bytes": 12824,
+      "sha256": "61d8df74b1cf640478b86bad44569f421605855939adc8011367e7daeadb4f3f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/LiveTranscriptionControllerTests.swift",
+      "bytes": 5669,
+      "sha256": "a2be51f146f3caf7d2a071eb70919dc9b1b01e1728a56b34910f668be7cc78ac",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/LiveTranscriptionNativeTests.swift",
+      "bytes": 9114,
+      "sha256": "c187019e49cad11d586ec9e4259343499cce76dc6e582c834378492e972f41fc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ManualAudioWorkOwnerTests.swift",
+      "bytes": 4579,
+      "sha256": "f3b5644034d08901ea460f50718bf8745f7d0826fb11e2dc05edfb733ec35179",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/MarkerAudioMediaTests.swift",
+      "bytes": 7898,
+      "sha256": "c6c15c2524c8a8cb9e37d26696af06f509367f653bb23ded31238d39141790b7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/NativeAnnotationServiceTests.swift",
+      "bytes": 14382,
+      "sha256": "a8ec883ccb45d0cab7cff0753a9e284c22704b8c75cb6e30b008ff1b1a93f603",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/NativeControlCommandTests.swift",
+      "bytes": 6749,
+      "sha256": "4f39e7e88d448e8c4c8438a6647e9eb55b50db998d5c322b66c700b178b04f0e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/NativeFirstPassCoverageTests.swift",
+      "bytes": 9533,
+      "sha256": "ede5a1d839786c3ae313a0bb1f811f8bd899fec8c31373c22648da99243a0fdd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/NativeSpokenMarkerValidationTests.swift",
+      "bytes": 9416,
+      "sha256": "61a7b63181fd463c0581076aafa81a7cb46c209d835b044abadc8fa213ab5914",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ProgressiveRecallBenchmarkTests.swift",
+      "bytes": 36900,
+      "sha256": "9de1229eb9416fd733d22a80db529b728b21f6bb3882a77b2efbdac71f8bf2f6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ProgressiveRecallSearchTests.swift",
+      "bytes": 67958,
+      "sha256": "74806c03b77bd9e47a0271089af650d169ffced4e61d780d8471a8f5928efad4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/README.md",
+      "bytes": 6649,
+      "sha256": "cc2d0742f96306ef870a660a7ba77cc2ea1523987c586fc92b48842662cc47a4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RecallCoordinatorRoutingTests.swift",
+      "bytes": 3000,
+      "sha256": "82519ad2c4b008d5153e921307db5367556064ef087c078e566b652aeba094df",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RecordingLifecycleTests.swift",
+      "bytes": 19681,
+      "sha256": "9ebe6fc9e3febb10eb32cbdba1fefdf4fe67f83bb2fd111abcde4b0ffc3f5933",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RefinementLoopPolicyTests.swift",
+      "bytes": 2424,
+      "sha256": "96c0b28a980911a010a496798f739efb762d10e02d69a017fdd4347528216aa3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ResourceProcessingPolicyTests.swift",
+      "bytes": 5525,
+      "sha256": "1ed05a95b1ab5d885d56090b8d025b36dd37a03072667ed87a650ae9bee04163",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ResourceUsageMonitorTests.swift",
+      "bytes": 4764,
+      "sha256": "d35fcc449244e7a7e7cf976a0ee428340dd394e0032ebd3a75e1a39c82ce09f6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetentionCommandServiceTests.swift",
+      "bytes": 13537,
+      "sha256": "25e23eeb11cb1224444cb34e984c2395eec5b6ee7a3a9f0e5815be2f2678a96a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetentionOutputDrainTests.swift",
+      "bytes": 2471,
+      "sha256": "8fd8ec4bf930c8272c5d202c87e8ebdaa691b24df5e0878aab106cf33555ae3e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetentionPathValidationTests.swift",
+      "bytes": 5534,
+      "sha256": "014817331101feace9cbd02e5b05a975c7765e5ef0d9cbe098b852e5a34b7094",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceCommandAccessServiceTests.swift",
+      "bytes": 5481,
+      "sha256": "2d80ea26039b3802275f959b2fb4909b87ef1119a7ccbd7771bb66ddc8867c7e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceCommandDispatcherTests.swift",
+      "bytes": 9671,
+      "sha256": "282cc485776e837b21f58a46ec060347ded563b7c42d5fcc06cb0b723bd9175f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceCommandJobTests.swift",
+      "bytes": 9769,
+      "sha256": "63dbcfcb423e2a89bb2a4f073c1f9a85a8a9aeeacfb2d58cb317160a49dda545",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceContextCommandTests.swift",
+      "bytes": 14794,
+      "sha256": "f90393ac05e581e967ff7df294578ab5c39ffa60bf4856e00ff5ae5600dccef4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceContextRangeGrantTests.swift",
+      "bytes": 8254,
+      "sha256": "70723a7781f648df34aff54eaaee46358be57cc9fa082183d31b95b0d4383f25",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceForegroundCommandTests.swift",
+      "bytes": 9351,
+      "sha256": "ec0e82755e8b2fc16ffbc1704e63a4d259555da0eefa32a40298d532292b77c8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceForegroundRouterTests.swift",
+      "bytes": 5034,
+      "sha256": "506acc775b9195ae7620f39be239caf57ed5f9f7d33fc44525797d687ba01fb1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceGrantedEvidenceTests.swift",
+      "bytes": 6930,
+      "sha256": "dede6301ec76fe8c1a3fcb0f9aa485a9b29d0dafcd87605245c669278755efb2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceNativeMarkerCommandTests.swift",
+      "bytes": 5206,
+      "sha256": "6f778c3935681dfbf4309c782c31df7d76c70fb774f2525bf81f05f8611c52e2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceOperationsTests.swift",
+      "bytes": 3640,
+      "sha256": "7ae36bca1d903cec903968427203646cbe47429bb936a40fba1057f92cb0ff01",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetracePrivateTransportAcceptanceTests.swift",
+      "bytes": 25715,
+      "sha256": "fbed83ee1b79aae821fad493236cc397579c5e059b2fa66098dd0294701d0519",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceRetentionCommandsTests.swift",
+      "bytes": 16797,
+      "sha256": "63d19a233de42a8e6e408fd5c004c45c4f3ab0852e6c2874ba7d991a172b9d8a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceScreenshotCommandTests.swift",
+      "bytes": 16680,
+      "sha256": "fe5e87a08505c71f97e1b1e49fe01c1ee343a6894b96efa00fd07407d7fb38b0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceTimelineCommandTests.swift",
+      "bytes": 5016,
+      "sha256": "a8430d6afb9a0c4e9da165898da5cfc301363342211b34531c476ac3d6876df3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/RetraceTranscriptCommandTests.swift",
+      "bytes": 7070,
+      "sha256": "bf7caa5aadf45230d04ca21fe291b67bffe1f6cfc9b7bd9bc2aedb03b0431e47",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ScreenEvidenceAdmissionIntegrationTests.swift",
+      "bytes": 22312,
+      "sha256": "56e39d941b0935b618dc5529de1c4ce614b17689169901ce6af8cfa00f8b6a5b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ScreenEvidenceExpansionTests.swift",
+      "bytes": 25180,
+      "sha256": "1438e40e65a6b98852c311a03a055508032be03d5f95603856685c432f8730c1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/ScreenEvidenceFeedIntegrationTests.swift",
+      "bytes": 8396,
+      "sha256": "c48d59a854e861b3db18cdb60b14b950e57adbc8f95149082aaae40b078fb6ec",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/SourceConfigurationServiceTests.swift",
+      "bytes": 20125,
+      "sha256": "c6a38ba8b7cbadbdbe49d999a29792bed165288b612652eb503849657414cfc3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/StartupRecoverySequencingTests.swift",
+      "bytes": 27260,
+      "sha256": "ef93cd80e059b27083088819704568fad4f6f2d4bdc1a4d6fb825f7ce907b509",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/StorageUsageServiceTests.swift",
+      "bytes": 5702,
+      "sha256": "a54181473d02255f2f731ed808aaf13397f49030690d9583acd6e20ec023bdf7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/TestLogger.swift",
+      "bytes": 235,
+      "sha256": "d160f5388191bfc452b911af06b4ef3ff4010f39199c61b182d3c4d258625684",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/TimelineMarkerServiceTests.swift",
+      "bytes": 11353,
+      "sha256": "9bb39bf738c28807bcc8b3b1fc1f6d03b2ff4e747e7ae12342b94549a368d57f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/VoiceMarkerControllerTests.swift",
+      "bytes": 13508,
+      "sha256": "df5de81c9bc286ea0e555632f3634c95870f2208759d23295c93d0af941a9f2c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/Tests/VoicePhraseMatcherTests.swift",
+      "bytes": 6461,
+      "sha256": "b3367ba3e2d820c469a00d2b479c299f96612e6b8a76699220b8874acfa93074",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/TimelineMarkerService.swift",
+      "bytes": 19258,
+      "sha256": "f4538d9ca1d7e7cb28635264e36f28e8643214b73ad678ad2160e11843ac397b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/VoiceMarkers/MarkerAudioMediaService.swift",
+      "bytes": 11377,
+      "sha256": "2f37af0dbadb69cb65ab81c3beb324717e5d515d4600d4016280357bc353de11",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/VoiceMarkers/MarkerAudioPlayback.swift",
+      "bytes": 9472,
+      "sha256": "395ec134ce7565d92f1b331c2a97032393018643b13f617010bea37131869c87",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/VoiceMarkers/VoiceMarkerController.swift",
+      "bytes": 15763,
+      "sha256": "e2e065f1a1eb65357fa558e40cc69e833deae9d9a83907d469ec3ee027572149",
+      "symlinkTarget": null
+    },
+    {
+      "path": "App/VoiceMarkers/VoicePhraseMatcher.swift",
+      "bytes": 9510,
+      "sha256": "01328599ef536f662e919a9d4d95ba6e4cb61d0a56cc366c32c206a6094793f0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/AGENTS.md",
+      "bytes": 32171,
+      "sha256": "31246047bde4cedce2b1e612678c1c35c4985cbb63f3f6d05ae18ad826c3780f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ActivityMonitor.swift",
+      "bytes": 39840,
+      "sha256": "00d09f5b3aa41dcca8edf7ebf9ccf697c08d59a1eb1ed73cbfe84b3604a71869",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/AudioCaptureManager.swift",
+      "bytes": 16560,
+      "sha256": "8517274254273010e4d8a734707aa807de0799197d17e2b40ce1a53290be12fd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/AudioCaptureSampleClock.swift",
+      "bytes": 4064,
+      "sha256": "7b6bef2095f190db7f500c1ce60922935ede266e4954efd0e2cf7e1f417302b6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/AudioFormatConverter.swift",
+      "bytes": 10281,
+      "sha256": "5a3e6fc8a1aa2d67d72ae67a38a50faff916dea1866d66e86af5e23c039e3983",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/ConsentDialogHelper.swift",
+      "bytes": 9496,
+      "sha256": "ab27a6cd76ec0f0f88dc3c6f7c85f38055dae59902aec64af4e219ecedc7d5b1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/MeetingDetector.swift",
+      "bytes": 7991,
+      "sha256": "8994655c05ff6afee51489467fc0e5c93fff311ef367c61165fcd861655858cf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/MicrophoneAudioCapture.swift",
+      "bytes": 14358,
+      "sha256": "32a580a899de35634d413f7229e2b7385317cde8b4c01a4215b7d1fae84ecb3f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/MicrophoneCaptureHardware.swift",
+      "bytes": 11044,
+      "sha256": "e582828016f91ba6ce4feb807cda617ee4b65f6e0f55d51d7541b7431558fa24",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Audio/SystemAudioCapture.swift",
+      "bytes": 10002,
+      "sha256": "31171403e6f89c087c4275f2c0bbea68c02fcb6016c6effe0f21fc917506ea49",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/CaptureManager.swift",
+      "bytes": 32843,
+      "sha256": "edb0299f9e292fdfc4bddfb2f4b040c2def436d63c6e8c9ebdd4f9ae3a6da61e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Deduplication/FrameDeduplicator.swift",
+      "bytes": 11556,
+      "sha256": "4996c928a1d3cb0aec1b1927539e713acefe846170d54ff0ae57a9b235b1c049",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Deduplication/PerceptualHash.swift",
+      "bytes": 4952,
+      "sha256": "86c246b5d93e727146d4da6d376d3e503c673e5a36a7c3e1c79c8b438b7c62de",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Metadata/AppInfoProvider.swift",
+      "bytes": 15659,
+      "sha256": "227b4ab839dcccb55d90b32bae2fc18df827d952b7f2a33600c46b3093385ad9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Metadata/BrowserURLExtractor.swift",
+      "bytes": 52162,
+      "sha256": "6c460840be30409cda1052bdcb12e3dd7ac7fd52e0f31275a21e9bff6dcb0830",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Metadata/CaptureAttribution.swift",
+      "bytes": 11049,
+      "sha256": "f3c57008e925d1fe9cd5de05fdf3e07897cacbe1562e3f5c1fa5045d87b7d26b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Metadata/CaptureSamplingDiagnostics.swift",
+      "bytes": 4738,
+      "sha256": "b47f72bda0d29d2b5c168bad0a7114724385da46277ea1799057e825ece833a8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Metadata/CapturedWindowGeometry.swift",
+      "bytes": 2790,
+      "sha256": "8328f545e2338897c0f2abf44bc5fbfbf84e180a5b187b6799cc5ee29ae4fee3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/README.md",
+      "bytes": 3988,
+      "sha256": "5f9470f80c93e1f6cb883fca63d6094a5f35d0dfa3270585f5860962831fa00a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/CGWindowListCapture.swift",
+      "bytes": 40749,
+      "sha256": "034baac167932abbbd11c39cc14612cab6808cd2977128600828ab5021972cc0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/CapturePollingTimer.swift",
+      "bytes": 555,
+      "sha256": "786151ca29eefe037b05b257dc5ba7ecf1c8250d7db8e0ee82c28455c4c2e697",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/DisplayMonitor.swift",
+      "bytes": 5787,
+      "sha256": "dd503d4c43eba0e4ec4b5cccb5d68f138c1e51def845b8bd69726d216c0153dd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/DisplaySwitchMonitor.swift",
+      "bytes": 9970,
+      "sha256": "d75fe5016f15662567d5292803edd5b36ef233c331fa3feee46ecea8f12c7961",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/PermissionChecker.swift",
+      "bytes": 1701,
+      "sha256": "f4f38f643ebe03c15a96a3ebd9b4a0856b2bde0d354c39b432ff8e21ba523a05",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/PermissionMonitor.swift",
+      "bytes": 11395,
+      "sha256": "fb42e9931c7a6764cfa39b5ea7e48c3752258a0ab9bcda8db36f53ea9236a7be",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/PrivateWindowDetector.swift",
+      "bytes": 17701,
+      "sha256": "83f6653f108b2a922300a65cddbbf3b2c8f89c2afba68ba610f1ec2e9ab08f08",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/ScreenCapture/PrivateWindowMonitor.swift",
+      "bytes": 4356,
+      "sha256": "3e3602c8f6526e209d868f7855286003842f398e5f58b1036e6fc06e5981ba67",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/AccessibilityInspectorTest.swift",
+      "bytes": 31606,
+      "sha256": "a82f3ea7c95b8305273e5cb5335ea20aca1d4cdacf98890d39896c51fb4f6e2e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/ActivityApplicationIdentityTests.swift",
+      "bytes": 27424,
+      "sha256": "21d23412862d6c5cef290c8c87e8a7258d3dabab27e3f3e763fdbe19bf130ad6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/ActivityContextPrivacyTests.swift",
+      "bytes": 3018,
+      "sha256": "eb82fd978b2b40c7777fb5040b6bcc0a8d1822b0397aca09a59f2176bc5dc2bb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/ActivityMonitorAttributionTests.swift",
+      "bytes": 34578,
+      "sha256": "535d3409f91ad93e64b6559f5b01fbe705f9598d945f03f19edabab68060f6df",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/ActivityMonitorLatencyTests.swift",
+      "bytes": 7479,
+      "sha256": "b126499f1e754c0ed5af03b9352e87b6e925852b2e568614410a9a4f400fc3f5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/ActivityObservationBufferTests.swift",
+      "bytes": 3223,
+      "sha256": "8a8c439da8aa96903dc5d8650f25d54c3bc92d9781e9ed2ada2e751bfff29fca",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/AudioCaptureSampleClockTests.swift",
+      "bytes": 8461,
+      "sha256": "58ed024bcf4ffd66f78d70564acb09c00262478c8fd35e802a4e9ccae95fcbcb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/AudioFormatConverterTests.swift",
+      "bytes": 14767,
+      "sha256": "f8044316729ecdf20924662265c9128e3e481505aff0e18d983ef5a9b68ae534",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/AudioStreamBufferingPolicyTests.swift",
+      "bytes": 1108,
+      "sha256": "f6c8818152d623646a1fcb2fa503a2f473bd2614abbaa025c0f2bde7ba6c907a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/BrowserURLAppleScriptCoordinatorTests.swift",
+      "bytes": 12369,
+      "sha256": "121b9e72fa6ef26e57c4c3da82bfbf4ed8bd084e4c03d642412accd6c95b72ed",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CaptureConfigurationAdmissionTests.swift",
+      "bytes": 34280,
+      "sha256": "21bbbe26b89744b12e3e6f7169fecbac87b50afe98dbe739be1b3de40f1017f3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CaptureContextSequencingTests.swift",
+      "bytes": 14694,
+      "sha256": "131252fa485b4d42d45d80d0bb08cc5de25254333a645bad6621a4fc9bdb25da",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CaptureDisplaySelectionTests.swift",
+      "bytes": 4148,
+      "sha256": "53646150e1760b3bcbb0ae0cf1503d9f96f4de35f384e51553306190bf1d11bb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CaptureMetadataRetentionTests.swift",
+      "bytes": 3899,
+      "sha256": "f762f05a1a88dadacbe897eb3cadcb82bdb1155aeaaa00e1a6613b6c897181f5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CapturePollingTimerTests.swift",
+      "bytes": 2455,
+      "sha256": "339a617f23d7d59c3cfebf59dca0c3da799b230927fb6ed188649f0c76ff9237",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CaptureSamplingSourceTests.swift",
+      "bytes": 6840,
+      "sha256": "e90977b1f494bcdd20981abc1a5678acf4bbb7f99d5bfed39d6699065dfa8fa4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/CaptureStreamLifecycleTests.swift",
+      "bytes": 8818,
+      "sha256": "d45b025fec0e3e9cb25ef4d274d2cb34a68c9c7f0ba5e2c0f3d2a52bf6238524",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/DeduplicationTests.swift",
+      "bytes": 7109,
+      "sha256": "7f460e627ed78df2cbc43e8986014d45ff53a189b2d8868aa24aaa65489984ea",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/DisplaySwitchMonitorTests.swift",
+      "bytes": 7898,
+      "sha256": "571d48bfe5c4c961cc023b2c114ced160ffd17576ed7b49f555444e1d451065e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/InstalledActivityAdapterTests.swift",
+      "bytes": 7724,
+      "sha256": "d02f7edc6fa2d723496f105d68e652b7ccf043a38477f3c9f319ba79df072294",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/MicrophoneInputRoutingTests.swift",
+      "bytes": 35259,
+      "sha256": "be4787db621ce54761b54121da264e8dc1a1b316bc0f8f775ca06dac00cafb34",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/ObservedWindowGenerationTests.swift",
+      "bytes": 4230,
+      "sha256": "cd975f8f7e4f1c9a6d1d25b7494c4b0e64e974c6b205543bdce49bbd6a116147",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/SemanticPixelDeduplicationTests.swift",
+      "bytes": 20622,
+      "sha256": "c2dd73991461efc942e254a5cdff55417bdd29da144b453f0466967636f21495",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/TestLogger.swift",
+      "bytes": 1097,
+      "sha256": "91660768e84e97084db8ff1345d35f0e04cf4f9d614339093d63a15e6868937f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/WindowChangeCapturePolicyTests.swift",
+      "bytes": 922,
+      "sha256": "bf81d684af082717ca1eb1d58447022dea7db2196edb7846a3ce6b2600d5f346",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Capture/Tests/_future/PrivateWindowDetectorTests.swift",
+      "bytes": 6649,
+      "sha256": "ce23897d075d0349a012686df113aee2952799af3c8a9c9d5b2182bee1f1250f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/AGENTS.md",
+      "bytes": 47589,
+      "sha256": "a70506102064887c8b26aa4d7481969c2dd8b460a34b212e1f89cc0e0f1cef00",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ActivityPersistence.swift",
+      "bytes": 21351,
+      "sha256": "3f0bc042e64d304f961b4faf8af8473895cd7733fe6a21e6cfa50ab689173737",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ActivityScreenLinkPersistence.swift",
+      "bytes": 9252,
+      "sha256": "01cd5e0969cffc254d38fbcbd11fb7c6c64948a45d0610f38eaeb8092015563e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Companion/CompanionDeliveryDatabase.swift",
+      "bytes": 36767,
+      "sha256": "0c5481db43f1bec5b7c10dd325da53461861e8745615b4a10e43dd87217d1a99",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Context/AudioSessionSettingsPersistence.swift",
+      "bytes": 4596,
+      "sha256": "8c6e9ae6ece537f225330a9e689a57166693a301eb3772cf2c3660c3d53cadbe",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Context/CompanionCandidatePersistence.swift",
+      "bytes": 5985,
+      "sha256": "386548628a492a0da83455221c408623980dfff7cc3862e19edd2dd509223015",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Context/ContextDatabase.swift",
+      "bytes": 60645,
+      "sha256": "b1d3d957632cf76b6105a8fd6df9f57b1ad86c0f04ed115db16408a4259f7bb0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/DatabaseConfig.swift",
+      "bytes": 4549,
+      "sha256": "7a9c98e36f2effae443775e0029fb80e673381e6a80da6e99879621ae4cabe22",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/DatabaseConnection.swift",
+      "bytes": 7140,
+      "sha256": "21da6f7d9981cc436cd10771a484bcddf9e74b8f0290bb698c77925c8398cf5c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/DatabaseManager.swift",
+      "bytes": 137840,
+      "sha256": "4e29c6d9aeed6b493f8813afaccf3a7242e3b06ae9d0462a1cd0540a7614c357",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ExactOCRRepairPersistence.swift",
+      "bytes": 6165,
+      "sha256": "0f14d8b43cb6719f63fdd6b13b765fc49d82ada5ef169e4d54068c793377b515",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/FTSManager.swift",
+      "bytes": 17876,
+      "sha256": "e2cb47dc27a19b9e170d22da4e71b33b408d7a75eeb104048f4d4ee6d2db23e4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/FramePipelinePersistence.swift",
+      "bytes": 15984,
+      "sha256": "1158dfd9fa57d3aca7ef674ae17c9c0d6f62f10cf4e191fe49eb2aa45f8b639c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/IDMappingService.swift",
+      "bytes": 7202,
+      "sha256": "352c6e2407fcdb0c2c54ccc80d005de67c02cb05cacf21f38c984aad434328da",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/LegacyOCRBackfillPersistence.swift",
+      "bytes": 6913,
+      "sha256": "e533f39548fc11f3544fe33a74635f49b573be26092d5fe5e9233433c9fd5f2c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/MigrationRunner.swift",
+      "bytes": 6083,
+      "sha256": "874588ce650f617185538695e50adf475fbbc7e7d96e0f618358c9bf4bdace06",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V10_SegmentCommentSearchIndex.swift",
+      "bytes": 2694,
+      "sha256": "ed6ae6e10f1965eab33782d97419694df944decb26af7d1c49824ce96bbd8390",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V11_SegmentCommentLinkCompositeIndex.swift",
+      "bytes": 1216,
+      "sha256": "7aa2e2215d2d78937745bd76abc31d3db4d896606c4cc07c6be780c56d6ca8e8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V12_AudioCaptures.swift",
+      "bytes": 2670,
+      "sha256": "9b7018a5ee7d9609ea0a0e068df3b83a5201cd20c1a94b0538c790ffc453b772",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V13_TranscriptionPass.swift",
+      "bytes": 1169,
+      "sha256": "96d6482af307b3be233e2a3c6ec4fdcde3c31b2b183c573146f716e2fceb0322",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V14_ContextualRefinement.swift",
+      "bytes": 719,
+      "sha256": "03c43359a17113956259844de1cf128ac2e27a9d85f2683177b280622907b7c5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V15_PipelineVersion.swift",
+      "bytes": 998,
+      "sha256": "8256925d8fcef53c5425440cd2450fbbc2c1f19c0bbc48a7263d0df7a09c7705",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V16_DictationSessions.swift",
+      "bytes": 1540,
+      "sha256": "0ce506feddc7e28f996af4f9ec694e2724e7c3cfc5720e14e8f632d0a76f28ba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V17_AudioTranscriptMetadata.swift",
+      "bytes": 1876,
+      "sha256": "1055212e8c302935a768f571959576f73de212c1f21651e421b8e24c390503db",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V18_NodeText.swift",
+      "bytes": 1726,
+      "sha256": "8bdf93fd998e1fca7f94413cefccf2eb2fd34935c815a05e6a8563bc72d59299",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V19_ProcessingQueueFrameIndex.swift",
+      "bytes": 821,
+      "sha256": "518da3334a209c93a9d3b0034c80a857555be4f4a228e8c37c5bba95332c8a73",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V1_InitialSchema.swift",
+      "bytes": 15773,
+      "sha256": "c19ccf050a54b53452f58fac6c40220059f313a35c9d504f60eb5a6000c462b4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V20_OCRBackfillState.swift",
+      "bytes": 602,
+      "sha256": "62b12065ce80424040c5dc3f91044d33338b8848c0fbe954f249def53a405763",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V21_ProgressiveRecall.swift",
+      "bytes": 9391,
+      "sha256": "2c906df60dfc0f5e432f02311f20e3fed4f16cbbf05c422b64633a5e55ca604c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V22_ScreenEvidenceFeed.swift",
+      "bytes": 4436,
+      "sha256": "c709368070ccd30afa8b646290720d56a6ca99d5617c64d678140786c4976f9a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V23_ScreenEvidenceAdmission.swift",
+      "bytes": 10015,
+      "sha256": "7fa0abe8bc3f1e1335ee7d5a7371034e5ace69d9c089c2f8d9e7b96d45e7cace",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V2_UnfinalisedVideoTracking.swift",
+      "bytes": 2374,
+      "sha256": "1aab9c17e9bd4ac4e90a85f6ec4c596d73d014723ca4d9bb790efe25fa3355ba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V3_TagSystem.swift",
+      "bytes": 2970,
+      "sha256": "1654ae5a4ef839dcf26c27b62c987472beee0fa9b1b7089c61429281ddd231c5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V4_DailyMetrics.swift",
+      "bytes": 2577,
+      "sha256": "f3ac61f38b98f8709ef21fd5e548062a4d10a427f42b7c4d6cb2531de9f1437d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V5_FTSUnicode61.swift",
+      "bytes": 2582,
+      "sha256": "e6d4f938105c4edc75157eb3906253da24897827c33b6c998f6275e461048b3a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V6_FrameProcessedAt.swift",
+      "bytes": 1812,
+      "sha256": "1d7e629918f6030fb025fc70585a733cae01cdf406c41ef80498d3d13f6f9639",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V7_FrameRedactionReason.swift",
+      "bytes": 2431,
+      "sha256": "41e0cab92bf82fe5ad3ea249e8734c88da6a59a2ddd81d53518b1b0f3c9232cd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V8_SegmentComments.swift",
+      "bytes": 3030,
+      "sha256": "88bdb3c552150877d04debaded67d43ed0907dbe214eac304bb0d87ffdd46349",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Migrations/V9_SegmentCommentFrameAnchor.swift",
+      "bytes": 2681,
+      "sha256": "ed7eba09730bd5b3a05de1c02c0da6c8622b1a9edb8c35d44d987fc26fef5f38",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/NativeAnnotationPersistence.swift",
+      "bytes": 22846,
+      "sha256": "81bcab4728cd9b13ba10b3c7eb52b73a87149c3a2102fdcf7509f63184c99faf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/NativeSourceDependencies.swift",
+      "bytes": 2621,
+      "sha256": "67e7d66522edde103229c63db9979a4a0b2c8c21acd5f091c31cd7edbe2adce3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/NativeSourceMutationHooks.swift",
+      "bytes": 12229,
+      "sha256": "4ec810a2e95de8bd65598f3c07038414b3f817b6d40d3432597b130d6debcdff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/NativeSupport/DatabaseNativeSupport.c",
+      "bytes": 767,
+      "sha256": "3fd44855d460e861adf86c960a812d1ba056f33f593a7b226d7f6d72c1037273",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/NativeSupport/include/DatabaseNativeSupport.h",
+      "bytes": 650,
+      "sha256": "9734771d0de129c4e5436a6763ba92a28bee66d9b3e04d3652340b00afc3654b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/AppSegmentQueries.swift",
+      "bytes": 50354,
+      "sha256": "91c7241db48e4e0d6c42869954d454d9925e2432ba9c9dceb951b6b0288410e7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/AudioTranscriptionQueries.swift",
+      "bytes": 89663,
+      "sha256": "89845007fb0623ed883374a85f85f0cf7daf357b0d132a92575678fb97ec34cc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/DailyMetricsQueries.swift",
+      "bytes": 12184,
+      "sha256": "62771ca783f5dc2479c8efa39cabbb09d5d1104f4db03551dbc1a90a9ae31054",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/DictationSessionQueries.swift",
+      "bytes": 6452,
+      "sha256": "4c44adde64b996ece2d7111f001ae62771a748011303281cdd463617727b8642",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/DocumentQueries.swift",
+      "bytes": 3729,
+      "sha256": "93c5b4b3eeea24ffa343a49fcfc9133df6d5ded96a82c5b74d65d511b8681c13",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/FTSQueries.swift",
+      "bytes": 10884,
+      "sha256": "a014821637461cbf5a7ccbe1430a4de52ae81037314b71406d4bece8450f72a1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/FrameQueries.swift",
+      "bytes": 37361,
+      "sha256": "7ecde258a66fdbae2380bfabe3ad495d6c46bb0f9baf3af70bda624d041fe9b3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/LiveContextQueries.swift",
+      "bytes": 12624,
+      "sha256": "d19158e81ecba9571962b9ffc12d0e3b91ca51e6ce30197d65fe90c072e4891d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/NodeQueries.swift",
+      "bytes": 8959,
+      "sha256": "eeb3aeb71fa464fd672c1e6285c1501c0179b1ee3bcf808a8469b260467b6bb0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Queries/SegmentQueries.swift",
+      "bytes": 16826,
+      "sha256": "771e89d45331df317be57b43e201633b8e5bdaafccc23cdcb3ad74b51c458e31",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/README.md",
+      "bytes": 1028,
+      "sha256": "da569becb2e248faafcd3972491c038522d58233c6a5e932129264dff89f78f1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/RecallSearchRevisionHooks.swift",
+      "bytes": 2585,
+      "sha256": "871ef77f7bd4e62e800b43ef69340b16676574aa393018e69c2b8eb150b83e25",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ResourceUsagePersistence.swift",
+      "bytes": 3304,
+      "sha256": "37cc475592dc2938da0d402286cc4ef3a2681c285628dfa15e7a08b7f587d5f3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/RetentionCommandPersistence.swift",
+      "bytes": 28331,
+      "sha256": "8968187b9f1681640b6010fb078b01b59c8c3e55ab701162f1055a5f31f6dbda",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/RetentionPersistence.swift",
+      "bytes": 8455,
+      "sha256": "0089450fc4021c841e78e1673d3b6f68925bba8a63b532ace7afa4cc376a6f26",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/RetraceDisclosureRead.swift",
+      "bytes": 3680,
+      "sha256": "1a656ea2c669179803eee34f1103ba3510923d23d226051367dfd4ef05ec56f5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Schema.swift",
+      "bytes": 18723,
+      "sha256": "7ca5dc679feae762a56132a4ea5f31b100b9d26f4d31c4b496d3174507689fad",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Schema_V1_OLD.swift.bak",
+      "bytes": 43786,
+      "sha256": "980b00aa68527dc19077d18436dfaee352f3a73e65c5feb8135c583498d84c1c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ScreenEvidenceAdmissionPersistence.swift",
+      "bytes": 52535,
+      "sha256": "5ff7497bce47281f685dcf7be801a16d01d5299b7e26a3e1f6b7def20877982f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ScreenEvidenceFeedConsumerPersistence.swift",
+      "bytes": 26025,
+      "sha256": "f088d5f46ecb0efda9c8e19f60bb68f5646ec6270996235dc68305a98452ea13",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ScreenEvidenceFeedPublication.swift",
+      "bytes": 10246,
+      "sha256": "874122af4f2fce8a2c3704f570ba3ae35acbc485eb25f626e27f72ee2cd02607",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/ScreenEvidencePersistence.swift",
+      "bytes": 18917,
+      "sha256": "c6e9db63cefd30d3ce41ce57408d9d70c9bfb80ae94a020f5ca858cbe00cff94",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/TestSupport/DatabaseTestSupport.c",
+      "bytes": 205,
+      "sha256": "1f81177b3c38addb3ad570739137462f8e40617e78bee1df75f6d1194b88d852",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/TestSupport/include/DatabaseTestSupport.h",
+      "bytes": 180,
+      "sha256": "e80ca264f70f0cfe8453f911ba70516f9257ee302024df967431355352555c7a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ActivityPersistenceTests.swift",
+      "bytes": 17992,
+      "sha256": "c39af08755185d913299db28ec2893af066bfe6c7f15170c26b3ad0fcec1fd75",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ActivityScreenLinkTests.swift",
+      "bytes": 12614,
+      "sha256": "6226789568a8a17b3eb5326b2cfb19d78485721985dfc19ef8484408f92e1e9c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/AsyncQueuePipelineTests.swift",
+      "bytes": 18475,
+      "sha256": "af604fe9c8557fc553d97e8568604cffb07fac60934af22b1811ca5a75782c2e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/AudioContextCandidatePagingTests.swift",
+      "bytes": 7363,
+      "sha256": "649cf8aad11f8cd3ecfc0ec6b0d670b093b0a30e8292e5fb2b9586a2d7044861",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/AudioRepairPolicyTests.swift",
+      "bytes": 19398,
+      "sha256": "5d49e1cdbc955b8add59f7ebe76f3788950e2a0d0992bbda7970026f511421b7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/AudioSessionSettingsPersistenceTests.swift",
+      "bytes": 6375,
+      "sha256": "3af2597ab8e393baf538181f8823d14d7d2a0487d7a21ce05995f1b67e7c5038",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/AudioTranscriptionPaginationTests.swift",
+      "bytes": 14500,
+      "sha256": "d98c6050cbdd22da180bbad51422bfb747d31d7f0df0c3bb17aa38374a90df62",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/AutomaticAudioSelectionTests.swift",
+      "bytes": 19064,
+      "sha256": "a5ca06e2c5a6b22c7ece3a3ed6386349d20d634e64b61187caba0befca3970b9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/CompanionDeliveryDatabaseTests.swift",
+      "bytes": 17830,
+      "sha256": "7acb94f725cae34a0bc5a6192f65541af63336777d1ddaf99ed6b658287cfab1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/CompanionEligibilityTests.swift",
+      "bytes": 2622,
+      "sha256": "59c78785cc6108192a13eda3e30da4a0f63fb5dca358de55807abb5e991fbf41",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ContextDatabaseTests.swift",
+      "bytes": 19416,
+      "sha256": "c1eccec13d79cd74f63a51f281b8f2934f895c8fcaedecb72d6cf75fba4b9c9b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ContextProposalPersistenceTests.swift",
+      "bytes": 17343,
+      "sha256": "e043304a6c9c266c956419beb6c12eadd84ad4bb54180f8d516ef3bf2859e862",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/DatabaseManagerTests.swift",
+      "bytes": 51405,
+      "sha256": "203eb8848526a96ab3dbffa693b9b1322d88e7876d8358039114a4625a9c9e4d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/DictationSessionQueriesTests.swift",
+      "bytes": 4350,
+      "sha256": "ab07d8a6dcb9da678da8e8308ebc8afe0789643f327c9ff4aa608cc35f2ba763",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/EdgeCaseTests.swift",
+      "bytes": 44141,
+      "sha256": "34207cd3ea047555b22944b4a19206fed8575a7c26619f3866c6096aacb950de",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ExactOCRRepairPersistenceTests.swift",
+      "bytes": 9931,
+      "sha256": "b4054f66ae784db8317ee58a579eac2aa934d2116e7a4a7b7e158b87b1be873d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/FTSManagerTests.swift",
+      "bytes": 13696,
+      "sha256": "2ce378f8d15dac80d02af5e694d53999ebcfb985bb97b32daf8ed0ea5aa95397",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/FramePipelinePersistenceTests.swift",
+      "bytes": 32373,
+      "sha256": "c4ece8f96b87c20a7f629622b33b5a892a9c33c06c25808b131fd5388763e58d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/IntegrationTests.swift",
+      "bytes": 20500,
+      "sha256": "5a7848c682836b027b62a843cc97852ca3e508b2fe84380890df6929760f29f2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/LegacyOCRBackfillPagingTests.swift",
+      "bytes": 17746,
+      "sha256": "b5b71aaa1a001a7a7e544514e901f01b800cc34f54c90c5936df1c6eb4426c5c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/LiveContextQueryTests.swift",
+      "bytes": 4861,
+      "sha256": "72d28be1f56837faf985021c984105479a839143894affd7d24d8212f03144aa",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/NativeAnnotationPersistenceTests.swift",
+      "bytes": 19496,
+      "sha256": "2d5ca77e0b0b65fd419b689e6ff80e71cab5bc0f0df9643510396d47f6fc35c7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/NativeSourceMutationHooksTests.swift",
+      "bytes": 12893,
+      "sha256": "9a7ff4d9f093d2c7cd60b7963637f93baf5c2baab1783c5eb372c6a368bde542",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/OCRPipelineTests.swift",
+      "bytes": 18653,
+      "sha256": "0603556220a1cad62580e9b95f2e752cecf592093b539ee355ab765f0fbb363f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/PendingAudioCommitTests.swift",
+      "bytes": 12464,
+      "sha256": "84a41c96560bceb3084980677baf16a59d598909820761c872bfc51e94301b35",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ProgressivePersistenceTestAssertions.swift",
+      "bytes": 1337,
+      "sha256": "d5f26ed6cf0f3bf7692060aaca1a4ea6506f3a8df3e367906c5d239d439299dd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/QueryBuilderTests.swift",
+      "bytes": 24582,
+      "sha256": "1a511fcf136c5ef64d5e3f91a43d1f4eb85e73b5192b7e284da1104325e35192",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/RecallReadConnectionTests.swift",
+      "bytes": 3550,
+      "sha256": "7e1f71e7b9efcd25b357c36899688bf932162f8806f7eb10d9ff66dc67057998",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/RecallSearchRevisionTests.swift",
+      "bytes": 5267,
+      "sha256": "322fbf59de1bcdd22ed5ccbb10ea607af003d58d4741b890c14f9d8c4e4d7dbf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/RenderedRecallFixture.swift",
+      "bytes": 3328,
+      "sha256": "f98ad1008d0426c53077bfed414f42894faeca337a860d08febe74506d40e88b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ResourceUsagePersistenceTests.swift",
+      "bytes": 6563,
+      "sha256": "95d38ce6b959da3e7d81b8b3c86bbe3d955605077c1e3cda2dd78c966513e062",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/RetentionCommandPersistenceTests.swift",
+      "bytes": 14486,
+      "sha256": "08ce13e667359644076a8521da4133d213de0f6e7ce662409394cfb41d17a706",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/RetentionPersistenceTests.swift",
+      "bytes": 13428,
+      "sha256": "e329d50a54c4ee620f66d9d3b22947e4d96f0565feb19e5c975f5fe28672965f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/RetraceDisclosureReadTests.swift",
+      "bytes": 3420,
+      "sha256": "5040b8413b66475714e96a7cf2ddedf9c6dc2cb4b09b10aae9b0b70332991866",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/SQLCipherConnectionOwnershipTests.swift",
+      "bytes": 2583,
+      "sha256": "6c53183485be5ac49663026ecbab9c0b515723df9488a82a1a71e8b94d070e48",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/SchemaValidationTests.swift.skip",
+      "bytes": 37161,
+      "sha256": "d3a82864792eb9b71cb088aba7198240ea9bb596caa5103ea2960b9dbe95ad8a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ScreenEvidenceAdmissionTests.swift",
+      "bytes": 55775,
+      "sha256": "3c1a8430f813bf31cb173e9cb86730281f77f55ecb64ae0be0115861eb672be8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ScreenEvidenceFeedConsumerTests.swift",
+      "bytes": 41286,
+      "sha256": "1b3bcf5519c2234323e22c9e4e5038d890c0261c9c9de22c7c834d642871152d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ScreenEvidenceFeedPublicationTests.swift",
+      "bytes": 36099,
+      "sha256": "dcafc4d86de51004aebc80ad71868e322b93acd212ea9953c6d6e72fd4ca3e0b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/ScreenEvidencePersistenceTests.swift",
+      "bytes": 19082,
+      "sha256": "f8d83f886235ec58934fa5ff5a45abe024848acb5b59d93d24be3f407cc6446e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/SearchRevisionCompatibilityTests.swift",
+      "bytes": 7811,
+      "sha256": "dd926fc3d0177839f9b1807d746ae81b68a17dc54c0c3770b4bb0fd514782ff5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/SpokenMarkerPersistenceTests.swift",
+      "bytes": 17183,
+      "sha256": "63fb1e34cf1da4afdb85da7f59f8ebdbf5cbbf6a51f922aab28b7a5f2f16ee6c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/StructuredScreenObservationTests.swift",
+      "bytes": 18279,
+      "sha256": "09d818af9d987ee845eb6128a1b68ce976199075fd8c93555e98288cda2ab23c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/TestLogger.swift",
+      "bytes": 1098,
+      "sha256": "6a451ed35df2ec71825588d0b89a7cd048fcd8c17f5f680cdb51b664a7ef9d36",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Database/Tests/_future/AudioTranscriptionQueriesTests.swift",
+      "bytes": 20321,
+      "sha256": "8769af651981913bbc9f275eac8505fc94e74df8c8996ebd5bcd1b2675587dd3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Migration/AGENTS.md",
+      "bytes": 5686,
+      "sha256": "55f8dbde9aa561bf61e8cec24bfe9eb9a805c71176b118488110e6ffca871c9c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Migration/Importers/RewindImporter.swift",
+      "bytes": 22158,
+      "sha256": "efa81ed147996fe03d64ca24680631a4abcab73e334f51eee0c9e9aa138686bb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Migration/MigrationManager.swift",
+      "bytes": 6461,
+      "sha256": "c9733b982ead1e55f3a0ae6e53df2fe9a62a4a125c66a9384fa85644261f1f0d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Migration/README.md",
+      "bytes": 2164,
+      "sha256": "e6315365b45ee7014f438176a938a362f2844f06ad605085e96ef7acac6a3acf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Package.resolved",
+      "bytes": 826,
+      "sha256": "beb207d5d10b5334d35400ea7ad2274e57b582cba8a10b18ac1dbaacb48c13e1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Package.swift",
+      "bytes": 11778,
+      "sha256": "709b1dc26a674ebff8a1b10234c9051c1705af5e2973f30f6763f0cc42850f56",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/AGENTS.md",
+      "bytes": 19365,
+      "sha256": "af67fd48aa9be2b14a587cc2fcef036803f6c6f59ff14ea6753c720892e60ded",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Accessibility/AccessibilityService.swift",
+      "bytes": 6581,
+      "sha256": "d4969581337bbe63161f226a59d065f00bb77a30f041b9d5f92de4baf4d3962d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioBackfillManager.swift",
+      "bytes": 14651,
+      "sha256": "969f96b984b92b17f3d81ea8f383fb1b7a3f84f4b5cf41630384f98b3edfac24",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioBufferManager.swift",
+      "bytes": 11739,
+      "sha256": "1ee2a8f571106bde3aabfa085e7d2c3b9cbd2a77212f760fdb9706dae3828ca0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioContextualRefinementManager.swift",
+      "bytes": 16879,
+      "sha256": "0eac4eebeab823ed041cf48c08a8381dad679bc4f2bd0e6f76f4ec48fe3100a3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioEnhancer.swift",
+      "bytes": 4252,
+      "sha256": "9539853d023cce9d742fb712b656f3cda4354fa6e842bdcda0c88ab9881700c9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioProcessingManager.swift",
+      "bytes": 54297,
+      "sha256": "b88e6838bb789d0a1084cb9e3d9d19609a0630b530f836c52106dd4756950024",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioRefinementManager.swift",
+      "bytes": 17212,
+      "sha256": "01ac9ee3dec15fe9815ccab12c170df81af29c471db67c03ae8b92c47496a4d3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioSpeechActivityPolicy.swift",
+      "bytes": 3237,
+      "sha256": "786c3f092c497325841dcc10c96d140d43c4d7010ae489287b9abe99137a3c11",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioStoragePolicy.swift",
+      "bytes": 469,
+      "sha256": "8aabae29928463323d9d3d3cd44db6c853f312bb7f56ae214d5b416259ba510e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioTranscriptQualityPolicy.swift",
+      "bytes": 11846,
+      "sha256": "5595eaae521cb6d6be76213e67419a32d385d0d7338b46a918b3c0db42ef15de",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/AudioTranscriptionRetryPipeline.swift",
+      "bytes": 14062,
+      "sha256": "132f0f5e4414ec80d130b8fb28309f72820918dcb723b9ad3ec066c351f06b95",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/MockTranscriptionService.swift",
+      "bytes": 1330,
+      "sha256": "93dbbc2372099af7f173e1504cf3c4d2e80a9fb29913bffbae084bc6c8271faf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/NativeSpeechTranscriptionService.swift",
+      "bytes": 11454,
+      "sha256": "6ec9b1596638a0fc9de62af975a9b413ccfeafdb2d94fedfb67779c52698e5a9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/NativeStreamingSpeechService.swift",
+      "bytes": 16474,
+      "sha256": "85c258f61fce1553d8248048c16532b770f7a8109a8229e4c53bc2f9e91a1ef2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/SentenceSegmenter.swift",
+      "bytes": 5553,
+      "sha256": "af8e9ddca22a696dcc802b105c3bd9ea9a5854e708224d731255869b80d29e4c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Audio/WhisperCppTranscriptionService.swift",
+      "bytes": 18979,
+      "sha256": "2aa6a1d1a788ffcebade2d3a3a6ba3d9a179f233c41a40a3541ffe6c73fb7069",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/FrameProcessingQueue.swift",
+      "bytes": 47507,
+      "sha256": "4090ff5084fb8f6539003a780f143f938fb5bc1e9e471fe6c7c392254301ebdc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/FrameProcessingWakeSignal.swift",
+      "bytes": 1786,
+      "sha256": "fbb402b87784794b340c54102b8be6b23fadf554b0ee2286d7aea1d27e75975c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/FullFrameOCRCache.swift",
+      "bytes": 4165,
+      "sha256": "275992fdd72c5aa2b03ed0f29b91c443fcae0916cc8e85ac482dbba8fe8114ba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/OCRTileCache.swift",
+      "bytes": 4636,
+      "sha256": "b81c7dc0f772632818837a3a6398412f62fa8034ac03bb6b2064bd78a5574070",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/RegionOCRMerger.swift",
+      "bytes": 2937,
+      "sha256": "61ef405990af502953cd8b7e5b970cec820e906eae3df419874d48f200db66ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/RegionOCRResult.swift",
+      "bytes": 2694,
+      "sha256": "3dc81800faa5eaf1c4de7a1dd7a9b1f24251d272b433775b0ac6e0f82d3d9f2b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/TileChangeDetector.swift",
+      "bytes": 9144,
+      "sha256": "57f549255db83bf37e7069bc135d8aa6c8c96e7c079e7d32ae4d005ccecd1622",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/TileGridConfig.swift",
+      "bytes": 1178,
+      "sha256": "04cf43d702120cc674eebe1905e3ad6ad053242e87989c97c9d16d1ccf4db94a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/TileOCRProcessor.swift",
+      "bytes": 6565,
+      "sha256": "da7983acc9773973597a328f7bf6a5b106fcae16cefb90d704b56716280d496b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/OCR/VisionOCR.swift",
+      "bytes": 25731,
+      "sha256": "8d8a3262f7e8eda77837b508ffa2bd872aac4915a8e4081423a86739901f08b6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/ProcessingManager.swift",
+      "bytes": 11704,
+      "sha256": "83de56f8c55d83262e2a0c38e61021bee2fdd9f5c55a104fbf01724af12b55c6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/README.md",
+      "bytes": 2921,
+      "sha256": "b33c50ac1d6074298f93d09b58ea1d6a43f3ac6e76727460417334c9818b45ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioBufferSourceRangeTests.swift",
+      "bytes": 8550,
+      "sha256": "b098eb1be0815cb1670e7508d92b6713e976cc27e5bed4485686402fdd024ddb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioBufferTimingTests.swift",
+      "bytes": 1871,
+      "sha256": "134a1b346b6d2121f27f7fe5659ba35cda8248eb15a7522d60f7366aa1e62b14",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioEnhancementPolicyTests.swift",
+      "bytes": 2026,
+      "sha256": "71ee916aaa99dd1c9288ec2ba7f29fe0212263af76a161ba47671abefb7bcafa",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioProcessingBackpressureTests.swift",
+      "bytes": 10995,
+      "sha256": "284f42134e42afd779c08db1c2b0dd5e67bea41ec6f4bf9ee4e2ed2776e0824c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioProcessingFreshnessTests.swift",
+      "bytes": 41425,
+      "sha256": "6581eb87fe8f5f960c8b0d027d0355325364f1ed4748a8f06b6280f015f5a1ad",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioProcessingGovernorTests.swift",
+      "bytes": 19918,
+      "sha256": "69c087c5aaff657d89663b67e1fc1845fb68299b0cd2290bdee72d915d22d7ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioRefinementSchedulingPolicyTests.swift",
+      "bytes": 1159,
+      "sha256": "57f61b74c8c2877f025c66193ecbb68d4fb02dc51d350586499b17410e023d98",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioSpeechActivityPolicyTests.swift",
+      "bytes": 3086,
+      "sha256": "e69f66ed7d0be488e9ece9c28c527e622a93c72adf613959c47d206c68caddd0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioStoragePolicyTests.swift",
+      "bytes": 693,
+      "sha256": "03cc25ecd097dca3af28c0f606e4af8dd3d31aff779df3fe22601d821282e03b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/AudioTranscriptionCompletenessPolicyTests.swift",
+      "bytes": 21403,
+      "sha256": "d93f2b6dc95be309047eea346d976afc383b0e56c8e0abfc3fad35e37ebbef66",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/Fixtures/WhisperTimedWords/authored.wav",
+      "bytes": 347510,
+      "sha256": "271a49fc227c083978627f4ea436d4f5c155514542d9089390a6885182c3cd00",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/Fixtures/WhisperTimedWords/provenance.json",
+      "bytes": 1556,
+      "sha256": "da1b828f3294fb20f4014f5bc7c3ef5cb31ad9f79b153d6e2a7826de09499de9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/Fixtures/WhisperTimedWords/reference.txt",
+      "bytes": 189,
+      "sha256": "c9e4267ce37593ab46a3a7ce5e15ee3ceb95d39d7ce87a0481fe4ffadb7038ad",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/FrameProcessingSourceReadinessTests.swift",
+      "bytes": 15501,
+      "sha256": "0ee9cc7405edfeee31d3c5904196764ec77d7135bd3b88f1a0a25b67dd520976",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/FrameProcessingWakeSignalTests.swift",
+      "bytes": 2878,
+      "sha256": "882c79578ecd72a850021dd99cfc65a7d2e45aeb990754a45dce18599e787df6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/HistoricalOCREvidenceTests.swift",
+      "bytes": 24673,
+      "sha256": "32cf1114468850c868f34646edb8374d9213beffad2e7b10a15301adcb839b03",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/NativeFirstPassPersistenceTests.swift",
+      "bytes": 15216,
+      "sha256": "ad74aaabdc10bc964ca17bbca0d386a23ecee4cdf0c3c3b9b62782e2f594f936",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/NativeSpeechTranscriptionServiceTests.swift",
+      "bytes": 11494,
+      "sha256": "d4d46d2fb46d2e7cd1cff1c25adcc729a30f64b9db9b641e8d2f6ea1f48a7989",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/PersistedAudioBatchCallbackTests.swift",
+      "bytes": 15803,
+      "sha256": "5ab3f0ecbc53d3d9c73a911a355ff8211521fe60da62f2b7f44e245f82b67cd5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/TestLogger.swift",
+      "bytes": 1100,
+      "sha256": "e431072434cb13fa4b56f243e9fe32c8bbe1676d16ee1bbcf807d3ec3e596c83",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/VisionOCRIncrementalTests.swift",
+      "bytes": 13986,
+      "sha256": "20194c2bf1b47f3fa9ee02d20058560d5464cabe6c416d3532c6b9cddfe12f76",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/WhisperModelResidencyTests.swift",
+      "bytes": 12207,
+      "sha256": "90a8ffc5aa0b6760314dbc2078aef2e9b0e2753e4a0da7989fadde88a7e6a88f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/_future/AccessibilityTests.swift",
+      "bytes": 3720,
+      "sha256": "fbbba9333efe993015017c198d70dfdff189657772a4abca1d9ab1d00d5a33da",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/Tests/_future/VisionOCRTests.swift",
+      "bytes": 8936,
+      "sha256": "a958950c1075ed34bc3db37b0ee6279b49b163c0a79992d24be0f3c7a2f207af",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/TextMerger/TextMerger.swift",
+      "bytes": 2988,
+      "sha256": "092894601512469d5c9fe59c8497b35ed52e2d3d1b92cb450e388c952c8b82c7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Processing/URLExtractor.swift",
+      "bytes": 6152,
+      "sha256": "59ebecf120eca53dcc913cf461bbfe2a3cb7b5c86e0b2cf5d574a8ae1d2ed297",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/AGENTS.md",
+      "bytes": 21364,
+      "sha256": "20aac13413d1573bdf82a874361c3d3174918cb83bb957f414fab22395105002",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/IngestionManager.swift",
+      "bytes": 5399,
+      "sha256": "455cb66f874778bf625f504e6837a53b7e82a9faf174b203898f040d027c5462",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/QueryParser/QueryParser.swift",
+      "bytes": 8710,
+      "sha256": "1d9e080dcccf4641932b8a9f594faaf2420d8671bcc31dbb6692bbf5d517589a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/README.md",
+      "bytes": 8161,
+      "sha256": "73f1e2ed2edb7340fc6620420b998a4690a2763ba0cd8ae2b9f01c919504a35e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/Ranking/ResultRanker.swift",
+      "bytes": 4316,
+      "sha256": "b6561f3b3be5d953a2ab19db6051b5baed07e436aaca0c0e1bd16d2855ce7c4a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/SearchManager.swift",
+      "bytes": 13038,
+      "sha256": "f186694221ecad141b014932cf385a61b2e778e7ce441aafcc2bf5b20b904514",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/Tests/QueryParserTests.swift",
+      "bytes": 1748,
+      "sha256": "7cc25236da069c71754f9bb72ae7e65ee86e6bd968a0a4b01ddd5f4d92ff2f6e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/Tests/TestLogger.swift",
+      "bytes": 1096,
+      "sha256": "d6fa404a8ea40274ab8c63780b567f15544da86547aaabab02c578e50e1b44c1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/VectorSearchTODO/Embedding/LocalEmbeddingService.swift",
+      "bytes": 10351,
+      "sha256": "78769837ac9d573788380ee01093187a7c7d856bb97b6d77611956427082ee6b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/VectorSearchTODO/Embedding/README.md",
+      "bytes": 10688,
+      "sha256": "e80be6bfa7af43ec88b5bd5f2942eaa5382a603c71c9599c55d175b3b330b3d3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/VectorSearchTODO/Embedding.swift",
+      "bytes": 2665,
+      "sha256": "d803dd09f7cb4806eaf824e7e5b913bb69a10a99556e40d25c60875d4e730710",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/VectorSearchTODO/HybridSearchManager.swift",
+      "bytes": 13074,
+      "sha256": "25de16d63c681f4ae2772f0f2087002c970ad6ac4137251c1466d3d96b190a08",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/VectorSearchTODO/README.md",
+      "bytes": 2663,
+      "sha256": "b21a4355b56ce2c8cff7ebb4655a4156f770b2892b7724f2f0577bd7cc46fade",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Search/VectorSearchTODO/VectorStore/SQLiteVectorStore.swift",
+      "bytes": 9454,
+      "sha256": "cb794ade3a49ceaf41568a4e9885fd9ffee9779c41b300c30aea0c1ce6ed9d6f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/AppPaths.swift",
+      "bytes": 4000,
+      "sha256": "970b26602f4bcfff2f8a6de48d0474ce3be89da3d6e8d28655c3dcfeec183478",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/CapturedURLPolicy.swift",
+      "bytes": 2910,
+      "sha256": "74f17600e2bd4651eceebe82a3bd29562948c5265a4f86033a2c0a8e724ac66e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/EmergencyDiagnostics.swift",
+      "bytes": 16020,
+      "sha256": "f45f719b9fc5373d991abe22d2bf0244e6715d1690f51fa3380075c05007ead6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Logging.swift",
+      "bytes": 28886,
+      "sha256": "0281d286195736b7a6a4035eccc0565a1107893089898a99c60f66016aa57be6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Activity.swift",
+      "bytes": 11105,
+      "sha256": "0303116a5ae9f565f2f02ed8d9d1fa63d77b3b54d1da87c9584c608df7e82479",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Audio.swift",
+      "bytes": 5745,
+      "sha256": "ba055a9d491646eef19835f122a9a874240fb58f2e1d3ddf571bf4cc087f6a22",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/AudioPreparationStatus.swift",
+      "bytes": 1128,
+      "sha256": "748ec1066cd26bdeb6c9b25e2d96d142c0301212fd2558e5a81182e872f590c2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/AudioSessionSettings.swift",
+      "bytes": 4797,
+      "sha256": "3ee3066824e9e5036e3e0cc8c4c34b4dd70591af11505603c48078d0ce86ded6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/BackgroundProcessingContext.swift",
+      "bytes": 1760,
+      "sha256": "ecefd3a94b27cce9df47dc4d10601a94281a1e1919cc2eacf7a7cc05e20e794a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Comment.swift",
+      "bytes": 3037,
+      "sha256": "594d53a0a7352d1114c4e02cfa392da3f6f694550a0c3c5a0a9546ca0a67f862",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/CompanionContext.swift",
+      "bytes": 21310,
+      "sha256": "4932305b61197cc2b717346d4e6a6ae7f107fd6d21160e8ad7164f11587de344",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/CompanionDelivery.swift",
+      "bytes": 4359,
+      "sha256": "ceffa61f6d15c6adbcda10b3e483ec9b9d89e47345216a83fee30bd70e7c2a18",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/CompanionTurn.swift",
+      "bytes": 3708,
+      "sha256": "b0da2558e3e7957c23380e5aa8a48dac33210dcc86d97ce85cbca9c01d3595d3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Config.swift",
+      "bytes": 15452,
+      "sha256": "354ff63d6444645a915002d6be8ce5651744e74179833ea2f7eae559a51dab94",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Dictation.swift",
+      "bytes": 4538,
+      "sha256": "270464063180d144c791efd076fb4ffb5ff64373842ff5a0e07b4e9c163710e9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Errors.swift",
+      "bytes": 9077,
+      "sha256": "e193f3d98f5163cb73dee975a0815a76ff94e5e62b5dde538c6f04e47c561296",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Evidence.swift",
+      "bytes": 5259,
+      "sha256": "ddb1c010bc463574c79b96c11228fb0466be343baa2f39c48fbdb1a5412c23cd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/ExactOCRRepair.swift",
+      "bytes": 2245,
+      "sha256": "a2394235cbec67d4e5e79358392081f17af07d833d156473dfa85050278eb439",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/FilterCriteria.swift",
+      "bytes": 9842,
+      "sha256": "24fe45acba8310d6d26af648a1b16769d30575679024a459c65f9dfc668990d0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Frame.swift",
+      "bytes": 11965,
+      "sha256": "9b6d637debad2b5a42d7187afaef22cd0d02bd30be785db2454826952a284bae",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/FrameProcessingLane.swift",
+      "bytes": 273,
+      "sha256": "e74bb364bb4fc0f7991ce019f78ad8bdd2026616566ed8779c0761ab8e5fc34a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/LiveAudioEvidence.swift",
+      "bytes": 1698,
+      "sha256": "3c6bca778a15d44ffe4c4466ef4a99b1fd531e4876821c660ede9e50d26752bf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/LiveTranscription.swift",
+      "bytes": 1929,
+      "sha256": "a9764826e39ab3e8c52930622a48f829154848de73e97117df03401d3791a688",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/MarkerContextProvenance.swift",
+      "bytes": 6131,
+      "sha256": "986a84f49cad6cff5dc55b98e12f8dea13d59dbf399cb77c5c123c76ec41d14c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/NativeAnnotations.swift",
+      "bytes": 3599,
+      "sha256": "d5ecfb74a9d97f2f90cd82acd7937787eea254fd0e4662ac7c13f0aa3cd7b438",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/NativeControlState.swift",
+      "bytes": 577,
+      "sha256": "0f09eaa2ea7011df8519e1e73c158e2139960afd15c0674520a8127b83e2a79e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/NativeFirstPass.swift",
+      "bytes": 1757,
+      "sha256": "bb99163178a06eeee855db481437b6d57b2603fc0923f56ed72253cdaad84094",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/NativeSourceMutation.swift",
+      "bytes": 1886,
+      "sha256": "45df17e595cd964cb4b2ee240eaed82aa436662ba85402970fb40b0918df8567",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/ResourceUsage.swift",
+      "bytes": 2997,
+      "sha256": "3064a7736c13be9b84b5d12c940f8f3ee6d60eb26edc89189018fdc9f5e84965",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/RetentionCommand.swift",
+      "bytes": 6344,
+      "sha256": "f5526a34b4a12535ae9977415b1addc9a4965eef385c4131c1fb06b53af8e237",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/RetraceCommands.swift",
+      "bytes": 13068,
+      "sha256": "d0714d13f8c5553a8d354e957e360126c608af63f7e1cc96ba8a31a0385f1243",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/RetraceOperations.swift",
+      "bytes": 4477,
+      "sha256": "eaf121f4e29a142074a20758fdefd7a1e0ad3c705839af0965af12e2d71f9afc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/RetracePlaybackGate.swift",
+      "bytes": 1515,
+      "sha256": "07e1a1ab0228fe79a1a34505d3d3a757b14ff54b075e8178de10fa8ee83c26a5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/ScreenEvidenceAdmission.swift",
+      "bytes": 8312,
+      "sha256": "56b507c2b5537a98bee586ff0a775b4fe3e573adb230158e74e68cace6f62f95",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/ScreenEvidenceExpansion.swift",
+      "bytes": 9072,
+      "sha256": "74bf64cde12d56e092e0942f5283a75c13b5435962e0613d15ef9fcb5594bf4a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/ScreenEvidenceFeed.swift",
+      "bytes": 5313,
+      "sha256": "105c781f428bed24132b7e217d2c6f9433ce7e92783d13174faec246ec950cea",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Search.swift",
+      "bytes": 17051,
+      "sha256": "f2044aceb7b0721b47fecdc9e96f98d6c5b546bfd8f8b0effc71f3756521b936",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Segment.swift",
+      "bytes": 4707,
+      "sha256": "289d4517be501aed119c2baf8e2579e630bdec70933c3832432863a471c32f17",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Source.swift",
+      "bytes": 2200,
+      "sha256": "5eb8c1ca4e2f312576baf8ee9188ecb77d29dc413a710b03d747e2fc0b2dac73",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/SourceConfiguration.swift",
+      "bytes": 2618,
+      "sha256": "4c2aa438337764e4abf04ac1f76b15779d92e50fe59a9681c676263dcf8b3852",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/SpokenMarker.swift",
+      "bytes": 5126,
+      "sha256": "ac9bb3c7ea60cc50044bd078315864072c30917be0e585e8882917d47d47ecf8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/StorageUsage.swift",
+      "bytes": 7255,
+      "sha256": "9744fbcafc660f42d23d07b9fc01b32946bc90a72fa8aa6b68f7da7d0c49b81b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/StructuredScreenObservation.swift",
+      "bytes": 5435,
+      "sha256": "f70ad248785eb7ee4da364cbc780dfa5b1964c5c30e64391c354cf06d95c5691",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Tag.swift",
+      "bytes": 1500,
+      "sha256": "d570771572ddc13181448bbe4f62ac01ebdaba039759a0da810c24f133f910d9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/Text.swift",
+      "bytes": 3778,
+      "sha256": "1efd4efd43146c05c1fe59895d3e1815e3e712994b9a557be2e07c62cbaf4b17",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/TextRegion.swift",
+      "bytes": 5133,
+      "sha256": "47ba8383e8d4e9404a112f8d738af25fa5f049aa9ab0ebaf644b64bbe38c3093",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/TimelineMarker.swift",
+      "bytes": 6563,
+      "sha256": "d20ddcfd551447470c30c555bd657d63c8ec620f0a75938b44b1903ed6e9105f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Models/VoiceRecognition.swift",
+      "bytes": 3782,
+      "sha256": "e9a6f5049ed896572040c12439131c403451964022a3ba55781b6ad4f08336b6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/PowerStateMonitor.swift",
+      "bytes": 1912,
+      "sha256": "4453f9934f797b8a28a61cb24703ab8a1af35e389a9179d337dae2d88c65456f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/ActivityStoreProtocol.swift",
+      "bytes": 1970,
+      "sha256": "a7b07db5398a4525ec25abcdf34c759e420791e97581cf7919f7b152e5d1570a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/AudioCaptureProtocol.swift",
+      "bytes": 3238,
+      "sha256": "3e842e0e10444e5370caa958d1fe0cc5f2c5a26ec0cac3c12559aa6a1f682f3f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/BackgroundProcessingProtocol.swift",
+      "bytes": 2021,
+      "sha256": "22d1f0c69534ebf357fbd2a903ab4f3f27994606d5ce6e75faa173b689cf9f42",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/CaptureProtocol.swift",
+      "bytes": 4272,
+      "sha256": "4cf6b1c7c0f314371d1eedb38df46ad123f31819012553f30eb235f24a742f6b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/ContextStoreProtocol.swift",
+      "bytes": 3476,
+      "sha256": "cf4dc942bf4dd42147632ee2abe343f73e5d7611ec0f6a380b528145376df443",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/DatabaseProtocol.swift",
+      "bytes": 16096,
+      "sha256": "9e553622c6c2ca9ae45b8ef66ed799dcaec93da09fd1c8bde98c99968cdeec73",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/EvidenceStoreProtocol.swift",
+      "bytes": 541,
+      "sha256": "b6a4ef643d8a54fd95cdd55d1a7643084db53a55e692e852b958a468d99193cb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/MigrationProtocol.swift",
+      "bytes": 12584,
+      "sha256": "ace9a3a0b4e0f3f5eaf066e4354229f249ebb50f3f8f03e98d9fcd8dfd319657",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/ProcessingProtocol.swift",
+      "bytes": 6208,
+      "sha256": "9ca988f2e3084bc7b8cab25a8bba0d29ca2e3f8667463001630737240446fe68",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/ResourceUsageProviding.swift",
+      "bytes": 193,
+      "sha256": "4dc0137690e6a7df1e77dec1d8aa5e54e0a7d7f4ef48d79f17a49d1456831fb8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/ScreenEvidenceAdmissionStoreProtocol.swift",
+      "bytes": 3707,
+      "sha256": "bb42932b206b03145cc962d1a8d224b4a0cbcbaf12e7478a7283ef7bc505976c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/ScreenEvidenceFeedStoreProtocol.swift",
+      "bytes": 1400,
+      "sha256": "00e80c888571540e8e91f2fb9d4e430c3fd073e793cedde33fb11ce8e5e2e2ae",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/SearchProtocol.swift",
+      "bytes": 3480,
+      "sha256": "ca263e15bebddc520a8655d1a37017419d9d4b59d7fd739119f69caa3fe02ad6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/StorageProtocol.swift",
+      "bytes": 5353,
+      "sha256": "57eae7b94335a1b90166bd5e9a20ba52335cb9f26a3fabe4af800a9b7255618e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/StorageUsageReportingProtocol.swift",
+      "bytes": 583,
+      "sha256": "ed8a0faecf29b06c174f9f5cfd639ac569f0fe9ef3b1d5d529f0b49aefe017ac",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Shared/Protocols/TranscriptionProtocol.swift",
+      "bytes": 2696,
+      "sha256": "f2576fda3fae6a3ca69e8c412e199b2130eaba722da434d5adb7338bf42dcd8b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Sources/QueryRewindApps/main.swift",
+      "bytes": 4122,
+      "sha256": "e066710109b51cd0531bce848e2ed4396b6b53cfc489066ad7e236dcedfe2b43",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Sources/TestMostRecentFrame/main.swift",
+      "bytes": 1329,
+      "sha256": "b36aa4660246cb08ceae4d0b7b68adbeb3eafd7d1dca0c29d9c72c529ca4d31c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/AGENTS.md",
+      "bytes": 8404,
+      "sha256": "7961454cc166211a7a890dcd25b073385a5adfcabaed1c13e1afa2e7b92695a0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Audio/AACContainerCompactor.swift",
+      "bytes": 8491,
+      "sha256": "5992c5598c7e4195537e48f2622b5de592581171518bef1100433cbf9217a786",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Audio/AudioFileDecoder.swift",
+      "bytes": 4163,
+      "sha256": "8d766d79e16a3bc037a644cc2f836b29e6e10a9728a0edd9fe8f724c8d726dd2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Audio/AudioSegmentWriter.swift",
+      "bytes": 10995,
+      "sha256": "d079daa524e24d489ee845877bbeddb57c4d07452ec994ca4047bf35b697abbd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Audio/ExactAudioDecoder.swift",
+      "bytes": 4676,
+      "sha256": "6ff2e6fa423d102b5d4b49f70f767f883b2507dd2a5123307ea4c6735972eb24",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/ExactFrameReader.swift",
+      "bytes": 7287,
+      "sha256": "595f7dcc5d3d7d930c4f4bc126d381b6196ad928c412f700472023eae298c2ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/FileManager/DirectoryManager.swift",
+      "bytes": 3581,
+      "sha256": "2032eddead935a1b4227eeed621f0ffce8793e2f83915d9a42fec2921493eb06",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/FileManager/StorageHealthMonitor.swift",
+      "bytes": 16713,
+      "sha256": "c37f16490aeb0ec80e41434c44bf47136d86c4848e956ea9b5badd4b7725581a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/FileManager/StorageUsageMonitor.swift",
+      "bytes": 22245,
+      "sha256": "fd9ce7cf8d3bd04f61d2a5e00378f232b9473c0bfd0c49fbc7cb026561dc83a6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/ImageExtractor.swift",
+      "bytes": 16479,
+      "sha256": "52bce45dcd9ca276a0a46ddce87270808aec28039f939b18b601dacb7261219f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/ImageExtractor.swift.bak",
+      "bytes": 15238,
+      "sha256": "416acf81405f030e0b59aea877912bbcfd85693e3841ce6a251217ffedf979c4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/IncrementalSegmentWriter.swift",
+      "bytes": 5728,
+      "sha256": "b254286a2405c908e77e248e7c043320f70e4f892120d82ecede50b20380ff91",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/README.md",
+      "bytes": 1033,
+      "sha256": "86ec0519696a9c44bcc52908b714900ef44cab6e6dba9b716bb26131f080f26b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/SegmentWriterImpl.swift",
+      "bytes": 4050,
+      "sha256": "b1f9797f2750979e77cbb9eb211294a039944a971ea8c2579b05887dbaffe159",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/StorageManager.swift",
+      "bytes": 41400,
+      "sha256": "a64317763c7e1276b5f3c89f187752dd93af67dcb4f9cf18be615f5ee4d1903f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/StorageModuleError.swift",
+      "bytes": 517,
+      "sha256": "7e9be586d635040b07a942c1ab5b18fb9785686bc8e4c2c031887628d86ec6b9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/AACContainerCompactorTests.swift",
+      "bytes": 11724,
+      "sha256": "b52a30e78cd26931dd292f47f530a46b7ae1bf7a853873a721fbc7cc8940c653",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/DirectoryManagerTests.swift",
+      "bytes": 4231,
+      "sha256": "2ae13feeeaf57794224830d0099470ad3d78d272ba5a07fe26c5830662e068a8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/ExactAudioDecoderTests.swift",
+      "bytes": 2201,
+      "sha256": "c815b243c53cb8d7fdfa41b727fce867bbcf261efd881d3b41a9d4bdc9caa884",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/ExactFrameReaderTests.swift",
+      "bytes": 11454,
+      "sha256": "48bd21abb0ed63366c2667793aa326eb1957f2baa65e05ff4656736aa2aae64e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/ExactWALFrameTests.swift",
+      "bytes": 8793,
+      "sha256": "01668c47562287b7835a6395463ff66defacb4eba3c60307fbd0ad43aaed08f5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/HEVCEncoderTests.swift",
+      "bytes": 20268,
+      "sha256": "1ddf393c651b3d734bdc6647aea6efbe4ecc2350fddd56a77f2b1539fd1fddc3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/StorageManagerTests.swift",
+      "bytes": 20039,
+      "sha256": "c0c296a1bfce902ba60ef26567ecab27eaf7175f91a1b65cbd1c9a19e5e38c39",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/StorageUsageMonitorTests.swift",
+      "bytes": 25437,
+      "sha256": "cf0ccc4eda20b5cdc9f906cbb8242089c4c28516dc401a0f87020001d8c22517",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/TestLogger.swift",
+      "bytes": 227,
+      "sha256": "fc8f8ca7251033767389060272a38c7d84dfde1a1c85f5bdb03c85f9b180a1c8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/Tests/WALRecoveryTests.swift",
+      "bytes": 18482,
+      "sha256": "0bf964807628e727224b0691695dad98250eadb79ff483dbd4c2e5685b207612",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/VideoEncoder/FrameConverter.swift",
+      "bytes": 4411,
+      "sha256": "da66a12cce226a85b0a68d46984bc079d187e3e5bd6a5e0ce722176010636f0b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/VideoEncoder/HEVCEncoder.swift",
+      "bytes": 18879,
+      "sha256": "3c9ee37fed88cd1e9bc96db69e0c76b7556d9310105323e9ac35eb6f08c87004",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/WAL/RecoveryManager.swift",
+      "bytes": 14248,
+      "sha256": "80776aee4954a80e810fae6d9c05633ffa3469bd29c828dc4df3c8e56a5fb5d1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/WAL/WALManager.swift",
+      "bytes": 43260,
+      "sha256": "97d39fd0d93429c838ed182641ca4a8239a612eee3b239504b6d8f130841bae1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Storage/WAL/WALRecoveryReader.swift",
+      "bytes": 6429,
+      "sha256": "67faa6ae6799f361fb8749a50e86727caa6b38f059ab0d480183aa74d0751c5d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/AGENTS.md",
+      "bytes": 60121,
+      "sha256": "06cd9e2a3e3176793a5c66356a115c3bc66395ab6e10c6a29d13651757e59aa7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/Contents.json",
+      "bytes": 1301,
+      "sha256": "fd62c72482a200be31beefeacd22582182828322e523947c8d778ac34d4f1c1b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_128x128.png",
+      "bytes": 682,
+      "sha256": "8a5d5d2b7ad06e9e1434bfc1eba3bcb4c2f67399c0775ef36ea311bb4b3c883c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png",
+      "bytes": 1432,
+      "sha256": "867e529a60388a3ea390f420c45734b2bcdd347669ea55a8d4c594409175b90d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_16x16.png",
+      "bytes": 133,
+      "sha256": "16eb8b11fa4346b2699f53220f06a57394f5efbf6f28846cde45f6b73ba383d3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_16x16@2x.png",
+      "bytes": 197,
+      "sha256": "676da50ab54d13ab26bb58f22767b9f440d904236d48496f1c9a70ff93ae9148",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_256x256.png",
+      "bytes": 1432,
+      "sha256": "867e529a60388a3ea390f420c45734b2bcdd347669ea55a8d4c594409175b90d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_256x256@2x.png",
+      "bytes": 3286,
+      "sha256": "64ee18139c334003e5da1031e2b25c6e7926d12c6fb95bd552b7667b4e7e6ff4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_32x32.png",
+      "bytes": 197,
+      "sha256": "676da50ab54d13ab26bb58f22767b9f440d904236d48496f1c9a70ff93ae9148",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_32x32@2x.png",
+      "bytes": 348,
+      "sha256": "2052a65e3d5a8544b21bd990c8075fab39017c1dbcaa7fddc57b28fbd3ae10a4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_512x512.png",
+      "bytes": 3286,
+      "sha256": "64ee18139c334003e5da1031e2b25c6e7926d12c6fb95bd552b7667b4e7e6ff4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png",
+      "bytes": 8666,
+      "sha256": "92d1a9a297ae7b7f3e3cbbee6445da5f396621334abaf7c78d942fff8758697e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/Contents.json",
+      "bytes": 63,
+      "sha256": "0fd49ba3c3585c709678e0046a821c3c60685ec7063720d30d3a3448be3a208b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/CreatorProfile.imageset/Contents.json",
+      "bytes": 156,
+      "sha256": "9f62f37b5161a31cf39e7eb12f36494dab8ebd3d2a931068e9efdcf7bd1deefd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/CreatorProfile.imageset/haseab.png",
+      "bytes": 136777,
+      "sha256": "9070831630072526ec4d90b36207808150481d2b0ef7efb4c96a9aac48886932",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Assets.xcassets/CreatorProfile.imageset/haseab.webp",
+      "bytes": 16848,
+      "sha256": "a4037ed44fe429f9364d97d98140d002b1df7002fce5b6f28be9bd3231009125",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/AnalyticsCard.swift",
+      "bytes": 4340,
+      "sha256": "31203f297aa9bb0ec6e39dcfc9c2e4baedc36f311c204f950569a48e555025e6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/AppMover.swift",
+      "bytes": 6644,
+      "sha256": "109bb21273ad1728450c4ca4fb918eaf7d04403cf5848255be50cca36bfbd19c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/AppRelaunch.swift",
+      "bytes": 2304,
+      "sha256": "0af1abaea5f70c917e9e9401ed0e1dc2b10d980d81a12c322a4bc1dc8812857c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/AppResourceBundle.swift",
+      "bytes": 718,
+      "sha256": "04be0f8492af4aec2f829c34812a5d8a1e706f59f5d3b5813e13cd80f647fb22",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/AppTheme.swift",
+      "bytes": 84670,
+      "sha256": "d431b3635c9f78619d2e1d4760a19b2a7d5229fa69905e0c28c4f7d599e88b96",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ApplicationTerminationWorkflow.swift",
+      "bytes": 2445,
+      "sha256": "db13bae91ae0a55664739ffbad959cb6d4dc5e6a1f6fc79579898739ea68d32d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ConfettiView.swift",
+      "bytes": 7472,
+      "sha256": "1fe067d61818018f9373a7024d7e26f7efc7ace39004afc12a5c8fb97d7da0af",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ContextMenuContent.swift",
+      "bytes": 12856,
+      "sha256": "9f108ef587a9e4641ea7e9317f4a5f0aca719d141144f21fdb486cded55b5f61",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/DeeplinkHandler.swift",
+      "bytes": 5676,
+      "sha256": "9b6534f31b531ffe34d8d1fa475d94b4d4da15f138d6d8c2c37a7e2bc3ef20a2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/FilterPopoverComponents.swift",
+      "bytes": 130620,
+      "sha256": "2b679743bf14dea7e9ddbc5966b41434f1d61f3e4486f1be5b3cbb1e9074d84e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/HotkeyManager.swift",
+      "bytes": 27824,
+      "sha256": "1f63b08765c9e7d51a38aa33a609c9c0056b0781ed0f8189edfb86a22c2f5410",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/LaunchOnLoginReminderManager.swift",
+      "bytes": 6861,
+      "sha256": "d0c270498d2d9f8ef231966647c685aab7201c773f50704bcd9392d51cf6f626",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/MenuBarManager.swift",
+      "bytes": 59024,
+      "sha256": "0668a71f14acd3278a063ef6a72a3a4c3319fc7525c76d6c34c69b9b44c862d9",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/MigrationPanel.swift",
+      "bytes": 10228,
+      "sha256": "f988d2b36b09ce1947143ccf86d866dc314e095979bc7d06469e8d2e42fcaeb0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/MilestoneCelebrationManager.swift",
+      "bytes": 14756,
+      "sha256": "f40f88f19d430a1ff0fa65c1c84035ca6016fbce2c413ca2f0db39eb950686ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/MilestoneCelebrationView.swift",
+      "bytes": 36447,
+      "sha256": "6e9ce821e04900e40a4bf1db08a843a2b113cb14a85832b4b8f1d3d57db6eff6",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/PauseReminderManager.swift",
+      "bytes": 9080,
+      "sha256": "4054d4b640d5da993988b7a9a28f1f6f4d2006da18c79d82e41a8abf347a74a3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/PauseReminderView.swift",
+      "bytes": 4259,
+      "sha256": "c9ce713496d1d823b6fc43262a79bb315d10156b10ca8c837c13af20290244b1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/PauseReminderWindowController.swift",
+      "bytes": 5414,
+      "sha256": "06cbca1273f080fcd991acd02741606669ecbd93ad208efb3c5603b5a337fbae",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/PermissionBanner.swift",
+      "bytes": 2793,
+      "sha256": "813437a305ebd8041dc9b9e7d7eee4825d794cbde5f963ed7a341d8919f5f63f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ProcessCPULogReader.swift",
+      "bytes": 4185,
+      "sha256": "c7580d1ccb7e7f75bdb532c6dd2cc180fc33dd01aea703dd045fc62579c74663",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ProcessCPUMonitor.swift",
+      "bytes": 54841,
+      "sha256": "2a934b2e3d5194d9b6e7ee80a45c0d46bb06efb61bad76d9b17bda2c2d38dca0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ProcessCPUSummaryCard.swift",
+      "bytes": 21728,
+      "sha256": "370a491d5296314209a1bcc1204a02acd9db6a5bd5548c774d73911b90e18c7d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ProcessMemorySummaryCard.swift",
+      "bytes": 22083,
+      "sha256": "0d434a53c6d1788de80582ee80c280e92c41ea58cc9ad2528051b6ba93a2bae5",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/ResourceUsageCard.swift",
+      "bytes": 2592,
+      "sha256": "65275dcbf9ea9db1eb1cff2c4b84ef9e26118b33f1267035560c1bb38fa8d132",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/SearchEvidenceThumbnailLoader.swift",
+      "bytes": 8205,
+      "sha256": "e05611615b675ace7ac606702fcdbc4054fcd4f485dc4021bcdc82b0bb999d17",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/SessionIndicator.swift",
+      "bytes": 7654,
+      "sha256": "69ca7eff902702720e5d0e25000079453b2be4a0541b502e7ade1438c389a6e1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/SpinnerView.swift",
+      "bytes": 1334,
+      "sha256": "6fcabb8a60b33d3f081b24bcc48d4817522b8f0ee3981607e7def1aca9cb6dcb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/StorageUsageCard.swift",
+      "bytes": 5926,
+      "sha256": "afee37a8129c560d936dc52afe4c39e24b1880fdb5402316a01821e8050992d4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/StorageUsagePresentation.swift",
+      "bytes": 1518,
+      "sha256": "492ca55db447c92fd7ee43aa2210811ed9833f801b7c59d76216c6ca04faa751",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/TimelineSessionMetrics.swift",
+      "bytes": 4803,
+      "sha256": "5cfd81323be06a45579a4e382b6ccc9fe111974c57657663f058215edfb070e7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Components/UpdaterManager.swift",
+      "bytes": 29274,
+      "sha256": "5a31218b64d5ff1963d18886d23bf9dd29694fc76562ba7829edcd2499da0cab",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ContentView.swift",
+      "bytes": 8996,
+      "sha256": "1ed0ea7e2bcf113d29df5d3b8f2d6a50934e6990be89133a5c17b7f7b7edf60f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Extensions/SearchResult+UI.swift",
+      "bytes": 1397,
+      "sha256": "8ed24c388cb383b9ccdd130e3013bf587c2bdcd2454773a335f48cd6b277ab52",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Info.plist",
+      "bytes": 3821,
+      "sha256": "8598bee87c1426789146796f618e91cfdeeab4f7ad6b2795bddc09981c9db890",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/README.md",
+      "bytes": 1870,
+      "sha256": "70fce0b07c49415ba5602dc765e0d39cd2344ae6e8b51cf716f7e7b2d8c57f63",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Retrace.entitlements",
+      "bytes": 522,
+      "sha256": "f8b7aa1d1b9668363582c72bf50a34467576c50b8867af5561ea7345a005d3e1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/RetraceApp.swift",
+      "bytes": 61884,
+      "sha256": "fa2e756c0e4d81d847af6584f6f031234e3ae0b7dea3e2d86ab79b0bdd19e874",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/AppResourceBundleTests.swift",
+      "bytes": 4420,
+      "sha256": "49bd90316b179509cbeb1d3050be1ebc1f56123ff5c989f3d5e6bd72354b64ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/ApplicationTerminationWorkflowTests.swift",
+      "bytes": 14637,
+      "sha256": "e72728ae0a485f5d4c0433c0e4c0acd075351bcb1b10e084df2d1e54d3e74baf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/CaptureRedactionSettingsModelTests.swift",
+      "bytes": 15968,
+      "sha256": "e3ebc192705dc363b5f2fc9278f61104fa53e638f257624698eb1580fe9e98ee",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/CommandAccessViewModelTests.swift",
+      "bytes": 4134,
+      "sha256": "d5ce43a1e8abeb796435c9a325d9720feab60104183998e2d947d9795c239292",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/CompanionWorkspaceModelTests.swift",
+      "bytes": 7410,
+      "sha256": "a8289bc03c0ad5479446234e1ea2366c39d2efd49a9afa8e44ccc9b5896df0a3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/DashboardSavedRecordingsTests.swift",
+      "bytes": 21065,
+      "sha256": "ed191f42a8f839fabcd564640df776e104803cfd96073a2aae6272774202b433",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/DashboardScreenshotIdentityTests.swift",
+      "bytes": 34474,
+      "sha256": "6f6d49715e79279ad73f5bb18da07328092851273fd29099fab324229f9cdf58",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/DashboardSelectedFrameRefreshTests.swift",
+      "bytes": 10977,
+      "sha256": "78889ebbac9a9cca0bf08084d1c04e9bca72e692aa802d5503237e5930b6d120",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/DashboardSettingsRoutingTests.swift",
+      "bytes": 13500,
+      "sha256": "8d782441a17be9ea4c9854e1a1efc47a26195c49da574a19bdd5979741cf4780",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/DashboardVoiceLayoutTests.swift",
+      "bytes": 52082,
+      "sha256": "99d0a10f8569089886d6e78979f2727f0f52c6c1761e451f2a4183f1341c6009",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/EvidenceTextViewModelTests.swift",
+      "bytes": 9332,
+      "sha256": "c871e192c25e5b88cfe00847d5dd430bfa0027432bcd0431c5542c1648a1ed2f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/EvidenceViewModelTests.swift",
+      "bytes": 16767,
+      "sha256": "16559e7b31fac4336faca410d612148f1646c93730f8309e153454711dd5c044",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/HotkeyHoldReleasePolicyTests.swift",
+      "bytes": 2082,
+      "sha256": "163d163ad4510e3d3bc483e47a37f2c27bc98d4be3241ab250c3f2588a9d0835",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveContextCopyBudgetTests.swift",
+      "bytes": 2095,
+      "sha256": "31f356bd2d2eeda3ec7d10c6617b0fc9222b3239b86f4b31c30edcfc4f935bd1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveContextNativeViewTests.swift",
+      "bytes": 128591,
+      "sha256": "94cb385491c935e317d214515364324daa273fba8bbdd555e6bea1849d080cb8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveContextScrollInteractionTests.swift",
+      "bytes": 15063,
+      "sha256": "a14094a9d2213b721b419f94bda94b5bada87b343dd881b8152edb66ba693491",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveContextSearchModelTests.swift",
+      "bytes": 9318,
+      "sha256": "30717c28f7d21517bfef8bd48c7a10128e6fbe644c7862ad1226695f7711bd12",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveContextSettingsNativeTests.swift",
+      "bytes": 13609,
+      "sha256": "5d886efff34404c69a5586569fec6bd7877b0f2479a28133b4da0af470755e61",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveContextWorkspaceTests.swift",
+      "bytes": 43822,
+      "sha256": "ade02b76be975f504f71b313f5a8210a7f84c636954bef4292b40d9f2b077ccb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/LiveTranscriptProjectionTests.swift",
+      "bytes": 11166,
+      "sha256": "1118b9598021c8f9c9350a44df01aaa367c1ad0df0cf5192051b714da977e980",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/MarkerContextViewModelTests.swift",
+      "bytes": 18912,
+      "sha256": "cd76f86bb1e8c200823cf211ff7826f24af0a76257e9ad045cce0ac9f7287d65",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/NativeAppKitObservationLoop.swift",
+      "bytes": 2809,
+      "sha256": "d0c39368097d69ee9ecfa02d387d7d3c9a36d0e436c0f7b88388b47ec3a32c52",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/ProcessCPULogReaderTests.swift",
+      "bytes": 7843,
+      "sha256": "62186f2378dd5bedce1f22bc3560f0f14be1db12f6883e2c264a2f9b772abce3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/ProcessCPUMonitorPolicyTests.swift",
+      "bytes": 729,
+      "sha256": "d3c3a749d55dfff9a960be9ef18a7c8dab388d4885d15a477ee10e129f55d107",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/RetentionReviewModelTests.swift",
+      "bytes": 4177,
+      "sha256": "ccf721123726bb9eb02fe8825c4a908608ae099aadd30d4b1beeac51a64dd909",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/SearchEvidenceThumbnailTests.swift",
+      "bytes": 22585,
+      "sha256": "69c3079ca7c012f400b4f6bfb1d01821bf5aa230d1477ba82cf8dacedf7295e4",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/SearchQueryPreservationTests.swift",
+      "bytes": 23633,
+      "sha256": "53fa474fe39dc0fa8ce91fb3f59b8f3ff7ccb052f3e4f688bf148dbd7e272cb8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/StorageUsagePresentationTests.swift",
+      "bytes": 3321,
+      "sha256": "0c77b01dcb1c0036b80a62be14484deb2d4baed014f79a69e670f0a4dd98a325",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TestLogger.swift",
+      "bytes": 61192,
+      "sha256": "fff045142088f4fc4b830747f37be113fd0b399ba2a551de551902cc45cc2360",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TimelineAnnotationSelectionTests.swift",
+      "bytes": 15623,
+      "sha256": "8573f9de14f5fd97a07dafb37dfae7c7076c13c072ad53a7b26fa8ec84d78715",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TimelineBackgroundRefreshPolicyTests.swift",
+      "bytes": 1215,
+      "sha256": "d3ede5ab122e0605fe807d098c9d8b6bb0df6fe219f159f36424a9de96b5711a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TimelineEvidenceSelectionTests.swift",
+      "bytes": 48893,
+      "sha256": "9e30a2ebe1001fe0f301a51981a95bb51ce2a5514f17dfb5ecfdcb7105ac638c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TimelineMarkersViewModelTests.swift",
+      "bytes": 4850,
+      "sha256": "2f8aa6de5fb76857cbd72027ac1784cdcd1181d7bca484f9e62a444da05e79fb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TimelineOriginalFrameTests.swift",
+      "bytes": 39493,
+      "sha256": "0eb079e599f1e46f69de0be09be64ddda0f80c829543a33a335081019494a45b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TimelineSessionMetricsTests.swift",
+      "bytes": 15864,
+      "sha256": "b40d332a6c25e599d85fcf7b694c8b8d79e28fddcbf818ddac1b11f002d9bc44",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TranscriptAudioPlaybackTests.swift",
+      "bytes": 17274,
+      "sha256": "07fc813e2086bcae8791f04ea5676be2ae5b17ae4498eee4bed8814dfcbd5711",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TranscriptCommandLifecycleTests.swift",
+      "bytes": 9854,
+      "sha256": "935b021ed7a595dca10201fcab9178b4f6a21174e252c598726f96fa318a6c76",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TranscriptCursorPolicyTests.swift",
+      "bytes": 5238,
+      "sha256": "408fb691a955fa6be2e6c18f757ab5e6fe566a1531b09947443d5d5e1950fa8c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TranscriptPlaybackSuppressionTests.swift",
+      "bytes": 1454,
+      "sha256": "7b8a3ffcd05f6f36abcf72cfc409d42616cc5bcab708fc4bf9d31dc444c0af5a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/TranscriptRecordingVisibilityTests.swift",
+      "bytes": 22380,
+      "sha256": "17ef3295ec360c2d169e10c409e677ae2b79d73c1faf92fd46db6000e8986549",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Tests/VoiceMarkerStatusModelTests.swift",
+      "bytes": 3020,
+      "sha256": "8a4c5718704dc9e227ccdc590a0d2d9483154dcb9ccb66f8967822df48637fdc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/AppCoordinatorWrapper.swift",
+      "bytes": 5401,
+      "sha256": "97d8c85bc087f141effc224d776264dfe8ef504a5f0df3d98eb9c911d053a63e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/CaptureRedactionSettingsModel.swift",
+      "bytes": 9759,
+      "sha256": "0189950c618daf59f0ab1970fe7a05277f80cbcd984328d6ce1ac45cda5cd5eb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/CommandAccessViewModel.swift",
+      "bytes": 5009,
+      "sha256": "38b97e450ce883385221b5db6dea31ebaf9fb0e05e2534589ef17ff99dd47097",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/CompanionSettingsViewModel.swift",
+      "bytes": 2404,
+      "sha256": "3acb3b457d7ee42a07928b24b085e3a48825cfc4dac8ab4ab7fe7ba6bf54f293",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/CompanionWorkspaceModel.swift",
+      "bytes": 8199,
+      "sha256": "7d8dbc82dbd06ad294210acb3447b6e77ad8f80c829f3c0e391c6ab60c58f013",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/DashboardViewModel.swift",
+      "bytes": 49136,
+      "sha256": "710b957e8294c59174afc004547b24aef2396847f5c1094890209390cad583af",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/EvidenceTextViewModel.swift",
+      "bytes": 5560,
+      "sha256": "babf378997fb20baab79e0995a6e677f62c719f02e07f1c430b85a2f1dd8c5ae",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/EvidenceViewModel.swift",
+      "bytes": 18700,
+      "sha256": "4a923aca2ca28abbc60c4c070c2118046ab9986868cad898a087b5715bed3dc8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/FeedbackViewModel.swift",
+      "bytes": 11810,
+      "sha256": "854711977c8814f24c5cffa71c82e513f2f28415f5131e0aef147650e7a8f700",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/LiveContextCopyBudget.swift",
+      "bytes": 1632,
+      "sha256": "174ea420cce6f78974a4499d7a19678e8f1854e77a262dd438ef5b2097a49747",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/LiveContextSearchModel.swift",
+      "bytes": 5950,
+      "sha256": "75b76c911570d983473d035f23071880a490d3a345a4c75c3f5329c916fab87f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/LiveContextWorkspaceModel.swift",
+      "bytes": 47004,
+      "sha256": "45407f30e3ccb25d4f4f645a91c05558cc20695bd4552c06429aec04928b8639",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/LiveTranscriptProjection.swift",
+      "bytes": 7180,
+      "sha256": "7efab90768ca53704df316bfbb0bbe32f151b2e0fbfd65671194ec6359785978",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/MarkerContextViewModel.swift",
+      "bytes": 8651,
+      "sha256": "e78c5b4143ac20435b2b519307605282bcd75eae79255e38a73ae8fda9dca14e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/ModelDownloadViewModel.swift",
+      "bytes": 6069,
+      "sha256": "36ab7f5c7c833937f38e614e189fd25a088033649ff309d1cd092499f85832ab",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/SearchViewModel.swift",
+      "bytes": 106320,
+      "sha256": "6cbe33f4345337fdcbdafc3c60dd3a3e0931a1f3e806590c9172a14e02491066",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/SimpleTimelineViewModel.swift",
+      "bytes": 496815,
+      "sha256": "a493da6ded4cd2d2e48548d5d6542b7dff34a06955c2b17054c221a2d6ae1dd7",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/TimelineMarkersViewModel.swift",
+      "bytes": 10819,
+      "sha256": "896d3585ade4c3a4367d19e9bb2b361a59d100652a490b499e71a14e5bb176ac",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/ViewModels/VoiceMarkerStatusModel.swift",
+      "bytes": 4695,
+      "sha256": "a6e8934a6c0087ccd8f5e3c2350aaee7c4ece8ccdbdfc5f6e99e961b3abdde53",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Audio/CompanionTurnWindowController.swift",
+      "bytes": 6511,
+      "sha256": "4e4848758432b4adf8434964bfff6cc8c27c3847c0f721e9567f1b16895e47dc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Audio/ModelDownloadView.swift",
+      "bytes": 6288,
+      "sha256": "65ae8b9e4daad7a9cd21ec5f01082ee60064a014dcc16397843ce76de4c64591",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Audio/TranscriptAudioPlayback.swift",
+      "bytes": 12693,
+      "sha256": "04639fcd91b279ac015583bdc017d2159424c8ffa06600c4a689e88571f3de82",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Audio/TranscriptContentView.swift",
+      "bytes": 16708,
+      "sha256": "e76ad92568bd72f12950c77ac7336c5cc77fc8a5affe94143b42e4b7cfea4636",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Audio/TranscriptRecordingLoader.swift",
+      "bytes": 1217,
+      "sha256": "76febcfd21cc682c86ee1b2920741eae3a33241b93180f171ff97c5bf2c93d78",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Audio/TranscriptWindowController.swift",
+      "bytes": 19388,
+      "sha256": "5e6816f62680615e43f7a5a349289be6aea1ef159b8798b806515a9281132ddf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/AppSessionsDetailView.swift",
+      "bytes": 13540,
+      "sha256": "17fb8954d06e596e9c3623a73fa713e23c92f695d5b26359d8c04552a22dc029",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/AppUsageHardDriveView.swift",
+      "bytes": 20269,
+      "sha256": "9f3db2da4addb3f49fc08c7b2e37da80c6dd898e1fd7feedee77920e2698b269",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/AppUsageListView.swift",
+      "bytes": 37489,
+      "sha256": "7e0ac4c399f8f4d33180532a466926c89b53d5fcc4dd1042616f922d4711d390",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/ChangelogView.swift",
+      "bytes": 18229,
+      "sha256": "929cf09c22d6fd6a012968b24c3f90d1ff03b49d7ef48cc28ea1f1c22b56b23d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/CompanionSpeakerView.swift",
+      "bytes": 5024,
+      "sha256": "49dcdac89e00eb5cd3e9789e7fd5bd3c07b64d8dd42f798e7293916f11139323",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/DashboardSavedRecordings.swift",
+      "bytes": 9420,
+      "sha256": "39c2366554d3fa1e315ad97be7c5d2cb37bc1c2e71d87513aa6768b7b4947d84",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/DashboardView.swift",
+      "bytes": 119878,
+      "sha256": "775e407ce3d8e3824c9d73af48a8735ad2294ea84ba0d73dd9b92237837c2134",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/DashboardVoiceLayout.swift",
+      "bytes": 66637,
+      "sha256": "edcf693df4544eea05decedf52ee35a98ebf1a4aab1b4abb52d18f0fe2c01c18",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/DashboardWindowController.swift",
+      "bytes": 24373,
+      "sha256": "cf3e108f40dbd4a3eedfac06ef56659bca2ee3fcff20a39625f57b28d6766346",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/LiveContextScrollInteractionObserver.swift",
+      "bytes": 11520,
+      "sha256": "90373be8c29d9e03b7cc36964fc82e67e837b31aceef3b79871b42c88dd594df",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/LiveContextWorkspaceView.swift",
+      "bytes": 61888,
+      "sha256": "b0632c1d2812f9e1959d25a93124ea5a2ac41a4fadfbfef1631af8b1ffb6c2a1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/MarkerContextWindowController.swift",
+      "bytes": 14606,
+      "sha256": "7e2e2c84454e0e5412a62b9c9753ea52eb32d4a08a7a541543e16543b959bbe8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/MiniLineGraphView.swift",
+      "bytes": 17443,
+      "sha256": "0b8384edcf73152dbc623e6721fcf93eb262eca248fc20a0f16b11cd44d9a59e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/ScreenshotEvidencePreview.swift",
+      "bytes": 7923,
+      "sha256": "4ffedad3d06b5fece1e294259a72008284958bb1dc2c27ddf223dbb3e4c055bc",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/SystemMonitorView.swift",
+      "bytes": 64569,
+      "sha256": "8318f26e4125d907ec304a507d4cd14c2fdfeb6c842f42e7b9c97dbec3202e10",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/SystemMonitorWindowController.swift",
+      "bytes": 3607,
+      "sha256": "aaadf2c3d03f75ca7dee94dc0451f0d5d069a0f00386372a847c803d8b933441",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Dashboard/TimelineMarkersPanel.swift",
+      "bytes": 6793,
+      "sha256": "8c3e7a91d5d210acd6206e940c77d85f6dad26909d1cbf09688d0d44c8ef54cf",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Feedback/FeedbackFormView.swift",
+      "bytes": 23593,
+      "sha256": "33850ef3fe8dc5a2bad65c327afb7102b7272197447535f3583ea82da4b8fcde",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Feedback/FeedbackModels.swift",
+      "bytes": 18323,
+      "sha256": "60d677c20481d2e3077db4565b2262b4fcb86c0860b241893ab13bdc4cc6306c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Feedback/FeedbackService.swift",
+      "bytes": 31395,
+      "sha256": "94173ca7be66893ff28308c64b37a1efa8fa2d73cd55e13d1b15176605a8af1f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/FullscreenFrameView.swift",
+      "bytes": 4766,
+      "sha256": "4ab39ecb4ab3a8c4629f08e11318f7247cc5614b99d9ae0652357986cc5c1730",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/ScrollCaptureView.swift",
+      "bytes": 3277,
+      "sha256": "8f97d03082cb881879c41531f726e3db703c9e077a14457f1a878528cd3cf7ab",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/SearchFilterBar.swift",
+      "bytes": 41908,
+      "sha256": "2c6f4d518fc565b7823e48392265cb64342d6d382ca51944bdb4d6cfde4d1978",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/SimpleTimelineView.swift",
+      "bytes": 428534,
+      "sha256": "7fb61cf8dc87be56d77525b8bc19a943ffbbfc6488fd84711f97bfcd99e658f1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/SpotlightSearchOverlay.swift",
+      "bytes": 82975,
+      "sha256": "f3fecdc5750aee200b8092a9ccd34f00aeef2d7f1db8f65a4f3d9d90b87b4bf3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/TimelineSegment.swift",
+      "bytes": 5156,
+      "sha256": "411e6ffdc7e7cede9fa6c88258ce8573dfdd8330c0e12f94a4fb7fd0688c475c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/TimelineTapeView.swift",
+      "bytes": 114725,
+      "sha256": "e9e5f346a5753091ff8fa1901991756b0986ad6de52c714020cdf79b9fed3fa0",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/TimelineWindowController.swift",
+      "bytes": 150312,
+      "sha256": "b9b9195c0f7ea93045166fb2e1c3dd108b16231b010b5feed11fcbf42466574d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/FullscreenTimeline/VideoFrameView.swift",
+      "bytes": 5752,
+      "sha256": "b9ee24a9122bcd807b568c30137dc9d7fa30e9820c2e3e6fe9a3dc6ae99bffc2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Onboarding/OnboardingView.swift",
+      "bytes": 188784,
+      "sha256": "f1a2c783aa26cabe7349eee6dd21ae87a424cf39047cf8f29220b5322a083a53",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Settings/AudioSessionSettingsView.swift",
+      "bytes": 4816,
+      "sha256": "e6a60c0a3330572298218935f31b37dfd00684076593fa79f66818b0d9c8767d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Settings/CommandAccessSettingsView.swift",
+      "bytes": 6787,
+      "sha256": "a0cfc3b0103237a276149fb5a4c174c95f925901dde50f547a4afe0ade220c09",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Settings/CompanionSettingsView.swift",
+      "bytes": 2481,
+      "sha256": "da17bb9446dfb78a76b071a3464ca7591bb6d71154134aa2b42671c87d5c287b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Settings/RetentionReviewView.swift",
+      "bytes": 7806,
+      "sha256": "d31b2e5cb4bddd785dacbc7bbc3a3bcfb053900fb316d2a0142393d4dcad3a14",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Settings/SettingsView.swift",
+      "bytes": 313017,
+      "sha256": "98ca8ecc1397a7a96b4be62d882188d715bfabbe5ec3b392dcd6dc7142dd0e8b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Settings/VoiceMarkerRulesView.swift",
+      "bytes": 6126,
+      "sha256": "d99d535aee7a567723bf4e631bf1b824ad9f827882f8f70b7b5d08fbc7a03b10",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Timeline/EvidenceTextView.swift",
+      "bytes": 3146,
+      "sha256": "cdd1e3cf9ed3261f1ff448a82282f5ea6962875a8ce8d2e8423872389c25a350",
+      "symlinkTarget": null
+    },
+    {
+      "path": "UI/Views/Timeline/ExactEvidenceView.swift",
+      "bytes": 11611,
+      "sha256": "1990708d79fb36a303d7255e553a516e155d8afa0ad6d7df8a90024681f48698",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/README.md",
+      "bytes": 3304,
+      "sha256": "99a2b22efdc8e757407cfabb1dcdc7586b3e7543b4d3fab2c6668dd77f49ef8b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-alloc.h",
+      "bytes": 3011,
+      "sha256": "8344c5eb56ce9d0e0d45e1ef59846e0dcd0e4f84eb9bb68a6126252247bc0338",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-backend.h",
+      "bytes": 20868,
+      "sha256": "88d58b3b507477eacfc401b914b48af8b2ad875705674b5304420523a92b9c0a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-blas.h",
+      "bytes": 586,
+      "sha256": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-cann.h",
+      "bytes": 4553,
+      "sha256": "6f8af52ea9326cead78e5dc59401106fcc8b029d2b9ed24df6cf7a64805405d1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-cpp.h",
+      "bytes": 1652,
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-cpu.h",
+      "bytes": 7528,
+      "sha256": "6d57ebc3df51169c0f0d4d6e9459595fa0568fa1b515546735067c6ecfd4bc63",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-cuda.h",
+      "bytes": 1585,
+      "sha256": "8f22e8e43e460db426bb94e14e10dc91e64789e8d216c5ae62a0d02a2eb07d7f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-hexagon.h",
+      "bytes": 351,
+      "sha256": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-metal.h",
+      "bytes": 2141,
+      "sha256": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-opencl.h",
+      "bytes": 581,
+      "sha256": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-opt.h",
+      "bytes": 14039,
+      "sha256": "2919321813be96e0f5d6ba36e7ed634a518de0fbe834902ad8f5a402f906e302",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-rpc.h",
+      "bytes": 1056,
+      "sha256": "4832436aeec2a9c3f6d2ca12d90f567de5d24df76803e1e167d3f188c23efa3d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-sycl.h",
+      "bytes": 1763,
+      "sha256": "d59d5275423a7ce173c8e6f69933a501e53a635410de3f8d61bf23a59dac81fd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-vulkan.h",
+      "bytes": 952,
+      "sha256": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-webgpu.h",
+      "bytes": 328,
+      "sha256": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-zdnn.h",
+      "bytes": 292,
+      "sha256": "ee1d79c95ade45ba195a6b71f59a05c18617de4a596d2b2b03ecf38975a9a448",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml-zendnn.h",
+      "bytes": 498,
+      "sha256": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/ggml.h",
+      "bytes": 101743,
+      "sha256": "d13cc07d4c37e17d94f60d9549618fbafc35ef51876d7f35d95a9f2712a87413",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/gguf.h",
+      "bytes": 10224,
+      "sha256": "d2eec8b938aa04ccec9bc4ce8a6a6dcf70d942c37d2bb3113e426d9307d51385",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/include/llama/llama.h",
+      "bytes": 73761,
+      "sha256": "83af760f19df55bab78d530a53e024bf9efaba19b547cd14dec0e5d841d1df2d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-base.0.9.4.dylib",
+      "bytes": 635560,
+      "sha256": "c9f0c20e589e62999371ab2777aadfe403e9bf0f9f3d458c368d716806032cba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-base.0.dylib",
+      "bytes": 635560,
+      "sha256": "c9f0c20e589e62999371ab2777aadfe403e9bf0f9f3d458c368d716806032cba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-base.dylib",
+      "bytes": 635560,
+      "sha256": "c9f0c20e589e62999371ab2777aadfe403e9bf0f9f3d458c368d716806032cba",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-blas.0.9.4.dylib",
+      "bytes": 58664,
+      "sha256": "1261aca63ae7934967d9aaea3a47ad4e8d457aa289496498889b7e0ba2a0af9b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-blas.0.dylib",
+      "bytes": 58664,
+      "sha256": "1261aca63ae7934967d9aaea3a47ad4e8d457aa289496498889b7e0ba2a0af9b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-blas.dylib",
+      "bytes": 58664,
+      "sha256": "1261aca63ae7934967d9aaea3a47ad4e8d457aa289496498889b7e0ba2a0af9b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-cpu.0.9.4.dylib",
+      "bytes": 800416,
+      "sha256": "c21d11a31197fdc757e698cdb3157649c859bc972798105b96cd2d4176cd5796",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-cpu.0.dylib",
+      "bytes": 800416,
+      "sha256": "c21d11a31197fdc757e698cdb3157649c859bc972798105b96cd2d4176cd5796",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-cpu.dylib",
+      "bytes": 800416,
+      "sha256": "c21d11a31197fdc757e698cdb3157649c859bc972798105b96cd2d4176cd5796",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-metal.0.9.4.dylib",
+      "bytes": 761800,
+      "sha256": "97a6e3e54b1b77482af16d1c61796d7a62dba1da8af4066977d0e949fa318b8e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-metal.0.dylib",
+      "bytes": 761800,
+      "sha256": "97a6e3e54b1b77482af16d1c61796d7a62dba1da8af4066977d0e949fa318b8e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml-metal.dylib",
+      "bytes": 761800,
+      "sha256": "97a6e3e54b1b77482af16d1c61796d7a62dba1da8af4066977d0e949fa318b8e",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml.0.9.4.dylib",
+      "bytes": 59424,
+      "sha256": "84677dc8ea85a79cd2ab9c4167f50797e4d61300d151898d48f2c9172b0ece92",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml.0.dylib",
+      "bytes": 59424,
+      "sha256": "84677dc8ea85a79cd2ab9c4167f50797e4d61300d151898d48f2c9172b0ece92",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libggml.dylib",
+      "bytes": 59424,
+      "sha256": "84677dc8ea85a79cd2ab9c4167f50797e4d61300d151898d48f2c9172b0ece92",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libllama.0.0.1.dylib",
+      "bytes": 1885040,
+      "sha256": "88403a1325988a670f661b779f8c7d165b62b7cfa64340f67e4452014eee53e3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libllama.0.dylib",
+      "bytes": 1885040,
+      "sha256": "88403a1325988a670f661b779f8c7d165b62b7cfa64340f67e4452014eee53e3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/lib/libllama.dylib",
+      "bytes": 1885040,
+      "sha256": "88403a1325988a670f661b779f8c7d165b62b7cfa64340f67e4452014eee53e3",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/llama/module.modulemap",
+      "bytes": 99,
+      "sha256": "1594065b35bf7ceb68ea1f1f4f0dedfbe2e40c7d3e8ff217697061135b041acb",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/LICENSE",
+      "bytes": 1078,
+      "sha256": "e562a2ddfaf8280537795ac5ecd34e3012b6582a147ef69ba6a6a5c08c84757d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/README.md",
+      "bytes": 3978,
+      "sha256": "0e3fc57884cc3b7768aae8a4d513fa82b498f72cbf887e9a4cff4dcd121a6039",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-alloc.h",
+      "bytes": 3011,
+      "sha256": "8344c5eb56ce9d0e0d45e1ef59846e0dcd0e4f84eb9bb68a6126252247bc0338",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-backend.h",
+      "bytes": 20868,
+      "sha256": "88d58b3b507477eacfc401b914b48af8b2ad875705674b5304420523a92b9c0a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-blas.h",
+      "bytes": 586,
+      "sha256": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cann.h",
+      "bytes": 4553,
+      "sha256": "6f8af52ea9326cead78e5dc59401106fcc8b029d2b9ed24df6cf7a64805405d1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cpp.h",
+      "bytes": 1652,
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cpu.h",
+      "bytes": 7437,
+      "sha256": "0bba07cc8d4fb47ba9bd8cafcdbd3738a041f88861039151e119c52970a1d8f2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cuda.h",
+      "bytes": 1585,
+      "sha256": "8f22e8e43e460db426bb94e14e10dc91e64789e8d216c5ae62a0d02a2eb07d7f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-hexagon.h",
+      "bytes": 351,
+      "sha256": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-metal.h",
+      "bytes": 2141,
+      "sha256": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-opencl.h",
+      "bytes": 581,
+      "sha256": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-opt.h",
+      "bytes": 14039,
+      "sha256": "2919321813be96e0f5d6ba36e7ed634a518de0fbe834902ad8f5a402f906e302",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-rpc.h",
+      "bytes": 1056,
+      "sha256": "4832436aeec2a9c3f6d2ca12d90f567de5d24df76803e1e167d3f188c23efa3d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-sycl.h",
+      "bytes": 1763,
+      "sha256": "d59d5275423a7ce173c8e6f69933a501e53a635410de3f8d61bf23a59dac81fd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-vulkan.h",
+      "bytes": 952,
+      "sha256": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-webgpu.h",
+      "bytes": 328,
+      "sha256": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-zdnn.h",
+      "bytes": 292,
+      "sha256": "ee1d79c95ade45ba195a6b71f59a05c18617de4a596d2b2b03ecf38975a9a448",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-zendnn.h",
+      "bytes": 498,
+      "sha256": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml.h",
+      "bytes": 101743,
+      "sha256": "d13cc07d4c37e17d94f60d9549618fbafc35ef51876d7f35d95a9f2712a87413",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/gguf.h",
+      "bytes": 10224,
+      "sha256": "d2eec8b938aa04ccec9bc4ce8a6a6dcf70d942c37d2bb3113e426d9307d51385",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-alloc.h",
+      "bytes": 3011,
+      "sha256": "8344c5eb56ce9d0e0d45e1ef59846e0dcd0e4f84eb9bb68a6126252247bc0338",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-backend.h",
+      "bytes": 20868,
+      "sha256": "88d58b3b507477eacfc401b914b48af8b2ad875705674b5304420523a92b9c0a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-blas.h",
+      "bytes": 586,
+      "sha256": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cann.h",
+      "bytes": 4553,
+      "sha256": "6f8af52ea9326cead78e5dc59401106fcc8b029d2b9ed24df6cf7a64805405d1",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cpp.h",
+      "bytes": 1652,
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cpu.h",
+      "bytes": 7437,
+      "sha256": "0bba07cc8d4fb47ba9bd8cafcdbd3738a041f88861039151e119c52970a1d8f2",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cuda.h",
+      "bytes": 1585,
+      "sha256": "8f22e8e43e460db426bb94e14e10dc91e64789e8d216c5ae62a0d02a2eb07d7f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-hexagon.h",
+      "bytes": 351,
+      "sha256": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-metal.h",
+      "bytes": 2141,
+      "sha256": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-opencl.h",
+      "bytes": 581,
+      "sha256": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-opt.h",
+      "bytes": 14039,
+      "sha256": "2919321813be96e0f5d6ba36e7ed634a518de0fbe834902ad8f5a402f906e302",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-rpc.h",
+      "bytes": 1056,
+      "sha256": "4832436aeec2a9c3f6d2ca12d90f567de5d24df76803e1e167d3f188c23efa3d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-sycl.h",
+      "bytes": 1763,
+      "sha256": "d59d5275423a7ce173c8e6f69933a501e53a635410de3f8d61bf23a59dac81fd",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-vulkan.h",
+      "bytes": 952,
+      "sha256": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-webgpu.h",
+      "bytes": 328,
+      "sha256": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-zdnn.h",
+      "bytes": 292,
+      "sha256": "ee1d79c95ade45ba195a6b71f59a05c18617de4a596d2b2b03ecf38975a9a448",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-zendnn.h",
+      "bytes": 498,
+      "sha256": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/ggml.h",
+      "bytes": 101743,
+      "sha256": "d13cc07d4c37e17d94f60d9549618fbafc35ef51876d7f35d95a9f2712a87413",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/gguf.h",
+      "bytes": 10224,
+      "sha256": "d2eec8b938aa04ccec9bc4ce8a6a6dcf70d942c37d2bb3113e426d9307d51385",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/include/whisper.h",
+      "bytes": 35157,
+      "sha256": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-base.dylib",
+      "bytes": 632240,
+      "sha256": "86ae45cafc861c92f939bb28215a446a401d2cee63b947eea175f7676db4c650",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-blas.dylib",
+      "bytes": 58656,
+      "sha256": "b7f54577a21aba5a37b22518f60f9bc3b1f4c9438c1876759330e58fa15bb490",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-cpu.dylib",
+      "bytes": 640416,
+      "sha256": "f17e57d4d4df1a34a06f3b204ae4c5f762860eee2f7846c56d1d033a2792e10c",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-metal.dylib",
+      "bytes": 710576,
+      "sha256": "9e1049b0ce4ed957d7724a3301c40853207b5caab027aa49a69d267e6da53692",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml.dylib",
+      "bytes": 59232,
+      "sha256": "a611b8585b2afd0ea2b72c50968115cd8384075091ca6da34ea2a3fedd07c53f",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libwhisper.1.8.2.dylib",
+      "bytes": 425536,
+      "sha256": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libwhisper.1.dylib",
+      "bytes": 425536,
+      "sha256": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/lib/libwhisper.dylib",
+      "bytes": 425536,
+      "sha256": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/module.modulemap",
+      "bytes": 64,
+      "sha256": "6881250c729680969eca5eddc9dffef0a1bb4b642a99e3c0100494516857fdf8",
+      "symlinkTarget": null
+    },
+    {
+      "path": "Vendors/whisper/patches/v1.8.2-cancellable-cpu-graphs.patch",
+      "bytes": 6753,
+      "sha256": "0ef3c0f2a130332c7a3dbd495dfa3230e764ab68f9bad3b7182f138c41d43418",
+      "symlinkTarget": null
+    },
+    {
+      "path": "docs/fixtures/repair-20261113-audio-integration-harness/release.py",
+      "bytes": 4866,
+      "sha256": "3fd0de40ee0f6ceb143af4d126f4ce70cc6093d62a149415e1f9f3bbe5425259",
+      "symlinkTarget": null
+    },
+    {
+      "path": "scripts/create-release.sh",
+      "bytes": 4587,
+      "sha256": "50fc127d2f73a7e0cc4c0b7757eb8e3ef96b091fd1476fced71eda1a77070c53",
+      "symlinkTarget": null
+    },
+    {
+      "path": "scripts/release.sh",
+      "bytes": 7889,
+      "sha256": "85a3c818b0ca6efa5dd9ad82bc1e8bd1c1ccee194448d21eb439590a80b5be5d",
+      "symlinkTarget": null
+    },
+    {
+      "path": "scripts/validate_noninteractive.py",
+      "bytes": 2376,
+      "sha256": "7b4df35af4c54c5abd8e8cef7f8e6c88db69a4c75f8ab7295736d5126d9f545b",
+      "symlinkTarget": null
+    }
+  ]
+}

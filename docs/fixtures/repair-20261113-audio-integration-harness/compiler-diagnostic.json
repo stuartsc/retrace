@@ -1,0 +1,21 @@
+{
+  "compilerPID": 4609,
+  "parentPID": 4607,
+  "buildPID": 52585,
+  "boundedOwnedTreeSnapshot": {
+    "elapsed": "10:54",
+    "cpuTime": "10:09.50",
+    "cpuPercent": 105.5,
+    "rssKiB": 2794720,
+    "state": "RN",
+    "nice": 15
+  },
+  "sampleAttempted": false,
+  "reason": "Compiler exited before the required parent/command identity check; ps returned exit 1, so no sampling command ran.",
+  "releaseSubsequentlyVerified": "passed",
+  "moduleFromCompletedBuildLog": "Retrace",
+  "moduleAndPassAtProbe": "not established because process exited",
+  "interpretation": "Earlier modules were scheduler-starved. The final observed compiler was CPU-bound; without a stack sample no repeated optimiser/typechecker hotspot or normal codegen diagnosis is established.",
+  "priorityChanged": false,
+  "sourceChanged": false
+}

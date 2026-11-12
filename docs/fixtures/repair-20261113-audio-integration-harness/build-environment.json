@@ -1,0 +1,14 @@
+{
+  "macOS": {
+    "exitCode": 0,
+    "output": "ProductName:\t\tmacOS\nProductVersion:\t\t26.1\nBuildVersion:\t\t25B78"
+  },
+  "Xcode": {
+    "exitCode": 0,
+    "output": "Xcode 26.3\nBuild version 17C529"
+  },
+  "Swift": {
+    "exitCode": 0,
+    "output": "Apple Swift version 6.2.4 (swiftlang-6.2.4.1.4 clang-1700.6.4.2)\nTarget: arm64-apple-macosx26.0"
+  }
+}

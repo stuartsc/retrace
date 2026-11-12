@@ -70,10 +70,13 @@ files unchanged and readable.
 - `NativeFirstPassPersistenceTests.testNativeProofBindsCompactedAACBeforeSearchablePublication`
   exercises native encoding/decoding and private SQLite with controlled native
   recognition output. It does not require or simulate actual Apple inference.
-- Noninteractive runner unit tests and `git diff --check` passed. Swift build and
-  tests have not run on this source integration; retention owns the next build
-  slot. Freeze/commit source before focused validation, then run the separate
-  clean optimised build and the appropriate full suite under the root's schedule.
+- Noninteractive runner unit tests and `git diff --check` passed. The clean
+  focused actual-product integration passed 15 tests, zero skips and zero
+  failures on source checkpoint `b495d4a`: five AAC compactor tests, two writer
+  policy tests and eight native persistence tests. Compilation took 314.73
+  seconds and the tests took 3.453 seconds. The separate clean optimised
+  whole-app build also passed in 3,736.19 seconds (62m16s), with all 751 full inputs and the 348 focused inputs
+  unchanged. No installed acceptance is claimed.
 - Native assets are still reported missing; actual speech quality/continuous
   coverage/latency/energy acceptance remains open. Fast native preview and
   governed durable-text latency remain separate gates. No model downloads ran.
@@ -85,7 +88,7 @@ AudioWriterPolicyTests|AACContainerCompactorTests|NativeFirstPassPersistenceTest
 ```
 
 
-## Focused real-product harness (prepared; not compiled)
+## Focused real-product harness (clean validation passed)
 
 The bounded policy integration review passed with no findings. A private package
 is prepared at `.audio-integration-validation`, ignored with its build products.
@@ -100,10 +103,11 @@ and AAC fixtures preserve their existing `#filePath` lookups without editing any
 test source. The harness snapshots 348 production/test/fixture inputs, verifies
 seven exact copied inputs, preserves the three resolved dependency pins, and
 checks its own manifest and runner hashes. The production `Package.swift` is
-unchanged. Preparation verification and Python syntax checking passed; no Swift
-manifest evaluation, compilation or test execution has occurred in this harness.
+unchanged. SwiftPM accepted the real local product dependency, compiled the
+production modules and passed all three focused test suites. Input hashes, exact
+copies and pins matched before and after; both owned command groups drained.
 
-After the root releases the build slot, the explicit command is:
+The validated command is:
 
 ```sh
 python3 .audio-integration-validation/run.py run --log /tmp/retrace-audio-integration-focused.log
@@ -117,12 +121,12 @@ created exclusively so prior failures cannot be overwritten. A second hash/pin
 check and a JSON exit-code/log-hash receipt follow execution. `verify` performs
 only the source/copy checks, without invoking Swift.
 
-Local-product unsafe flags have not yet been evaluated by SwiftPM. If the package
-manager rejects the real production dependency, retain that failure and use the
-ordinary safe runner; do not bypass the restriction using substitute App/Storage
-targets. Regardless of focused-test success, a separate clean optimised build of
-the full production application remains mandatory. The earlier native full suite
+SwiftPM accepted the production package's existing linker settings without a
+substitute module or manifest change. A separate clean optimised build of the
+full production application has now passed. The earlier native full suite
 and AAC component suite remain separate receipts, not this harness's results.
+The exact command/cleanup receipt, compressed log, source manifest and result
+summary are retained in `docs/fixtures/repair-20261113-audio-integration-harness`.
 
 
 ### Harness process ownership correction
@@ -142,5 +146,45 @@ manifest, resolved dependency pins, lifecycle tests and their receipt are tracke
 under `docs/fixtures/repair-20261113-audio-integration-harness`. Preparation changes
 only the checkout path in the ignored private copy and rechecks all input hashes.
 The refreshed runner hash and all 348 inputs/seven copied files verify. The root
-has now released the build slot for clean focused integration followed by the
-mandatory clean optimised whole-app build; those results are still pending.
+released the build slot for clean focused integration, which passed, followed
+by the mandatory clean optimised whole-app build. That build passed through the
+reviewed noninteractive runner inside the same owned process-group wrapper; both command groups drained without forced killing.
+
+
+### Clean release input coverage
+
+The first release attempt was deliberately interrupted after 106.5 seconds to
+replace its harness-only hash precheck with a full whole-app input freeze. Its
+interrupted receipt and log remain retained; no compiler failure occurred and
+its process group drained. The restarted recipe snapshots 751 files across every
+production module, including UI/resources, native binaries/headers, source
+utilities, Package.swift/resolved, Info.plist/entitlements and release scripts.
+It requires identical file inventory, bytes, hashes and symlink targets after
+the separate clean optimised build, and records the resulting executable hash.
+The low-priority two-job build passed in 3,736.19 seconds; the final receipt
+matched all 751 full inputs, all 348 focused inputs, seven copied fixtures/tests
+and dependency pins. The compiled executable is 62,443,944 bytes, SHA256
+`2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38`.
+The complete receipt, input manifest, compressed log and build environment are
+retained beside the focused-test receipts.
+
+
+### Compiler delay and acceptance boundary
+
+The long release elapsed time is a build observation, not an application
+performance result. Earlier owned compiler snapshots showed scheduler starvation;
+the final frontend later accumulated 10m09.50s CPU over 10m54s elapsed at nice 15,
+using about 2.67 GiB RSS. A requested read-only sample was cancelled by the identity
+guard because that compiler had already exited. The application then linked
+successfully. No stack sample exists to identify a repeated optimiser/typechecker
+hotspot, so the exact reason for that final CPU-heavy compile remains unproven.
+The diagnostic receipt records this distinction.
+
+The native speech defaults remain off. The root reported en-AU assets unavailable;
+this agent neither rechecked nor downloaded them. Controlled native outputs in
+the eight persistence tests establish durable integration, not real recognition
+quality, continuous framework coverage, latency or energy acceptance. This branch
+has 15 focused integration tests and a clean whole-app release receipt; the earlier
+1,733-test native full suite remains separate. No app was installed, no live
+preferences or history changed, and no model/device/UI opt-in ran. Packaging and
+installed acceptance belong to the root's subsequent stage.
