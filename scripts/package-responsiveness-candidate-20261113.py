@@ -106,4 +106,18 @@ receipt.update(candidate=str(candidate), packagedExecutableSHA256=digest(exe), s
     installedExecutableAndPlistUnchanged=True)
 no_links(base / 'candidate-2611.13.1.json')
 (base / 'candidate-2611.13.1.json').write_text(json.dumps(receipt, indent=2) + '\n')
+# Keep the reviewed app-only installer self-contained in the candidate directory.
+helper_dir = base / 'Recovery helper'
+no_links(helper_dir)
+helper_dir.mkdir(mode=0o700, exist_ok=True)
+for original, installed_name in (
+    (source / 'scripts/recovery/clone_native_library.py', helper_dir / 'clone_native_library.py'),
+    (source / 'scripts/install-responsiveness-candidate-20261113.py', base / 'install_app_only.py'),
+    (source / 'docs/fixtures/repair-20261113/app-only-compatibility.json', base / 'app-only-compatibility.json'),
+):
+    no_links(original)
+    no_links(installed_name)
+    require(not installed_name.exists(), 'Refuse to overwrite installer material: ' + str(installed_name))
+    shutil.copy2(original, installed_name)
+    require(digest(installed_name) == digest(original), 'Installer material copy changed')
 print(json.dumps({'candidate': str(candidate), 'signatureVerified': True, 'installed': False}))
