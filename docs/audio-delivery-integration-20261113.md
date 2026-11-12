@@ -123,3 +123,24 @@ ordinary safe runner; do not bypass the restriction using substitute App/Storage
 targets. Regardless of focused-test success, a separate clean optimised build of
 the full production application remains mandatory. The earlier native full suite
 and AAC component suite remain separate receipts, not this harness's results.
+
+
+### Harness process ownership correction
+
+The one Python advisory review found that `subprocess.call` could leave build
+children running after interruption and omit an interrupted receipt. The runner
+now owns each command's new process group, latches SIGINT/SIGTERM, sends TERM with
+a bounded grace then KILL, reaps the direct child and waits for executing inherited
+group members to stop. OS-owned orphan zombies are disclosed separately. Cleanup
+and receipt writing finish before restoring signal handlers, and interruption
+prevents the next stage. Three real private process tests passed, including both
+signals against an authored child/grandchild that ignore TERM. No Swift or app
+operation occurred during those checks.
+
+The reproducible package manifest, runner, preparation script, pinned source
+manifest, resolved dependency pins, lifecycle tests and their receipt are tracked
+under `docs/fixtures/repair-20261113-audio-integration-harness`. Preparation changes
+only the checkout path in the ignored private copy and rechecks all input hashes.
+The refreshed runner hash and all 348 inputs/seven copied files verify. The root
+has now released the build slot for clean focused integration followed by the
+mandatory clean optimised whole-app build; those results are still pending.

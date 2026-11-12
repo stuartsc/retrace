@@ -1,0 +1,18 @@
+{
+  "scope": "authored private child/grandchild lifecycle only; no Swift or app execution",
+  "executed": 3,
+  "failures": 0,
+  "signalCases": [
+    "SIGINT",
+    "SIGTERM"
+  ],
+  "boundedGraceAndForcedKillVerified": true,
+  "leaderReapedAndNoRunningDescendants": true,
+  "interruptedReceiptAndLogPreserved": true,
+  "subsequentCommandPrevented": true,
+  "handlersRestored": true,
+  "runnerSHA256": "be844ca2b9e95dfee37e1b049f2e65dffdb570bd06e60360f682e50755134994",
+  "testSHA256": "b6c485f5fcdd0bcd84dbee4cbc188cc15aab3390c267517b42ca7d11c550ddf8",
+  "logSHA256": "76dee5d105c8b2dcc6401302e245738fe4ec26cf3c1c7b78f3feecb73d2c5431",
+  "atUTC": "2026-11-12T20:42:17.492029+00:00"
+}

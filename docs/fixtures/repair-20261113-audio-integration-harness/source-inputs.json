@@ -1,0 +1,1815 @@
+{
+  "productionRoot": ".",
+  "productionCommit": "92dd2dc362a4400c33d0a89149b4cee39ffe19b1",
+  "products": [
+    "App",
+    "Processing",
+    "Storage",
+    "Shared",
+    "Database"
+  ],
+  "productionRoots": [
+    "Shared",
+    "Database",
+    "Storage",
+    "Capture",
+    "Processing",
+    "Search",
+    "Migration",
+    "App",
+    "Vendors/whisper"
+  ],
+  "sourceSuffixes": [
+    ".c",
+    ".dylib",
+    ".h",
+    ".json",
+    ".metallib",
+    ".modulemap",
+    ".swift",
+    ".txt"
+  ],
+  "copiedPaths": [
+    "App/Tests/AudioWriterPolicyTests.swift",
+    "Processing/Tests/NativeFirstPassPersistenceTests.swift",
+    "Storage/Tests/AACContainerCompactorTests.swift",
+    "Processing/Tests/Fixtures/WhisperTimedWords/authored.wav",
+    "Processing/Tests/Fixtures/WhisperTimedWords/provenance.json",
+    "Processing/Tests/Fixtures/WhisperTimedWords/reference.txt",
+    "docs/fixtures/responsiveness/2026-09-28/authored-codec-output/existing-quality-based.m4a"
+  ],
+  "productionPackageUnmodified": true,
+  "files": [
+    {
+      "path": "App/ActivityTimelineProjection.swift",
+      "sha256": "2aa4e369bdd1415ba962a7d23b09b51212fb68bd9c3b63d1960e51571d128b8b",
+      "bytes": 10667
+    },
+    {
+      "path": "App/AppCoordinator.swift",
+      "sha256": "82bdb74bfbaf70781e8b72528a4909076d2fbea7123af6a89e1785d5dc0f1bd4",
+      "bytes": 179671
+    },
+    {
+      "path": "App/AppLifecycle.swift",
+      "sha256": "b50c23e3c116467823ad03cae2330ac7b4b9f51babd0a075ac20c2523aa0463d",
+      "bytes": 8143
+    },
+    {
+      "path": "App/Audio/WhisperConfigLoader.swift",
+      "sha256": "edaba1a0455a07145b60cfd1a4dae079431267d46ae12ef8679ca452b7d8c437",
+      "bytes": 3302
+    },
+    {
+      "path": "App/AudioSearch.swift",
+      "sha256": "30a737fbeae77c295f09df874f92108ec24cd8e03ca60faf36b28a46f1194efe",
+      "bytes": 7172
+    },
+    {
+      "path": "App/AudioSessionOwner.swift",
+      "sha256": "67e7bee49bf4a305cc704bfab258b13dac57e5029e7e7d43e1cdcc341ff9cfa1",
+      "bytes": 10819
+    },
+    {
+      "path": "App/AudioWriterPolicy.swift",
+      "sha256": "118bbae93f875dcb26c8500635df665ce131ad99854fdd9feca77292eb11099c",
+      "bytes": 1047
+    },
+    {
+      "path": "App/BackgroundProcessingGovernor.swift",
+      "sha256": "9a73f58c7662bf1a5ef180ace97e9a65f41cde0c20cd03669ae3bdee0f3d210a",
+      "bytes": 30290
+    },
+    {
+      "path": "App/BackgroundTranscriptionService.swift",
+      "sha256": "ebba23d0de843f571218f9cf5e8f38d19dbfaf6fc821e16ce7cf98a7da129d04",
+      "bytes": 1577
+    },
+    {
+      "path": "App/CaptureSettingsPersistence.swift",
+      "sha256": "45e99d9b2a75cfda5576855bce8e51bfeef7904e88df40c737b97a797ce1e0a7",
+      "bytes": 3314
+    },
+    {
+      "path": "App/Companion/CompanionAdmissionGate.swift",
+      "sha256": "b7acdadba73151759913543267c123e7d462f1b20f5c056181c263305919c275",
+      "bytes": 1559
+    },
+    {
+      "path": "App/Companion/CompanionBatchPlan.swift",
+      "sha256": "9c30547c3a5c46ef78f819a9287f7f127a6d7f9d00cf8ada05b6fe859fad2b11",
+      "bytes": 3953
+    },
+    {
+      "path": "App/Companion/CompanionBatchReconciler.swift",
+      "sha256": "b88817c32b8e9f3e8a69d223d6c8993492d55acb428f2e945c8c4ca129912d6f",
+      "bytes": 2071
+    },
+    {
+      "path": "App/Companion/CompanionContextCollector.swift",
+      "sha256": "29220793700f714c97bb798b219a7a20b9038d11185e762865d0435783d0ec9a",
+      "bytes": 3898
+    },
+    {
+      "path": "App/Companion/CompanionController.swift",
+      "sha256": "5762962964c6c9761d02e32516d9d43fab771f213a694f808cbff82fb87844cb",
+      "bytes": 45042
+    },
+    {
+      "path": "App/Companion/CompanionEnrichmentService.swift",
+      "sha256": "aa73b7794e00af54e3ce20e0ef8d6fa66078aab87fdda39c31dc20c225de4933",
+      "bytes": 24364
+    },
+    {
+      "path": "App/Companion/CompanionEvidenceReader.swift",
+      "sha256": "f34ad5cf17a6f5047b52334caa468ea9d71eb611273fc82876d7441b7efbca3f",
+      "bytes": 14745
+    },
+    {
+      "path": "App/Companion/CompanionHTTPTransport.swift",
+      "sha256": "f34783d3a9f3a3b510be97bf0e18d087210ab923e4d21af2b25f25a813609086",
+      "bytes": 8687
+    },
+    {
+      "path": "App/Companion/CompanionRefreshPass.swift",
+      "sha256": "4e1d5aaa48074ff4f8ef15b541cc6024e43184e9f38a1c30a1b686228cb266a5",
+      "bytes": 1933
+    },
+    {
+      "path": "App/Companion/CompanionSettingsService.swift",
+      "sha256": "47c1c01fdc2365597538f32d6b38793b66519ea7bfc3c02109757ce6755cfbc7",
+      "bytes": 9325
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerCatalog.swift",
+      "sha256": "0068d45f7a514183d1b71febaf74366c9a98f6ebff1e3c6dcb9bffa2c320a550",
+      "bytes": 8645
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerChanges.swift",
+      "sha256": "f8cac12e82e9cd2ea6ba1276471ae316a03b4b7ce632498ff3e4f2bbeb129339",
+      "bytes": 1724
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerCorrectionStore.swift",
+      "sha256": "51342e549c5e61c7a56683fad27cb0c6e46bfc68ab5def0fb20b2787cd2bec2b",
+      "bytes": 6232
+    },
+    {
+      "path": "App/Companion/CompanionSpeakerWindow.swift",
+      "sha256": "18181b1296e654f9ee18b087172b60237185c10d1f377e50dfa7f037959d7b8d",
+      "bytes": 2310
+    },
+    {
+      "path": "App/Companion/CompanionSpool.swift",
+      "sha256": "84b732dc1a96dc3b8aa7b671ffe648a98f25d12d2fee2406222013c183fa0990",
+      "bytes": 10120
+    },
+    {
+      "path": "App/Companion/CompanionTranscriptSnapshot.swift",
+      "sha256": "a242736c1b81cf724c1e8065c42d9c64e7e8905852369a29bad533f7086982db",
+      "bytes": 3777
+    },
+    {
+      "path": "App/Companion/CompanionTurnPlayback.swift",
+      "sha256": "0c0797353820f1a402ccf6bff5da93a83056ac6c43fbbd3e2bebf8e31a0815f6",
+      "bytes": 11324
+    },
+    {
+      "path": "App/Companion/CompanionTurnResolver.swift",
+      "sha256": "92eac2fba9fd50d92c348fc4d2b3fa3cb940f2ac84a809d62aefbfd28e26bc94",
+      "bytes": 2825
+    },
+    {
+      "path": "App/Companion/CompanionWire.swift",
+      "sha256": "c8cfe38d81b209606b73f38f19e14131e9c039f2e67ad59b3c8433b3e8b1bce0",
+      "bytes": 6277
+    },
+    {
+      "path": "App/Companion/ContextRangePresentationService.swift",
+      "sha256": "2f4b99c6cbf32fb5b91df0698db9db0e6638ee4d7038202f5d993605be5a4d1f",
+      "bytes": 10872
+    },
+    {
+      "path": "App/DataAdapter.swift",
+      "sha256": "f509543cf941bd107d0953e125d0f2c3c60aaacb013ee14912f144d0e00af545",
+      "bytes": 186716
+    },
+    {
+      "path": "App/Dictation/DictationAudioBuffer.swift",
+      "sha256": "105ffb3cf625ccd89363174d2557272b6dfeafa7924bf7f0a712a0a55a7ec758",
+      "bytes": 5480
+    },
+    {
+      "path": "App/Dictation/DictationInsertionService.swift",
+      "sha256": "343c3995a9b5a30ad1822ea16a09cca668ba3719f4a075596f2841d51d97e3bc",
+      "bytes": 4858
+    },
+    {
+      "path": "App/Dictation/DictationManager.swift",
+      "sha256": "bd29aebd4edb859a4d7a97baff305bb3e09093136be79b3554636641a5714212",
+      "bytes": 9174
+    },
+    {
+      "path": "App/Dictation/DictationSessionStoreAdapter.swift",
+      "sha256": "936d634547ec1713132c6b0695379ec246dee1c00bd922943fde460e9f6f4958",
+      "bytes": 79
+    },
+    {
+      "path": "App/Dictation/DictationTargetContextProvider.swift",
+      "sha256": "cd270d5397f6bcc1ed20a9f07063199cb46acbec101c9eaa67d1dd5a2b271dba",
+      "bytes": 1206
+    },
+    {
+      "path": "App/Dictation/DictationTextFormatter.swift",
+      "sha256": "15958d038dc4854ef38ada9865703654450c528afca678dff4a702cc4a5c1fc3",
+      "bytes": 3375
+    },
+    {
+      "path": "App/ExactOCRRepairPixels.swift",
+      "sha256": "f0fdba33b160db8a58097f16976b075d1127bfa54f959102b04058cfc3c36fd8",
+      "bytes": 1762
+    },
+    {
+      "path": "App/ExactOCRRepairService.swift",
+      "sha256": "96c95f353b76a5eecb42aed759432668cb55abf2a5d8767b9fdee52b87ae0e60",
+      "bytes": 7391
+    },
+    {
+      "path": "App/LiveAudioContextReader.swift",
+      "sha256": "4ce514cd09ec48c6d2ad4968aaeba0c3d09d75c13efce654e8f6eba60006840e",
+      "bytes": 3743
+    },
+    {
+      "path": "App/LiveContextSearchService.swift",
+      "sha256": "b0fc9c0c2ef793de10c59b4db7ed110ed18ad0f59cc80b605a6004b8bead5023",
+      "bytes": 30573
+    },
+    {
+      "path": "App/LiveTranscriptionController.swift",
+      "sha256": "377123b282c1754444e355841cec62bdefc2bb87fd8177d8ff9975c0b9d0505a",
+      "bytes": 11707
+    },
+    {
+      "path": "App/ManualAudioWorkOwner.swift",
+      "sha256": "32e5067fd6ad2bf29f9f7354781d257b2609aeaff27d4dddae4b931c5d84bc6e",
+      "bytes": 1851
+    },
+    {
+      "path": "App/ModelManager.swift",
+      "sha256": "b215b2e8c29a4a45e00ed3bf874ae444d590f6baa49d2d7f95710c8e88306421",
+      "bytes": 9949
+    },
+    {
+      "path": "App/NativeAnnotationService.swift",
+      "sha256": "dec5917d1549e59182df506aa0e241e62329a91d1491ba3220b9f380fa264e76",
+      "bytes": 5325
+    },
+    {
+      "path": "App/NativeFirstPassCoverage.swift",
+      "sha256": "b96e823f31c0f2d29558c514eda9723ac2f4992b4d9a54fc12c9bd55db9ddef2",
+      "bytes": 4427
+    },
+    {
+      "path": "App/OnboardingManager.swift",
+      "sha256": "838c0c346c6bd41415309fe147408b88931413bcf525b8c76b4bcd225b293b62",
+      "bytes": 8914
+    },
+    {
+      "path": "App/ProgressiveRecallService.swift",
+      "sha256": "a5e3848e385be09a270d3f47a936c38c566c4b6d0f4815686cd9b518a90d8baa",
+      "bytes": 34564
+    },
+    {
+      "path": "App/RecordingLifecycle.swift",
+      "sha256": "67149e8e9e1d674b84c57b4fe04112f0872f3bea39062e7ae29f6214e7cff692",
+      "bytes": 5601
+    },
+    {
+      "path": "App/ResourceProcessingPolicy.swift",
+      "sha256": "b83b7fc2f788599ba2da3cb84c8e3ca956953945ba9470a6761178392ed3fd03",
+      "bytes": 2933
+    },
+    {
+      "path": "App/ResourceUsageMonitor.swift",
+      "sha256": "8975013d510ab16c42bc38907a4ff6b0a81daa3c79dd0ea7e7b5d960887f001b",
+      "bytes": 10230
+    },
+    {
+      "path": "App/RetentionCommandService.swift",
+      "sha256": "ccde214c1adb00e20172f7c533ef5eb415e8c31d2aa25695f8e0d722aab0d2b7",
+      "bytes": 13964
+    },
+    {
+      "path": "App/RetentionManager.swift",
+      "sha256": "ba9862e4c5d3ded098ddba11bf80d067550f696916956fc29982a83e445fdf9e",
+      "bytes": 14491
+    },
+    {
+      "path": "App/RetraceCommands/RetraceAnnotationCommands.swift",
+      "sha256": "ac237241c7841dd47c19ab46f751b100611a460b1a932221d443b519266f98e4",
+      "bytes": 8364
+    },
+    {
+      "path": "App/RetraceCommands/RetraceAudioSettingsCommands.swift",
+      "sha256": "a3e17bc3c43263a3aa904c90fd1c340c8407740eff9ad7b858ac100b81480038",
+      "bytes": 1478
+    },
+    {
+      "path": "App/RetraceCommands/RetraceCommandAccessService.swift",
+      "sha256": "459fc3835f1e3fb99e54dd41bb96f324ba5d70a19127f27d9f79ac7383e93530",
+      "bytes": 11533
+    },
+    {
+      "path": "App/RetraceCommands/RetraceCommandDispatcher.swift",
+      "sha256": "2ff442e2867d5876575a9500cc07bb48e8c22fbbf1f82114193242ed1e93bbb0",
+      "bytes": 23810
+    },
+    {
+      "path": "App/RetraceCommands/RetraceCommandLedger.swift",
+      "sha256": "179ad504eb7bd7451659975e8a27902af67ccb5ddff38bacb6eaf8220fd0110b",
+      "bytes": 9631
+    },
+    {
+      "path": "App/RetraceCommands/RetraceContextCommands.swift",
+      "sha256": "245247dc82f9bcb7db54600c24a60d6ac5cdc050f7aeba90b5bf86dac84525c5",
+      "bytes": 11715
+    },
+    {
+      "path": "App/RetraceCommands/RetraceContextRangeCommands.swift",
+      "sha256": "db80fef01df3dc0bdcaaeb3d4c38aca4e31b5d1555a390fd6869d5db59dc16cf",
+      "bytes": 1403
+    },
+    {
+      "path": "App/RetraceCommands/RetraceForegroundCommands.swift",
+      "sha256": "7d7f4cc01fcb5cf74b120a297d075df64a63df1ffa58b0e42a5e762c85171758",
+      "bytes": 7824
+    },
+    {
+      "path": "App/RetraceCommands/RetraceForegroundRouter.swift",
+      "sha256": "432f746f3b66cf2f1ddbe76a7d950aaebe672e016bb5fb4e43e7901daec79d38",
+      "bytes": 4134
+    },
+    {
+      "path": "App/RetraceCommands/RetraceNativeBridge.swift",
+      "sha256": "2154426d227a5b0c719ea5cfe4a6838fe885e2be0fea6cd2458d1618746c0f32",
+      "bytes": 8611
+    },
+    {
+      "path": "App/RetraceCommands/RetraceNativeCommandHandlers.swift",
+      "sha256": "1f9fae933141f7965c6171f36f9de7eaa27a2518c8c221ee7c762f1a2e0b2a97",
+      "bytes": 16252
+    },
+    {
+      "path": "App/RetraceCommands/RetraceRetentionCommands.swift",
+      "sha256": "f4ab3b8bd992b699785e8812e8dec382e8a6373086befbfd6f0991c64111937b",
+      "bytes": 6008
+    },
+    {
+      "path": "App/RetraceCommands/RetraceScreenshotCommands.swift",
+      "sha256": "e599df6360a9da3411dfcc0b2fa1efd56827104f0376a07873674c7fcab0a9b9",
+      "bytes": 2938
+    },
+    {
+      "path": "App/RetraceCommands/RetraceSourceCommands.swift",
+      "sha256": "70e0a828860e7aa4de7fcbf99fcadbe536aa841c1d11644d136c4552d43d7d73",
+      "bytes": 4939
+    },
+    {
+      "path": "App/RetraceCommands/RetraceSpeakerCommands.swift",
+      "sha256": "84b52fb5cbf11743e7d2fcedb898a88a1971c7cd910a33a11779d88bca3fe757",
+      "bytes": 4255
+    },
+    {
+      "path": "App/RetraceCommands/RetraceTimelineCommands.swift",
+      "sha256": "3fd969e414a440248a84f6cb0646a5a186b3ef73881cfad0ee64111c4547914e",
+      "bytes": 4694
+    },
+    {
+      "path": "App/RetraceCommands/RetraceTranscriptCommands.swift",
+      "sha256": "63d50e1321223e1c4f452167308b11e867f72a1af17fec0dbfda57c1f9875821",
+      "bytes": 9622
+    },
+    {
+      "path": "App/RetraceOperationsService.swift",
+      "sha256": "10faae6d4737ddd6ee8d9922921b119e56bb65168c47f023b6e7e882dbeba4da",
+      "bytes": 1529
+    },
+    {
+      "path": "App/ScreenEvidenceAdmissionCoordinator.swift",
+      "sha256": "17029091d0d4a47dea9b215984e6765859f9e299d07d78c1eff7b9c430e00866",
+      "bytes": 3908
+    },
+    {
+      "path": "App/ServiceContainer.swift",
+      "sha256": "58d0ebb29993da28d54baa5903b6e27f286ee0359e5232c308505784e022cff1",
+      "bytes": 56320
+    },
+    {
+      "path": "App/SourceConfigurationService.swift",
+      "sha256": "c56ddd46798abc4d2423a0fd57914e56ae3d8a2195fa73311280f950a4c81397",
+      "bytes": 17659
+    },
+    {
+      "path": "App/StorageUsageService.swift",
+      "sha256": "8ce3b60c85d423bbccec329779eaff7c90dd3e5dcb13defbdc72faa3b8a7a4dd",
+      "bytes": 4132
+    },
+    {
+      "path": "App/Tests/AudioWriterPolicyTests.swift",
+      "sha256": "a9f098cf87d5df86275f3c843e7af6b1f3218155c2834836cc0ddf0f233ea65f",
+      "bytes": 3915
+    },
+    {
+      "path": "App/TimelineMarkerService.swift",
+      "sha256": "f4538d9ca1d7e7cb28635264e36f28e8643214b73ad678ad2160e11843ac397b",
+      "bytes": 19258
+    },
+    {
+      "path": "App/VoiceMarkers/MarkerAudioMediaService.swift",
+      "sha256": "2f37af0dbadb69cb65ab81c3beb324717e5d515d4600d4016280357bc353de11",
+      "bytes": 11377
+    },
+    {
+      "path": "App/VoiceMarkers/MarkerAudioPlayback.swift",
+      "sha256": "395ec134ce7565d92f1b331c2a97032393018643b13f617010bea37131869c87",
+      "bytes": 9472
+    },
+    {
+      "path": "App/VoiceMarkers/VoiceMarkerController.swift",
+      "sha256": "e2e065f1a1eb65357fa558e40cc69e833deae9d9a83907d469ec3ee027572149",
+      "bytes": 15763
+    },
+    {
+      "path": "App/VoiceMarkers/VoicePhraseMatcher.swift",
+      "sha256": "01328599ef536f662e919a9d4d95ba6e4cb61d0a56cc366c32c206a6094793f0",
+      "bytes": 9510
+    },
+    {
+      "path": "Capture/ActivityMonitor.swift",
+      "sha256": "00d09f5b3aa41dcca8edf7ebf9ccf697c08d59a1eb1ed73cbfe84b3604a71869",
+      "bytes": 39840
+    },
+    {
+      "path": "Capture/Audio/AudioCaptureManager.swift",
+      "sha256": "8517274254273010e4d8a734707aa807de0799197d17e2b40ce1a53290be12fd",
+      "bytes": 16560
+    },
+    {
+      "path": "Capture/Audio/AudioCaptureSampleClock.swift",
+      "sha256": "7b6bef2095f190db7f500c1ce60922935ede266e4954efd0e2cf7e1f417302b6",
+      "bytes": 4064
+    },
+    {
+      "path": "Capture/Audio/AudioFormatConverter.swift",
+      "sha256": "5a3e6fc8a1aa2d67d72ae67a38a50faff916dea1866d66e86af5e23c039e3983",
+      "bytes": 10281
+    },
+    {
+      "path": "Capture/Audio/ConsentDialogHelper.swift",
+      "sha256": "ab27a6cd76ec0f0f88dc3c6f7c85f38055dae59902aec64af4e219ecedc7d5b1",
+      "bytes": 9496
+    },
+    {
+      "path": "Capture/Audio/MeetingDetector.swift",
+      "sha256": "8994655c05ff6afee51489467fc0e5c93fff311ef367c61165fcd861655858cf",
+      "bytes": 7991
+    },
+    {
+      "path": "Capture/Audio/MicrophoneAudioCapture.swift",
+      "sha256": "32a580a899de35634d413f7229e2b7385317cde8b4c01a4215b7d1fae84ecb3f",
+      "bytes": 14358
+    },
+    {
+      "path": "Capture/Audio/MicrophoneCaptureHardware.swift",
+      "sha256": "e582828016f91ba6ce4feb807cda617ee4b65f6e0f55d51d7541b7431558fa24",
+      "bytes": 11044
+    },
+    {
+      "path": "Capture/Audio/SystemAudioCapture.swift",
+      "sha256": "31171403e6f89c087c4275f2c0bbea68c02fcb6016c6effe0f21fc917506ea49",
+      "bytes": 10002
+    },
+    {
+      "path": "Capture/CaptureManager.swift",
+      "sha256": "edb0299f9e292fdfc4bddfb2f4b040c2def436d63c6e8c9ebdd4f9ae3a6da61e",
+      "bytes": 32843
+    },
+    {
+      "path": "Capture/Deduplication/FrameDeduplicator.swift",
+      "sha256": "4996c928a1d3cb0aec1b1927539e713acefe846170d54ff0ae57a9b235b1c049",
+      "bytes": 11556
+    },
+    {
+      "path": "Capture/Deduplication/PerceptualHash.swift",
+      "sha256": "86c246b5d93e727146d4da6d376d3e503c673e5a36a7c3e1c79c8b438b7c62de",
+      "bytes": 4952
+    },
+    {
+      "path": "Capture/Metadata/AppInfoProvider.swift",
+      "sha256": "227b4ab839dcccb55d90b32bae2fc18df827d952b7f2a33600c46b3093385ad9",
+      "bytes": 15659
+    },
+    {
+      "path": "Capture/Metadata/BrowserURLExtractor.swift",
+      "sha256": "6c460840be30409cda1052bdcb12e3dd7ac7fd52e0f31275a21e9bff6dcb0830",
+      "bytes": 52162
+    },
+    {
+      "path": "Capture/Metadata/CaptureAttribution.swift",
+      "sha256": "f3c57008e925d1fe9cd5de05fdf3e07897cacbe1562e3f5c1fa5045d87b7d26b",
+      "bytes": 11049
+    },
+    {
+      "path": "Capture/Metadata/CaptureSamplingDiagnostics.swift",
+      "sha256": "b47f72bda0d29d2b5c168bad0a7114724385da46277ea1799057e825ece833a8",
+      "bytes": 4738
+    },
+    {
+      "path": "Capture/Metadata/CapturedWindowGeometry.swift",
+      "sha256": "8328f545e2338897c0f2abf44bc5fbfbf84e180a5b187b6799cc5ee29ae4fee3",
+      "bytes": 2790
+    },
+    {
+      "path": "Capture/ScreenCapture/CGWindowListCapture.swift",
+      "sha256": "034baac167932abbbd11c39cc14612cab6808cd2977128600828ab5021972cc0",
+      "bytes": 40749
+    },
+    {
+      "path": "Capture/ScreenCapture/CapturePollingTimer.swift",
+      "sha256": "786151ca29eefe037b05b257dc5ba7ecf1c8250d7db8e0ee82c28455c4c2e697",
+      "bytes": 555
+    },
+    {
+      "path": "Capture/ScreenCapture/DisplayMonitor.swift",
+      "sha256": "dd503d4c43eba0e4ec4b5cccb5d68f138c1e51def845b8bd69726d216c0153dd",
+      "bytes": 5787
+    },
+    {
+      "path": "Capture/ScreenCapture/DisplaySwitchMonitor.swift",
+      "sha256": "d75fe5016f15662567d5292803edd5b36ef233c331fa3feee46ecea8f12c7961",
+      "bytes": 9970
+    },
+    {
+      "path": "Capture/ScreenCapture/PermissionChecker.swift",
+      "sha256": "f4f38f643ebe03c15a96a3ebd9b4a0856b2bde0d354c39b432ff8e21ba523a05",
+      "bytes": 1701
+    },
+    {
+      "path": "Capture/ScreenCapture/PermissionMonitor.swift",
+      "sha256": "fb42e9931c7a6764cfa39b5ea7e48c3752258a0ab9bcda8db36f53ea9236a7be",
+      "bytes": 11395
+    },
+    {
+      "path": "Capture/ScreenCapture/PrivateWindowDetector.swift",
+      "sha256": "83f6653f108b2a922300a65cddbbf3b2c8f89c2afba68ba610f1ec2e9ab08f08",
+      "bytes": 17701
+    },
+    {
+      "path": "Capture/ScreenCapture/PrivateWindowMonitor.swift",
+      "sha256": "3e3602c8f6526e209d868f7855286003842f398e5f58b1036e6fc06e5981ba67",
+      "bytes": 4356
+    },
+    {
+      "path": "Database/ActivityPersistence.swift",
+      "sha256": "3f0bc042e64d304f961b4faf8af8473895cd7733fe6a21e6cfa50ab689173737",
+      "bytes": 21351
+    },
+    {
+      "path": "Database/ActivityScreenLinkPersistence.swift",
+      "sha256": "01cd5e0969cffc254d38fbcbd11fb7c6c64948a45d0610f38eaeb8092015563e",
+      "bytes": 9252
+    },
+    {
+      "path": "Database/Companion/CompanionDeliveryDatabase.swift",
+      "sha256": "0c5481db43f1bec5b7c10dd325da53461861e8745615b4a10e43dd87217d1a99",
+      "bytes": 36767
+    },
+    {
+      "path": "Database/Context/AudioSessionSettingsPersistence.swift",
+      "sha256": "8c6e9ae6ece537f225330a9e689a57166693a301eb3772cf2c3660c3d53cadbe",
+      "bytes": 4596
+    },
+    {
+      "path": "Database/Context/CompanionCandidatePersistence.swift",
+      "sha256": "386548628a492a0da83455221c408623980dfff7cc3862e19edd2dd509223015",
+      "bytes": 5985
+    },
+    {
+      "path": "Database/Context/ContextDatabase.swift",
+      "sha256": "b1d3d957632cf76b6105a8fd6df9f57b1ad86c0f04ed115db16408a4259f7bb0",
+      "bytes": 60645
+    },
+    {
+      "path": "Database/DatabaseConfig.swift",
+      "sha256": "7a9c98e36f2effae443775e0029fb80e673381e6a80da6e99879621ae4cabe22",
+      "bytes": 4549
+    },
+    {
+      "path": "Database/DatabaseConnection.swift",
+      "sha256": "21da6f7d9981cc436cd10771a484bcddf9e74b8f0290bb698c77925c8398cf5c",
+      "bytes": 7140
+    },
+    {
+      "path": "Database/DatabaseManager.swift",
+      "sha256": "4e29c6d9aeed6b493f8813afaccf3a7242e3b06ae9d0462a1cd0540a7614c357",
+      "bytes": 137840
+    },
+    {
+      "path": "Database/ExactOCRRepairPersistence.swift",
+      "sha256": "0f14d8b43cb6719f63fdd6b13b765fc49d82ada5ef169e4d54068c793377b515",
+      "bytes": 6165
+    },
+    {
+      "path": "Database/FTSManager.swift",
+      "sha256": "e2cb47dc27a19b9e170d22da4e71b33b408d7a75eeb104048f4d4ee6d2db23e4",
+      "bytes": 17876
+    },
+    {
+      "path": "Database/FramePipelinePersistence.swift",
+      "sha256": "1158dfd9fa57d3aca7ef674ae17c9c0d6f62f10cf4e191fe49eb2aa45f8b639c",
+      "bytes": 15984
+    },
+    {
+      "path": "Database/IDMappingService.swift",
+      "sha256": "352c6e2407fcdb0c2c54ccc80d005de67c02cb05cacf21f38c984aad434328da",
+      "bytes": 7202
+    },
+    {
+      "path": "Database/LegacyOCRBackfillPersistence.swift",
+      "sha256": "e533f39548fc11f3544fe33a74635f49b573be26092d5fe5e9233433c9fd5f2c",
+      "bytes": 6913
+    },
+    {
+      "path": "Database/Migrations/MigrationRunner.swift",
+      "sha256": "874588ce650f617185538695e50adf475fbbc7e7d96e0f618358c9bf4bdace06",
+      "bytes": 6083
+    },
+    {
+      "path": "Database/Migrations/V10_SegmentCommentSearchIndex.swift",
+      "sha256": "ed6ae6e10f1965eab33782d97419694df944decb26af7d1c49824ce96bbd8390",
+      "bytes": 2694
+    },
+    {
+      "path": "Database/Migrations/V11_SegmentCommentLinkCompositeIndex.swift",
+      "sha256": "7aa2e2215d2d78937745bd76abc31d3db4d896606c4cc07c6be780c56d6ca8e8",
+      "bytes": 1216
+    },
+    {
+      "path": "Database/Migrations/V12_AudioCaptures.swift",
+      "sha256": "9b7018a5ee7d9609ea0a0e068df3b83a5201cd20c1a94b0538c790ffc453b772",
+      "bytes": 2670
+    },
+    {
+      "path": "Database/Migrations/V13_TranscriptionPass.swift",
+      "sha256": "96d6482af307b3be233e2a3c6ec4fdcde3c31b2b183c573146f716e2fceb0322",
+      "bytes": 1169
+    },
+    {
+      "path": "Database/Migrations/V14_ContextualRefinement.swift",
+      "sha256": "03c43359a17113956259844de1cf128ac2e27a9d85f2683177b280622907b7c5",
+      "bytes": 719
+    },
+    {
+      "path": "Database/Migrations/V15_PipelineVersion.swift",
+      "sha256": "8256925d8fcef53c5425440cd2450fbbc2c1f19c0bbc48a7263d0df7a09c7705",
+      "bytes": 998
+    },
+    {
+      "path": "Database/Migrations/V16_DictationSessions.swift",
+      "sha256": "0ce506feddc7e28f996af4f9ec694e2724e7c3cfc5720e14e8f632d0a76f28ba",
+      "bytes": 1540
+    },
+    {
+      "path": "Database/Migrations/V17_AudioTranscriptMetadata.swift",
+      "sha256": "1055212e8c302935a768f571959576f73de212c1f21651e421b8e24c390503db",
+      "bytes": 1876
+    },
+    {
+      "path": "Database/Migrations/V18_NodeText.swift",
+      "sha256": "8bdf93fd998e1fca7f94413cefccf2eb2fd34935c815a05e6a8563bc72d59299",
+      "bytes": 1726
+    },
+    {
+      "path": "Database/Migrations/V19_ProcessingQueueFrameIndex.swift",
+      "sha256": "518da3334a209c93a9d3b0034c80a857555be4f4a228e8c37c5bba95332c8a73",
+      "bytes": 821
+    },
+    {
+      "path": "Database/Migrations/V1_InitialSchema.swift",
+      "sha256": "c19ccf050a54b53452f58fac6c40220059f313a35c9d504f60eb5a6000c462b4",
+      "bytes": 15773
+    },
+    {
+      "path": "Database/Migrations/V20_OCRBackfillState.swift",
+      "sha256": "62b12065ce80424040c5dc3f91044d33338b8848c0fbe954f249def53a405763",
+      "bytes": 602
+    },
+    {
+      "path": "Database/Migrations/V21_ProgressiveRecall.swift",
+      "sha256": "2c906df60dfc0f5e432f02311f20e3fed4f16cbbf05c422b64633a5e55ca604c",
+      "bytes": 9391
+    },
+    {
+      "path": "Database/Migrations/V22_ScreenEvidenceFeed.swift",
+      "sha256": "c709368070ccd30afa8b646290720d56a6ca99d5617c64d678140786c4976f9a",
+      "bytes": 4436
+    },
+    {
+      "path": "Database/Migrations/V23_ScreenEvidenceAdmission.swift",
+      "sha256": "7fa0abe8bc3f1e1335ee7d5a7371034e5ace69d9c089c2f8d9e7b96d45e7cace",
+      "bytes": 10015
+    },
+    {
+      "path": "Database/Migrations/V2_UnfinalisedVideoTracking.swift",
+      "sha256": "1aab9c17e9bd4ac4e90a85f6ec4c596d73d014723ca4d9bb790efe25fa3355ba",
+      "bytes": 2374
+    },
+    {
+      "path": "Database/Migrations/V3_TagSystem.swift",
+      "sha256": "1654ae5a4ef839dcf26c27b62c987472beee0fa9b1b7089c61429281ddd231c5",
+      "bytes": 2970
+    },
+    {
+      "path": "Database/Migrations/V4_DailyMetrics.swift",
+      "sha256": "f3ac61f38b98f8709ef21fd5e548062a4d10a427f42b7c4d6cb2531de9f1437d",
+      "bytes": 2577
+    },
+    {
+      "path": "Database/Migrations/V5_FTSUnicode61.swift",
+      "sha256": "e6d4f938105c4edc75157eb3906253da24897827c33b6c998f6275e461048b3a",
+      "bytes": 2582
+    },
+    {
+      "path": "Database/Migrations/V6_FrameProcessedAt.swift",
+      "sha256": "1d7e629918f6030fb025fc70585a733cae01cdf406c41ef80498d3d13f6f9639",
+      "bytes": 1812
+    },
+    {
+      "path": "Database/Migrations/V7_FrameRedactionReason.swift",
+      "sha256": "41e0cab92bf82fe5ad3ea249e8734c88da6a59a2ddd81d53518b1b0f3c9232cd",
+      "bytes": 2431
+    },
+    {
+      "path": "Database/Migrations/V8_SegmentComments.swift",
+      "sha256": "88bdb3c552150877d04debaded67d43ed0907dbe214eac304bb0d87ffdd46349",
+      "bytes": 3030
+    },
+    {
+      "path": "Database/Migrations/V9_SegmentCommentFrameAnchor.swift",
+      "sha256": "ed7eba09730bd5b3a05de1c02c0da6c8622b1a9edb8c35d44d987fc26fef5f38",
+      "bytes": 2681
+    },
+    {
+      "path": "Database/NativeAnnotationPersistence.swift",
+      "sha256": "81bcab4728cd9b13ba10b3c7eb52b73a87149c3a2102fdcf7509f63184c99faf",
+      "bytes": 22846
+    },
+    {
+      "path": "Database/NativeSourceDependencies.swift",
+      "sha256": "67e7d66522edde103229c63db9979a4a0b2c8c21acd5f091c31cd7edbe2adce3",
+      "bytes": 2621
+    },
+    {
+      "path": "Database/NativeSourceMutationHooks.swift",
+      "sha256": "4ec810a2e95de8bd65598f3c07038414b3f817b6d40d3432597b130d6debcdff",
+      "bytes": 12229
+    },
+    {
+      "path": "Database/NativeSupport/DatabaseNativeSupport.c",
+      "sha256": "3fd44855d460e861adf86c960a812d1ba056f33f593a7b226d7f6d72c1037273",
+      "bytes": 767
+    },
+    {
+      "path": "Database/NativeSupport/include/DatabaseNativeSupport.h",
+      "sha256": "9734771d0de129c4e5436a6763ba92a28bee66d9b3e04d3652340b00afc3654b",
+      "bytes": 650
+    },
+    {
+      "path": "Database/Queries/AppSegmentQueries.swift",
+      "sha256": "91c7241db48e4e0d6c42869954d454d9925e2432ba9c9dceb951b6b0288410e7",
+      "bytes": 50354
+    },
+    {
+      "path": "Database/Queries/AudioTranscriptionQueries.swift",
+      "sha256": "89845007fb0623ed883374a85f85f0cf7daf357b0d132a92575678fb97ec34cc",
+      "bytes": 89663
+    },
+    {
+      "path": "Database/Queries/DailyMetricsQueries.swift",
+      "sha256": "62771ca783f5dc2479c8efa39cabbb09d5d1104f4db03551dbc1a90a9ae31054",
+      "bytes": 12184
+    },
+    {
+      "path": "Database/Queries/DictationSessionQueries.swift",
+      "sha256": "4c44adde64b996ece2d7111f001ae62771a748011303281cdd463617727b8642",
+      "bytes": 6452
+    },
+    {
+      "path": "Database/Queries/DocumentQueries.swift",
+      "sha256": "93c5b4b3eeea24ffa343a49fcfc9133df6d5ded96a82c5b74d65d511b8681c13",
+      "bytes": 3729
+    },
+    {
+      "path": "Database/Queries/FTSQueries.swift",
+      "sha256": "a014821637461cbf5a7ccbe1430a4de52ae81037314b71406d4bece8450f72a1",
+      "bytes": 10884
+    },
+    {
+      "path": "Database/Queries/FrameQueries.swift",
+      "sha256": "7ecde258a66fdbae2380bfabe3ad495d6c46bb0f9baf3af70bda624d041fe9b3",
+      "bytes": 37361
+    },
+    {
+      "path": "Database/Queries/LiveContextQueries.swift",
+      "sha256": "d19158e81ecba9571962b9ffc12d0e3b91ca51e6ce30197d65fe90c072e4891d",
+      "bytes": 12624
+    },
+    {
+      "path": "Database/Queries/NodeQueries.swift",
+      "sha256": "eeb3aeb71fa464fd672c1e6285c1501c0179b1ee3bcf808a8469b260467b6bb0",
+      "bytes": 8959
+    },
+    {
+      "path": "Database/Queries/SegmentQueries.swift",
+      "sha256": "771e89d45331df317be57b43e201633b8e5bdaafccc23cdcb3ad74b51c458e31",
+      "bytes": 16826
+    },
+    {
+      "path": "Database/RecallSearchRevisionHooks.swift",
+      "sha256": "871ef77f7bd4e62e800b43ef69340b16676574aa393018e69c2b8eb150b83e25",
+      "bytes": 2585
+    },
+    {
+      "path": "Database/ResourceUsagePersistence.swift",
+      "sha256": "37cc475592dc2938da0d402286cc4ef3a2681c285628dfa15e7a08b7f587d5f3",
+      "bytes": 3304
+    },
+    {
+      "path": "Database/RetentionCommandPersistence.swift",
+      "sha256": "8968187b9f1681640b6010fb078b01b59c8c3e55ab701162f1055a5f31f6dbda",
+      "bytes": 28331
+    },
+    {
+      "path": "Database/RetentionPersistence.swift",
+      "sha256": "0089450fc4021c841e78e1673d3b6f68925bba8a63b532ace7afa4cc376a6f26",
+      "bytes": 8455
+    },
+    {
+      "path": "Database/RetraceDisclosureRead.swift",
+      "sha256": "1a656ea2c669179803eee34f1103ba3510923d23d226051367dfd4ef05ec56f5",
+      "bytes": 3680
+    },
+    {
+      "path": "Database/Schema.swift",
+      "sha256": "7ca5dc679feae762a56132a4ea5f31b100b9d26f4d31c4b496d3174507689fad",
+      "bytes": 18723
+    },
+    {
+      "path": "Database/ScreenEvidenceAdmissionPersistence.swift",
+      "sha256": "5ff7497bce47281f685dcf7be801a16d01d5299b7e26a3e1f6b7def20877982f",
+      "bytes": 52535
+    },
+    {
+      "path": "Database/ScreenEvidenceFeedConsumerPersistence.swift",
+      "sha256": "f088d5f46ecb0efda9c8e19f60bb68f5646ec6270996235dc68305a98452ea13",
+      "bytes": 26025
+    },
+    {
+      "path": "Database/ScreenEvidenceFeedPublication.swift",
+      "sha256": "874122af4f2fce8a2c3704f570ba3ae35acbc485eb25f626e27f72ee2cd02607",
+      "bytes": 10246
+    },
+    {
+      "path": "Database/ScreenEvidencePersistence.swift",
+      "sha256": "c6e9db63cefd30d3ce41ce57408d9d70c9bfb80ae94a020f5ca858cbe00cff94",
+      "bytes": 18917
+    },
+    {
+      "path": "Migration/Importers/RewindImporter.swift",
+      "sha256": "efa81ed147996fe03d64ca24680631a4abcab73e334f51eee0c9e9aa138686bb",
+      "bytes": 22158
+    },
+    {
+      "path": "Migration/MigrationManager.swift",
+      "sha256": "c9733b982ead1e55f3a0ae6e53df2fe9a62a4a125c66a9384fa85644261f1f0d",
+      "bytes": 6461
+    },
+    {
+      "path": "Package.resolved",
+      "sha256": "beb207d5d10b5334d35400ea7ad2274e57b582cba8a10b18ac1dbaacb48c13e1",
+      "bytes": 826
+    },
+    {
+      "path": "Package.swift",
+      "sha256": "709b1dc26a674ebff8a1b10234c9051c1705af5e2973f30f6763f0cc42850f56",
+      "bytes": 11778
+    },
+    {
+      "path": "Processing/Accessibility/AccessibilityService.swift",
+      "sha256": "d4969581337bbe63161f226a59d065f00bb77a30f041b9d5f92de4baf4d3962d",
+      "bytes": 6581
+    },
+    {
+      "path": "Processing/Audio/AudioBackfillManager.swift",
+      "sha256": "969f96b984b92b17f3d81ea8f383fb1b7a3f84f4b5cf41630384f98b3edfac24",
+      "bytes": 14651
+    },
+    {
+      "path": "Processing/Audio/AudioBufferManager.swift",
+      "sha256": "1ee2a8f571106bde3aabfa085e7d2c3b9cbd2a77212f760fdb9706dae3828ca0",
+      "bytes": 11739
+    },
+    {
+      "path": "Processing/Audio/AudioContextualRefinementManager.swift",
+      "sha256": "0eac4eebeab823ed041cf48c08a8381dad679bc4f2bd0e6f76f4ec48fe3100a3",
+      "bytes": 16879
+    },
+    {
+      "path": "Processing/Audio/AudioEnhancer.swift",
+      "sha256": "9539853d023cce9d742fb712b656f3cda4354fa6e842bdcda0c88ab9881700c9",
+      "bytes": 4252
+    },
+    {
+      "path": "Processing/Audio/AudioProcessingManager.swift",
+      "sha256": "b88e6838bb789d0a1084cb9e3d9d19609a0630b530f836c52106dd4756950024",
+      "bytes": 54297
+    },
+    {
+      "path": "Processing/Audio/AudioRefinementManager.swift",
+      "sha256": "01ac9ee3dec15fe9815ccab12c170df81af29c471db67c03ae8b92c47496a4d3",
+      "bytes": 17212
+    },
+    {
+      "path": "Processing/Audio/AudioSpeechActivityPolicy.swift",
+      "sha256": "786c3f092c497325841dcc10c96d140d43c4d7010ae489287b9abe99137a3c11",
+      "bytes": 3237
+    },
+    {
+      "path": "Processing/Audio/AudioStoragePolicy.swift",
+      "sha256": "8aabae29928463323d9d3d3cd44db6c853f312bb7f56ae214d5b416259ba510e",
+      "bytes": 469
+    },
+    {
+      "path": "Processing/Audio/AudioTranscriptQualityPolicy.swift",
+      "sha256": "5595eaae521cb6d6be76213e67419a32d385d0d7338b46a918b3c0db42ef15de",
+      "bytes": 11846
+    },
+    {
+      "path": "Processing/Audio/AudioTranscriptionRetryPipeline.swift",
+      "sha256": "132f0f5e4414ec80d130b8fb28309f72820918dcb723b9ad3ec066c351f06b95",
+      "bytes": 14062
+    },
+    {
+      "path": "Processing/Audio/MockTranscriptionService.swift",
+      "sha256": "93dbbc2372099af7f173e1504cf3c4d2e80a9fb29913bffbae084bc6c8271faf",
+      "bytes": 1330
+    },
+    {
+      "path": "Processing/Audio/NativeSpeechTranscriptionService.swift",
+      "sha256": "6ec9b1596638a0fc9de62af975a9b413ccfeafdb2d94fedfb67779c52698e5a9",
+      "bytes": 11454
+    },
+    {
+      "path": "Processing/Audio/NativeStreamingSpeechService.swift",
+      "sha256": "85c258f61fce1553d8248048c16532b770f7a8109a8229e4c53bc2f9e91a1ef2",
+      "bytes": 16474
+    },
+    {
+      "path": "Processing/Audio/SentenceSegmenter.swift",
+      "sha256": "af8e9ddca22a696dcc802b105c3bd9ea9a5854e708224d731255869b80d29e4c",
+      "bytes": 5553
+    },
+    {
+      "path": "Processing/Audio/WhisperCppTranscriptionService.swift",
+      "sha256": "2aa6a1d1a788ffcebade2d3a3a6ba3d9a179f233c41a40a3541ffe6c73fb7069",
+      "bytes": 18979
+    },
+    {
+      "path": "Processing/FrameProcessingQueue.swift",
+      "sha256": "4090ff5084fb8f6539003a780f143f938fb5bc1e9e471fe6c7c392254301ebdc",
+      "bytes": 47507
+    },
+    {
+      "path": "Processing/FrameProcessingWakeSignal.swift",
+      "sha256": "fbb402b87784794b340c54102b8be6b23fadf554b0ee2286d7aea1d27e75975c",
+      "bytes": 1786
+    },
+    {
+      "path": "Processing/OCR/FullFrameOCRCache.swift",
+      "sha256": "275992fdd72c5aa2b03ed0f29b91c443fcae0916cc8e85ac482dbba8fe8114ba",
+      "bytes": 4165
+    },
+    {
+      "path": "Processing/OCR/OCRTileCache.swift",
+      "sha256": "b81c7dc0f772632818837a3a6398412f62fa8034ac03bb6b2064bd78a5574070",
+      "bytes": 4636
+    },
+    {
+      "path": "Processing/OCR/RegionOCRMerger.swift",
+      "sha256": "61ef405990af502953cd8b7e5b970cec820e906eae3df419874d48f200db66ff",
+      "bytes": 2937
+    },
+    {
+      "path": "Processing/OCR/RegionOCRResult.swift",
+      "sha256": "3dc81800faa5eaf1c4de7a1dd7a9b1f24251d272b433775b0ac6e0f82d3d9f2b",
+      "bytes": 2694
+    },
+    {
+      "path": "Processing/OCR/TileChangeDetector.swift",
+      "sha256": "57f549255db83bf37e7069bc135d8aa6c8c96e7c079e7d32ae4d005ccecd1622",
+      "bytes": 9144
+    },
+    {
+      "path": "Processing/OCR/TileGridConfig.swift",
+      "sha256": "04cf43d702120cc674eebe1905e3ad6ad053242e87989c97c9d16d1ccf4db94a",
+      "bytes": 1178
+    },
+    {
+      "path": "Processing/OCR/TileOCRProcessor.swift",
+      "sha256": "da7983acc9773973597a328f7bf6a5b106fcae16cefb90d704b56716280d496b",
+      "bytes": 6565
+    },
+    {
+      "path": "Processing/OCR/VisionOCR.swift",
+      "sha256": "8d8a3262f7e8eda77837b508ffa2bd872aac4915a8e4081423a86739901f08b6",
+      "bytes": 25731
+    },
+    {
+      "path": "Processing/ProcessingManager.swift",
+      "sha256": "83de56f8c55d83262e2a0c38e61021bee2fdd9f5c55a104fbf01724af12b55c6",
+      "bytes": 11704
+    },
+    {
+      "path": "Processing/Tests/Fixtures/WhisperTimedWords/authored.wav",
+      "sha256": "271a49fc227c083978627f4ea436d4f5c155514542d9089390a6885182c3cd00",
+      "bytes": 347510
+    },
+    {
+      "path": "Processing/Tests/Fixtures/WhisperTimedWords/provenance.json",
+      "sha256": "da1b828f3294fb20f4014f5bc7c3ef5cb31ad9f79b153d6e2a7826de09499de9",
+      "bytes": 1556
+    },
+    {
+      "path": "Processing/Tests/Fixtures/WhisperTimedWords/reference.txt",
+      "sha256": "c9e4267ce37593ab46a3a7ce5e15ee3ceb95d39d7ce87a0481fe4ffadb7038ad",
+      "bytes": 189
+    },
+    {
+      "path": "Processing/Tests/NativeFirstPassPersistenceTests.swift",
+      "sha256": "ad74aaabdc10bc964ca17bbca0d386a23ecee4cdf0c3c3b9b62782e2f594f936",
+      "bytes": 15216
+    },
+    {
+      "path": "Processing/TextMerger/TextMerger.swift",
+      "sha256": "092894601512469d5c9fe59c8497b35ed52e2d3d1b92cb450e388c952c8b82c7",
+      "bytes": 2988
+    },
+    {
+      "path": "Processing/URLExtractor.swift",
+      "sha256": "59ebecf120eca53dcc913cf461bbfe2a3cb7b5c86e0b2cf5d574a8ae1d2ed297",
+      "bytes": 6152
+    },
+    {
+      "path": "Search/IngestionManager.swift",
+      "sha256": "455cb66f874778bf625f504e6837a53b7e82a9faf174b203898f040d027c5462",
+      "bytes": 5399
+    },
+    {
+      "path": "Search/QueryParser/QueryParser.swift",
+      "sha256": "1d9e080dcccf4641932b8a9f594faaf2420d8671bcc31dbb6692bbf5d517589a",
+      "bytes": 8710
+    },
+    {
+      "path": "Search/Ranking/ResultRanker.swift",
+      "sha256": "b6561f3b3be5d953a2ab19db6051b5baed07e436aaca0c0e1bd16d2855ce7c4a",
+      "bytes": 4316
+    },
+    {
+      "path": "Search/SearchManager.swift",
+      "sha256": "f186694221ecad141b014932cf385a61b2e778e7ce441aafcc2bf5b20b904514",
+      "bytes": 13038
+    },
+    {
+      "path": "Search/VectorSearchTODO/Embedding.swift",
+      "sha256": "d803dd09f7cb4806eaf824e7e5b913bb69a10a99556e40d25c60875d4e730710",
+      "bytes": 2665
+    },
+    {
+      "path": "Search/VectorSearchTODO/Embedding/LocalEmbeddingService.swift",
+      "sha256": "78769837ac9d573788380ee01093187a7c7d856bb97b6d77611956427082ee6b",
+      "bytes": 10351
+    },
+    {
+      "path": "Search/VectorSearchTODO/HybridSearchManager.swift",
+      "sha256": "25de16d63c681f4ae2772f0f2087002c970ad6ac4137251c1466d3d96b190a08",
+      "bytes": 13074
+    },
+    {
+      "path": "Search/VectorSearchTODO/VectorStore/SQLiteVectorStore.swift",
+      "sha256": "cb794ade3a49ceaf41568a4e9885fd9ffee9779c41b300c30aea0c1ce6ed9d6f",
+      "bytes": 9454
+    },
+    {
+      "path": "Shared/AppPaths.swift",
+      "sha256": "970b26602f4bcfff2f8a6de48d0474ce3be89da3d6e8d28655c3dcfeec183478",
+      "bytes": 4000
+    },
+    {
+      "path": "Shared/CapturedURLPolicy.swift",
+      "sha256": "74f17600e2bd4651eceebe82a3bd29562948c5265a4f86033a2c0a8e724ac66e",
+      "bytes": 2910
+    },
+    {
+      "path": "Shared/EmergencyDiagnostics.swift",
+      "sha256": "f45f719b9fc5373d991abe22d2bf0244e6715d1690f51fa3380075c05007ead6",
+      "bytes": 16020
+    },
+    {
+      "path": "Shared/Logging.swift",
+      "sha256": "0281d286195736b7a6a4035eccc0565a1107893089898a99c60f66016aa57be6",
+      "bytes": 28886
+    },
+    {
+      "path": "Shared/Models/Activity.swift",
+      "sha256": "0303116a5ae9f565f2f02ed8d9d1fa63d77b3b54d1da87c9584c608df7e82479",
+      "bytes": 11105
+    },
+    {
+      "path": "Shared/Models/Audio.swift",
+      "sha256": "ba055a9d491646eef19835f122a9a874240fb58f2e1d3ddf571bf4cc087f6a22",
+      "bytes": 5745
+    },
+    {
+      "path": "Shared/Models/AudioPreparationStatus.swift",
+      "sha256": "748ec1066cd26bdeb6c9b25e2d96d142c0301212fd2558e5a81182e872f590c2",
+      "bytes": 1128
+    },
+    {
+      "path": "Shared/Models/AudioSessionSettings.swift",
+      "sha256": "3ee3066824e9e5036e3e0cc8c4c34b4dd70591af11505603c48078d0ce86ded6",
+      "bytes": 4797
+    },
+    {
+      "path": "Shared/Models/BackgroundProcessingContext.swift",
+      "sha256": "ecefd3a94b27cce9df47dc4d10601a94281a1e1919cc2eacf7a7cc05e20e794a",
+      "bytes": 1760
+    },
+    {
+      "path": "Shared/Models/Comment.swift",
+      "sha256": "594d53a0a7352d1114c4e02cfa392da3f6f694550a0c3c5a0a9546ca0a67f862",
+      "bytes": 3037
+    },
+    {
+      "path": "Shared/Models/CompanionContext.swift",
+      "sha256": "4932305b61197cc2b717346d4e6a6ae7f107fd6d21160e8ad7164f11587de344",
+      "bytes": 21310
+    },
+    {
+      "path": "Shared/Models/CompanionDelivery.swift",
+      "sha256": "ceffa61f6d15c6adbcda10b3e483ec9b9d89e47345216a83fee30bd70e7c2a18",
+      "bytes": 4359
+    },
+    {
+      "path": "Shared/Models/CompanionTurn.swift",
+      "sha256": "b0da2558e3e7957c23380e5aa8a48dac33210dcc86d97ce85cbca9c01d3595d3",
+      "bytes": 3708
+    },
+    {
+      "path": "Shared/Models/Config.swift",
+      "sha256": "354ff63d6444645a915002d6be8ce5651744e74179833ea2f7eae559a51dab94",
+      "bytes": 15452
+    },
+    {
+      "path": "Shared/Models/Dictation.swift",
+      "sha256": "270464063180d144c791efd076fb4ffb5ff64373842ff5a0e07b4e9c163710e9",
+      "bytes": 4538
+    },
+    {
+      "path": "Shared/Models/Errors.swift",
+      "sha256": "e193f3d98f5163cb73dee975a0815a76ff94e5e62b5dde538c6f04e47c561296",
+      "bytes": 9077
+    },
+    {
+      "path": "Shared/Models/Evidence.swift",
+      "sha256": "ddb1c010bc463574c79b96c11228fb0466be343baa2f39c48fbdb1a5412c23cd",
+      "bytes": 5259
+    },
+    {
+      "path": "Shared/Models/ExactOCRRepair.swift",
+      "sha256": "a2394235cbec67d4e5e79358392081f17af07d833d156473dfa85050278eb439",
+      "bytes": 2245
+    },
+    {
+      "path": "Shared/Models/FilterCriteria.swift",
+      "sha256": "24fe45acba8310d6d26af648a1b16769d30575679024a459c65f9dfc668990d0",
+      "bytes": 9842
+    },
+    {
+      "path": "Shared/Models/Frame.swift",
+      "sha256": "9b6d637debad2b5a42d7187afaef22cd0d02bd30be785db2454826952a284bae",
+      "bytes": 11965
+    },
+    {
+      "path": "Shared/Models/FrameProcessingLane.swift",
+      "sha256": "e74bb364bb4fc0f7991ce019f78ad8bdd2026616566ed8779c0761ab8e5fc34a",
+      "bytes": 273
+    },
+    {
+      "path": "Shared/Models/LiveAudioEvidence.swift",
+      "sha256": "3c6bca778a15d44ffe4c4466ef4a99b1fd531e4876821c660ede9e50d26752bf",
+      "bytes": 1698
+    },
+    {
+      "path": "Shared/Models/LiveTranscription.swift",
+      "sha256": "a9764826e39ab3e8c52930622a48f829154848de73e97117df03401d3791a688",
+      "bytes": 1929
+    },
+    {
+      "path": "Shared/Models/MarkerContextProvenance.swift",
+      "sha256": "986a84f49cad6cff5dc55b98e12f8dea13d59dbf399cb77c5c123c76ec41d14c",
+      "bytes": 6131
+    },
+    {
+      "path": "Shared/Models/NativeAnnotations.swift",
+      "sha256": "d5ecfb74a9d97f2f90cd82acd7937787eea254fd0e4662ac7c13f0aa3cd7b438",
+      "bytes": 3599
+    },
+    {
+      "path": "Shared/Models/NativeControlState.swift",
+      "sha256": "0f09eaa2ea7011df8519e1e73c158e2139960afd15c0674520a8127b83e2a79e",
+      "bytes": 577
+    },
+    {
+      "path": "Shared/Models/NativeFirstPass.swift",
+      "sha256": "bb99163178a06eeee855db481437b6d57b2603fc0923f56ed72253cdaad84094",
+      "bytes": 1757
+    },
+    {
+      "path": "Shared/Models/NativeSourceMutation.swift",
+      "sha256": "45df17e595cd964cb4b2ee240eaed82aa436662ba85402970fb40b0918df8567",
+      "bytes": 1886
+    },
+    {
+      "path": "Shared/Models/ResourceUsage.swift",
+      "sha256": "3064a7736c13be9b84b5d12c940f8f3ee6d60eb26edc89189018fdc9f5e84965",
+      "bytes": 2997
+    },
+    {
+      "path": "Shared/Models/RetentionCommand.swift",
+      "sha256": "f5526a34b4a12535ae9977415b1addc9a4965eef385c4131c1fb06b53af8e237",
+      "bytes": 6344
+    },
+    {
+      "path": "Shared/Models/RetraceCommands.swift",
+      "sha256": "d0714d13f8c5553a8d354e957e360126c608af63f7e1cc96ba8a31a0385f1243",
+      "bytes": 13068
+    },
+    {
+      "path": "Shared/Models/RetraceOperations.swift",
+      "sha256": "eaf121f4e29a142074a20758fdefd7a1e0ad3c705839af0965af12e2d71f9afc",
+      "bytes": 4477
+    },
+    {
+      "path": "Shared/Models/RetracePlaybackGate.swift",
+      "sha256": "07e1a1ab0228fe79a1a34505d3d3a757b14ff54b075e8178de10fa8ee83c26a5",
+      "bytes": 1515
+    },
+    {
+      "path": "Shared/Models/ScreenEvidenceAdmission.swift",
+      "sha256": "56b507c2b5537a98bee586ff0a775b4fe3e573adb230158e74e68cace6f62f95",
+      "bytes": 8312
+    },
+    {
+      "path": "Shared/Models/ScreenEvidenceExpansion.swift",
+      "sha256": "74bf64cde12d56e092e0942f5283a75c13b5435962e0613d15ef9fcb5594bf4a",
+      "bytes": 9072
+    },
+    {
+      "path": "Shared/Models/ScreenEvidenceFeed.swift",
+      "sha256": "105c781f428bed24132b7e217d2c6f9433ce7e92783d13174faec246ec950cea",
+      "bytes": 5313
+    },
+    {
+      "path": "Shared/Models/Search.swift",
+      "sha256": "f2044aceb7b0721b47fecdc9e96f98d6c5b546bfd8f8b0effc71f3756521b936",
+      "bytes": 17051
+    },
+    {
+      "path": "Shared/Models/Segment.swift",
+      "sha256": "289d4517be501aed119c2baf8e2579e630bdec70933c3832432863a471c32f17",
+      "bytes": 4707
+    },
+    {
+      "path": "Shared/Models/Source.swift",
+      "sha256": "5eb8c1ca4e2f312576baf8ee9188ecb77d29dc413a710b03d747e2fc0b2dac73",
+      "bytes": 2200
+    },
+    {
+      "path": "Shared/Models/SourceConfiguration.swift",
+      "sha256": "4c2aa438337764e4abf04ac1f76b15779d92e50fe59a9681c676263dcf8b3852",
+      "bytes": 2618
+    },
+    {
+      "path": "Shared/Models/SpokenMarker.swift",
+      "sha256": "ac9bb3c7ea60cc50044bd078315864072c30917be0e585e8882917d47d47ecf8",
+      "bytes": 5126
+    },
+    {
+      "path": "Shared/Models/StorageUsage.swift",
+      "sha256": "9744fbcafc660f42d23d07b9fc01b32946bc90a72fa8aa6b68f7da7d0c49b81b",
+      "bytes": 7255
+    },
+    {
+      "path": "Shared/Models/StructuredScreenObservation.swift",
+      "sha256": "f70ad248785eb7ee4da364cbc780dfa5b1964c5c30e64391c354cf06d95c5691",
+      "bytes": 5435
+    },
+    {
+      "path": "Shared/Models/Tag.swift",
+      "sha256": "d570771572ddc13181448bbe4f62ac01ebdaba039759a0da810c24f133f910d9",
+      "bytes": 1500
+    },
+    {
+      "path": "Shared/Models/Text.swift",
+      "sha256": "1efd4efd43146c05c1fe59895d3e1815e3e712994b9a557be2e07c62cbaf4b17",
+      "bytes": 3778
+    },
+    {
+      "path": "Shared/Models/TextRegion.swift",
+      "sha256": "47ba8383e8d4e9404a112f8d738af25fa5f049aa9ab0ebaf644b64bbe38c3093",
+      "bytes": 5133
+    },
+    {
+      "path": "Shared/Models/TimelineMarker.swift",
+      "sha256": "d20ddcfd551447470c30c555bd657d63c8ec620f0a75938b44b1903ed6e9105f",
+      "bytes": 6563
+    },
+    {
+      "path": "Shared/Models/VoiceRecognition.swift",
+      "sha256": "e9a6f5049ed896572040c12439131c403451964022a3ba55781b6ad4f08336b6",
+      "bytes": 3782
+    },
+    {
+      "path": "Shared/PowerStateMonitor.swift",
+      "sha256": "4453f9934f797b8a28a61cb24703ab8a1af35e389a9179d337dae2d88c65456f",
+      "bytes": 1912
+    },
+    {
+      "path": "Shared/Protocols/ActivityStoreProtocol.swift",
+      "sha256": "a7b07db5398a4525ec25abcdf34c759e420791e97581cf7919f7b152e5d1570a",
+      "bytes": 1970
+    },
+    {
+      "path": "Shared/Protocols/AudioCaptureProtocol.swift",
+      "sha256": "3e842e0e10444e5370caa958d1fe0cc5f2c5a26ec0cac3c12559aa6a1f682f3f",
+      "bytes": 3238
+    },
+    {
+      "path": "Shared/Protocols/BackgroundProcessingProtocol.swift",
+      "sha256": "22d1f0c69534ebf357fbd2a903ab4f3f27994606d5ce6e75faa173b689cf9f42",
+      "bytes": 2021
+    },
+    {
+      "path": "Shared/Protocols/CaptureProtocol.swift",
+      "sha256": "4cf6b1c7c0f314371d1eedb38df46ad123f31819012553f30eb235f24a742f6b",
+      "bytes": 4272
+    },
+    {
+      "path": "Shared/Protocols/ContextStoreProtocol.swift",
+      "sha256": "cf4dc942bf4dd42147632ee2abe343f73e5d7611ec0f6a380b528145376df443",
+      "bytes": 3476
+    },
+    {
+      "path": "Shared/Protocols/DatabaseProtocol.swift",
+      "sha256": "9e553622c6c2ca9ae45b8ef66ed799dcaec93da09fd1c8bde98c99968cdeec73",
+      "bytes": 16096
+    },
+    {
+      "path": "Shared/Protocols/EvidenceStoreProtocol.swift",
+      "sha256": "b6a4ef643d8a54fd95cdd55d1a7643084db53a55e692e852b958a468d99193cb",
+      "bytes": 541
+    },
+    {
+      "path": "Shared/Protocols/MigrationProtocol.swift",
+      "sha256": "ace9a3a0b4e0f3f5eaf066e4354229f249ebb50f3f8f03e98d9fcd8dfd319657",
+      "bytes": 12584
+    },
+    {
+      "path": "Shared/Protocols/ProcessingProtocol.swift",
+      "sha256": "9ca988f2e3084bc7b8cab25a8bba0d29ca2e3f8667463001630737240446fe68",
+      "bytes": 6208
+    },
+    {
+      "path": "Shared/Protocols/ResourceUsageProviding.swift",
+      "sha256": "4dc0137690e6a7df1e77dec1d8aa5e54e0a7d7f4ef48d79f17a49d1456831fb8",
+      "bytes": 193
+    },
+    {
+      "path": "Shared/Protocols/ScreenEvidenceAdmissionStoreProtocol.swift",
+      "sha256": "bb42932b206b03145cc962d1a8d224b4a0cbcbaf12e7478a7283ef7bc505976c",
+      "bytes": 3707
+    },
+    {
+      "path": "Shared/Protocols/ScreenEvidenceFeedStoreProtocol.swift",
+      "sha256": "00e80c888571540e8e91f2fb9d4e430c3fd073e793cedde33fb11ce8e5e2e2ae",
+      "bytes": 1400
+    },
+    {
+      "path": "Shared/Protocols/SearchProtocol.swift",
+      "sha256": "ca263e15bebddc520a8655d1a37017419d9d4b59d7fd739119f69caa3fe02ad6",
+      "bytes": 3480
+    },
+    {
+      "path": "Shared/Protocols/StorageProtocol.swift",
+      "sha256": "57eae7b94335a1b90166bd5e9a20ba52335cb9f26a3fabe4af800a9b7255618e",
+      "bytes": 5353
+    },
+    {
+      "path": "Shared/Protocols/StorageUsageReportingProtocol.swift",
+      "sha256": "ed8a0faecf29b06c174f9f5cfd639ac569f0fe9ef3b1d5d529f0b49aefe017ac",
+      "bytes": 583
+    },
+    {
+      "path": "Shared/Protocols/TranscriptionProtocol.swift",
+      "sha256": "f2576fda3fae6a3ca69e8c412e199b2130eaba722da434d5adb7338bf42dcd8b",
+      "bytes": 2696
+    },
+    {
+      "path": "Storage/Audio/AACContainerCompactor.swift",
+      "sha256": "5992c5598c7e4195537e48f2622b5de592581171518bef1100433cbf9217a786",
+      "bytes": 8491
+    },
+    {
+      "path": "Storage/Audio/AudioFileDecoder.swift",
+      "sha256": "8d766d79e16a3bc037a644cc2f836b29e6e10a9728a0edd9fe8f724c8d726dd2",
+      "bytes": 4163
+    },
+    {
+      "path": "Storage/Audio/AudioSegmentWriter.swift",
+      "sha256": "d079daa524e24d489ee845877bbeddb57c4d07452ec994ca4047bf35b697abbd",
+      "bytes": 10995
+    },
+    {
+      "path": "Storage/Audio/ExactAudioDecoder.swift",
+      "sha256": "6ff2e6fa423d102b5d4b49f70f767f883b2507dd2a5123307ea4c6735972eb24",
+      "bytes": 4676
+    },
+    {
+      "path": "Storage/ExactFrameReader.swift",
+      "sha256": "595f7dcc5d3d7d930c4f4bc126d381b6196ad928c412f700472023eae298c2ff",
+      "bytes": 7287
+    },
+    {
+      "path": "Storage/FileManager/DirectoryManager.swift",
+      "sha256": "2032eddead935a1b4227eeed621f0ffce8793e2f83915d9a42fec2921493eb06",
+      "bytes": 3581
+    },
+    {
+      "path": "Storage/FileManager/StorageHealthMonitor.swift",
+      "sha256": "c37f16490aeb0ec80e41434c44bf47136d86c4848e956ea9b5badd4b7725581a",
+      "bytes": 16713
+    },
+    {
+      "path": "Storage/FileManager/StorageUsageMonitor.swift",
+      "sha256": "fd9ce7cf8d3bd04f61d2a5e00378f232b9473c0bfd0c49fbc7cb026561dc83a6",
+      "bytes": 22245
+    },
+    {
+      "path": "Storage/ImageExtractor.swift",
+      "sha256": "52bce45dcd9ca276a0a46ddce87270808aec28039f939b18b601dacb7261219f",
+      "bytes": 16479
+    },
+    {
+      "path": "Storage/IncrementalSegmentWriter.swift",
+      "sha256": "b254286a2405c908e77e248e7c043320f70e4f892120d82ecede50b20380ff91",
+      "bytes": 5728
+    },
+    {
+      "path": "Storage/SegmentWriterImpl.swift",
+      "sha256": "b1f9797f2750979e77cbb9eb211294a039944a971ea8c2579b05887dbaffe159",
+      "bytes": 4050
+    },
+    {
+      "path": "Storage/StorageManager.swift",
+      "sha256": "a64317763c7e1276b5f3c89f187752dd93af67dcb4f9cf18be615f5ee4d1903f",
+      "bytes": 41400
+    },
+    {
+      "path": "Storage/StorageModuleError.swift",
+      "sha256": "7e9be586d635040b07a942c1ab5b18fb9785686bc8e4c2c031887628d86ec6b9",
+      "bytes": 517
+    },
+    {
+      "path": "Storage/Tests/AACContainerCompactorTests.swift",
+      "sha256": "b52a30e78cd26931dd292f47f530a46b7ae1bf7a853873a721fbc7cc8940c653",
+      "bytes": 11724
+    },
+    {
+      "path": "Storage/VideoEncoder/FrameConverter.swift",
+      "sha256": "da66a12cce226a85b0a68d46984bc079d187e3e5bd6a5e0ce722176010636f0b",
+      "bytes": 4411
+    },
+    {
+      "path": "Storage/VideoEncoder/HEVCEncoder.swift",
+      "sha256": "3c9ee37fed88cd1e9bc96db69e0c76b7556d9310105323e9ac35eb6f08c87004",
+      "bytes": 18879
+    },
+    {
+      "path": "Storage/WAL/RecoveryManager.swift",
+      "sha256": "80776aee4954a80e810fae6d9c05633ffa3469bd29c828dc4df3c8e56a5fb5d1",
+      "bytes": 14248
+    },
+    {
+      "path": "Storage/WAL/WALManager.swift",
+      "sha256": "97d39fd0d93429c838ed182641ca4a8239a612eee3b239504b6d8f130841bae1",
+      "bytes": 43260
+    },
+    {
+      "path": "Storage/WAL/WALRecoveryReader.swift",
+      "sha256": "67faa6ae6799f361fb8749a50e86727caa6b38f059ab0d480183aa74d0751c5d",
+      "bytes": 6429
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-alloc.h",
+      "sha256": "8344c5eb56ce9d0e0d45e1ef59846e0dcd0e4f84eb9bb68a6126252247bc0338",
+      "bytes": 3011
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-backend.h",
+      "sha256": "88d58b3b507477eacfc401b914b48af8b2ad875705674b5304420523a92b9c0a",
+      "bytes": 20868
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-blas.h",
+      "sha256": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b",
+      "bytes": 586
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cann.h",
+      "sha256": "6f8af52ea9326cead78e5dc59401106fcc8b029d2b9ed24df6cf7a64805405d1",
+      "bytes": 4553
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cpp.h",
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+      "bytes": 1652
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cpu.h",
+      "sha256": "0bba07cc8d4fb47ba9bd8cafcdbd3738a041f88861039151e119c52970a1d8f2",
+      "bytes": 7437
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-cuda.h",
+      "sha256": "8f22e8e43e460db426bb94e14e10dc91e64789e8d216c5ae62a0d02a2eb07d7f",
+      "bytes": 1585
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-hexagon.h",
+      "sha256": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375",
+      "bytes": 351
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-metal.h",
+      "sha256": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980",
+      "bytes": 2141
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-opencl.h",
+      "sha256": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a",
+      "bytes": 581
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-opt.h",
+      "sha256": "2919321813be96e0f5d6ba36e7ed634a518de0fbe834902ad8f5a402f906e302",
+      "bytes": 14039
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-rpc.h",
+      "sha256": "4832436aeec2a9c3f6d2ca12d90f567de5d24df76803e1e167d3f188c23efa3d",
+      "bytes": 1056
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-sycl.h",
+      "sha256": "d59d5275423a7ce173c8e6f69933a501e53a635410de3f8d61bf23a59dac81fd",
+      "bytes": 1763
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-vulkan.h",
+      "sha256": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c",
+      "bytes": 952
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-webgpu.h",
+      "sha256": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c",
+      "bytes": 328
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-zdnn.h",
+      "sha256": "ee1d79c95ade45ba195a6b71f59a05c18617de4a596d2b2b03ecf38975a9a448",
+      "bytes": 292
+    },
+    {
+      "path": "Vendors/whisper/include/ggml-zendnn.h",
+      "sha256": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff",
+      "bytes": 498
+    },
+    {
+      "path": "Vendors/whisper/include/ggml.h",
+      "sha256": "d13cc07d4c37e17d94f60d9549618fbafc35ef51876d7f35d95a9f2712a87413",
+      "bytes": 101743
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-alloc.h",
+      "sha256": "8344c5eb56ce9d0e0d45e1ef59846e0dcd0e4f84eb9bb68a6126252247bc0338",
+      "bytes": 3011
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-backend.h",
+      "sha256": "88d58b3b507477eacfc401b914b48af8b2ad875705674b5304420523a92b9c0a",
+      "bytes": 20868
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-blas.h",
+      "sha256": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b",
+      "bytes": 586
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cann.h",
+      "sha256": "6f8af52ea9326cead78e5dc59401106fcc8b029d2b9ed24df6cf7a64805405d1",
+      "bytes": 4553
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cpp.h",
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+      "bytes": 1652
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cpu.h",
+      "sha256": "0bba07cc8d4fb47ba9bd8cafcdbd3738a041f88861039151e119c52970a1d8f2",
+      "bytes": 7437
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-cuda.h",
+      "sha256": "8f22e8e43e460db426bb94e14e10dc91e64789e8d216c5ae62a0d02a2eb07d7f",
+      "bytes": 1585
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-hexagon.h",
+      "sha256": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375",
+      "bytes": 351
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-metal.h",
+      "sha256": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980",
+      "bytes": 2141
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-opencl.h",
+      "sha256": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a",
+      "bytes": 581
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-opt.h",
+      "sha256": "2919321813be96e0f5d6ba36e7ed634a518de0fbe834902ad8f5a402f906e302",
+      "bytes": 14039
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-rpc.h",
+      "sha256": "4832436aeec2a9c3f6d2ca12d90f567de5d24df76803e1e167d3f188c23efa3d",
+      "bytes": 1056
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-sycl.h",
+      "sha256": "d59d5275423a7ce173c8e6f69933a501e53a635410de3f8d61bf23a59dac81fd",
+      "bytes": 1763
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-vulkan.h",
+      "sha256": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c",
+      "bytes": 952
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-webgpu.h",
+      "sha256": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c",
+      "bytes": 328
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-zdnn.h",
+      "sha256": "ee1d79c95ade45ba195a6b71f59a05c18617de4a596d2b2b03ecf38975a9a448",
+      "bytes": 292
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml-zendnn.h",
+      "sha256": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff",
+      "bytes": 498
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/ggml.h",
+      "sha256": "d13cc07d4c37e17d94f60d9549618fbafc35ef51876d7f35d95a9f2712a87413",
+      "bytes": 101743
+    },
+    {
+      "path": "Vendors/whisper/include/ggml/gguf.h",
+      "sha256": "d2eec8b938aa04ccec9bc4ce8a6a6dcf70d942c37d2bb3113e426d9307d51385",
+      "bytes": 10224
+    },
+    {
+      "path": "Vendors/whisper/include/gguf.h",
+      "sha256": "d2eec8b938aa04ccec9bc4ce8a6a6dcf70d942c37d2bb3113e426d9307d51385",
+      "bytes": 10224
+    },
+    {
+      "path": "Vendors/whisper/include/whisper.h",
+      "sha256": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",
+      "bytes": 35157
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-base.dylib",
+      "sha256": "86ae45cafc861c92f939bb28215a446a401d2cee63b947eea175f7676db4c650",
+      "bytes": 632240
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-blas.dylib",
+      "sha256": "b7f54577a21aba5a37b22518f60f9bc3b1f4c9438c1876759330e58fa15bb490",
+      "bytes": 58656
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-cpu.dylib",
+      "sha256": "f17e57d4d4df1a34a06f3b204ae4c5f762860eee2f7846c56d1d033a2792e10c",
+      "bytes": 640416
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml-metal.dylib",
+      "sha256": "9e1049b0ce4ed957d7724a3301c40853207b5caab027aa49a69d267e6da53692",
+      "bytes": 710576
+    },
+    {
+      "path": "Vendors/whisper/lib/libggml.dylib",
+      "sha256": "a611b8585b2afd0ea2b72c50968115cd8384075091ca6da34ea2a3fedd07c53f",
+      "bytes": 59232
+    },
+    {
+      "path": "Vendors/whisper/lib/libwhisper.1.8.2.dylib",
+      "sha256": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a",
+      "bytes": 425536
+    },
+    {
+      "path": "Vendors/whisper/lib/libwhisper.1.dylib",
+      "sha256": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a",
+      "bytes": 425536
+    },
+    {
+      "path": "Vendors/whisper/lib/libwhisper.dylib",
+      "sha256": "8afb4558cb047ffced1b58e063b13b943c076118fc9ca21baa15e4afeb2ac35a",
+      "bytes": 425536
+    },
+    {
+      "path": "Vendors/whisper/module.modulemap",
+      "sha256": "6881250c729680969eca5eddc9dffef0a1bb4b642a99e3c0100494516857fdf8",
+      "bytes": 64
+    },
+    {
+      "path": "docs/fixtures/responsiveness/2026-09-28/authored-codec-output/existing-quality-based.m4a",
+      "sha256": "56006cfef72a014ceaaf2753340e972291d43a2b62a37b15107dff0aeddf891c",
+      "bytes": 60047
+    },
+    {
+      "path": "scripts/validate_noninteractive.py",
+      "sha256": "7b4df35af4c54c5abd8e8cef7f8e6c88db69a4c75f8ab7295736d5126d9f545b",
+      "bytes": 2376
+    }
+  ],
+  "harnessPackageSHA256": "f44ff73ed080dd45732a4f77445bb543229dad1f4453f71b194c269333f0569f",
+  "dependencyPins": [
+    {
+      "identity": "sparkle",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/sparkle-project/Sparkle.git",
+      "state": {
+        "revision": "5581748cef2bae787496fe6d61139aebe0a451f6",
+        "version": "2.8.1"
+      }
+    },
+    {
+      "identity": "swift-sqlcipher",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/skiptools/swift-sqlcipher.git",
+      "state": {
+        "revision": "02649e1dc7e3d8905eac2aaf2773bd220cb5cff2",
+        "version": "1.7.0"
+      }
+    },
+    {
+      "identity": "swiftychrono",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/batmac/SwiftyChrono.git",
+      "state": {
+        "revision": "e1bf3bde0f09112909157360b6bf39302f10ae5f"
+      }
+    }
+  ],
+  "compilationAttempted": false,
+  "runnerSHA256": "be844ca2b9e95dfee37e1b049f2e65dffdb570bd06e60360f682e50755134994"
+}
