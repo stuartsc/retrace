@@ -109,3 +109,7 @@ a compile correction, not native acceptance.
 ### Advisory review
 
 The one advisory review of `e90fcc7..0ea09c9` found no blocking correctness or additional medium-severity defects. It covered coverage/finalisation, exact AAC binding, cancellation, device inactivity, durable publication and deferred CPU correction. This is source review, not native acceptance. Both native gates remain disabled. Full logs are retained under `docs/fixtures/repair-20261113-native`.
+
+### Full noninteractive regression
+
+The full suite passed1,733tests,24explicit skips,0failures in568.024s. Swift/native inputs remained unchanged from0ea09c9. The already-reviewed runner environment fix was inherited to clear legacy interactive switches; its Python test passed. This reliability run is not a matched performance comparison or native speech acceptance. Complete compressed log and hash are retained with the focused receipts. Separate clean optimised validation will follow integration of the independently validated AAC writer option.

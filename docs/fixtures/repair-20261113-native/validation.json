@@ -13,9 +13,20 @@
     "focused": {
       "sha256": "d98961f6b85ba12409919c6c490ead57233a3d63b0fda5073b5f22b1584ec535",
       "bytes": 1199403
+    },
+    "full-debug": {
+      "sha256": "ab713fe593de20764ea1fa79328f131315a4acf8ce827eaee56c72da2861a47f",
+      "bytes": 10769566
     }
   },
   "advisoryReview": "no blocking findings",
   "nativeAcceptance": "pending missing assets",
-  "installed": false
+  "installed": false,
+  "full": {
+    "executed": 1733,
+    "skipped": 24,
+    "failures": 0,
+    "seconds": 568.024
+  },
+  "swiftInputsUnchangedFromCheckpoint": true
 }
