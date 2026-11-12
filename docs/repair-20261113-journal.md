@@ -54,3 +54,6 @@ Clean debug validation, independent optimised build, advisory review, measured n
 - Restart timing was requested because installation briefly pauses recording. No install has occurred. Initial push of the validation commit was rejected by GitHub with `missing necessary objects`; a full-object retry follows. Source and test receipts remain local and intact.
 
 - The previously reviewed quiescence helper is now retained verbatim under scripts/recovery, and packaging copies the installer/helper/compatibility receipt into the candidate directory. The GitHub push retry with full objects succeeded; the running app remains unchanged.
+
+- Removed only two completed, owned generated build directories after checking that no process held files beneath them: the primary debug scratch and the isolated AAC component scratch. Available filesystem space rose by1,790,832,640bytes during the operation; concurrent capture/build activity prevents treating this as an isolated reclamation benchmark. Signed candidate, release binary, source and validation receipts remain. No recording-library files were touched.
+- The requested project-record check found no matching Retrace/backintime issue in connected Jira search, so no unrelated issue was changed or new issue invented. GitHub branch and this journal retain the checkpoint.

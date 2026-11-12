@@ -1,0 +1,12 @@
+{
+  "removedOwnedGeneratedBuilds": [
+    "/Users/stuartbond/backintime-responsiveness-20261113/.build-validation/debug",
+    "/Users/stuartbond/backintime-aac-20261113/.aac-validation/.build"
+  ],
+  "freeBytesBefore": 46646104064,
+  "freeBytesAfter": 48436936704,
+  "observedFreeBytesChange": 1790832640,
+  "liveLibraryTouched": false,
+  "signedCandidateRetained": true,
+  "note": "Concurrent capture/build activity means this filesystem delta is not an isolated reclamation measurement."
+}
