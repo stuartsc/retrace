@@ -1,0 +1,32 @@
+{
+  "advisoryFindings": 2,
+  "findingsSeverity": "medium",
+  "resolved": [
+    "Focused inputs bound to tested production commit, current files and release manifest",
+    "Installer inputs validated before candidate creation; ready receipt published last"
+  ],
+  "privateInstallerTests": {
+    "tests": 4,
+    "failures": 0,
+    "seconds": 0.063,
+    "actualInstalledAppOrLibraryAccess": false
+  },
+  "readOnlySourceChecks": {
+    "wholeAppInputs": 751,
+    "focusedInputsMatchedTestedCommit": 348
+  },
+  "retainedSparkleComparison": {
+    "version": "2.8.1",
+    "build": "2050",
+    "unsignedArm64SHA256": "ebb987d1ae41fb02d2f11bdc31b78b42de55b2b0511c5cf176785914d02b642c",
+    "matchedActualBuildArtifact": true
+  },
+  "scriptSHA256": {
+    "scripts/package-audio-delivery-candidate-20261113.py": "ffbdb26a02827fbcac65e8df17136358f528505f6c89c71154c79134a4ddd46d",
+    "scripts/install-audio-delivery-candidate-20261113.py": "343d48f73fc2d1d2b255250cb65d9ffe2de57f79d8232780844d6cd356e3e4dd",
+    "scripts/test_install_audio_delivery_candidate.py": "ed424700b9413137599f8121cb3743e95c6854c55873ac12a25df9df5850774f",
+    "scripts/recovery/clone_native_library.py": "081da8b46b99eaef2375c283e775bc5dc82f4abbb0446f21d24d90ca7407d5ca"
+  },
+  "installationAttempted": false,
+  "additionalMetadataCorrection": "Replace inherited installed build revision/source-manifest metadata with verified release identities; installer rejects an old bundle manifest."
+}

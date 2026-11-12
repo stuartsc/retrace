@@ -1,0 +1,11 @@
+{
+  "sourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "productionSourceCommit": "92dd2dc362a4400c33d0a89149b4cee39ffe19b1",
+  "releaseExecutableSHA256": "2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38",
+  "installedBaseBuild": "2610.22.5",
+  "schemaTransition": "none; remains V23",
+  "storageFormatTransition": "none",
+  "rollback": "application only; retain current library",
+  "newAudioPadding": "Standard AAC/M4A packets and timing unchanged; only validated zero container padding removed before new-file publication",
+  "nativeSpeechTrials": "both default off; missing assets and latency not accepted"
+}
