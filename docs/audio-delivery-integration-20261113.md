@@ -7,7 +7,7 @@ Isolated worktree `/Users/stuartbond/backintime-audio-delivery-20261113`, branch
 compactor commit `08ebb78` was cherry-picked as `7d3466a`. The two noninteractive
 runner files are inherited exactly from reviewed checkpoint `7b0ac80`.
 
-Signed local candidate **2611.13.2** is ready; it is not installed or accepted against live workloads. No live preferences,
+Local trial **2611.13.2 is installed and running**. New saved screen frames and microphone files are verified; live transcription latency, accuracy and matched performance are not accepted. No live preferences,
 recordings, models or app bundles were changed. No device or UI operation ran.
 Root owns build scheduling and the one bounded integration-policy review; the
 compactor and native-first-pass implementations already have their own reviews.
@@ -18,16 +18,14 @@ Candidate **2611.13.2** combines the Timeline/audio scheduling repair with new-f
 AAC padding removal. Both native speech trials remain off. The app is signed with
 the existing Developer ID; deep strict verification and the actual installer
 `--check` passed. The check created no files or receipts in the candidate directory.
-The installed app remains **2610.22.5**; its executable and Info.plist hashes did
-not change. No recording library, preference, model asset or visible UI was changed.
+These were pre-installation checks: installed **2610.22.5** was then unchanged. The authorised installation is recorded below. No model assets were downloaded.
 
 The candidate directory is
 `~/Library/Application Support/Retrace Candidates/2026-11-13-audio-delivery`.
 `install_app_only.py --install` requires normal Quit, verifies that recording
 writers have stopped, retains the old application and swaps only the application.
 It does not copy or open the database. V23 and standard AAC/M4A remain compatible;
-rollback uses the current recording library. Restart timing is still awaiting the
-user's answer because it creates a recording gap. Do not launch the candidate
+rollback uses the current recording library. The user subsequently authorised installation, which is complete. Its receipts are consumed; do not rerun the installer. Do not launch the candidate
 alongside the installed application.
 
 Packaging verifies all **751** release inputs and **348** focused-test inputs.
@@ -48,6 +46,38 @@ Receipts: `docs/fixtures/repair-20261113-audio-integration-harness/` contains
 and `app-only-compatibility.json`. Production code is `92dd2dc`; clean release
 input checkpoint `b495d4a`; release validation record `d68b4bc`; packaging recipe
 `8ff1b7b`. These are separate from installed acceptance.
+
+## Installed local trial — 13 November
+
+The user explicitly requested installation. Normal Quit confirmation was handled
+without saving a different Quit preference. The first attempt stopped before any
+app/library mutation: the writer guard mistook the working directory of an outbound
+read-only audio sync for a writable file. The old app was reopened while the guard
+was corrected. Only `cwd` records are exempted; real writable files/directories,
+unknown-access mappings and running Retrace still block. Six private guard tests,
+four installer tests and one independent Python review passed (`6ea8fa6`). The prior
+helper and candidate receipt are retained beside their corrected versions.
+
+The retry installed **2611.13.2**, retained the old app, verified unchanged database
+metadata during the swap, and reopened with background/hidden launch flags. No
+large database rollback copy was made. New screen rows and microphone files were
+subsequently verified read-only. Recording/privacy/Quit/native-trial configuration
+checks matched the pre-install state. Actual new audio files have matching database
+sizes and no top-level zero-padding `free` atom. Unchanged screens were observed
+being deduplicated after a temporary stable-context capture wait.
+
+The recorded microphone interval gaps were **371.817 seconds** during the initial
+failed attempt/recovery, and **60.939 seconds** during the final restart. They are
+not presented as gap-free recording. Detailed local observations stay in the private
+candidate folder; the repository contains a content-free `installed-verification.json`.
+
+New microphone data is being saved; fresh text remained pending/probable silence
+in the scoped check. No spoken-sentence accuracy or near-real-time latency claim is
+made. System audio was already unavailable under the capture-source exclusion policy
+before installation; that restriction remains. Native fast drafts/reuse stay off
+and Apple asset download approval remains pending. No Timeline/Live acceptance
+walkthrough or performance benchmark took over the screen; UI work was restricted
+to the two normal Quit confirmations.
 
 ## One policy for every writer
 

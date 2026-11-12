@@ -1,0 +1,65 @@
+{
+  "build": "2611.13.2",
+  "installed": true,
+  "launched": true,
+  "installerResult": "passed",
+  "databaseMetadataUnchangedDuringSwap": true,
+  "databaseBackupCreated": false,
+  "oldApplicationRetained": true,
+  "checkedConfigurationUnchanged": true,
+  "normalQuitPreferencePreserved": true,
+  "sourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
+  "executableSHA256": "a8dda3648d2e2d48016043b68b20b2b455926f465c31ba127ee9e4cab3255200",
+  "newSavedScreenRows": 12,
+  "newSavedAudioRows": 38,
+  "newAudioSources": [
+    "microphone"
+  ],
+  "newAudioStatusCounts": {
+    "pending": 37,
+    "probable_silence": 1
+  },
+  "newNonemptyTranscripts": 0,
+  "newAudioContainers": [
+    {
+      "bytes": 46393,
+      "databaseBytesMatch": true,
+      "topLevelAtoms": [
+        "ftyp",
+        "moov",
+        "mdat"
+      ]
+    },
+    {
+      "bytes": 46350,
+      "databaseBytesMatch": true,
+      "topLevelAtoms": [
+        "ftyp",
+        "moov",
+        "mdat"
+      ]
+    },
+    {
+      "bytes": 46493,
+      "databaseBytesMatch": true,
+      "topLevelAtoms": [
+        "ftyp",
+        "moov",
+        "mdat"
+      ]
+    }
+  ],
+  "failedAttemptMicrophoneGapSeconds": 371.817,
+  "successfulRestartMicrophoneGapSeconds": 60.939,
+  "captureContextInitiallyDeferred": true,
+  "captureContextRestored": true,
+  "unchangedFramesObservedDeduplicated": true,
+  "systemAudioUnavailableUnderExistingExclusionPolicy": true,
+  "nativeSpeechTrialsEnabled": false,
+  "speechAssetsDownloaded": false,
+  "timelineOrLiveVisibleAcceptance": false,
+  "microphoneSpeechAccuracyAccepted": false,
+  "matchedCPUOrLatencyAccepted": false,
+  "uiInteractionScope": "Normal Quit confirmations only; no visible acceptance walkthrough",
+  "installerGuardCorrectionCommit": "6ea8fa6"
+}

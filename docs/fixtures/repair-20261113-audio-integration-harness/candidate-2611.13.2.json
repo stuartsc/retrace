@@ -10,7 +10,7 @@
   "installed": false,
   "installedExecutableAndPlistUnchanged": true,
   "installerMaterialSHA256": {
-    "Recovery helper/clone_native_library.py": "081da8b46b99eaef2375c283e775bc5dc82f4abbb0446f21d24d90ca7407d5ca",
+    "Recovery helper/clone_native_library.py": "87070ba97b774a4c9fc8c481ae6165ce46be1ebb9c215633cd24aafa61efc7d9",
     "app-only-compatibility.json": "a22902c04ba23511b46d4e89e3083203a04f05b7947f0dd0c0a03d79646a4c2a",
     "install_app_only.py": "343d48f73fc2d1d2b255250cb65d9ffe2de57f79d8232780844d6cd356e3e4dd"
   },
@@ -43,5 +43,14 @@
   "sourceRoot": "/Users/stuartbond/backintime-audio-delivery-20261113",
   "testedSourceCommit": "b495d4a8904fb221053e02369f80557cd4ca9538",
   "validationReceiptSHA256": "0d7e0f06fcb867556d300bfc156cd277387f383607cca288b1c0caf4c4e191b6",
-  "verifiedBuildBinarySHA256": "2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38"
+  "verifiedBuildBinarySHA256": "2f606db9d0cca8f5de6ff3302581d62f050c434948a22a290a07b7093dd13e38",
+  "installerGuardCorrection": {
+    "sourceCommit": "6ea8fa6ffa09b73e46c43ece72a429e38a88e30e",
+    "previousSHA256": "081da8b46b99eaef2375c283e775bc5dc82f4abbb0446f21d24d90ca7407d5ca",
+    "newSHA256": "87070ba97b774a4c9fc8c481ae6165ce46be1ebb9c215633cd24aafa61efc7d9",
+    "guardTestsPassed": 6,
+    "installerTestsPassed": 4,
+    "review": "approved; no material findings",
+    "onlyNewExemption": "cwd directory reference"
+  }
 }
