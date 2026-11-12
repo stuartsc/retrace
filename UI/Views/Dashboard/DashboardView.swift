@@ -54,11 +54,6 @@ private struct RecordingIndicatorAnchorPreferenceKey: PreferenceKey {
     }
 }
 
-private struct DashboardLiveDerivedPresentation: Equatable, Sendable {
-    let activityBrief: RetraceActivityBrief
-    let fuseIntel: FuseIntelPresentationSnapshot
-}
-
 /// Main dashboard view - analytics and statistics
 /// Default landing screen
 public struct DashboardView: View {
@@ -66,10 +61,9 @@ public struct DashboardView: View {
     // MARK: - Properties
 
     @ObservedObject var viewModel: DashboardViewModel
+    private let isActive: Bool
     @StateObject private var coordinatorWrapper: AppCoordinatorWrapper
-    @StateObject private var fuseIntelViewModel: FuseIntelViewModel
     @StateObject private var screenshotEvidence: EvidenceViewModel
-    @StateObject private var savedRecordings: DashboardSavedRecordingsModel
     @State private var storageSnapshot = StorageUsageSnapshot()
     @State private var screenshotPresenter = DashboardScreenshotEvidencePresenter()
     @State private var startedEvidenceSelection: ScreenshotEvidenceSelection?
@@ -90,18 +84,6 @@ public struct DashboardView: View {
     @State private var isLoadingMoreDictationSessions = false
     @State private var canLoadMoreDictationSessions = true
     @State private var expandedDictationSessionIDs: Set<UUID> = []
-    @State private var liveAudioRawRows: [DashboardLiveAudioRow] = []
-    @State private var liveAudioRows: [DashboardLiveAudioRow] = []
-    @State private var liveAudioStatusRows: [DashboardLiveAudioRow] = []
-    @State private var liveAudioTranscriptBlocks: [DashboardLiveTranscriptBlock] = []
-    @State private var liveAudioError: String?
-    @State private var isLoadingLiveAudio = false
-    @State private var isLoadingMoreLiveAudio = false
-    @State private var canLoadMoreLiveAudioRows = true
-    @State private var liveAudioTranscriptOffset = 0
-    @State private var lastAutoLoadedLiveAudioBoundaryRowID: Int64?
-    @State private var lastAutoLoadedLiveAudioOffset: Int?
-    @State private var expandedLiveAudioRowIDs: Set<Int64> = []
     @State private var liveFrames: [DashboardScreenshotRow] = []
     @State private var screenshotReadEpoch: UInt64 = 0
     @State private var screenshotWindowVisible: Bool
@@ -122,13 +104,6 @@ public struct DashboardView: View {
     @State private var screenshotContentRevision: UInt64 = 0
     @State private var completedScreenshotFilter: DashboardScreenshotFilterRequest?
     @State private var matchingScreenshotIDs: Set<ScreenshotEvidenceSelection> = []
-    @State private var recentActivityFrames: [FrameWithVideoInfo] = []
-    @State private var latestLiveContextFrame: FrameWithVideoInfo?
-    @State private var liveActivityBriefSnapshot = RetraceActivityBriefPolicy.make(moments: [], speech: [])
-    @State private var liveFuseIntelPresentationSnapshot = FuseIntelPresentationSnapshot.empty
-    @State private var liveDerivedPresentationGeneration = 0
-    @State private var selectedFuseIntelSection: FuseIntelSection = .now
-    @State private var expandedFuseIntelItemIDs: Set<String> = []
     @Binding var hasLoadedInitialData: Bool
 
     enum AppUsageViewMode: String, CaseIterable {
@@ -165,34 +140,23 @@ public struct DashboardView: View {
         viewModel: DashboardViewModel,
         coordinator: AppCoordinator,
         launchOnLoginReminderManager: LaunchOnLoginReminderManager,
-        hasLoadedInitialData: Binding<Bool> = .constant(false)
+        hasLoadedInitialData: Binding<Bool> = .constant(false),
+        isActive: Bool = true
     ) {
         self.viewModel = viewModel
-        _screenshotWindowVisible = State(initialValue: viewModel.isWindowVisible)
+        self.isActive = isActive
+        _screenshotWindowVisible = State(initialValue: isActive && viewModel.isWindowVisible)
         _coordinatorWrapper = StateObject(wrappedValue: AppCoordinatorWrapper(coordinator: coordinator))
-        _fuseIntelViewModel = StateObject(wrappedValue: FuseIntelViewModel())
         _screenshotEvidence = StateObject(wrappedValue: EvidenceViewModel(client: .live(service: {
             try await coordinator.progressiveRecall()
         })))
-        _savedRecordings = StateObject(wrappedValue: DashboardSavedRecordingsModel(
-            playback: TranscriptAudioPlayback(resolve: { request in
-                let root = await coordinator.getAudioStorageDirectory()
-                return try await TranscriptAudioFileResolver.resolve(request: request, storageRoot: root)
-            }, onEvent: { event in
-                Task { try? await coordinator.recordMetricEvent(metricType: .audioTranscriptPlayback, metadata: event.metadata) }
-            }),
-            load: {
-                guard let queries = await coordinator.getAudioTranscriptionQueries() else {
-                    throw TranscriptRecordingLoadError.unavailable
-                }
-                return try await DashboardSavedRecordingsQuery.load(queries: queries, through: Date())
-            }
-        ))
         self.launchOnLoginReminderManager = launchOnLoginReminderManager
         self._hasLoadedInitialData = hasLoadedInitialData
     }
 
     // MARK: - Body
+
+    private var isDashboardActive: Bool { isActive && viewModel.isWindowVisible }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -252,8 +216,8 @@ public struct DashboardView: View {
                 .frame(maxWidth: dashboardMaxWidth)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 32)
-                .padding(.top, 28)
-                .padding(.bottom, 32)
+                .padding(.top, selectedDashboardTab == .live ? 14 : 28)
+                .padding(.bottom, selectedDashboardTab == .live ? 16 : 32)
 
             // Voice-first content layout with compact stats strip.
             GeometryReader { geometry in
@@ -263,9 +227,11 @@ public struct DashboardView: View {
                     dashboardContentSection(layoutSize: layoutSize)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                    dashboardStatsStrip(layoutSize: layoutSize)
+                    if selectedDashboardTab != .live {
+                        dashboardStatsStrip(layoutSize: layoutSize)
+                    }
                 }
-                .frame(maxWidth: dashboardMaxWidth)
+                .frame(maxWidth: selectedDashboardTab == .live ? .infinity : dashboardMaxWidth)
                 .frame(maxWidth: .infinity)
                 .frame(maxHeight: .infinity, alignment: .top)
             }
@@ -283,15 +249,24 @@ public struct DashboardView: View {
             .ignoresSafeArea()
         )
         .background(
-            Button("") {
-                Task { await viewModel.loadStatistics() }
+            Group {
+                if isDashboardActive {
+                    Button("") {
+                        guard isDashboardActive else { return }
+                        Task { await viewModel.loadStatistics() }
+                    }
+                    .keyboardShortcut("r", modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                }
             }
-            .keyboardShortcut("r", modifiers: .command)
-            .frame(width: 0, height: 0)
-            .opacity(0)
         )
         .task {
             viewModel.isWindowVisible = true
+            screenshotWindowVisible = isActive
+        }
+        .task(id: isDashboardActive) {
+            guard isDashboardActive else { return }
             if !hasLoadedInitialData {
                 hasLoadedInitialData = true
                 Log.debug("[Dashboard] Initial load - first appearance", category: .ui)
@@ -304,16 +279,16 @@ public struct DashboardView: View {
                 Log.debug("[Dashboard] Tab switch - skipping reload", category: .ui)
             }
         }
-        .task(id: viewModel.isWindowVisible) {
-            while viewModel.isWindowVisible && !Task.isCancelled {
+        .task(id: isDashboardActive) {
+            while isDashboardActive && !Task.isCancelled {
                 let snapshot = await coordinatorWrapper.coordinator.storageUsageSnapshot()
-                guard !Task.isCancelled, viewModel.isWindowVisible else { return }
+                guard !Task.isCancelled, isDashboardActive else { return }
                 if storageSnapshot != snapshot { storageSnapshot = snapshot }
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
             }
         }
-        .task(id: "\(selectedDashboardTab.rawValue):\(viewModel.isWindowVisible):\(screenshotReadEpoch)") {
-            guard viewModel.isWindowVisible else { return }
+        .task(id: "\(selectedDashboardTab.rawValue):\(isDashboardActive):\(screenshotReadEpoch)") {
+            guard isDashboardActive else { return }
             switch selectedDashboardTab {
             case .dictation:
                 switch DashboardTabEntryLoadPolicy.action(hasLoadedItems: !recentDictationSessions.isEmpty) {
@@ -323,34 +298,7 @@ public struct DashboardView: View {
                     await refreshDictationDashboardData()
                 }
             case .live:
-                async let contextRefresh: Void = refreshLatestLiveContextFrame()
-                async let intelRefresh: Void = fuseIntelViewModel.refresh()
-                switch DashboardTabEntryLoadPolicy.action(hasLoadedItems: !liveAudioRows.isEmpty) {
-                case .initialLoad:
-                    await loadLiveAudioDashboardData(reset: true)
-                case .refresh:
-                    await refreshLiveAudioDashboardData()
-                }
-                _ = await (contextRefresh, intelRefresh)
-                await refreshLiveDerivedPresentation()
-                while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
-                    loopTab: .live,
-                    selectedTab: selectedDashboardTab,
-                    isWindowVisible: viewModel.isWindowVisible
-                ) {
-                    try? await Task.sleep(for: .seconds(8))
-                    guard !Task.isCancelled else { return }
-                    guard DashboardRefreshLoopPolicy.shouldContinue(
-                        loopTab: .live,
-                        selectedTab: selectedDashboardTab,
-                        isWindowVisible: viewModel.isWindowVisible
-                    ) else { return }
-                    async let audioRefresh: Void = refreshLiveAudioDashboardData()
-                    async let frameRefresh: Void = refreshLatestLiveContextFrame()
-                    async let fuseIntelRefresh: Void = fuseIntelViewModel.refresh()
-                    _ = await (audioRefresh, frameRefresh, fuseIntelRefresh)
-                    await refreshLiveDerivedPresentation()
-                }
+                return // LiveContextWorkspaceView owns its visible read lifetime.
             case .screenshots:
                 switch DashboardTabEntryLoadPolicy.action(hasLoadedItems: !liveFrames.isEmpty) {
                 case .initialLoad:
@@ -361,14 +309,14 @@ public struct DashboardView: View {
                 while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
                     loopTab: .screenshots,
                     selectedTab: selectedDashboardTab,
-                    isWindowVisible: viewModel.isWindowVisible
+                    isWindowVisible: isDashboardActive
                 ) {
                     try? await Task.sleep(for: .seconds(8))
                     guard !Task.isCancelled else { return }
                     guard DashboardRefreshLoopPolicy.shouldContinue(
                         loopTab: .screenshots,
                         selectedTab: selectedDashboardTab,
-                        isWindowVisible: viewModel.isWindowVisible
+                        isWindowVisible: isDashboardActive
                     ) else { return }
                     await refreshLiveFramesDashboardData()
                 }
@@ -379,14 +327,14 @@ public struct DashboardView: View {
             while !Task.isCancelled && DashboardRefreshLoopPolicy.shouldContinue(
                 loopTab: .dictation,
                 selectedTab: selectedDashboardTab,
-                isWindowVisible: viewModel.isWindowVisible
+                isWindowVisible: isDashboardActive
             ) {
                 try? await Task.sleep(for: .seconds(8))
                 guard !Task.isCancelled else { return }
                 guard DashboardRefreshLoopPolicy.shouldContinue(
                     loopTab: .dictation,
                     selectedTab: selectedDashboardTab,
-                    isWindowVisible: viewModel.isWindowVisible
+                    isWindowVisible: isDashboardActive
                 ) else { return }
                 await refreshDictationDashboardData()
             }
@@ -417,17 +365,13 @@ public struct DashboardView: View {
             } catch { }
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidBecomeKey)) { _ in
+            guard isDashboardActive else { return }
             Log.debug("[Dashboard] Window became key - refreshing", category: .ui)
             Task {
                 await viewModel.loadStatistics()
+                guard isDashboardActive else { return }
                 if selectedDashboardTab == .dictation {
                     await refreshDictationDashboardData()
-                } else if selectedDashboardTab == .live {
-                    async let audioRefresh: Void = refreshLiveAudioDashboardData()
-                    async let frameRefresh: Void = refreshLatestLiveContextFrame()
-                    async let intelRefresh: Void = fuseIntelViewModel.refresh()
-                    _ = await (audioRefresh, frameRefresh, intelRefresh)
-                    await refreshLiveDerivedPresentation()
                 } else if selectedDashboardTab == .screenshots {
                     await refreshLiveFramesDashboardData()
                 }
@@ -435,30 +379,29 @@ public struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidOpen)) { _ in
             viewModel.isWindowVisible = true
-            screenshotWindowVisible = true
+            screenshotWindowVisible = isActive
             invalidateScreenshotReads(clearRows: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataSourceDidChange)) { _ in
-            savedRecordings.setActive(false)
             invalidateScreenshotReads(clearRows: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardDidClose)) { _ in
-            savedRecordings.setActive(false)
             viewModel.isWindowVisible = false
             screenshotWindowVisible = false
             invalidateScreenshotReads(clearRows: false)
         }
         .onChange(of: selectedDashboardTab) { _ in
-            savedRecordings.setActive(false)
             invalidateScreenshotReads(clearRows: false)
         }
         .onChange(of: viewModel.isWindowVisible) { isVisible in
-            if !isVisible { savedRecordings.setActive(false) }
-            screenshotWindowVisible = isVisible
+            screenshotWindowVisible = isActive && isVisible
             if !isVisible { invalidateScreenshotReads(clearRows: false) }
         }
+        .onChange(of: isActive) { active in
+            screenshotWindowVisible = active && viewModel.isWindowVisible
+            invalidateScreenshotReads(clearRows: false)
+        }
         .onDisappear {
-            savedRecordings.setActive(false)
             screenshotWindowVisible = false
             invalidateScreenshotReads(clearRows: false)
         }
@@ -1235,14 +1178,19 @@ public struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             dashboardContentTabs
 
-            Group {
+            ZStack(alignment: .top) {
+                liveDashboardCard(layoutSize: layoutSize)
+                    .opacity(selectedDashboardTab == .live ? 1 : 0)
+                    .allowsHitTesting(selectedDashboardTab == .live && isDashboardActive)
+                    .disabled(selectedDashboardTab != .live || !isDashboardActive)
+                    .accessibilityHidden(selectedDashboardTab != .live || !isDashboardActive)
                 switch selectedDashboardTab {
                 case .dictation:
                     dictationDashboardCard(layoutSize: layoutSize)
                 case .appUsage:
                     appUsageDashboardCard(layoutSize: layoutSize)
                 case .live:
-                    liveDashboardCard(layoutSize: layoutSize)
+                    EmptyView()
                 case .screenshots:
                     screenshotsDashboardCard(layoutSize: layoutSize)
                 }
@@ -1319,10 +1267,6 @@ public struct DashboardView: View {
         if tab == .dictation {
             Task {
                 await refreshDictationDashboardData()
-            }
-        } else if tab == .live {
-            Task {
-                await refreshLiveAudioDashboardData()
             }
         } else if tab == .screenshots {
             Task {
@@ -1454,86 +1398,9 @@ public struct DashboardView: View {
     // MARK: - Live Dashboard
 
     private func liveDashboardCard(layoutSize _: LayoutSize) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.retraceDanger.opacity(viewModel.isRecording ? 0.14 : 0.08))
-                        .frame(width: 42, height: 42)
-
-                    Image(systemName: "waveform.and.magnifyingglass")
-                        .font(.retraceHeadline)
-                        .foregroundColor(viewModel.isRecording ? .retraceDanger : .retraceSecondary)
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Live Memory")
-                        .font(.retraceHeadline)
-                        .foregroundColor(.retracePrimary)
-
-                    Text(DashboardContentTab.live.subtitle)
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retraceSecondary)
-                }
-
-                Spacer()
-
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(viewModel.isRecording ? Color.retraceDanger : Color.retraceSecondary)
-                        .frame(width: 7, height: 7)
-
-                    Text(viewModel.isRecording ? "Recording" : "Paused")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.08))
-                .clipShape(Capsule())
-            }
-
-            GeometryReader { geometry in
-                let mode = DashboardLiveLayoutPolicy.contentMode(forWidth: geometry.size.width)
-                let columns = DashboardLiveLayoutPolicy.columnWidths(forWidth: geometry.size.width)
-
-                Group {
-                    switch mode {
-                    case .threeColumn:
-                        HStack(alignment: .top, spacing: DashboardLiveLayoutPolicy.columnSpacing) {
-                            liveAudioPanel
-                                .frame(width: columns.transcript)
-                                .frame(maxHeight: .infinity)
-
-                            liveIntelligencePanel
-                                .frame(width: columns.intelligence)
-                                .frame(maxHeight: .infinity)
-
-                            liveConversationContextPanel
-                                .frame(width: columns.context)
-                                .frame(maxHeight: .infinity)
-                        }
-                    case .stacked:
-                        ScrollView(showsIndicators: false) {
-                            VStack(spacing: 14) {
-                                liveAudioPanel
-                                liveIntelligencePanel
-                                liveConversationContextPanel
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(18)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(16)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(themeBorderColor.opacity(1.2), lineWidth: 1.2)
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        LiveContextWorkspaceView(coordinator: coordinatorWrapper.coordinator,
+            isActive: isDashboardActive && selectedDashboardTab == .live,
+            isRecording: viewModel.isRecording)
     }
 
     private func screenshotsDashboardCard(layoutSize _: LayoutSize) -> some View {
@@ -1712,126 +1579,6 @@ public struct DashboardView: View {
         .cornerRadius(14)
     }
 
-    private var liveAudioPanel: some View {
-        let transcriptBlocks = liveAudioTranscriptBlocks
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(viewModel.isRecording ? Color.retraceDanger : Color.retraceSecondary)
-                    .frame(width: 7, height: 7)
-
-                Text("Live Transcript")
-                    .font(.retraceCalloutMedium)
-                    .foregroundColor(.retracePrimary)
-
-                Spacer()
-
-                if !transcriptBlocks.isEmpty {
-                    Button {
-                        copyTranscriptText(
-                            DashboardLiveTranscriptBlockPolicy.copyText(from: transcriptBlocks),
-                            surface: "live_audio_loaded"
-                        )
-                    } label: {
-                        Label("Copy loaded", systemImage: "doc.on.doc")
-                            .font(.retraceCaption2Medium)
-                            .foregroundColor(.retraceSecondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color.white.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Copy all currently loaded transcript text")
-                }
-
-                if isLoadingLiveAudio {
-                    ProgressView()
-                        .scaleEffect(0.55)
-                }
-            }
-
-            Text("Recent audio is available before its text is ready. Prepared transcripts below retain their original recording dates.")
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-
-            if let liveAudioError {
-                Text(liveAudioError)
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceWarning)
-            } else {
-                liveAudioTranscriptHistory
-            }
-        }
-        .padding(14)
-        .background(Color.white.opacity(0.025))
-        .cornerRadius(14)
-    }
-
-    private var liveAudioTranscriptHistory: some View {
-        let transcriptBlocks = liveAudioTranscriptBlocks
-        return List {
-            DashboardSavedRecordingsView(model: savedRecordings,
-                isActive: viewModel.isWindowVisible && selectedDashboardTab == .live,
-                sourceRevision: screenshotReadEpoch)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            if transcriptBlocks.isEmpty {
-                Text(liveAudioStatusRows.isEmpty
-                    ? "No continuous transcript yet."
-                    : "No readable transcript in the newest page. Older readable transcripts may still be below."
-                )
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retraceSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 8)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            } else {
-                ForEach(transcriptBlocks) { block in
-                    liveAudioTranscriptBlock(block)
-                        .padding(.bottom, 10)
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .onAppear {
-                            loadMoreLiveAudioRowsIfNeeded(current: block)
-                        }
-                }
-            }
-
-            if DashboardLiveAudioHistoryPolicy.shouldShowHistory(
-                readableRowCount: liveAudioRows.count,
-                canLoadMoreOlderRows: canLoadMoreLiveAudioRows,
-                isLoadingOlderRows: isLoadingMoreLiveAudio
-            ) && canLoadMoreLiveAudioRows {
-                Button {
-                    Task { await loadMoreLiveAudioRows() }
-                } label: {
-                    loadOlderFooter(
-                        isLoading: isLoadingMoreLiveAudio,
-                        idleText: liveAudioRows.isEmpty ? "Load older readable transcripts" : "Scroll or click for older entries"
-                    )
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .task(id: liveAudioTranscriptOffset) {
-                    await autoContinueLiveAudioHistoryIfNeeded(
-                        offset: liveAudioTranscriptOffset
-                    )
-                }
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 1)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
     private var liveScreenshotsPanel: some View {
         let displayedFrames = filteredLiveFrames
         return VStack(alignment: .leading, spacing: 10) {
@@ -1973,761 +1720,6 @@ public struct DashboardView: View {
         }
     }
 
-    private var liveIntelligencePanel: some View {
-        let items = liveFuseIntelPresentationSnapshot.items(for: selectedFuseIntelSection)
-        let operatingBrief = FuseIntelOperatingBriefPolicy.make(from: items)
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceWarning)
-
-                Text("Operating Brief")
-                    .font(.retraceCalloutMedium)
-                    .foregroundColor(.retracePrimary)
-
-                Text("RETRACE × FUSEINTEL")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(1.1)
-                    .foregroundColor(.retraceWarning)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.retraceWarning.opacity(0.11))
-                    .clipShape(Capsule())
-
-                Spacer()
-
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(fuseIntelConnectionColor)
-                        .frame(width: 6, height: 6)
-                    Text(fuseIntelConnectionLabel)
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                }
-
-                Button {
-                    Task {
-                        await fuseIntelViewModel.refresh(force: true)
-                        await refreshLiveDerivedPresentation()
-                        recordFuseIntelAction("refresh")
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                        .frame(width: 26, height: 26)
-                        .background(Color.white.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .disabled(fuseIntelViewModel.isLoading)
-                .help("Refresh FuseIntel")
-
-                Button {
-                    openFuseIntelDashboard()
-                } label: {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                        .frame(width: 26, height: 26)
-                        .background(Color.white.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .help("Open the full FuseIntel dashboard")
-            }
-
-            Text("Current work connected to source-backed priorities, risks, relationships, and next moves.")
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-
-            HStack(spacing: 8) {
-                Label("Local context live", systemImage: "bolt.fill")
-                    .foregroundColor(.retraceSuccess)
-
-                if let freshness = fuseIntelViewModel.freshnessDate {
-                    Text("Business evidence updated \(freshness, style: .relative)")
-                        .foregroundColor(.retraceSecondary)
-                }
-                if fuseIntelViewModel.isShowingCachedData, let received = fuseIntelViewModel.lastUpdatedAt {
-                    Text("Cached \(received, style: .relative) ago")
-                        .foregroundColor(.retraceWarning)
-                }
-            }
-            .font(.retraceCaption2)
-
-            HStack(spacing: 4) {
-                ForEach(FuseIntelSection.allCases) { section in
-                    Button {
-                        selectedFuseIntelSection = section
-                        recordFuseIntelAction("section_\(section.rawValue)")
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(section.title)
-                            if section == selectedFuseIntelSection, !items.isEmpty {
-                                Text("\(items.count)")
-                                    .foregroundColor(.retraceSecondary)
-                            }
-                        }
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(section == selectedFuseIntelSection ? .retracePrimary : .retraceSecondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(section == selectedFuseIntelSection ? Color.white.opacity(0.085) : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(3)
-            .background(Color.black.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-
-            if fuseIntelViewModel.isLoading && fuseIntelViewModel.snapshot == nil {
-                VStack(spacing: 9) {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                    Text("Connecting to the local intel loop...")
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retraceSecondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if fuseIntelViewModel.snapshot == nil {
-                fuseIntelUnavailableState
-            } else if items.isEmpty {
-                VStack(spacing: 9) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.retraceHeadline)
-                        .foregroundColor(.retraceSuccess)
-                    Text("Nothing needs your attention here")
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retracePrimary)
-                    Text("FuseIntel is connected; this view will update as new evidence arrives.")
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(20)
-            } else if selectedFuseIntelSection == .now {
-                operatingBriefContent(operatingBrief)
-            } else {
-                ScrollView(showsIndicators: true) {
-                    LazyVStack(alignment: .leading, spacing: 9) {
-                        ForEach(items) { item in
-                            fuseIntelItemCard(item)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            }
-        }
-        .padding(14)
-        .background(
-            LinearGradient(
-                colors: [Color.retraceWarning.opacity(0.04), Color.white.opacity(0.025)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .cornerRadius(14)
-    }
-
-    private func operatingBriefContent(_ brief: FuseIntelOperatingBrief) -> some View {
-        ScrollView(showsIndicators: true) {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                if let recommendation = brief.recommendation {
-                    fuseIntelRecommendationCard(recommendation)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("No evidenced next move yet", systemImage: "checkmark.seal")
-                            .font(.retraceCaptionMedium)
-                            .foregroundColor(.retracePrimary)
-                        Text("Unsupported suggestions are withheld. Broader signals remain available in the other views.")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.035))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-
-                if !brief.connectedContext.isEmpty {
-                    fuseIntelListHeading(
-                        title: "Connected to current work",
-                        detail: "Older evidence matching the live screen and transcript"
-                    )
-                    ForEach(brief.connectedContext) { item in
-                        fuseIntelCompactRow(item)
-                    }
-                }
-
-                if !brief.broaderPriorities.isEmpty {
-                    fuseIntelListHeading(
-                        title: "Across the business",
-                        detail: "High-value work that should not disappear behind the current task"
-                    )
-                    ForEach(brief.broaderPriorities) { item in
-                        fuseIntelCompactRow(item)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private func fuseIntelRecommendationCard(_ item: FuseIntelDisplayItem) -> some View {
-        let accent = fuseIntelAccentColor(item)
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 7) {
-                Text("BEST NEXT MOVE")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(0.8)
-                    .foregroundColor(accent)
-
-                if item.relevance == .contextMatch {
-                    Text("CONNECTED TO NOW")
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .tracking(0.45)
-                        .foregroundColor(.retraceSuccess)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.retraceSuccess.opacity(0.11))
-                        .clipShape(Capsule())
-                }
-
-                Spacer(minLength: 0)
-
-                if let timestamp = item.timestamp {
-                    Text(timestamp, style: .relative)
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary)
-                }
-            }
-
-            Text(item.title)
-                .font(.retraceCalloutMedium)
-                .foregroundColor(.retracePrimary)
-                .textSelection(.enabled)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("WHY NOW")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(0.65)
-                    .foregroundColor(.retraceSecondary)
-                Text(item.detail)
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retracePrimary.opacity(0.9))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-
-            if let suggestedAction = item.suggestedAction,
-               !suggestedAction.isEmpty,
-               suggestedAction != item.detail {
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "arrow.turn.down.right")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(accent)
-                    Text(suggestedAction)
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retracePrimary)
-                        .textSelection(.enabled)
-                }
-                .padding(9)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(accent.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-            }
-
-            fuseIntelEvidenceFooter(item, accent: accent)
-        }
-        .padding(13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [accent.opacity(0.14), Color.white.opacity(0.035)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 13))
-        .overlay {
-            RoundedRectangle(cornerRadius: 13)
-                .stroke(accent.opacity(0.28), lineWidth: 1)
-        }
-    }
-
-    private func fuseIntelListHeading(title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retracePrimary)
-            Text(detail)
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-        }
-        .padding(.top, 2)
-    }
-
-    private func fuseIntelCompactRow(_ item: FuseIntelDisplayItem) -> some View {
-        let accent = fuseIntelAccentColor(item)
-        let isExpanded = expandedFuseIntelItemIDs.contains(item.id)
-
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: fuseIntelIconName(item.kind))
-                .font(.retraceCaptionMedium)
-                .foregroundColor(accent)
-                .frame(width: 26, height: 26)
-                .background(accent.opacity(0.11))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(item.eyebrow.uppercased())
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .tracking(0.45)
-                        .foregroundColor(accent)
-                    Spacer(minLength: 0)
-                    if item.relevance == .contextMatch {
-                        Image(systemName: "link")
-                            .font(.retraceCaption2Medium)
-                            .foregroundColor(.retraceSuccess)
-                    }
-                }
-
-                Text(item.title)
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retracePrimary)
-                    .lineLimit(isExpanded ? nil : 2)
-                    .textSelection(.enabled)
-
-                Text(item.detail)
-                    .font(.retraceCaption2)
-                    .foregroundColor(.retraceSecondary)
-                    .lineLimit(isExpanded ? nil : 2)
-                    .fixedSize(horizontal: false, vertical: isExpanded)
-
-                if isExpanded {
-                    fuseIntelEvidenceFooter(item, accent: accent)
-                }
-            }
-        }
-        .padding(.vertical, 9)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.white.opacity(0.065))
-                .frame(height: 1)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isExpanded {
-                expandedFuseIntelItemIDs.remove(item.id)
-            } else {
-                expandedFuseIntelItemIDs.insert(item.id)
-            }
-        }
-    }
-
-    private func fuseIntelEvidenceFooter(_ item: FuseIntelDisplayItem, accent: Color) -> some View {
-        HStack(spacing: 6) {
-            if let impactLabel = item.impactLabel, !impactLabel.isEmpty {
-                Text(impactLabel)
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .foregroundColor(accent)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(accent.opacity(0.10))
-                    .clipShape(Capsule())
-            }
-
-            ForEach(Array(item.sourceRefs.prefix(3).enumerated()), id: \.offset) { _, sourceRef in
-                Text(sourceRef.source.replacingOccurrences(of: "_", with: " ").uppercased())
-                    .font(.system(size: 8, weight: .semibold, design: .rounded))
-                    .foregroundColor(.retraceSecondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.05))
-                    .clipShape(Capsule())
-            }
-
-            Spacer(minLength: 0)
-
-            if let confidence = item.confidence, confidence > 0 {
-                Text("\(Int((confidence * 100).rounded()))% evidence")
-                    .font(.retraceCaption2)
-                    .foregroundColor(.retraceSecondary)
-            }
-        }
-    }
-
-    private var fuseIntelUnavailableState: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(Color.retraceWarning.opacity(0.12))
-                    .frame(width: 38, height: 38)
-                Image(systemName: "bolt.horizontal.circle")
-                    .font(.retraceHeadline)
-                    .foregroundColor(.retraceWarning)
-            }
-
-            Text(fuseIntelConnectionLabel == "Delayed" ? "FuseIntel is catching up" : "FuseIntel is offline")
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retracePrimary)
-
-            Text(fuseIntelConnectionLabel == "Delayed"
-                ? "The local intel loop is taking longer than usual. Retrace keeps recording while it finishes; retry remains available."
-                : "Retrace keeps recording locally. The configured FuseIntel service at \(fuseIntelViewModel.baseURL.host ?? "your primary Mac") is unavailable. Check the primary Mac and its private connection, then retry.")
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Button("Retry") {
-                    Task {
-                        await fuseIntelViewModel.refresh(force: true)
-                        await refreshLiveDerivedPresentation()
-                        recordFuseIntelAction("retry")
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.retraceAccent)
-
-                Button("Open dashboard") {
-                    openFuseIntelDashboard()
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.retraceSecondary)
-            }
-            .font(.retraceCaption2Medium)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(20)
-    }
-
-    private func fuseIntelItemCard(_ item: FuseIntelDisplayItem) -> some View {
-        let accent = fuseIntelAccentColor(item)
-        let isExpanded = expandedFuseIntelItemIDs.contains(item.id)
-
-        return HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(accent.opacity(0.18))
-                    .frame(width: 38, height: 38)
-
-                Image(systemName: fuseIntelIconName(item.kind))
-                    .font(.retraceCalloutMedium)
-                    .foregroundColor(accent)
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text(item.eyebrow.uppercased())
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .tracking(0.6)
-                        .foregroundColor(accent)
-
-                    if item.relevance == .contextMatch {
-                        Text("CONTEXT MATCH")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .tracking(0.4)
-                            .foregroundColor(.retraceSuccess)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.retraceSuccess.opacity(0.10))
-                            .clipShape(Capsule())
-                    }
-
-                    Spacer(minLength: 0)
-
-                    if let timestamp = item.timestamp {
-                        Text(timestamp, style: .relative)
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary.opacity(0.75))
-                    }
-                }
-
-                Text(item.title)
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retracePrimary)
-                    .lineLimit(isExpanded ? nil : 2)
-
-                Text(item.detail)
-                    .font(.retraceCaption2)
-                    .foregroundColor(.retraceSecondary)
-                    .lineLimit(isExpanded ? nil : 3)
-                    .fixedSize(horizontal: false, vertical: isExpanded)
-
-                HStack(spacing: 6) {
-                    ForEach(Array(item.sourceRefs.prefix(3).enumerated()), id: \.offset) { _, sourceRef in
-                        Text(sourceRef.source.replacingOccurrences(of: "_", with: " ").uppercased())
-                            .font(.system(size: 8, weight: .semibold, design: .rounded))
-                            .foregroundColor(.retraceSecondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.white.opacity(0.045))
-                            .clipShape(Capsule())
-                    }
-
-                    if let confidence = item.confidence, confidence > 0 {
-                        Text("\(Int((confidence * 100).rounded()))% evidence")
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary.opacity(0.8))
-                    } else if let evidenceState = item.evidenceState {
-                        Text(evidenceState.replacingOccurrences(of: "_", with: " ").capitalized)
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary.opacity(0.8))
-                    }
-
-                    Spacer(minLength: 0)
-
-                    if let sourceURL = item.sourceRefs.compactMap(\.url).first,
-                       let url = URL(string: sourceURL),
-                       ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                        Button {
-                            NSWorkspace.shared.open(url)
-                            recordFuseIntelAction("open_source")
-                        } label: {
-                            Image(systemName: "arrow.up.right")
-                                .font(.retraceCaption2Medium)
-                                .foregroundColor(.retraceAccent)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Open source")
-                    }
-                }
-            }
-        }
-        .padding(11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [
-                    accent.opacity(0.07),
-                    Color.white.opacity(0.03)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(accent.opacity(0.16), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isExpanded {
-                expandedFuseIntelItemIDs.remove(item.id)
-            } else {
-                expandedFuseIntelItemIDs.insert(item.id)
-            }
-        }
-    }
-
-    private var liveConversationContextPanel: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
-                    Image(systemName: "waveform.path")
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retraceSuccess)
-
-                    Text("Recent work")
-                        .font(.retraceCalloutMedium)
-                        .foregroundColor(.retracePrimary)
-
-                    Spacer()
-
-                    Text("LAST 10 MIN")
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .tracking(0.7)
-                        .foregroundColor(.retraceSuccess)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.retraceSuccess.opacity(0.10))
-                        .clipShape(Capsule())
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("LATEST CAPTURED CONTEXT")
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .tracking(0.8)
-                        .foregroundColor(.retraceSuccess)
-
-                    Text(liveActivityBrief.headline)
-                        .font(.retraceCalloutMedium)
-                        .foregroundColor(.retracePrimary)
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-
-                    Text(liveUserActivitySummary)
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    LinearGradient(
-                        colors: [Color.retraceSuccess.opacity(0.11), Color.white.opacity(0.025)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.retraceSuccess.opacity(0.18), lineWidth: 1)
-                }
-
-                if !liveActivityBrief.appTrail.isEmpty {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("RECENT WORK TRAIL")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .tracking(0.65)
-                            .foregroundColor(.retraceSecondary)
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 5) {
-                                ForEach(Array(liveActivityBrief.appTrail.prefix(4)), id: \.self) { appName in
-                                    Text(appName)
-                                        .font(.retraceCaption2Medium)
-                                        .foregroundColor(appName == liveActivityBrief.currentApp ? .retracePrimary : .retraceSecondary)
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 4)
-                                        .background(
-                                            appName == liveActivityBrief.currentApp
-                                                ? Color.retraceAccent.opacity(0.14)
-                                                : Color.white.opacity(0.045)
-                                        )
-                                        .clipShape(Capsule())
-                                }
-                            }
-                        }
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    activityPulseMetric(
-                        value: activityDurationLabel(liveActivityBrief.duration),
-                        label: "sample span"
-                    )
-                    activityPulseMetric(
-                        value: "\(liveActivityBrief.capturedMomentCount)",
-                        label: "moments"
-                    )
-                    activityPulseMetric(
-                        value: "\(liveActivityBrief.speechSegmentCount)",
-                        label: "speech clips"
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 7) {
-                        Image(systemName: liveFuseIntelContextMatchCount > 0 ? "link.badge.plus" : "link")
-                            .font(.retraceCaptionMedium)
-                            .foregroundColor(liveFuseIntelContextMatchCount > 0 ? .retraceSuccess : .retraceSecondary)
-                        Text("Connected evidence")
-                            .font(.retraceCaptionMedium)
-                            .foregroundColor(.retracePrimary)
-                    }
-                    Text(liveFuseIntelRelationshipSummary)
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, 4)
-
-                VStack(alignment: .leading, spacing: 10) {
-                    liveContextMetadataRow(
-                        iconName: "clock",
-                        label: "Latest",
-                        value: formatDashboardTimestamp(liveContextReferenceDate)
-                    )
-
-                    if let frame = latestLiveContextFrame?.frame {
-                        liveContextMetadataRow(
-                            iconName: "app.dashed",
-                            label: "App",
-                            value: liveFrameDisplayAppName(frame)
-                        )
-
-                        if let windowName = frame.metadata.windowName, !windowName.isEmpty {
-                            liveContextMetadataRow(iconName: "macwindow", label: "Window", value: windowName)
-                        }
-
-                        if let browserURL = frame.metadata.browserURL, !browserURL.isEmpty {
-                            liveContextMetadataRow(iconName: "link", label: "URL", value: browserURL)
-                        }
-
-                        liveContextMetadataRow(
-                            iconName: "photo",
-                            label: "Frame",
-                            value: "#\(frame.id.value)"
-                        )
-                    } else {
-                        liveContextMetadataRow(
-                            iconName: "app.dashed",
-                            label: "Screen",
-                            value: viewModel.isRecording ? "Waiting for a readable frame" : "Capture paused"
-                        )
-                    }
-
-                    if let latestAudio = liveAudioRows.first {
-                        liveContextMetadataRow(
-                            iconName: "waveform",
-                            label: "Audio",
-                            value: latestAudio.source.rawValue.capitalized
-                        )
-                        liveContextMetadataRow(
-                            iconName: "checkmark.seal",
-                            label: "Transcript",
-                            value: liveTranscriptConfidenceLabel(latestAudio)
-                        )
-                    }
-                }
-                .padding(12)
-                .background(Color.white.opacity(0.035))
-                .cornerRadius(12)
-            }
-        }
-        .padding(14)
-        .background(Color.white.opacity(0.025))
-        .cornerRadius(14)
-    }
-
-    private func activityPulseMetric(value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retracePrimary)
-            Text(label.uppercased())
-                .font(.system(size: 7, weight: .bold, design: .rounded))
-                .tracking(0.45)
-                .foregroundColor(.retraceSecondary)
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-    }
-
-    private func activityDurationLabel(_ duration: TimeInterval) -> String {
-        guard duration >= 60 else { return "Now" }
-        if duration < 3_600 { return "\(max(Int(duration / 60), 1))m" }
-        let hours = Int(duration / 3_600)
-        let minutes = Int(duration.truncatingRemainder(dividingBy: 3_600) / 60)
-        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
-    }
-
     private var screenshotContextPanel: some View {
         Group {
             if let selection = screenshotEvidenceSelection, selectedLiveFrame != nil, startedEvidenceSelection == selection {
@@ -2799,176 +1791,6 @@ public struct DashboardView: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    private func liveContextInsightCard(iconName: String, title: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: iconName)
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceAccent)
-                    .frame(width: 18)
-
-                Text(title)
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceSecondary)
-            }
-
-            Text(body)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retracePrimary)
-                .lineLimit(5)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(Color.white.opacity(0.035))
-                .cornerRadius(10)
-        }
-        .padding(10)
-        .background(Color.white.opacity(0.025))
-        .cornerRadius(12)
-    }
-
-    private func liveContextMetadataRow(iconName: String, label: String, value: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: iconName)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retraceSecondary.opacity(0.75))
-                .frame(width: 18)
-
-            Text(label)
-                .font(.retraceCaption2Medium)
-                .foregroundColor(.retraceSecondary)
-
-            Spacer(minLength: 8)
-
-            Text(value)
-                .font(.retraceCaption2Medium)
-                .foregroundColor(.retracePrimary)
-                .lineLimit(2)
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
-        }
-    }
-
-    private var liveUserActivitySummary: String {
-        liveActivityBrief.summary
-    }
-
-    private var liveContextReferenceDate: Date {
-        [
-            latestLiveContextFrame?.frame.timestamp,
-            liveAudioRows.first?.startedAt,
-            liveAudioStatusRows.first?.startedAt
-        ]
-        .compactMap { $0 }
-        .max() ?? Date()
-    }
-
-    private var liveActivityBrief: RetraceActivityBrief {
-        liveActivityBriefSnapshot
-    }
-
-    private var liveFuseIntelContextItems: [FuseIntelDisplayItem] {
-        liveFuseIntelPresentationSnapshot.contextItems
-    }
-
-    private var liveFuseIntelContextMatchCount: Int {
-        liveFuseIntelPresentationSnapshot.contextMatchCount
-    }
-
-    private var liveFuseIntelRelationshipSummary: String {
-        let contextItems = liveFuseIntelContextItems
-        guard !contextItems.isEmpty else {
-            return fuseIntelViewModel.isConnected
-                ? "No evidence-backed relationship to the current screen or speech yet. Workspace-wide intel remains available in the centre feed."
-                : "FuseIntel is offline. Retrace is still preserving local screen and audio context."
-        }
-
-        let terms = Array(Set(contextItems.flatMap(\.matchedTerms))).sorted().prefix(4)
-        let termText = terms.isEmpty ? "the current context" : terms.joined(separator: ", ")
-        return "\(liveFuseIntelContextMatchCount) source-backed item\(liveFuseIntelContextMatchCount == 1 ? "" : "s") match \(termText)."
-    }
-
-    private var fuseIntelConnectionLabel: String {
-        if fuseIntelViewModel.isLoading && fuseIntelViewModel.snapshot == nil { return "Connecting" }
-        if fuseIntelViewModel.snapshot == nil,
-           fuseIntelViewModel.errorMessage?.localizedCaseInsensitiveContains("timed out") == true {
-            return "Delayed"
-        }
-        guard let snapshot = fuseIntelViewModel.snapshot else { return "Offline" }
-        if fuseIntelViewModel.isShowingCachedData { return "Cached" }
-        if fuseIntelViewModel.errorMessage != nil { return "Stale" }
-        if snapshot.commandEnvelope.degraded || snapshot.feedEnvelope.degraded || !fuseIntelViewModel.warnings.isEmpty {
-            return "Degraded"
-        }
-        if let freshness = fuseIntelViewModel.freshnessDate,
-           Date().timeIntervalSince(freshness) > 3_600 {
-            return "Stale"
-        }
-        return "Connected"
-    }
-
-    private var fuseIntelConnectionColor: Color {
-        switch fuseIntelConnectionLabel {
-        case "Connected": return .retraceSuccess
-        case "Connecting": return .retraceAccent
-        case "Cached", "Stale", "Degraded", "Delayed": return .retraceWarning
-        default: return .retraceSecondary
-        }
-    }
-
-    private func fuseIntelIconName(_ kind: FuseIntelDisplayKind) -> String {
-        switch kind {
-        case .move: return "arrow.forward.circle.fill"
-        case .commercial: return "chart.line.uptrend.xyaxis"
-        case .foresight: return "binoculars.fill"
-        case .radar: return "scope"
-        case .signal: return "waveform.path.ecg"
-        case .upcoming: return "calendar"
-        case .waiting: return "hourglass"
-        case .delegated: return "person.crop.circle.badge.checkmark"
-        case .judgement: return "questionmark.diamond.fill"
-        case .thread: return "bubble.left.and.bubble.right.fill"
-        }
-    }
-
-    private func fuseIntelAccentColor(_ item: FuseIntelDisplayItem) -> Color {
-        if item.relevance == .contextMatch { return .retraceSuccess }
-        if ["critical", "high"].contains(item.priority.lowercased()) { return .retraceDanger }
-        switch item.kind {
-        case .move: return .retraceAccent
-        case .commercial: return .retraceSuccess
-        case .foresight: return .retraceWarning
-        case .radar: return .retraceWarning
-        case .signal: return .teal
-        case .upcoming: return .retraceSuccess
-        case .waiting: return .orange
-        case .delegated: return .blue
-        case .judgement: return .orange
-        case .thread: return .cyan
-        }
-    }
-
-    private func liveTranscriptConfidenceLabel(_ row: DashboardLiveAudioRow) -> String {
-        DashboardTranscriptConfidencePolicy.displayLabel(
-            transcriptionPass: row.transcriptionPass,
-            confidence: row.confidence
-        )
-    }
-
-    private func openFuseIntelDashboard() {
-        NSWorkspace.shared.open(fuseIntelViewModel.baseURL)
-        recordFuseIntelAction("open_dashboard")
-    }
-
-    private func recordFuseIntelAction(_ action: String) {
-        DashboardViewModel.recordDashboardFuseIntelAction(
-            coordinator: coordinatorWrapper.coordinator,
-            action: action,
-            section: selectedFuseIntelSection.rawValue,
-            connectionState: fuseIntelConnectionLabel.lowercased()
-        )
-    }
-
     private func loadOlderFooter(isLoading: Bool, idleText: String = "Scroll for older entries") -> some View {
         HStack(spacing: 8) {
             if isLoading {
@@ -2982,360 +1804,6 @@ public struct DashboardView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
-    }
-
-    @ViewBuilder
-    private func liveAudioRow(_ row: DashboardLiveAudioRow) -> some View {
-        if row.isPendingSummary || row.isLowConfidenceSummary || row.isStatusSummary {
-            liveAudioPendingSummaryRow(row)
-        } else {
-            liveAudioTranscriptRow(row)
-        }
-    }
-
-    private var liveAudioStatusPanel: some View {
-        let latestStatusDate = liveAudioStatusRows.map(\.startedAt).max()
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retraceWarning)
-
-                Text("Recent capture status")
-                    .font(.retraceCaptionMedium)
-                    .foregroundColor(.retracePrimary)
-
-                Spacer(minLength: 0)
-
-                if let latestStatusDate {
-                    HStack(spacing: 4) {
-                        Text("Updated")
-                        Text(latestStatusDate, style: .time)
-                    }
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceSecondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.055))
-                    .clipShape(Capsule())
-                }
-            }
-
-            Text("First-pass transcripts stay in the feed. Repair and catch-up state is tracked here.")
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(liveAudioStatusRows.prefix(3))) { row in
-                    liveAudioStatusSummaryRow(row)
-                }
-
-                if liveAudioStatusRows.count > 3 {
-                    Text("+\(liveAudioStatusRows.count - 3) more status groups")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary.opacity(0.8))
-                }
-            }
-        }
-        .padding(10)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color.retraceWarning.opacity(0.08),
-                    Color.white.opacity(0.028)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.retraceWarning.opacity(0.18), lineWidth: 1)
-        )
-    }
-
-    private func liveAudioStatusSummaryRow(_ row: DashboardLiveAudioRow) -> some View {
-        let accent = row.isPendingSummary
-            ? Color.retraceAccent
-            : (row.isLowConfidenceSummary ? Color.retraceWarning : Color.retraceSecondary)
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: summaryIconName(for: row))
-                .font(.retraceCaption2Medium)
-                .foregroundColor(accent)
-                .frame(width: 16, height: 16)
-                .padding(.top, 1)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(summaryTitle(for: row))
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retracePrimary)
-
-                    Text(row.startedAt, style: .time)
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary.opacity(0.8))
-                }
-
-                Text(statusSummaryDescription(for: row))
-                    .font(.retraceCaption2)
-                    .foregroundColor(.retraceSecondary)
-                    .lineLimit(2)
-            }
-
-            Spacer(minLength: 0)
-
-            Text(row.pendingBatchCount == 1 ? "1" : "\(row.pendingBatchCount)")
-                .font(.retraceCaption2Medium)
-                .foregroundColor(accent)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(accent.opacity(0.12))
-                .clipShape(Capsule())
-        }
-        .padding(8)
-        .background(Color.white.opacity(0.028))
-        .cornerRadius(9)
-    }
-
-    private func liveAudioPendingSummaryRow(_ row: DashboardLiveAudioRow) -> some View {
-        let isLowConfidence = row.isLowConfidenceSummary
-        let isPending = row.isPendingSummary
-        let accent = isLowConfidence ? Color.retraceSecondary : (isPending ? Color.retraceWarning : Color.retraceAccent)
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(accent.opacity(0.14))
-                        .frame(width: 28, height: 28)
-
-                    Image(systemName: summaryIconName(for: row))
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(accent)
-                }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(summaryTitle(for: row))
-                        .font(.retraceCaptionMedium)
-                        .foregroundColor(.retracePrimary)
-
-                    Text("Latest capture \(row.startedAt, style: .time)")
-                        .font(.retraceCaption2)
-                        .foregroundColor(.retraceSecondary)
-                }
-
-                Spacer(minLength: 0)
-
-                Text(row.pendingBatchCount == 1 ? "1 batch" : "\(row.pendingBatchCount) batches")
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(accent.opacity(0.12))
-                    .clipShape(Capsule())
-            }
-
-            Text(row.displayText)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retracePrimary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(isLowConfidence
-                ? "Stored for repair, hidden from the readable stream unless a cleaner pass finds speech."
-                : (isPending
-                    ? "Showing the newest readable transcripts below instead of repeating placeholder rows."
-                    : "Repeated identical status rows are collapsed so speech and repair state stay readable.")
-            )
-                .font(.retraceCaption2)
-                .foregroundColor(.retraceSecondary)
-        }
-        .padding(12)
-        .background(
-            LinearGradient(
-                colors: [
-                    accent.opacity(0.09),
-                    Color.white.opacity(0.035)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(accent.opacity(0.24), lineWidth: 1)
-        )
-    }
-
-    private func summaryTitle(for row: DashboardLiveAudioRow) -> String {
-        if row.ambientLabel != nil {
-            return "Ambient audio"
-        }
-        if row.isLowConfidenceSummary {
-            return "Repair queue"
-        }
-        if row.isPendingSummary {
-            return "Text pending"
-        }
-        return "Capture notice"
-    }
-
-    private func statusSummaryDescription(for row: DashboardLiveAudioRow) -> String {
-        if row.ambientLabel != nil {
-            return row.displayText
-        }
-        if row.isLowConfidenceSummary {
-            return "Uncertain audio is preserved for repair; useful first-pass text remains in the feed."
-        }
-        if row.isPendingSummary {
-            return "Captured audio is decoding now."
-        }
-        return DashboardLiveAudioRow.statusText(status: row.transcriptStatus, qualityFlags: row.qualityFlags)
-    }
-
-    private func summaryIconName(for row: DashboardLiveAudioRow) -> String {
-        if row.ambientLabel != nil {
-            return "waveform"
-        }
-        if row.isLowConfidenceSummary {
-            return "waveform.badge.exclamationmark"
-        }
-        if row.isPendingSummary {
-            return "waveform.path.badge.clock"
-        }
-        return "rectangle.stack.badge.minus"
-    }
-
-    private func liveAudioTranscriptBlock(_ block: DashboardLiveTranscriptBlock) -> some View {
-        let accent = block.isUpdating ? Color.retraceWarning : Color.retraceAccent
-
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 6) {
-                Text(block.startedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceSecondary)
-
-                if block.spansMultipleDisplayMinutes {
-                    Text("–")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary.opacity(0.7))
-                    Text(block.endedAt, style: .time)
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                }
-
-                Text(block.sourceLabel)
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceAccent)
-
-                if let badgeText = block.refinementBadgeText {
-                    Text(badgeText)
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(block.isUpdating ? .retraceWarning : .retraceSuccess)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            (block.isUpdating ? Color.retraceWarning : Color.retraceSuccess)
-                                .opacity(0.12)
-                        )
-                        .clipShape(Capsule())
-                }
-
-                Spacer(minLength: 0)
-
-                copyTranscriptButton(text: block.text, surface: "live_audio_block")
-            }
-
-            Text(block.text)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(.retracePrimary)
-                .lineSpacing(2)
-                .lineLimit(nil)
-                .textSelection(.enabled)
-        }
-        .padding(12)
-        .padding(.leading, 2)
-        .background {
-            RoundedRectangle(cornerRadius: 11)
-                .fill(accent.opacity(block.isUpdating ? 0.065 : 0.045))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 11)
-                        .stroke(accent.opacity(block.isUpdating ? 0.2 : 0.1), lineWidth: 1)
-                }
-        }
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(accent.opacity(block.isUpdating ? 0.65 : 0.5))
-                .frame(width: 2)
-                .padding(.vertical, 10)
-        }
-    }
-
-    private func liveAudioTranscriptRow(_ row: DashboardLiveAudioRow) -> some View {
-        let isExpanded = expandedLiveAudioRowIDs.contains(row.id)
-
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text(row.startedAt, style: .time)
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceSecondary)
-
-                Text(row.source.rawValue.capitalized)
-                    .font(.retraceCaption2Medium)
-                    .foregroundColor(.retraceAccent)
-
-                if row.isRepairedTranscript {
-                    Text(row.repairedBadgeText)
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSuccess)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.retraceSuccess.opacity(0.12))
-                        .clipShape(Capsule())
-                } else if row.isRepairingTranscript {
-                    Text("First pass")
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceWarning)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.retraceWarning.opacity(0.12))
-                        .clipShape(Capsule())
-                } else if !row.hasTranscriptText {
-                    Text(row.statusBadgeText)
-                        .font(.retraceCaption2Medium)
-                        .foregroundColor(.retraceSecondary)
-                }
-
-                Spacer(minLength: 0)
-
-                if row.hasTranscriptText {
-                    copyTranscriptButton(text: row.text, surface: "live_audio")
-                }
-            }
-
-            Text(row.displayText)
-                .font(.retraceCaptionMedium)
-                .foregroundColor(row.hasTranscriptText ? .retracePrimary : .retraceSecondary)
-                .lineLimit(DashboardTranscriptDisplayPolicy.lineLimit(isExpanded: isExpanded))
-                .textSelection(.enabled)
-        }
-        .padding(10)
-        .background(row.isRepairingTranscript ? Color.retraceWarning.opacity(0.045) : Color.white.opacity(0.035))
-        .cornerRadius(10)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(
-                    isExpanded
-                        ? Color.retraceAccent.opacity(0.45)
-                        : (row.isRepairingTranscript ? Color.retraceWarning.opacity(0.18) : Color.clear),
-                    lineWidth: 1
-                )
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            toggleLiveAudioExpansion(row)
-        }
     }
 
     private func dictationSessionRow(_ session: DictationSession) -> some View {
@@ -3431,18 +1899,6 @@ public struct DashboardView: View {
             DashboardViewModel.recordDashboardTranscriptExpanded(
                 coordinator: coordinatorWrapper.coordinator,
                 surface: "dictation"
-            )
-        }
-    }
-
-    private func toggleLiveAudioExpansion(_ row: DashboardLiveAudioRow) {
-        if expandedLiveAudioRowIDs.contains(row.id) {
-            expandedLiveAudioRowIDs.remove(row.id)
-        } else {
-            expandedLiveAudioRowIDs.insert(row.id)
-            DashboardViewModel.recordDashboardTranscriptExpanded(
-                coordinator: coordinatorWrapper.coordinator,
-                surface: "live_audio"
             )
         }
     }
@@ -3594,30 +2050,6 @@ public struct DashboardView: View {
         Task { await loadMoreDictationSessions() }
     }
 
-    private func loadMoreLiveAudioRowsIfNeeded(current row: DashboardLiveAudioRow) {
-        guard DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
-            currentRowID: row.id,
-            lastRowID: liveAudioRows.last?.id,
-            lastRequestedBoundaryRowID: lastAutoLoadedLiveAudioBoundaryRowID,
-            canLoadMoreOlderRows: canLoadMoreLiveAudioRows,
-            isLoadingOlderRows: isLoadingMoreLiveAudio
-        ) else { return }
-        lastAutoLoadedLiveAudioBoundaryRowID = row.id
-        Task { await loadMoreLiveAudioRows() }
-    }
-
-    private func loadMoreLiveAudioRowsIfNeeded(current block: DashboardLiveTranscriptBlock) {
-        guard DashboardLiveAudioHistoryPolicy.shouldAutoLoadOlderRows(
-            currentRowID: block.oldestRowID,
-            lastRowID: liveAudioRows.last?.id,
-            lastRequestedBoundaryRowID: lastAutoLoadedLiveAudioBoundaryRowID,
-            canLoadMoreOlderRows: canLoadMoreLiveAudioRows,
-            isLoadingOlderRows: isLoadingMoreLiveAudio
-        ) else { return }
-        lastAutoLoadedLiveAudioBoundaryRowID = block.oldestRowID
-        Task { await loadMoreLiveAudioRows() }
-    }
-
     private func handleLiveScreenshotScroll(
         previous: DashboardScreenshotScrollGeometry,
         current: DashboardScreenshotScrollGeometry
@@ -3640,24 +2072,6 @@ public struct DashboardView: View {
 
     private func loadMoreDictationSessions() async {
         await loadDictationDashboardData(reset: false)
-    }
-
-    private func loadMoreLiveAudioRows() async {
-        await loadLiveAudioDashboardData(reset: false)
-    }
-
-    private func autoContinueLiveAudioHistoryIfNeeded(offset: Int) async {
-        try? await Task.sleep(for: .milliseconds(120))
-        guard !Task.isCancelled else { return }
-        guard DashboardLiveAudioHistoryPolicy.shouldAutoContinueFromVisibleFooter(
-            currentOffset: offset,
-            lastRequestedOffset: lastAutoLoadedLiveAudioOffset,
-            canLoadMoreOlderRows: canLoadMoreLiveAudioRows,
-            isLoadingOlderRows: isLoadingMoreLiveAudio
-        ) else { return }
-
-        lastAutoLoadedLiveAudioOffset = offset
-        await loadMoreLiveAudioRows()
     }
 
     private func loadMoreLiveFrames() async {
@@ -3739,308 +2153,6 @@ public struct DashboardView: View {
             )
             Log.error("[Dashboard] Failed to refresh dictation history", category: .ui, error: error)
         }
-    }
-
-    private func loadLiveAudioDashboardData(reset: Bool = true) async {
-        guard reset || canLoadMoreLiveAudioRows else { return }
-        guard !isLoadingLiveAudio && !isLoadingMoreLiveAudio else { return }
-
-        if reset {
-            isLoadingLiveAudio = liveAudioRows.isEmpty
-            canLoadMoreLiveAudioRows = true
-            lastAutoLoadedLiveAudioBoundaryRowID = nil
-            lastAutoLoadedLiveAudioOffset = nil
-        } else {
-            isLoadingMoreLiveAudio = true
-        }
-        defer {
-            isLoadingLiveAudio = false
-            isLoadingMoreLiveAudio = false
-        }
-
-        do {
-            guard let queries = await coordinatorWrapper.coordinator.getAudioTranscriptionQueries() else {
-                liveAudioRawRows = []
-                liveAudioRows = []
-                liveAudioStatusRows = []
-                liveAudioTranscriptBlocks = []
-                liveAudioTranscriptOffset = 0
-                lastAutoLoadedLiveAudioBoundaryRowID = nil
-                lastAutoLoadedLiveAudioOffset = nil
-                liveAudioError = "Transcript store is not available"
-                return
-            }
-
-            let canLoadMore: Bool
-            if reset {
-                let activityRows = try await fetchLiveAudioRows(
-                    queries: queries,
-                    limit: Self.transcriptPageSize,
-                    offset: 0,
-                    includeActivityRows: true
-                )
-                let transcriptRows = try await fetchLiveAudioRows(
-                    queries: queries,
-                    limit: Self.transcriptPageSize,
-                    offset: 0,
-                    includeActivityRows: false
-                )
-                var mergedRows = normalizedLiveAudioRows(activityRows + transcriptRows)
-                var fetchedTranscriptRows = transcriptRows.count
-                var lastFetchedTranscriptRows = transcriptRows.count
-                var fetchedPageCount = 1
-                var preparedSnapshot = await prepareLiveAudioSnapshot(for: mergedRows)
-                var transcriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
-                    currentOffset: 0,
-                    fetchedTranscriptRows: lastFetchedTranscriptRows,
-                    reset: true
-                )
-
-                while DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
-                    readableRowCount: preparedSnapshot.transcriptRows.count,
-                    targetReadableRowCount: DashboardLiveMemoryPolicy.initialReadableTranscriptTarget,
-                    fetchedTranscriptRows: lastFetchedTranscriptRows,
-                    fetchedPageCount: fetchedPageCount,
-                    pageSize: Self.transcriptPageSize,
-                    canLoadMoreOlderRows: lastFetchedTranscriptRows == Self.transcriptPageSize
-                ) {
-                    let olderTranscriptRows = try await fetchLiveAudioRows(
-                        queries: queries,
-                        limit: Self.transcriptPageSize,
-                        offset: transcriptOffset,
-                        includeActivityRows: false
-                    )
-                    guard !olderTranscriptRows.isEmpty else {
-                        lastFetchedTranscriptRows = 0
-                        break
-                    }
-
-                    mergedRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
-                        existing: mergedRows,
-                        latest: olderTranscriptRows
-                    )
-                    lastFetchedTranscriptRows = olderTranscriptRows.count
-                    fetchedPageCount += 1
-                    fetchedTranscriptRows += olderTranscriptRows.count
-                    transcriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
-                        currentOffset: transcriptOffset,
-                        fetchedTranscriptRows: olderTranscriptRows.count,
-                        reset: false
-                    )
-                    preparedSnapshot = await prepareLiveAudioSnapshot(for: mergedRows)
-                }
-
-                guard !Task.isCancelled else { return }
-                liveAudioRawRows = mergedRows
-                applyLiveAudioSnapshot(preparedSnapshot)
-                liveAudioTranscriptOffset = fetchedTranscriptRows
-                canLoadMore = lastFetchedTranscriptRows == Self.transcriptPageSize
-            } else {
-                let targetReadableRows = liveAudioRows.count + DashboardLiveMemoryPolicy.olderReadableTranscriptTarget
-                var transcriptOffset = liveAudioTranscriptOffset
-                var fetchedTranscriptRows = 0
-                var lastFetchedTranscriptRows = Self.transcriptPageSize
-                var fetchedPageCount = 0
-                var mergedRows = liveAudioRawRows
-                var preparedSnapshot = await prepareLiveAudioSnapshot(for: mergedRows)
-
-                repeat {
-                    let rows = try await fetchLiveAudioRows(
-                        queries: queries,
-                        limit: Self.transcriptPageSize,
-                        offset: transcriptOffset,
-                        includeActivityRows: false
-                    )
-                    guard !rows.isEmpty else {
-                        lastFetchedTranscriptRows = 0
-                        break
-                    }
-
-                    mergedRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
-                        existing: mergedRows,
-                        latest: rows
-                    )
-                    lastFetchedTranscriptRows = rows.count
-                    fetchedPageCount += 1
-                    fetchedTranscriptRows += rows.count
-                    transcriptOffset = DashboardLiveAudioPaginationPolicy.nextTranscriptOffset(
-                        currentOffset: transcriptOffset,
-                        fetchedTranscriptRows: rows.count,
-                        reset: false
-                    )
-                    preparedSnapshot = await prepareLiveAudioSnapshot(for: mergedRows)
-                } while DashboardLiveAudioHistoryPolicy.shouldPrefetchMoreReadableRows(
-                    readableRowCount: preparedSnapshot.transcriptRows.count,
-                    targetReadableRowCount: targetReadableRows,
-                    fetchedTranscriptRows: lastFetchedTranscriptRows,
-                    fetchedPageCount: fetchedPageCount,
-                    pageSize: Self.transcriptPageSize,
-                    canLoadMoreOlderRows: lastFetchedTranscriptRows == Self.transcriptPageSize
-                )
-
-                guard !Task.isCancelled else { return }
-                liveAudioRawRows = mergedRows
-                applyLiveAudioSnapshot(preparedSnapshot)
-                canLoadMore = lastFetchedTranscriptRows == Self.transcriptPageSize
-                liveAudioTranscriptOffset = transcriptOffset
-                if fetchedTranscriptRows > 0 {
-                    DashboardViewModel.recordDashboardTranscriptLoadOlder(
-                        coordinator: coordinatorWrapper.coordinator,
-                        surface: "live_audio"
-                    )
-                }
-            }
-
-            canLoadMoreLiveAudioRows = canLoadMore
-            liveAudioError = nil
-        } catch {
-            liveAudioError = "Unable to load live transcript"
-            DashboardViewModel.recordDashboardLoadFailed(
-                coordinator: coordinatorWrapper.coordinator,
-                surface: "live_audio",
-                error: error
-            )
-            Log.error("[Dashboard] Failed to load live audio transcript", category: .ui, error: error)
-        }
-    }
-
-    private func refreshLiveAudioDashboardData() async {
-        guard !isLoadingLiveAudio && !isLoadingMoreLiveAudio else { return }
-        if liveAudioRawRows.isEmpty {
-            await loadLiveAudioDashboardData(reset: true)
-            return
-        }
-
-        do {
-            guard let queries = await coordinatorWrapper.coordinator.getAudioTranscriptionQueries() else {
-                liveAudioError = "Transcript store is not available"
-                return
-            }
-
-            let activityRows = try await fetchLiveAudioRows(
-                queries: queries,
-                limit: Self.transcriptPageSize,
-                offset: 0,
-                includeActivityRows: true
-            )
-            let transcriptRows = try await fetchLiveAudioRows(
-                queries: queries,
-                limit: Self.transcriptPageSize,
-                offset: 0,
-                includeActivityRows: false
-            )
-            let mergedRows = DashboardLiveAudioPresentationPolicy.mergedRowsReplacingOlderPasses(
-                existing: liveAudioRawRows,
-                latest: activityRows + transcriptRows
-            )
-            let preparedSnapshot = await prepareLiveAudioSnapshot(for: mergedRows)
-            guard !Task.isCancelled else { return }
-            liveAudioRawRows = mergedRows
-            applyLiveAudioSnapshot(preparedSnapshot)
-            liveAudioTranscriptOffset = max(liveAudioTranscriptOffset, transcriptRows.count)
-            if liveAudioRows.count <= Self.transcriptPageSize {
-                canLoadMoreLiveAudioRows = transcriptRows.count == Self.transcriptPageSize
-            }
-            liveAudioError = nil
-        } catch {
-            liveAudioError = "Unable to load live transcript"
-            DashboardViewModel.recordDashboardLoadFailed(
-                coordinator: coordinatorWrapper.coordinator,
-                surface: "live_audio",
-                error: error
-            )
-            Log.error("[Dashboard] Failed to refresh live audio transcript", category: .ui, error: error)
-        }
-    }
-
-    private func refreshLiveDerivedPresentation() async {
-        liveDerivedPresentationGeneration &+= 1
-        let generation = liveDerivedPresentationGeneration
-        let moments = recentActivityFrames.map { item in
-            let appName = liveFrameDisplayAppName(item)
-            return RetraceActivityMoment(
-                timestamp: item.frame.timestamp,
-                appName: appName,
-                windowTitle: item.frame.metadata.windowName,
-                browserURL: item.frame.metadata.browserURL,
-                isSelfCapture: isRetraceActivityFrame(item, resolvedAppName: appName)
-            )
-        }
-        let speech = liveAudioTranscriptBlocks
-            .prefix(RetraceActivityBriefPolicy.maximumSpeechSegments)
-            .map { block in
-                RetraceSpeechMoment(
-                    startedAt: block.startedAt,
-                    endedAt: block.endedAt,
-                    text: block.text
-                )
-            }
-        let command = fuseIntelViewModel.command
-        let feed = fuseIntelViewModel.feed
-        let start = CFAbsoluteTimeGetCurrent()
-
-        let derived = await Task.detached(priority: .utility) {
-            let activityBrief = RetraceActivityBriefPolicy.make(moments: moments, speech: speech)
-            return DashboardLiveDerivedPresentation(
-                activityBrief: activityBrief,
-                fuseIntel: FuseIntelPresentationSnapshotPolicy.make(
-                    command: command,
-                    feed: feed,
-                    contextText: activityBrief.contextText
-                )
-            )
-        }.value
-
-        guard !Task.isCancelled, generation == liveDerivedPresentationGeneration else { return }
-        if liveActivityBriefSnapshot != derived.activityBrief {
-            liveActivityBriefSnapshot = derived.activityBrief
-        }
-        if liveFuseIntelPresentationSnapshot != derived.fuseIntel {
-            liveFuseIntelPresentationSnapshot = derived.fuseIntel
-        }
-        Log.recordLatency(
-            "dashboard.live.derived_presentation_background_ms",
-            valueMs: (CFAbsoluteTimeGetCurrent() - start) * 1_000,
-            category: .ui,
-            summaryEvery: 10,
-            warningThresholdMs: 25,
-            criticalThresholdMs: 75
-        )
-    }
-
-    private func refreshLatestLiveContextFrame() async {
-        do {
-            let fetchLimit = recentActivityFrames.isEmpty
-                ? DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit
-                : DashboardLiveLayoutPolicy.activityRefreshFrameFetchLimit
-            let frames = try await coordinatorWrapper.coordinator.getMostRecentFramesWithVideoInfo(
-                limit: fetchLimit
-            )
-            await resolveLiveFrameAppNames(frames)
-            guard !Task.isCancelled else { return }
-
-            var seenFrameIDs = Set<FrameID>()
-            let now = Date()
-            let usefulFrames = (frames.filter { !isRetraceActivityFrame($0) } + recentActivityFrames)
-                .sorted { $0.frame.timestamp > $1.frame.timestamp }
-                .filter { $0.frame.timestamp <= now && now.timeIntervalSince($0.frame.timestamp) <= RetraceActivityBriefPolicy.recentWindowSeconds }
-                .filter { seenFrameIDs.insert($0.frame.id).inserted }
-            recentActivityFrames = Array(usefulFrames.prefix(RetraceActivityBriefPolicy.maximumMoments))
-            latestLiveContextFrame = usefulFrames.first
-        } catch {
-            Log.warning("[Dashboard] Unable to refresh latest live screen context: \(error)", category: .ui)
-        }
-    }
-
-    private func isRetraceActivityFrame(
-        _ item: FrameWithVideoInfo,
-        resolvedAppName: String? = nil
-    ) -> Bool {
-        if item.frame.metadata.appBundleID?.caseInsensitiveCompare("io.retrace.app") == .orderedSame {
-            return true
-        }
-        let appName = resolvedAppName ?? liveFrameDisplayAppName(item)
-        return appName.caseInsensitiveCompare("Retrace") == .orderedSame
     }
 
     private func loadLiveFramesDashboardData(reset: Bool = true) async {
@@ -4160,81 +2272,6 @@ public struct DashboardView: View {
     private func mergeLatestDictationSessions(_ sessions: [DictationSession]) {
         let latestIDs = Set(sessions.map(\.id))
         recentDictationSessions = sessions + recentDictationSessions.filter { !latestIDs.contains($0.id) }
-    }
-
-    private func fetchLiveAudioRows(
-        queries: AudioTranscriptionQueries,
-        limit: Int,
-        offset: Int,
-        includeActivityRows: Bool
-    ) async throws -> [DashboardLiveAudioRow] {
-        let transcriptions = try await queries.getTranscriptions(
-            from: Date(timeIntervalSince1970: 0),
-            to: Date(),
-            source: nil,
-            limit: limit,
-            offset: offset,
-            includeActivityRows: includeActivityRows
-        )
-        return liveAudioRows(from: transcriptions)
-    }
-
-    private func liveAudioRows(from transcriptions: [AudioTranscription]) -> [DashboardLiveAudioRow] {
-        transcriptions.map {
-            DashboardLiveAudioRow(
-                id: $0.id,
-                text: DashboardTranscriptDisplayPolicy.copyText($0.text),
-                startedAt: $0.startTime,
-                endedAt: $0.endTime,
-                source: $0.source,
-                confidence: $0.confidence,
-                transcriptStatus: $0.transcriptStatus,
-                detectedLanguage: $0.detectedLanguage,
-                audioVariant: $0.audioVariant,
-                qualityFlags: $0.qualityFlags,
-                transcriptionPass: $0.transcriptionPass,
-                batchAudioPath: $0.batchAudioPath
-            )
-        }
-    }
-
-    private func normalizedLiveAudioRows(_ rows: [DashboardLiveAudioRow]) -> [DashboardLiveAudioRow] {
-        DashboardLiveAudioPresentationPolicy.normalizedRows(rows)
-    }
-
-    private func prepareLiveAudioSnapshot(
-        for rawRows: [DashboardLiveAudioRow]
-    ) async -> DashboardLiveAudioPreparedSnapshot {
-        let start = CFAbsoluteTimeGetCurrent()
-        let statusRowLimit = DashboardLiveMemoryPolicy.recentStatusRowLimit
-        let snapshot = await Task.detached(priority: .userInitiated) {
-            DashboardLiveAudioPreparedSnapshot(
-                rawRows: rawRows,
-                statusRowLimit: statusRowLimit
-            )
-        }.value
-
-        Log.recordLatency(
-            "dashboard.live.transcript_prepare_background_ms",
-            valueMs: (CFAbsoluteTimeGetCurrent() - start) * 1_000,
-            category: .ui,
-            summaryEvery: 10,
-            warningThresholdMs: 50,
-            criticalThresholdMs: 150
-        )
-        return snapshot
-    }
-
-    private func applyLiveAudioSnapshot(_ snapshot: DashboardLiveAudioPreparedSnapshot) {
-        if liveAudioRows != snapshot.transcriptRows {
-            liveAudioRows = snapshot.transcriptRows
-        }
-        if liveAudioStatusRows != snapshot.statusRows {
-            liveAudioStatusRows = snapshot.statusRows
-        }
-        if liveAudioTranscriptBlocks != snapshot.transcriptBlocks {
-            liveAudioTranscriptBlocks = snapshot.transcriptBlocks
-        }
     }
 
     private func appendLiveFrames(_ frames: [DashboardScreenshotRow]) {

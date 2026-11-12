@@ -58,6 +58,7 @@ final class EvidenceViewModel: ObservableObject {
     @Published private(set) var newerRevision: Int64?
     @Published private(set) var isPresentingEvidence = false
     @Published private(set) var selectedFrame: FrameReference?
+    private(set) var commandSelectionID: UUID?
 
     private let client: EvidenceClient
     private var generation: UInt64 = 0
@@ -126,9 +127,47 @@ final class EvidenceViewModel: ObservableObject {
         await select(.evidence(reference), expectedFrame: nil, requiresFrameProof: false) { reference }
     }
 
+    /// Prepare without publishing source content; publish a complete selection only while the
+    /// command's source/grant authority still holds at the synchronous UI boundary.
+    func openEvidenceFromCommand(_ reference: ScreenEvidenceRef, authorization: RetraceForegroundAuthorization,
+                                 selectionID: UUID = UUID()) async throws {
+        let token = try authorization.effect {
+            closeEvidence()
+            generation &+= 1
+            commandSelectionID = selectionID
+            isPresentingEvidence = true; resolvingEvidence = true
+            return generation
+        }
+        do {
+            let result = await client.resolve(.screen(reference))
+            try Self.validate(result, reference: .screen(reference), expectedFrame: nil)
+            let retained: ScreenEvidenceSnapshot?
+            if case .unavailable = result { retained = await client.retainedScreen(reference) }
+            else { retained = nil }
+            if let retained { try Self.validate(retained, reference: reference, expectedFrame: nil) }
+            try await authorization.validate()
+            try authorization.effect {
+                guard generation == token, commandSelectionID == selectionID else { throw CancellationError() }
+                evidenceReference = .screen(reference); resolution = result; retainedSnapshot = retained
+                if case .screen(let snapshot, _) = result { selectedFrame = snapshot.frame }
+                else { selectedFrame = retained?.frame }
+                isPresentingEvidence = true; resolvingEvidence = false
+            }
+        } catch {
+            closeCommandEvidence(selectionID)
+            throw error
+        }
+    }
+
+    func closeCommandEvidence(_ selectionID: UUID) {
+        guard commandSelectionID == selectionID else { return }
+        closeEvidence()
+    }
+
     func closeEvidence() {
         guard isPresentingEvidence || task != nil else { return }
         generation &+= 1
+        commandSelectionID = nil
         task?.cancel(); task = nil; request = nil
         selectedSourceProof = nil
         resolution = nil; evidenceReference = nil; selectedFrame = nil
@@ -142,6 +181,7 @@ final class EvidenceViewModel: ObservableObject {
     /// revalidation can suspend. Keep the original citation as the only retry target.
     func invalidateForSourceChange() {
         generation &+= 1
+        commandSelectionID = nil
         task?.cancel(); task = nil; request = nil
         selectedSourceProof = nil
         resolution = .unavailable(.sourceDisconnected)
@@ -206,6 +246,7 @@ final class EvidenceViewModel: ObservableObject {
             return
         }
         generation &+= 1
+        commandSelectionID = nil
         let token = generation
         task?.cancel()
         request = selection

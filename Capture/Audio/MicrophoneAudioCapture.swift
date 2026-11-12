@@ -55,6 +55,13 @@ public actor MicrophoneAudioCapture {
 
     // MARK: - Lifecycle
 
+    /// Passive native connection state. A running session can have no selected
+    /// input while waiting for a device event; that is unavailable, not running.
+    public func runtimeState() -> AudioSourceRuntimeState {
+        guard generation != nil else { return .paused }
+        return isRunning && selectedInput != nil ? .running : .unavailable
+    }
+
     /// Start one source stream. Concurrent starts share native startup; device
     /// changes replace only the input/delegate while this stream stays open.
     public func startCapture() async throws {
@@ -144,7 +151,8 @@ public actor MicrophoneAudioCapture {
             return
         }
         guard let continuation = audioContinuation else { throw CancellationError() }
-        let next = MicAudioDelegate(continuation: continuation, formatConverter: AudioFormatConverter())
+        let next = MicAudioDelegate(continuation: continuation, formatConverter: AudioFormatConverter(),
+            recordingGeneration: id)
         observation?.events.setInputUID(input.uid)
         delegate = next
         do {
@@ -256,13 +264,15 @@ final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDele
     private let stateLock = NSLock()
     private var isFinished = false
     private var acceptsSamples = true
-    private var pendingStart: Date?
-    private var lastOutputEnd: Date?
+    private var sampleClock = AudioCaptureSampleClock()
+    private let recordingGeneration: UUID
     private var reportedConversionFailure = false
 
-    init(continuation: AsyncStream<CapturedAudio>.Continuation, formatConverter: AudioFormatConverter) {
+    init(continuation: AsyncStream<CapturedAudio>.Continuation, formatConverter: AudioFormatConverter,
+         recordingGeneration: UUID = UUID()) {
         self.continuation = continuation
         self.formatConverter = formatConverter
+        self.recordingGeneration = recordingGeneration
         super.init()
     }
 
@@ -274,21 +284,37 @@ final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDele
         stateLock.lock()
         defer { stateLock.unlock() }
         guard !isFinished, acceptsSamples else { return }
-        if pendingStart == nil { pendingStart = receivedAt }
+        let packet: AudioNativePacketTiming
+        do { packet = try AudioNativePacketTiming(sampleBuffer) }
+        catch {
+            // Rejected metadata has not entered the converter. Keep only its
+            // already accepted predecessor's tail before ending continuity.
+            if let tail = try? formatConverter.finish() { emit(tail) }
+            resetAfterConversionFailure()
+            return
+        }
         do {
+            if !sampleClock.isContinuous(packet) {
+                emit(try formatConverter.finish())
+                sampleClock.begin(packet, receivedAt: receivedAt)
+            }
             let data = try formatConverter.convert(sampleBuffer: sampleBuffer)
-            emit(data, at: pendingStart ?? receivedAt)
+            sampleClock.consumed(packet)
+            emit(data)
             reportedConversionFailure = false
         } catch {
             // A rejected packet is a discontinuity; retain neither filter history nor
             // its wall-clock anchor. Empty successful output above is normal priming.
-            formatConverter.reset()
-            pendingStart = nil
-            lastOutputEnd = nil
-            if !reportedConversionFailure {
-                Log.warning("[MicrophoneAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
-                reportedConversionFailure = true
-            }
+            resetAfterConversionFailure()
+        }
+    }
+
+    private func resetAfterConversionFailure() {
+        formatConverter.reset()
+        sampleClock.reset()
+        if !reportedConversionFailure {
+            Log.warning("[MicrophoneAudioCapture] Audio format conversion failed; waiting for a valid buffer", category: .capture)
+            reportedConversionFailure = true
         }
     }
 
@@ -305,21 +331,28 @@ final class MicAudioDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDele
         guard !isFinished else { return }
         isFinished = true
         do {
-            emit(try formatConverter.finish(), at: lastOutputEnd ?? pendingStart ?? Date())
+            emit(try formatConverter.finish())
         } catch {
             Log.warning("[MicrophoneAudioCapture] Could not drain final audio conversion samples", category: .capture)
         }
     }
 
-    private func emit(_ data: Data, at timestamp: Date) {
-        guard !data.isEmpty else { return }
+    private func emit(_ data: Data) {
+        let startSample = sampleClock.emittedFrames
+        let frameCount = data.count / MemoryLayout<Int16>.size
+        guard !data.isEmpty, let continuityID = sampleClock.continuityID,
+              let approximateOrigin = sampleClock.wallOrigin,
+              let timestamp = sampleClock.timestampForOutput(frameCount: frameCount) else { return }
         let duration = Double(data.count) / Double(formatConverter.targetSampleRate * MemoryLayout<Int16>.size)
         continuation.yield(CapturedAudio(
             timestamp: timestamp, audioData: data, duration: duration, source: .microphone,
-            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels
+            sampleRate: formatConverter.targetSampleRate, channels: formatConverter.targetChannels,
+            sampleIdentity: LiveAudioSampleIdentity(recordingGeneration: recordingGeneration,
+                continuityID: continuityID, startSample: startSample, sampleCount: Int64(frameCount),
+                sampleRate: formatConverter.targetSampleRate,
+                approximateOrigin: approximateOrigin),
+            voiceMarkerPlaybackAdmission: RetracePlaybackGate.shared.admission
         ))
-        lastOutputEnd = timestamp.addingTimeInterval(duration)
-        pendingStart = nil
     }
 }
 

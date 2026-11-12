@@ -74,15 +74,15 @@
 
     <!-- Privacy - Screen Recording Usage Description -->
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Retrace needs screen recording permission to capture your screen history. All data stays local and encrypted on your Mac.</string>
+    <string>Retrace captures your screen history for local search. You can optionally share supporting text with your private companion and screen context with clients you authorize.</string>
 
     <!-- Privacy - Accessibility Usage Description -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>Retrace needs Automation permission to extract the browser url. If you're getting this notice, you're likely using an application that doesn't support url extraction via accessibility APIs, so URL Extraction needs to be done via Apple Script. All data stays local and encrypted on your Mac.</string>
+    <string>Retrace uses Automation to read the browser URL associated with a captured window. You can optionally share this context with your private companion or clients you authorize.</string>
 
     <!-- Microphone permission -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>Retrace records audio for local speech-to-text transcription. All audio stays on your Mac.</string>
+    <string>Retrace records audio for on-device transcription and optional spoken markers. If you enable your private companion, audio can be sent to that Mac for speaker processing.</string>
 
     <!-- Required Entitlements -->
     <key>com.apple.security.device.screen-recording</key>

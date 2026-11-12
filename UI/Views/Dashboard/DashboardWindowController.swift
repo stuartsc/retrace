@@ -236,6 +236,12 @@ public class DashboardWindowController: NSObject {
         show()
     }
 
+    public func showVoiceMarkerSettings() {
+        navigation.openSettings(tab: .audio, scrollTargetID: SettingsView.voiceMarkersTargetID)
+        notificationCenter.post(name: .openSettings, object: self)
+        show()
+    }
+
     /// Toggle between settings and dashboard views
     /// If on dashboard or window not visible: show settings
     /// If on settings: go back to dashboard
@@ -417,7 +423,8 @@ struct DashboardContentView: View {
                     viewModel: dashboardViewModel,
                     coordinator: coordinator,
                     launchOnLoginReminderManager: launchOnLoginReminderManager,
-                    hasLoadedInitialData: $hasLoadedDashboard
+                    hasLoadedInitialData: $hasLoadedDashboard,
+                    isActive: navigation.selectedView == .dashboard
                 )
             },
             settings: { destination in
@@ -534,9 +541,18 @@ struct DashboardDestinationView<Dashboard: View, Settings: View, Changelog: View
     var monitor: () -> Monitor
 
     var body: some View {
-        Group {
+        ZStack {
+            // Keep the dashboard's native lists and reading position attached
+            // while a sibling destination temporarily owns the window.
+            dashboard()
+                .opacity(navigation.selectedView == .dashboard ? 1 : 0)
+                .animation(nil, value: navigation.selectedView)
+                .allowsHitTesting(navigation.selectedView == .dashboard)
+                .disabled(navigation.selectedView != .dashboard)
+                .accessibilityHidden(navigation.selectedView != .dashboard)
+
             switch navigation.selectedView {
-            case .dashboard: dashboard()
+            case .dashboard: EmptyView()
             case .settings: settings(navigation.settingsDestination)
             case .changelog: changelog()
             case .monitor: monitor()

@@ -1,0 +1,18 @@
+{
+  "manifestSHA256": "e2c8cc509bc783d7ecf86902635ffdefb552360ba61a75b7e34bdb33513f694d",
+  "matching": 753,
+  "changed": [
+    "UI/AGENTS.md",
+    "UI/Tests/LiveContextNativeViewTests.swift",
+    "UI/Tests/LiveContextScrollInteractionTests.swift",
+    "UI/Tests/LiveContextWorkspaceTests.swift",
+    "UI/Tests/LiveTranscriptProjectionTests.swift",
+    "UI/ViewModels/LiveContextWorkspaceModel.swift",
+    "UI/ViewModels/LiveTranscriptProjection.swift",
+    "UI/Views/Dashboard/LiveContextScrollInteractionObserver.swift",
+    "UI/Views/Dashboard/LiveContextWorkspaceView.swift"
+  ],
+  "missing": [
+    "UI/Views/Dashboard/LiveTranscriptPresentationPage.swift"
+  ]
+}

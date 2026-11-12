@@ -829,21 +829,6 @@ public class DashboardViewModel: ObservableObject {
         )
     }
 
-    /// Record explicit interactions with the read-only FuseIntel dashboard integration.
-    public static func recordDashboardFuseIntelAction(
-        coordinator: AppCoordinator,
-        action: String,
-        section: String,
-        connectionState: String
-    ) {
-        let metadata = jsonMetadata([
-            "action": action,
-            "section": section,
-            "connectionState": connectionState
-        ])
-        recordMetric(coordinator: coordinator, type: .dashboardFuseIntelAction, metadata: metadata)
-    }
-
     public static func recordDateSearchSubmitted(
         coordinator: AppCoordinator,
         source: String,

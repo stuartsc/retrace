@@ -32,6 +32,28 @@ final class TimelineEvidenceSelectionTests: XCTestCase {
         try await database.close()
     }
 
+    func testSupersededCommandCleanupCannotCloseNewerSameReferenceTimelineSelection() async throws {
+        _ = try await insertFrame()
+        let selected = try await hit(), reference = try XCTUnwrap(selected.evidenceRef)
+        let model = isolatedTimeline(client: .live(service: service(ImageProbe(image: try Self.image()))))
+        let entered = expectation(description: "Older exact timeline command held")
+        let held = ResolutionGate(entered: entered), oldID = UUID(), currentID = UUID()
+        let old = Task { try await model.openEvidenceFromCommand(reference,
+            authorization: .init(fence: NativeMutationFence(), validation: { await held.wait() }), selectionID: oldID) }
+        await fulfillment(of: [entered], timeout: 3)
+        try await model.openEvidenceFromCommand(reference,
+            authorization: .init(fence: NativeMutationFence(), validation: {}), selectionID: currentID)
+        await held.release()
+        do { try await old.value; XCTFail("Older timeline completion must be rejected") }
+        catch is CancellationError { }
+        model.closeEvidenceFromCommand(oldID)
+        XCTAssertEqual(model.evidence.commandSelectionID, currentID)
+        XCTAssertEqual(model.evidence.evidenceReference, .screen(reference))
+        XCTAssertEqual(model.frames.map(\.frame.id), [reference.frameID])
+        model.closeEvidenceFromCommand(currentID)
+        XCTAssertFalse(model.evidence.isPresentingEvidence)
+    }
+
     func testIndexedResultAlwaysValidatesSourceIDAndTimestampBeforeImageRead() async throws {
         _ = try await insertFrame()
         let selected = try await hit()
@@ -339,6 +361,93 @@ final class TimelineEvidenceSelectionTests: XCTestCase {
             XCTAssertNil(model.evidence.resolution)
             XCTAssertNil(model.evidence.selectedFrame)
         }
+    }
+
+    func testHeldOCRCompletionCannotReopenClosedOrReplacedTimelinePresentation() async throws {
+        let frame = try await insertFrame()
+        for transition in 0..<3 {
+            let selected = try await hit(), original = try XCTUnwrap(selected.evidenceRef)
+            let entered = expectation(description: "App OCR repair held \(transition)")
+            let gate = ResolutionGate(entered: entered)
+            let probe = ImageProbe(image: try Self.image())
+            let model = isolatedTimeline(client: .live(service: service(probe)))
+            await model.openSearchResult(selected)
+            model.test_exactNeighbourhoodEnabled = true
+            var neighbourhoodReads = 0
+            model.test_windowFetchHooks.getFramesWithVideoInfo = { _, _, _, _, _ in
+                neighbourhoodReads += 1; return []
+            }
+            let database = try XCTUnwrap(self.database)
+            model.test_ocrRepair = { reference in
+                await gate.wait()
+                // The App job can finish after closing its presentation. Use an actual
+                // native revision to distinguish that outcome from merely returning it.
+                _ = try await database.commitFrameOCR(frameID: frame.id,
+                    text: .init(frameID: frame.id, timestamp: frame.timestamp,
+                        regions: [TextRegion(frameID: frame.id, text: "contract Repaired", bounds: CGRect(x: 10, y: 10, width: 100, height: 40))],
+                        metadata: frame.metadata), frameWidth: 640, frameHeight: 360)
+                let saved = try await database.currentScreenEvidence(frameID: frame.id, storeID: reference.storeID)
+                return .init(reference: try XCTUnwrap(saved).ref)
+            }
+            let pending = Task { try await model.reprocessCurrentFrameOCR() }
+            await fulfillment(of: [entered], timeout: 2)
+            if transition < 2 { model.handleTimelineClosed() }
+            if transition == 1 { model.handleTimelineOpened() }
+            // Reopening/reselecting the same identity must still revoke the older UI continuation.
+            if transition > 0 { await model.openSearchResult(selected) }
+            let beforeReads = await probe.count, beforeNeighbourhood = neighbourhoodReads
+            await gate.release(); try await pending.value
+            let current = try await database.currentScreenEvidence(frameID: frame.id, storeID: original.storeID)
+            XCTAssertEqual(current?.ref.extractionRevision, original.extractionRevision + 1)
+            XCTAssertFalse(model.isRepairingOCR)
+            if transition == 0 {
+                XCTAssertFalse(model.evidence.isPresentingEvidence)
+                XCTAssertNil(model.evidence.resolution)
+            } else {
+                XCTAssertEqual(try screen(model.evidence).ref, original, "The user's newer navigation owns the displayed revision")
+            }
+            let afterReads = await probe.count
+            XCTAssertEqual(afterReads, beforeReads, "A stale repair must not resolve hidden/new evidence")
+            XCTAssertEqual(neighbourhoodReads, beforeNeighbourhood, "A stale repair must not query 1,000 neighbouring frames")
+            model.handleTimelineClosed()
+        }
+    }
+
+    func testTimelineCloseDuringOCRCompletionImageReadCannotStartNeighbourhoodQuery() async throws {
+        let frame = try await insertFrame(), selected = try await hit(), original = try XCTUnwrap(selected.evidenceRef)
+        let entered = expectation(description: "repair completion image read held")
+        let gate = ResolutionGate(entered: entered)
+        var client = EvidenceClient.live(service: service(ImageProbe(image: try Self.image())))
+        let resolve = client.resolve
+        client.resolve = { reference in
+            let result = await resolve(reference)
+            if case .screen(let screen) = reference, screen.extractionRevision > original.extractionRevision {
+                return await gate.hold(result)
+            }
+            return result
+        }
+        let model = isolatedTimeline(client: client)
+        await model.openSearchResult(selected)
+        model.test_exactNeighbourhoodEnabled = true
+        var neighbourhoodReads = 0
+        model.test_windowFetchHooks.getFramesWithVideoInfo = { _, _, _, _, _ in
+            neighbourhoodReads += 1; return []
+        }
+        let database = try XCTUnwrap(self.database)
+        model.test_ocrRepair = { reference in
+            _ = try await database.commitFrameOCR(frameID: frame.id,
+                text: .init(frameID: frame.id, timestamp: frame.timestamp, regions: [], fullText: "contract Repaired"),
+                frameWidth: 640, frameHeight: 360)
+            let saved = try await database.currentScreenEvidence(frameID: frame.id, storeID: reference.storeID)
+            return .init(reference: try XCTUnwrap(saved).ref)
+        }
+        let pending = Task { try await model.reprocessCurrentFrameOCR() }
+        await fulfillment(of: [entered], timeout: 2)
+        model.handleTimelineClosed()
+        await gate.release(); try await pending.value
+        XCTAssertFalse(model.evidence.isPresentingEvidence)
+        XCTAssertNil(model.evidence.resolution)
+        XCTAssertEqual(neighbourhoodReads, 0)
     }
 
     func testOverlayDeliversRealSelectionOnceBeforeDismissalAndCloseCancelsQueuedNavigation() async throws {

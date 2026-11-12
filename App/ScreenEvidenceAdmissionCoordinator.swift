@@ -43,9 +43,13 @@ actor ScreenEvidenceAdmissionCoordinator: CaptureConfigurationAdmissionProtocol 
     }
 
     func activate(_ transition: ScreenEvidencePolicyTransition) async throws {
+        try await activate(transition, commandFence: nil)
+    }
+
+    func activate(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws {
         try await measured(.evidencePolicyActivated) {
             guard session == transition.session else { throw ScreenEvidenceAdmissionError.staleSession }
-            try await store.activateScreenEvidencePolicy(transition)
+            try await store.activateScreenEvidencePolicy(transition, commandFence: commandFence)
         }
     }
 

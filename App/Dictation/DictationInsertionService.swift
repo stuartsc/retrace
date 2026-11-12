@@ -21,44 +21,81 @@ public enum DictationInsertionError: Error, LocalizedError, Sendable {
 }
 
 public protocol DictationInsertionServicing: Actor {
-    func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval) async throws
+    /// Hold admission at the actual paste mutation, after all asynchronous hops.
+    func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval,
+                admission: NativeMutationFence) async throws
 }
 
 public actor ClipboardDictationInsertionService: DictationInsertionServicing {
+    #if DEBUG
+    private var beforeMutationForTesting: (@MainActor @Sendable () async -> Void)?
+    private var pasteboardNameForTesting: String?
+    private var postPasteForTesting: (@MainActor @Sendable () throws -> Void)?
+
+    /// Exercises the real clipboard mutation with an isolated pasteboard and no
+    /// global keyboard events. Production always uses the native path below.
+    init(testingPasteboardName: String,
+         beforeMutation: @escaping @MainActor @Sendable () async -> Void,
+         postPaste: @escaping @MainActor @Sendable () throws -> Void) {
+        pasteboardNameForTesting = testingPasteboardName
+        beforeMutationForTesting = beforeMutation
+        postPasteForTesting = postPaste
+    }
+    #endif
+
     public init() {}
 
-    public func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval) async throws {
+    public func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval,
+                       admission: NativeMutationFence) async throws {
         guard method == .clipboardPaste else {
             throw DictationInsertionError.unsupportedMethod
         }
+
+        let pasteboardName: String?
+        let postPaste: @MainActor @Sendable () throws -> Void
+        #if DEBUG
+        await beforeMutationForTesting?()
+        pasteboardName = pasteboardNameForTesting
+        postPaste = postPasteForTesting ?? Self.postNativePaste
+        #else
+        pasteboardName = nil
+        postPaste = Self.postNativePaste
+        #endif
 
         try await MainActor.run {
             guard !IsSecureEventInputEnabled() else {
                 throw DictationInsertionError.secureInputEnabled
             }
 
-            let pasteboard = NSPasteboard.general
+            let pasteboard = pasteboardName.map { NSPasteboard(name: .init($0)) } ?? .general
             let snapshot = PasteboardSnapshot.capture(from: pasteboard)
 
-            pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
+            // No suspension between permission validation and posting the paste.
+            // Disable waits only for this synchronous mutation, never recognition.
+            try admission.withAdmission {
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
+                do { try postPaste() }
+                catch { snapshot.restore(to: pasteboard); throw error }
 
-            guard let source = CGEventSource(stateID: .hidSystemState),
-                  let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
-                snapshot.restore(to: pasteboard)
-                throw DictationInsertionError.pasteEventFailed
-            }
-
-            keyDown.flags = .maskCommand
-            keyUp.flags = .maskCommand
-            keyDown.post(tap: .cghidEventTap)
-            keyUp.post(tap: .cghidEventTap)
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) {
-                snapshot.restore(to: pasteboard)
+                DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) {
+                    snapshot.restore(to: pasteboard)
+                }
             }
         }
+    }
+
+    @MainActor
+    private static func postNativePaste() throws {
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+            throw DictationInsertionError.pasteEventFailed
+        }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
     }
 }
 

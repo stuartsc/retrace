@@ -29,7 +29,9 @@ final class TranscriptAudioPlaybackTests: XCTestCase {
         var events: [TranscriptAudioPlayback.Event] = []
         var playingItem: AVPlayerItem?
         var completedAt: TimeInterval?
+        let suppressionGate = RetracePlaybackGate()
         let playback = TranscriptAudioPlayback(resolve: { _ in clip }, isMuted: true,
+            playbackGate: suppressionGate,
             onEvent: { event in
                 events.append(event)
                 if event.outcome == .completed { completedAt = playingItem?.currentTime().seconds }
@@ -40,6 +42,7 @@ final class TranscriptAudioPlaybackTests: XCTestCase {
         let player = try XCTUnwrap(playback.player)
         playingItem = player.currentItem
         XCTAssertTrue(player.isMuted, "The tests must never play sound on the shared desktop")
+        XCTAssertFalse(suppressionGate.isSuppressed, "Muted native fixture playback must not suppress recognition")
         XCTAssertEqual(player.currentItem?.forwardPlaybackEndTime.seconds ?? 0, 1.25, accuracy: 0.002)
         XCTAssertGreaterThanOrEqual(player.currentTime().seconds, 0.74)
         try await waitUntil { playback.state.phase == .idle }

@@ -36,6 +36,24 @@ final class HistoricalOCRIsolationTests: XCTestCase {
         }
     }
 
+    func testExplicitRepairForcesFreshNativeOCRForUnchangedRetainedPixels() async throws {
+        let liveAX = UnrelatedLiveAccessibility()
+        let processing = ProcessingManager(config: ProcessingConfig(accessibilityEnabled: true, minimumConfidence: 0.1),
+            accessibility: liveAX)
+        await processing.setRegionBasedOCR(enabled: true)
+        let frame = try retainedOCRFrame()
+        let first = try await processing.extractText(from: frame)
+        let cached = try await processing.extractText(from: frame)
+        XCTAssertEqual(cached.regions.map(\.createdAt), first.regions.map(\.createdAt), "Fixture must actually reuse the unchanged cache")
+        let repaired = try await processing.reprocessText(from: frame)
+        XCTAssertTrue(repaired.fullText.contains("4200.00"))
+        XCTAssertFalse(repaired.regions.isEmpty)
+        XCTAssertNotEqual(repaired.regions.map(\.createdAt), first.regions.map(\.createdAt), "Repair must run native OCR again")
+        XCTAssertEqual(repaired.metadata, frame.metadata)
+        let accesses = await liveAX.accesses
+        XCTAssertEqual(accesses, 0)
+    }
+
     func testQueuedBlankFrameCannotAcquireUnrelatedLiveTextAfterConfigChange() async throws {
         let liveAX = UnrelatedLiveAccessibility()
         let processing = ProcessingManager(

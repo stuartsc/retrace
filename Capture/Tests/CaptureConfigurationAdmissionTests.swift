@@ -162,6 +162,29 @@ final class CaptureConfigurationAdmissionTests: XCTestCase {
         await assertClaimDenied(.notPermitted)
     }
 
+    func testExpiredCommandDuringNativeUpdateCannotActivateOrBecomeFutureConfiguration() async throws {
+        _ = try await seedActivePolicy()
+        try await manager.startCapture(config: allowed)
+        let clock = AdmissionCommandClock()
+        let fence = NativeMutationFence(expiresAt: Date(timeIntervalSince1970: 2), clock: { clock.now() })
+        let gate = makeGate()
+        await source.holdNextUpdate(gate)
+        let update = launch { try await self.manager.updateConfig(self.denied, commandFence: fence) }
+        guard await requireEntered(gate) else { return }
+        clock.expire()
+        await gate.release()
+        do { try await update.value; XCTFail("Expired authority cannot activate the prepared configuration") }
+        catch is CancellationError {}
+        await assertClaimDenied(.inactive)
+        let config = await manager.getConfig(), nativeConfig = await source.lastConfiguration
+        XCTAssertEqual(config, allowed)
+        XCTAssertEqual(nativeConfig, allowed)
+        // A later local retry uses the retained old configuration, not the
+        // rejected MCP request which happened to reach the native boundary.
+        try await manager.updateConfig(allowed)
+        _ = try await claim()
+    }
+
     func testPausedConfigurationChangeAndRoundTripCannotReviveAnOldArtifact() async throws {
         let old = try await seedActivePolicy()
         let receipt = try await stageArtifact()
@@ -649,6 +672,11 @@ private actor CaptureAdmissionTestBridge: CaptureConfigurationAdmissionProtocol 
         let gate = activationGate; activationGate = nil
         await gate?.hold()
     }
+    func activate(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws {
+        try await database.activateScreenEvidencePolicy(transition, commandFence: commandFence)
+        let gate = activationGate; activationGate = nil
+        await gate?.hold()
+    }
     func revoke(_ transition: ScreenEvidencePolicyTransition) async throws {
         try await database.revokeScreenEvidencePolicy(transition)
         revokedTransitions.append(transition)
@@ -660,4 +688,11 @@ private actor CaptureAdmissionTestBridge: CaptureConfigurationAdmissionProtocol 
         try await database.endScreenEvidenceWriterSession(session)
         self.session = nil
     }
+}
+
+private final class AdmissionCommandClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expired = false
+    func now() -> Date { lock.lock(); defer { lock.unlock() }; return Date(timeIntervalSince1970: expired ? 3 : 1) }
+    func expire() { lock.lock(); expired = true; lock.unlock() }
 }

@@ -20,11 +20,25 @@ import Shared
 /// - 9: Punctuation-only decoder artifacts like "[" and "]" are treated as junk
 public let CURRENT_PIPELINE_VERSION: Int = 9
 
+/// Content-free failures for bounded context reads. Busy means the connection
+/// mutex was unavailable before any query work began; callers may retry briefly.
+public enum AudioContextReadError: Error, Sendable, Equatable {
+    case connectionBusy
+    case budgetExceeded
+    case invalidContinuation
+    case closed
+}
+
 /// Database queries for audio transcription storage and retrieval
 /// Owner: DATABASE agent
 public actor AudioTranscriptionQueries {
 
+    /// Includes the unconsumed lookahead row. No request drains old history to
+    /// prove that a long recording cannot overlap the selected interval.
+    public nonisolated static let contextCandidateLimit = 512
+
     private let db: OpaquePointer
+    private let contextReaderID = UUID()
     #if DEBUG
     private var pendingTransactionWillCommitForTesting: (@Sendable () -> Void)?
     func setPendingTransactionWillCommitForTesting(_ hook: (@Sendable () -> Void)?) {
@@ -477,6 +491,245 @@ public actor AudioTranscriptionQueries {
     }
 
     // MARK: - Query Transcriptions
+
+    /// A bounded live read, not an immutable snapshot or durable evidence grant.
+    /// The interval is half-open; entries retain their original full audio ranges.
+    public func getContextPage(
+        from startDate: Date, to endDate: Date, source: AudioSource? = nil,
+        limit: Int = 100, before cursor: AudioContextCursor? = nil, query: String? = nil
+    ) throws -> AudioContextPage {
+        try withContextReadBudget {
+            try readContextPage(from: startDate, to: endDate, source: source, limit: limit,
+                before: cursor, query: query)
+        }
+    }
+
+    private func readContextPage(
+        from startDate: Date, to endDate: Date, source: AudioSource?,
+        limit: Int, before cursor: AudioContextCursor?, query: String?
+    ) throws -> AudioContextPage {
+        try Task.checkCancellation()
+        // Validate before converting Double dates to integer SQLite milliseconds.
+        let seconds = [startDate.timeIntervalSince1970, endDate.timeIntervalSince1970]
+        guard seconds.allSatisfy({ $0.isFinite && (-62_135_596_800...253_402_300_799).contains($0) }),
+              startDate < endDate, (1...500).contains(limit) else {
+            throw DatabaseError.queryExecutionFailed("Invalid context interval or page size")
+        }
+        let from = Schema.dateToTimestamp(startDate)
+        let to = Schema.dateToTimestamp(endDate)
+        let query = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard from < to, query.utf8.count <= 512, !query.contains("\0") else {
+            throw DatabaseError.queryExecutionFailed("Invalid context interval or search phrase")
+        }
+        if let cursor {
+            guard cursor.readerID == contextReaderID, cursor.from == from, cursor.to == to,
+                  cursor.source == source, cursor.query == query else {
+                throw AudioContextReadError.invalidContinuation
+            }
+        }
+        // Bound chronological candidates before applying overlap/FTS/latest-pass
+        // filters. Filtering first makes a final partial page scan the complete
+        // historical tail through V23's start-time index. No lower start bound
+        // is valid: a much earlier recording may still overlap this interval.
+        var sql = "SELECT id,start_time,end_time,source FROM audio_captures WHERE start_time < ?"
+        // V23's existing (start_time,end_time) index includes the rowid. Follow
+        // its full order so even a large equal-start group needs no temp sort.
+        if cursor != nil { sql += " AND start_time <= ? AND (start_time, end_time, id) < (?, ?, ?)" }
+        sql += " ORDER BY start_time DESC, end_time DESC, id DESC LIMIT ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, to)
+        var parameter: Int32 = 2
+        if let cursor {
+            sqlite3_bind_int64(statement, parameter, cursor.start)
+            sqlite3_bind_int64(statement, parameter + 1, cursor.start)
+            sqlite3_bind_int64(statement, parameter + 2, cursor.end)
+            sqlite3_bind_int64(statement, parameter + 3, cursor.id)
+            parameter += 4
+        }
+        sqlite3_bind_int(statement, parameter, Int32(Self.contextCandidateLimit))
+
+        // Exact primary-key eligibility avoids reading captured text for the
+        // rejected historical candidates. MATCH remains a bound literal phrase.
+        var eligibilitySQL = "SELECT id FROM audio_captures WHERE id = ?"
+            + Self.latestBatchPassPredicate(alias: "audio_captures")
+        if !query.isEmpty {
+            eligibilitySQL += " AND EXISTS (SELECT 1 FROM audio_captures_fts WHERE rowid = audio_captures.id AND audio_captures_fts MATCH ?)"
+        }
+        var eligibility: OpaquePointer?
+        guard sqlite3_prepare_v2(db, eligibilitySQL, -1, &eligibility, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(eligibility) }
+        if !query.isEmpty {
+            let literal = "\"" + query.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            sqlite3_bind_text(eligibility, 2, literal, -1, SQLITE_TRANSIENT)
+        }
+        var entries: [AudioTranscription] = []
+        var lastInspected: (start: Int64, end: Int64, id: Int64)?
+        var continuation: (start: Int64, end: Int64, id: Int64)?
+        var scannedCandidates = 0
+        var scanIncomplete = false
+        while true {
+            try Task.checkCancellation()
+            let code = sqlite3_step(statement)
+            if code == SQLITE_DONE { break }
+            guard code == SQLITE_ROW else {
+                throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            scannedCandidates += 1
+            // Reserve the final raw candidate as an unconsumed lookahead. Its
+            // existence proves only unchecked candidates, not matching results.
+            if scannedCandidates == Self.contextCandidateLimit {
+                continuation = lastInspected
+                scanIncomplete = true
+                break
+            }
+            let candidate = (start: sqlite3_column_int64(statement, 1), end: sqlite3_column_int64(statement, 2),
+                id: sqlite3_column_int64(statement, 0))
+            defer { lastInspected = candidate }
+            guard sqlite3_column_type(statement, 2) != SQLITE_NULL,
+                  sqlite3_column_int64(statement, 2) > from,
+                  let rawSource = sqlite3_column_text(statement, 3) else { continue }
+            let candidateSource = String(cString: rawSource)
+            guard candidateSource != "word", source == nil || source?.rawValue == candidateSource else { continue }
+            sqlite3_reset(eligibility)
+            sqlite3_bind_int64(eligibility, 1, candidate.id)
+            let eligible = sqlite3_step(eligibility)
+            if eligible == SQLITE_DONE { continue }
+            guard eligible == SQLITE_ROW else {
+                throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            if entries.count == limit {
+                // The matching sentinel must remain available on the next page.
+                // Copy the prior inspected key before this iteration's defer.
+                continuation = lastInspected
+                break
+            }
+            if let row = try readContextEntry(id: candidate.id) { entries.append(row) }
+        }
+        let next = continuation.map {
+            AudioContextCursor(readerID: contextReaderID, from: from, to: to, source: source,
+                query: query, start: $0.start, end: $0.end, id: $0.id)
+        }
+        return AudioContextPage(entries: entries, nextCursor: next,
+            scanIncomplete: scanIncomplete, scannedCandidates: scannedCandidates)
+    }
+
+    /// Re-read one current latest-pass row before an explicit action. Callers
+    /// must compare it with the selected row and retain their source/lifetime fence.
+    public func getContextEntry(id: Int64) throws -> AudioTranscription? {
+        try withContextReadBudget { try readContextEntry(id: id) }
+    }
+
+    /// Exact original first-pass row for durable publication proofs. A later pass
+    /// does not replace this identity. Callers compare the complete retained row.
+    public func getRetainedFirstPassEntry(id: Int64) throws -> AudioTranscription? {
+        try withContextReadBudget { try readContextEntry(id: id, latestOnly: false) }
+    }
+
+    /// Exact retained first-pass rows for one canonical AAC path. This is an internal publication
+    /// boundary, not a search endpoint; callers must retain full-row source proofs.
+    public func getContextBatchEntries(batchAudioPath: String) throws -> [AudioTranscription] {
+        try withContextReadBudget {
+            guard !batchAudioPath.isEmpty, batchAudioPath.utf8.count <= 1024, !batchAudioPath.contains("\0") else {
+                throw DatabaseError.queryExecutionFailed("Invalid audio batch identity")
+            }
+            let sql = Self.contextColumns + " WHERE batch_audio_path = ? AND transcription_pass = 1 AND source != 'word' ORDER BY start_time,id LIMIT 1025"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, batchAudioPath, -1, SQLITE_TRANSIENT)
+            var rows: [AudioTranscription] = []
+            while true {
+                try Task.checkCancellation()
+                let code = sqlite3_step(statement)
+                if code == SQLITE_DONE { break }
+                guard code == SQLITE_ROW else { throw DatabaseError.queryExecutionFailed("Audio batch snapshot unavailable") }
+                rows.append(Self.contextEntry(statement))
+                guard rows.count <= 1024 else { throw DatabaseError.queryExecutionFailed("Audio batch exceeds publication budget") }
+            }
+            return rows
+        }
+    }
+
+    private func readContextEntry(id: Int64, latestOnly: Bool = true) throws -> AudioTranscription? {
+        try Task.checkCancellation()
+        let sql = Self.contextColumns + " WHERE id = ? AND source != 'word'"
+            + (latestOnly ? Self.latestBatchPassPredicate(alias: "audio_captures") : " AND transcription_pass = 1")
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { try Task.checkCancellation(); return nil }
+        guard code == SQLITE_ROW else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        try Task.checkCancellation()
+        return Self.contextEntry(statement)
+    }
+
+    /// This connection has no persistent progress handler. Hold its recursive
+    /// mutex while installing/removing this request-local handler so another
+    /// actor sharing the writer cannot use it. Noncritical UI reads fail busy
+    /// rather than waiting behind a writer. VM deadlines are cooperative: native
+    /// I/O is not a hard 250 ms wall-time guarantee.
+    private func withContextReadBudget<T>(_ operation: () throws -> T) throws -> T {
+        try Task.checkCancellation()
+        guard let mutex = sqlite3_db_mutex(db), sqlite3_mutex_try(mutex) == SQLITE_OK else {
+            throw AudioContextReadError.connectionBusy
+        }
+        defer { sqlite3_mutex_leave(mutex) }
+        var deadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+        return try withUnsafeMutablePointer(to: &deadline) { pointer in
+            sqlite3_progress_handler(db, 1_000, { context in
+                guard let context else { return 1 }
+                let deadline = context.assumingMemoryBound(to: ContinuousClock.Instant.self).pointee
+                return Task.isCancelled || ContinuousClock.now >= deadline ? 1 : 0
+            }, pointer)
+            defer { sqlite3_progress_handler(db, 0, nil, nil) }
+            do {
+                let value = try operation()
+                try Task.checkCancellation()
+                return value
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                if ContinuousClock.now >= pointer.pointee {
+                    throw AudioContextReadError.budgetExceeded
+                }
+                throw error
+            }
+        }
+    }
+
+    private static let contextColumns = """
+        SELECT id, session_id, text, start_time, end_time, source, confidence, created_at,
+               audio_path, transcript_status, detected_language, audio_variant, quality_flags,
+               transcription_pass, batch_audio_path FROM audio_captures
+        """
+
+    private static func contextEntry(_ statement: OpaquePointer?) -> AudioTranscription {
+        func text(_ column: Int32) -> String? {
+            sqlite3_column_text(statement, column).map { String(cString: $0) }
+        }
+        return AudioTranscription(id: sqlite3_column_int64(statement, 0), sessionID: text(1), text: text(2) ?? "",
+            startTime: Schema.timestampToDate(sqlite3_column_int64(statement, 3)),
+            endTime: Schema.timestampToDate(sqlite3_column_int64(statement, 4)),
+            source: AudioSource(rawValue: text(5) ?? "") ?? .unknown,
+            confidence: sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 6),
+            createdAt: Schema.timestampToDate(sqlite3_column_int64(statement, 7)),
+            audioPath: text(8), batchAudioPath: text(14), transcriptStatus: text(9) ?? "transcribed",
+            detectedLanguage: text(10), audioVariant: text(11) ?? "raw", qualityFlags: text(12),
+            transcriptionPass: Int(sqlite3_column_int(statement, 13)))
+    }
 
     /// Get transcriptions within a time range
     public func getTranscriptions(
@@ -1538,6 +1791,40 @@ public actor AudioTranscriptionQueries {
 }
 
 // MARK: - Audio Transcription Model
+
+/// Ephemeral last-inspected candidate key. It is tied to one reader and exact
+/// query scope, including candidates that did not match the selected interval.
+/// Order is descending start, end, then row ID, matching the existing V23 index.
+/// It is deliberately neither Codable nor an audio evidence reference.
+public struct AudioContextCursor: Sendable, Equatable {
+    fileprivate let readerID: UUID
+    fileprivate let from: Int64
+    fileprivate let to: Int64
+    fileprivate let source: AudioSource?
+    fileprivate let query: String
+    fileprivate let start: Int64
+    fileprivate let end: Int64
+    fileprivate let id: Int64
+}
+
+public struct AudioContextPage: Sendable {
+    public let entries: [AudioTranscription]
+    public let nextCursor: AudioContextCursor?
+    /// The candidate limit left unchecked history. A continuation does not
+    /// prove another matching row; an empty accepted page can still continue.
+    public let scanIncomplete: Bool
+    /// Includes an unconsumed raw/matching lookahead, bounded at 512 per request.
+    public let scannedCandidates: Int
+    public var hasMoreMatches: Bool { nextCursor != nil && !scanIncomplete }
+
+    public init(entries: [AudioTranscription], nextCursor: AudioContextCursor?,
+                scanIncomplete: Bool = false, scannedCandidates: Int? = nil) {
+        self.entries = entries
+        self.nextCursor = nextCursor
+        self.scanIncomplete = scanIncomplete
+        self.scannedCandidates = scannedCandidates ?? entries.count
+    }
+}
 
 public struct AudioTranscription: Sendable {
     public let id: Int64

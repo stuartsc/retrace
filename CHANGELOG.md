@@ -1,10 +1,54 @@
 # Updates and changelog
 
-Last updated: 2026-10-20.
+Last updated: 2026-10-22.
 
 This file records meaningful Retrace bug fixes and improvements. Dates under **Unreleased** identify when changes were documented. **Local trial** means a specific build has been installed and launched for assessment; it remains unreleased. Dated, versioned **Released** sections are added only after a verified release.
 
 ## Unreleased
+
+### 2026-10-22 — Restore transcript scrolling (source candidate)
+
+- Restore newest-first Live transcripts and automatic older-history loading as the user scrolls down, including across days and beyond the former 500-record stop. Remove manual transcript pages; date filters apply only to explicit search. Preserve pinned reading, saved pending recordings, speaker labels and exact playback. Validation and installed status are tracked in [the Live ledger](docs/live-context-markers-plan.md).
+
+### 2026-10-22 — Bounded older-audio reads local trial 2610.22.5
+
+- Replace the historical tail scan with at most 512 raw candidates per read under the existing 250 ms budget and V23 index. Preserve long-overlap matches, continuation from the last inspected candidate and progress through empty accepted pages; disclose unchecked coverage separately from known matching results. No index/schema migration is introduced.
+- Coalesce Live head/older reads and carry bounded continuation/coverage through Search, Copy context, MCP and companion readers. Generic/security review, full54 (**1,699 tests, 20 explicit skips, zero failures**), a fresh optimized build, responsive54 and pending54b passed. The latter used the unchanged binary with settled observations; original pending54's wide-sequence failure remains retained with unresolved attribution.
+- Signed **2610.22.5** installed at **06:09:48 Brisbane** and launched at **06:09:51**, preserving V23. Final metadata at **06:14:11**, process age **4:20**, verifies advancing frame/audio records; this is bounded runtime evidence. Actual Load older increased **100→178** recordings without timeout, retaining the reading anchor and explicit incomplete coverage. A later unchanged page did not establish cursor progress. Pending-keyboard, Return, resize/tab privacy and pinned-arrival checks passed within scope; Live was left Following live.
+- The previous .4 and recovery .19.6 bundles are retained. The saved-audio wall-clock restart gap was **17.372 seconds**, not exact acoustic coverage. Voice markers/MCP remain off and companion unconfigured; physical/performance/context-quality and broader acceptance remain open in the [delivery ledger](docs/live-context-markers-plan.md).
+
+### 2026-10-22 — Audio reader and responsive Live local trial 2610.22.4
+
+- Keep one App-owned read-only audio reader with coalesced opening and joined close so pagination retains its owner/cursor identity. Retry typed busy failures at most three times with 50/150 ms delays; failure diagnostics remain content-free.
+- Make pending recording text selectable for native keyboard focus and preserve the same transcript across wide/narrow resizing and compact tabs. Responsive53 and pending53 passed actual native checks at both widths, including retained scroll identity/position, hidden-tab input, Return to live and exact preservation of 101 canonical recordings.
+- Full53 passed **1,693 tests, 20 explicit skips, zero failures** after clean compilation; a separate fresh optimized build passed. Signed **2610.22.4** installed at **05:37:10 Brisbane** and launched at **05:37:13**, with V23 and new frame/audio advancement verified. The previous .3 bundle is retained and the restart gap disclosed. Pending52's eligibility-count fixture failure remains retained; the final oracle checks canonical rows directly without renaming copied AAC paths.
+- Actual installed pending-text Page Up and resize/tab retention/privacy checks pass. **Load older failed twice with `budgetExceeded`** in the installed library, so audio paging remains unaccepted despite passing fixtures. The reviewed source54 bounded-read repair above is undergoing clean validation and is not installed. See the [delivery ledger](docs/live-context-markers-plan.md).
+
+### 2026-10-22 — Live workspace local trial 2610.22.3
+
+- Keep Live mounted across Settings, independently load screen/transcript evidence and revalidate retained material before showing it. Render up to 50 transcript rows with 10-row overlap; Earlier/Later preserves access to the canonical loaded history.
+- Full47 passed **1,683 tests, 18 explicit skips, zero failures** after clean compilation; a separate clean optimized build passed. Native47 passed actual wide/narrow reading and Settings checks, with four external accessibility privacy checks. A separate maximum fixture reached all 1,064 authored items in both directions; measured layout cost improved, but long-run paging memory remains open.
+- Signed **2610.22.3** installed at **04:44:56 Brisbane** and launched at **04:45:06**. V23 and new frame/audio advancement were verified after five minutes. The previous .2 and recovery .19.6 bundles are retained; installation caused a disclosed recording restart gap.
+- Installed checks found pending-only Page Up failure and an intermittent recovering audio-list error. The **2610.22.4** source repairs above have focused/native responsive evidence, with final builds and installation pending. Complete installed workspace/MCP acceptance, physical speech timing and matched performance remain open. See the [delivery ledger](docs/live-context-markers-plan.md).
+
+### 2026-10-22 — Governor monitor timer mitigation (included in local trial 2610.22.3)
+
+- Replace only the governor monitor's one-second task sleep with `BackgroundProcessingMonitorDelay` in the existing `App/BackgroundProcessingGovernor.swift`. The one-shot native timer joins its event/cancel handlers and serial finalizer before returning; the next timer waits for the resource refresh to finish. Its dispatch clock excludes system sleep, so wake can retain up to the remaining one-second delay.
+- Add six actual native timer regressions in `BackgroundProcessingMonitorDelayTests` and two held-resource-read governor tests covering refresh/rearm ordering and concurrent close/reopen fences. `BackgroundProcessingGovernorTests` also contains an opt-in 90-second native observation and joined-restart check.
+- The reviewed mitigation passed clean full32 and full47 validation and the optimized governor32 90-second soak plus joined close/reopen (**94.524 seconds**). It is included in installed **2610.22.3**. Signed **2610.22.1** had reproduced the Swift sleep assertion and was rolled back to .19.6 before later trials; that failure history remains retained. The mitigation is not a demonstrated root-cause fix or broad stability/performance acceptance; see the [implementation and validation ledger](docs/live-context-markers-plan.md).
+
+### 2026-10-22 — Initial Live following and native validation (included in local trial 2610.22.3)
+
+- Address the populated Live transcript opening at its oldest row while labelled Following live. The follow-up establishes initial following after native layout and cancels pending movement when reading begins. Native47 checks pass at wide and narrow sizes, asserting the newest end before keyboard/wheel reading, a fresh arrival while pinned, and Return to live. The current implementation is included in full47 and installed **2610.22.3**; the pending-only keyboard issue above remains open.
+- Signed candidate **2610.22.1** crashed during its first minute of installed use and was rolled back to **2610.19.6**. That historical failure is superseded as installed state by **2610.22.3**, while its crash cause and complete installed Live acceptance remain open. Private native settings and transport fixtures provide scoped evidence only; see the [implementation and validation ledger](docs/live-context-markers-plan.md).
+
+### 2026-10-21 — Live context, spoken markers and private command access (source candidate)
+
+- Replace Operating Brief with a resizable transcript and screen workspace, selected-range search, explicit coverage, manual markers and a reviewed Copy context selection. Voice-marker settings use literal microphone phrases and typed timeline actions; recording remains independent of recognition availability.
+- Store marker anchors, recognition revisions, context proposals and manual corrections in a separate context database compatible with the V23 recording library. Provisional acknowledgement follows a durable write, exact AAC playback suppresses self-triggering, and automatic proposals preserve manual or pinned context. Superseded proposals retain their original evidence and can request fresh analysis after restart.
+- Add durable private companion transport and locally retained speaker results, plus a default-disabled native command endpoint with client grants, revision checks, request receipts and confirmed destructive previews. Derived context requires current source validation and an evidence grant. Outlook's separate services remain intact.
+- Expose content-free processing backlog and scheduler status through the same App owners, including CPU freshness and unavailable counts. Status reads do not activate optional models, companion transport or a storage scan.
+- The implementation is included in signed local trial **2610.22.3** in the isolated recovery-based worktree. Native authored speech has exercised the streaming recognizer and exact audio mapping. Clean full47/optimized builds, signed installation and scoped native checks are recorded separately from complete acceptance; the failed .1 trial and rollback remain documented above. Physical microphone latency, matched CPU cost and complete installed UI/MCP acceptance remain open. See the [implementation and validation ledger](docs/live-context-markers-plan.md).
 
 ### 2026-10-20 — Periodic capture during menu tracking local trial 2610.19.6
 

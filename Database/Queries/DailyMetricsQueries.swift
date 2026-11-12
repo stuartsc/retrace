@@ -58,6 +58,8 @@ public enum DailyMetricsQueries {
         case playbackToggled = "playback_toggled"
         case playbackSpeedChanged = "playback_speed_changed"
         case audioTranscriptPlayback = "audio_transcript_playback" // JSON {outcome,source}; categorical, no content or paths
+        case timelineMarkerAction = "timeline_marker_action" // JSON {action,outcome}; categorical only
+        case companionAction = "companion_action" // JSON {action,outcome}; categorical only
         case audioSearch = "audio_search" // categorical query/open outcomes, never transcript content
         case audioPreparation = "audio_preparation" // JSON {outcome,source}; saved hints and committed repair outcomes, no content or paths
 

@@ -61,6 +61,11 @@ public actor DataAdapter {
     private var cachedHiddenTagId: Int64?
     private let searchConnectionIdentity = UUID()
     private var rewindSearchGeneration = UUID()
+    private struct ImportedRead {
+        let cancel: @Sendable () -> Void
+        let join: Task<Void, Never>
+    }
+    private var importedReads: [UUID: ImportedRead] = [:]
 
     // MARK: - Initialization
 
@@ -82,27 +87,64 @@ public actor DataAdapter {
         config: DatabaseConfig,
         imageExtractor: ImageExtractor,
         cutoffDate: Date
-    ) {
+    ) async {
+        let (generation, pending) = detachRewind()
+        await drainImportedReads(pending)
+        guard rewindSearchGeneration == generation, !Task.isCancelled else { return }
+        publishRewind(connection: connection, config: config, imageExtractor: imageExtractor, cutoffDate: cutoffDate)
+    }
+
+    /// The shared source owner uses this checked publication boundary. File
+    /// opening/decryption happens before admission, and cannot silently publish
+    /// after a disable, location change, expired preview or grant revocation.
+    public func configureRewindChecked(connection: DatabaseConnection, config: DatabaseConfig,
+                                       imageExtractor: ImageExtractor, cutoffDate: Date,
+                                       fences: [NativeMutationFence],
+                                       selectionIsCurrent: @Sendable () -> Bool) async throws {
+        try Task.checkCancellation()
+        let (generation, pending) = detachRewind()
+        await drainImportedReads(pending)
+        func publish(_ index: Int) throws {
+            if index < fences.count { return try fences[index].withAdmission { try publish(index + 1) } }
+            try Task.checkCancellation()
+            guard rewindSearchGeneration == generation, selectionIsCurrent() else { throw SourceConfigurationError.stalePreview }
+            publishRewind(connection: connection, config: config, imageExtractor: imageExtractor, cutoffDate: cutoffDate)
+        }
+        try publish(0)
+    }
+
+    private func publishRewind(connection: DatabaseConnection, config: DatabaseConfig,
+                               imageExtractor: ImageExtractor, cutoffDate: Date) {
         self.rewindConnection = connection
         self.rewindConfig = config
         self.rewindImageExtractor = imageExtractor
         self.cutoffDate = cutoffDate
         rewindSearchGeneration = UUID()
+        segmentCache.removeAll()
         Log.info("[DataAdapter] Rewind source configured with cutoff \(cutoffDate)", category: .app)
     }
 
     /// Disconnect Rewind data source (clears connection without deleting data)
-    public func disconnectRewind() {
-        guard rewindConnection != nil else {
-            Log.info("[DataAdapter] No Rewind source to disconnect", category: .app)
-            return
-        }
+    public func disconnectRewind() async {
+        let (_, pending) = detachRewind()
+        await drainImportedReads(pending)
+        Log.info("[DataAdapter] Rewind source disconnected", category: .app)
+    }
+
+    private func detachRewind() -> (UUID, [UUID: ImportedRead]) {
         self.rewindConnection = nil
         self.rewindConfig = nil
         self.rewindImageExtractor = nil
         self.cutoffDate = nil
         rewindSearchGeneration = UUID()
-        Log.info("[DataAdapter] Rewind source disconnected", category: .app)
+        segmentCache.removeAll()
+        return (rewindSearchGeneration, importedReads)
+    }
+
+    private func drainImportedReads(_ pending: [UUID: ImportedRead]) async {
+        for read in pending.values { read.cancel() }
+        for read in pending.values { await read.join.value }
+        for id in pending.keys { importedReads[id] = nil }
     }
 
     /// Initialize the adapter
@@ -123,8 +165,32 @@ public actor DataAdapter {
     /// Shutdown the adapter
     public func shutdown() async {
         isInitialized = false
+        await disconnectRewind()
         cachedHiddenTagId = nil
         Log.info("[DataAdapter] Shutdown complete", category: .app)
+    }
+
+    /// Rewind media and detached SQL reads retain an owned task until completion.
+    /// Disconnect first revokes their generation, then cancels and joins them.
+    /// No result from the previous library may publish after a source switch.
+    private func importedRead<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        guard rewindConnection != nil else { throw DataAdapterError.sourceNotAvailable(.rewind) }
+        guard importedReads.count < 32 else { throw SearchPaginationError.dataChanged }
+        let generation = rewindSearchGeneration, id = UUID()
+        let task = Task { try await self.performImportedRead(generation: generation, operation) }
+        importedReads[id] = ImportedRead(cancel: { task.cancel() }, join: Task { _ = await task.result })
+        defer { importedReads[id] = nil }
+        let value = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        guard generation == rewindSearchGeneration, rewindConnection != nil else { throw SearchPaginationError.dataChanged }
+        return value
+    }
+
+    private func performImportedRead<T: Sendable>(generation: UUID,
+                                                  _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        guard generation == rewindSearchGeneration, rewindConnection != nil else { throw SearchPaginationError.dataChanged }
+        return try await operation()
     }
 
     // MARK: - Connection Selection
@@ -743,7 +809,9 @@ public actor DataAdapter {
 
         // Extract image based on source
         if frameSource == .rewind, let extractor = rewindImageExtractor {
-            return try await extractor.extractFrame(videoPath: videoInfo.videoPath, frameIndex: videoInfo.frameIndex, frameRate: videoInfo.frameRate)
+            return try await importedRead {
+                try await extractor.extractFrame(videoPath: videoInfo.videoPath, frameIndex: videoInfo.frameIndex, frameRate: videoInfo.frameRate)
+            }
         }
         return try await retraceImageExtractor.extractFrame(videoPath: videoInfo.videoPath, frameIndex: videoInfo.frameIndex, frameRate: videoInfo.frameRate)
     }
@@ -771,28 +839,24 @@ public actor DataAdapter {
             LIMIT 1;
             """
 
-        guard let statement = try? connection.prepare(sql: sql) else {
-            throw DataAdapterError.frameNotFound
-        }
-        defer { connection.finalize(statement) }
-
-        sqlite3_bind_int64(statement, 1, videoID.value)
-
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            throw DataAdapterError.frameNotFound
-        }
-
-        guard let pathPtr = sqlite3_column_text(statement, 0) else {
-            throw DataAdapterError.frameNotFound
-        }
-        let videoPath = String(cString: pathPtr)
-        let frameRate = sqlite3_column_double(statement, 1)
+        // Finalize the SQLite reader before crossing into an asynchronous media
+        // decoder. Disconnect joins decoding without retaining a database cursor.
+        let (videoPath, frameRate): (String, Double) = try {
+            guard let statement = try? connection.prepare(sql: sql) else { throw DataAdapterError.frameNotFound }
+            defer { connection.finalize(statement) }
+            sqlite3_bind_int64(statement, 1, videoID.value)
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  let pathPtr = sqlite3_column_text(statement, 0) else { throw DataAdapterError.frameNotFound }
+            return (String(cString: pathPtr), sqlite3_column_double(statement, 1))
+        }()
 
         let fullPath = "\(config.storageRoot)/\(videoPath)"
 
         // Extract image based on source
         if frameSource == .rewind, let extractor = rewindImageExtractor {
-            return try await extractor.extractFrame(videoPath: fullPath, frameIndex: frameIndex, frameRate: frameRate)
+            return try await importedRead {
+                try await extractor.extractFrame(videoPath: fullPath, frameIndex: frameIndex, frameRate: frameRate)
+            }
         }
         return try await retraceImageExtractor.extractFrame(videoPath: fullPath, frameIndex: frameIndex, frameRate: frameRate)
     }
@@ -813,11 +877,9 @@ public actor DataAdapter {
         }()
 
         if frameSource == .rewind, let extractor = rewindImageExtractor {
-            return try await extractor.extractFrameCGImage(
-                videoPath: resolvedPath,
-                frameIndex: frameIndex,
-                frameRate: frameRate
-            )
+            return try await importedRead {
+                try await extractor.extractFrameCGImage(videoPath: resolvedPath, frameIndex: frameIndex, frameRate: frameRate)
+            }
         }
 
         return try await retraceImageExtractor.extractFrameCGImage(
@@ -953,14 +1015,22 @@ public actor DataAdapter {
     // MARK: - Full-Text Search
 
     /// Search sources in their pagination order, preserving each source's cursor.
-    public func search(query: SearchQuery) async throws -> SearchResults {
+    public func search(query: SearchQuery, nativeOnly: Bool = false) async throws -> SearchResults {
+        if !nativeOnly && !requiresRetraceOnly(query.filters) && rewindConnection != nil {
+            return try await importedRead { try await self.searchCurrent(query: query, nativeOnly: nativeOnly) }
+        }
+        return try await searchCurrent(query: query, nativeOnly: nativeOnly)
+    }
+
+    private func searchCurrent(query: SearchQuery, nativeOnly: Bool) async throws -> SearchResults {
         guard isInitialized else { throw DataAdapterError.notInitialized }
         try Task.checkCancellation()
+        if nativeOnly, query.cursor?.rewind != nil { throw SearchPaginationError.dataChanged }
         let startedAt = Date()
         let hiddenTagId = cachedHiddenTagId
         let nativeCursor = query.cursor?.native
         let rewindCursor = query.cursor?.rewind
-        let hasRewind = !requiresRetraceOnly(query.filters) && rewindConnection != nil && rewindConfig != nil
+        let hasRewind = !nativeOnly && !requiresRetraceOnly(query.filters) && rewindConnection != nil && rewindConfig != nil
         let oldestFirst = query.mode == .all && query.sortOrder == .oldestFirst
         let sourceIdentity = searchConnectionIdentity.uuidString + ":" + (hasRewind ? rewindSearchGeneration.uuidString : "native")
         let fingerprint = try Self.searchFingerprint(query)
@@ -1116,6 +1186,14 @@ public actor DataAdapter {
     @discardableResult
     func validateSearchSelection(_ result: SearchResult,
                                  materialized: SearchSelectionMaterial? = nil) async throws -> (item: FrameWithVideoInfo, text: ExtractedText?) {
+        if result.source == .rewind {
+            return try await importedRead { try await self.validateCurrentSearchSelection(result, materialized: materialized) }
+        }
+        return try await validateCurrentSearchSelection(result, materialized: materialized)
+    }
+
+    private func validateCurrentSearchSelection(_ result: SearchResult,
+                                 materialized: SearchSelectionMaterial?) async throws -> (item: FrameWithVideoInfo, text: ExtractedText?) {
         guard isInitialized else { throw DataAdapterError.notInitialized }
         try Task.checkCancellation()
         guard let token = result.selectionToken, token.source == result.source,
@@ -3803,6 +3881,20 @@ public actor DataAdapter {
                 )
                 """
         }
+    }
+
+    /// Native metadata is paginated independently from OCR. Current policy is
+    /// checked again by the presentation owner before opening/copying evidence.
+    public func nativeSourceDependencies(frameIDs: Set<Int64>, audioRowIDs: Set<Int64>) async throws -> NativeSourceDependencies {
+        try await database.nativeSourceDependencies(frameIDs: frameIDs, audioRowIDs: audioRowIDs)
+    }
+
+    public func contextMetadataPage(from: Date, to: Date, query: String, before: ContextReadCursor? = nil, limit: Int = 50) async throws -> ContextMetadataPage {
+        guard isInitialized else { throw DataAdapterError.notInitialized }
+        let generation = selectionSourceGeneration(.native)
+        let page = try await database.contextMetadataPage(from: from, to: to, query: query, before: before, limit: limit)
+        guard isInitialized, generation == selectionSourceGeneration(.native) else { throw SearchPaginationError.dataChanged }
+        return page
     }
 
     // MARK: - Row Parsing

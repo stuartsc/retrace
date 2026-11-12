@@ -15,6 +15,141 @@ reject a successfully persisted recording.
 
 You are responsible for the **Database** module of Retrace. Your job is to implement SQLite database operations including schema, migrations, CRUD operations, and full-text search indexing.
 
+`AudioContextReadError` categorizes bounded audio context reads without captured
+content: connection-mutex admission busy, work-budget exhaustion, mismatched
+continuation and a closed App-owned reader. `connectionBusy` is emitted only
+before the read body begins. The Live workspace retains an App-owned read-only
+connection through pagination and joins its reads before recording-store shutdown;
+it does not weaken cursor identity or current-source validation. The general
+borrowed audio writer/query factory remains separate. `AudioTranscriptionPaginationTests`
+checks typed continuation rejection; `App/Tests/LiveAudioContextReaderTests.swift`
+covers the actual coordinator factory, terminal close and committed file reads.
+
+Audio context pages inspect at most 512 raw candidates including an unconsumed
+lookahead, under the same cooperative 250 ms deadline. The existing V23
+`(start_time,end_time,rowid)` index supplies descending chronological order;
+equal starts use end time then ID. The ephemeral cursor advances past fully
+inspected nonmatches but never past a matching lookahead. `scanIncomplete` means
+unchecked older candidates may contain overlapping matches, not that another
+match exists; `hasMoreMatches` requires an observed qualifying lookahead.
+An empty accepted page can still have a continuation. There is no lower start
+cutoff, automatic historical drain, index build or recording-schema migration.
+`AudioContextCandidatePagingTests` covers partial final pages, empty candidate
+pages, much earlier long overlaps, latest-pass/source/phrase scope and equal-time
+ordering. App search, companion proposals and MCP retain the coverage distinction.
+
+`Queries/LiveContextQueries.swift` adds native metadata and note pages without a
+recording schema change. Timestamp/ID continuations retain raw SQLite milliseconds;
+finite inputs must also fit Int64 milliseconds. Exact revalidation binds original
+row IDs (and a note's linked segment), then compares the complete record; the
+discovery time guard band never authorizes a nearby record. Note candidates use
+separate indexed frame-time and segment-start-time branches before deduplication.
+Reads fail busy and use a cooperative 250 ms VM budget. Large intervals can still
+report incomplete coverage and require a narrower interval. App applies current
+capture policy and source/revision fences before presentation or copying.
+`LiveContextQueryTests` covers fractional timestamps, literal wildcard searches,
+same-time pages, hidden records, note edits and out-of-range finite dates.
+
+`NativeAnnotationPersistence.swift` provides exact native tag/comment snapshots and
+atomic compare-and-swap mutations for the shared App/UI/MCP owner. Connection-local
+TEMP epoch triggers plus `main.data_version` detect local and independent-writer
+annotation ABA; reopening changes the process-local selection identity. No recording
+schema migration is added: installed V23 remains unchanged. Source/store, extraction,
+hidden/redaction and current capture policy are checked inside the transaction.
+After mutation, the same bounded reader must accept the complete selected result:
+at most 128 tags and 64 comments per segment, 64 global links per comment and 256 KiB
+for the aggregate fingerprint. Overflow rolls back rows, links and the TEMP epoch.
+Policy, client grant and expiring selection fences remain held through the final
+deadline check before COMMIT. Shared comment edits/deletes/link extensions require every linked
+segment in the exact selection, and receipts count actual affected links. Attachment
+metadata participates in the fingerprint but paths are not exported or interpreted;
+annotation deletion retains attachment files. `NativeAnnotationPersistenceTests`
+uses private real SQLite for limits, rollback, external ABA, reopen, expiry and counts.
+
+`NativeSourceMutationHooks` uses SQLCipher's preupdate hook through the typed
+`NativeSupport` C bridge. Every source mutation rotates in-flight read/transmission
+epochs; bounded old/new row, segment, observation and audio-batch identities let
+the UI retain historical payloads when unrelated capture changes. Displaced
+`REPLACE` deletes, privacy/tag changes, unknown layouts and more than 256 targets
+fall back to full presentation invalidation. FTS membership writes and a segment
+update changing only `endDate` still fence reads without revoking retained source
+payloads. Layout discovery and `NativeSourceDependencies` exact-ID reads happen
+outside callbacks; callbacks must never issue SQL, await actors or acquire another
+connection. Dependency reads use a try-lock and bounded primary-key lookups.
+The identities are process-local, never serialized evidence or disclosure grants.
+`NativeSourceMutationHooksTests` covers replacement, same-batch supersession,
+overflow, rollback/commit completion and callback detachment using private SQLite.
+
+October 21 source candidate: `Context/ContextDatabase.swift` owns a separate version-5
+SQLite context store, with its own store UUID and an immutable binding to the supplied
+native recording store UUID. It refuses existing unrelated databases and never runs
+recording migrations. `Tests/ContextDatabaseTests.swift` uses private SQLite files for
+manual marker command receipts, reopen/identity checks, bounded pages, soft delete/Undo,
+per-range revisions and pinned ownership, disabled-by-default keyword rules, rollback
+and terminal close. Shared `ContextStoreProtocol` is the only cross-module interface.
+Manual creation is idempotent by client/request UUID and a digest of the full command;
+retries return the original receipt, so consumers must re-read current marker state
+before acknowledging visibility. Exact screen refs must belong to the bound native
+store; persistence alone does not validate current policy. Context ranges and rules
+have independent store-generated UUID revisions. This slice adds no speech recognition,
+model scheduling, live-database changes or recording-schema migration.
+
+Companion range import can supply `expectedMarkerRevision`; the same range-write
+transaction checks the marker is still active at that revision before checking the
+independent range revision and user ownership. Existing manual calls default to nil.
+Current source-policy revalidation remains an App responsibility across separate stores.
+
+`AudioTranscriptionQueries.getRetainedFirstPassEntry(id:)` reads the exact original
+pass-1 row by primary key without the latest-pass filter. Companion publication
+compares its full snapshot and the complete bounded `getContextBatchEntries` set;
+a later pass can coexist, while mutation or deletion of original rows revokes the
+proof. This adds no recording schema or migration.
+
+Context schema V3 adds retained exact companion request/result bytes, immutable proposal
+receipts and bounded range revision history. A compare-and-swap proposal head is captured
+when source collection begins; late retries return their old receipt without resurrecting
+superseded ranges. One transaction replaces only automatic ranges, preserving manual,
+pinned and explicitly noted records. Inherited explanation provenance survives ownership
+changes; user-authored notes are separate. Legacy payloads without origin stay unverified.
+`ContextProposalPersistenceTests` covers supersession, conflicting retries, reopen,
+V2 legacy payload migration, injected receipt/head rollback, independent-connection
+compare-and-swap and ownership preservation. App disclosure must use `ContextRangePresentationService`, never
+raw ranges/history, and revalidate source policy at use. The recording schema stays V23.
+
+Context schema V4 records explicit companion enable epochs and enqueues new microphone
+manifest registrations in the same transaction. Enabling never enrolls existing manifests;
+restart reuses an active epoch. Indexed due candidates survive first-pass callback loss,
+queue pressure and restart, with revision-checked waiting/published/unavailable outcomes.
+`CompanionCandidatePersistence.swift` uses only context-sidecar tables, never V23 migrations.
+
+Context schema V5 adds durable audio source settings and client/request command receipts.
+`AudioSessionSettingsPersistence.swift` owns compare-and-swap revisions and retry digests;
+the App audio session owner reconciles capture only after the settings commit. Reads do
+not start devices. Historical migration fixtures must remove V5 tables when reconstructing
+V1/V2 databases. This remains a context-sidecar change, not a recording-library migration.
+
+`Companion/CompanionDeliveryDatabase.swift` is a separate private sender catalog. Its
+256-job bound covers active work, while exact wire requests/results and stage receipts
+remain immutable history. Indexed keyset speaker pages and source-sample coverage avoid
+polling retained file history. All uncovered fragments and their dependency-bearing batch
+receipt publish atomically. Staged media reservations prevent acknowledgement cleanup from
+racing publication; bounded garbage claims delete only staged copies through the App owner.
+`CompanionDeliveryDatabaseTests` and `CompanionEligibilityTests` cover real private SQLite
+capacity rollback, reopen, identity refusal, retained pages, active media references and
+explicit enable boundaries. Source changes still require App revalidation at every use.
+
+Context schema V2 adds immutable microphone observation revisions and durable
+occurrence suppression after user delete/Undo. Confirmation freezes the exact PCM
+anchor, while its callback-based wall-clock origin stays explicitly approximate.
+Recognition withdrawal is independent of user deletion and retained media. Initial
+observations require a current enabled rule snapshot; later revisions retain that
+snapshot. Original AAC manifests bind hashes and batch-to-source sample mappings;
+registration performs no file reads and is not playback verification. Different
+files may cover the same source samples because batches repeat a five-second tail.
+Within-file overlaps and conflicting origins are rejected. Bounded state/history
+and manifest queries, immutable receipts and V1 additive migration are exercised
+by `Tests/SpokenMarkerPersistenceTests.swift` using private SQLite files.
+
 **Status**: ✅ Core tables fully implemented (segments, frames, searchRanking FTS5). Uses SQLCipher for optional encryption and Rewind database import compatibility. Audio capture/transcription tables, contextual refinement tracking, daily metrics, and dictation session history are active. **Advanced tables not yet implemented** (app_sessions, encoding_queue, junction tables - planned for future release).
 
 ## Your Directory
@@ -27,6 +162,8 @@ regressions are in `Tests/PendingAudioCommitTests.swift`.
 
 ```
 Database/
+├── Context/
+│   └── ContextDatabase.swift    # Independent versioned marker/rule/range store; no recording connection
 ├── Migrations/
 │   ├── MigrationRunner.swift
 │   ├── V10_SegmentCommentSearchIndex.swift
@@ -66,6 +203,8 @@ Database/
 │   ├── DatabaseTestSupport.c
 │   └── include/DatabaseTestSupport.h
 ├── Tests/
+│   ├── ContextDatabaseTests.swift # Real private SQLite identity, command, revision and rollback tests
+│   ├── SpokenMarkerPersistenceTests.swift # Immutable speech revisions, suppression, additive migration and exact media mappings
 │   ├── _future/
 │   │   └── AudioTranscriptionQueriesTests.swift
 │   ├── AsyncQueuePipelineTests.swift

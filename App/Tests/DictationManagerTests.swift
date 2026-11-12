@@ -1,8 +1,95 @@
+import AppKit
 import XCTest
 import Shared
 @testable import App
 
 final class DictationManagerTests: XCTestCase {
+    @MainActor
+    func testDisableRevokesQueuedNativePasteEvenWhenInsertionIgnoresCancellation() async throws {
+        let name = "io.retrace.dictation-test.\(UUID().uuidString)"
+        let pasteboard = NSPasteboard(name: .init(name))
+        pasteboard.setString("Authored previous clipboard", forType: .string)
+        defer { pasteboard.releaseGlobally() }
+        let entered = expectation(description: "Native paste waiting before its mutation")
+        let gate = DictationPasteGate()
+        let probe = DictationPasteProbe()
+        let native = ClipboardDictationInsertionService(testingPasteboardName: name,
+            beforeMutation: { entered.fulfill(); await gate.wait() },
+            postPaste: { probe.posts += 1 })
+        let insertion = UncancelledClipboardInsertionService(native)
+        let buffer = DictationAudioBuffer()
+        let manager = DictationManager(transcriptionService: StubDictationTranscriptionService(text: "private old speech"),
+            insertionService: insertion, audioBuffer: buffer)
+        let time = Date(timeIntervalSince1970: 2_000)
+        await manager.ingest(.init(timestamp: time, audioData: Data(repeating: 1, count: 20), duration: 1,
+            source: .microphone, sampleRate: 10, channels: 1))
+        _ = await manager.beginDictation(at: time, targetContext: nil)
+        let ending = Task { try await manager.endDictation(at: time.addingTimeInterval(1)) }
+        await fulfillment(of: [entered], timeout: 3)
+        let disabling = Task { await manager.setMicrophoneAllowed(false) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while await buffer.slice(from: time, to: time.addingTimeInterval(1)) != nil, ContinuousClock.now < deadline {
+            await Task.yield()
+        }
+        let cleared = await buffer.slice(from: time, to: time.addingTimeInterval(1))
+        XCTAssertNil(cleared)
+        // A new enabled generation must not make the queued old paste valid.
+        await manager.setMicrophoneAllowed(true)
+        await gate.release()
+        await disabling.value
+        let result = try await ending.value
+        XCTAssertEqual(result.status, .cancelled)
+        XCTAssertEqual(probe.posts, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Authored previous clipboard")
+    }
+
+    func testMicrophoneDisableClearsPreRollAndRefusesSamplesUntilReenabled() async throws {
+        let service = StubDictationTranscriptionService(text: "Old microphone audio")
+        let insertion = RecordingDictationInsertionService()
+        let manager = DictationManager(transcriptionService: service, insertionService: insertion)
+        let time = Date(timeIntervalSince1970: 2_000)
+        let sample = CapturedAudio(timestamp: time, audioData: Data(repeating: 1, count: 20), duration: 1,
+            source: .microphone, sampleRate: 10, channels: 1)
+        await manager.ingest(sample)
+        await manager.setMicrophoneAllowed(false)
+        await manager.ingest(sample)
+        await manager.setMicrophoneAllowed(true)
+        _ = await manager.beginDictation(at: time, targetContext: nil)
+        let result = try await manager.endDictation(at: time.addingTimeInterval(1))
+        XCTAssertEqual(result.status, .empty)
+        let inserted = await insertion.insertedTextsSnapshot()
+        XCTAssertTrue(inserted.isEmpty)
+    }
+
+    func testDisableJoinsHeldRecognitionAndPreventsLateInsertion() async throws {
+        let entered = expectation(description: "Dictation recognition held")
+        let service = HeldDictationRecognition { entered.fulfill() }
+        let insertion = RecordingDictationInsertionService()
+        let buffer = DictationAudioBuffer()
+        let manager = DictationManager(transcriptionService: service, insertionService: insertion, audioBuffer: buffer)
+        let time = Date(timeIntervalSince1970: 2_000)
+        await manager.ingest(.init(timestamp: time, audioData: Data(repeating: 1, count: 20), duration: 1,
+            source: .microphone, sampleRate: 10, channels: 1))
+        _ = await manager.beginDictation(at: time, targetContext: nil)
+        let ending = Task { try await manager.endDictation(at: time.addingTimeInterval(1)) }
+        await fulfillment(of: [entered], timeout: 3)
+        let disabling = Task { await manager.setMicrophoneAllowed(false) }
+        // The transcriber deliberately ignores cancellation; the joined owner must
+        // still reject the old generation before any insertion can begin.
+        let limit = ContinuousClock.now.advanced(by: .seconds(3))
+        while await buffer.slice(from: time, to: time.addingTimeInterval(1)) != nil, ContinuousClock.now < limit {
+            await Task.yield()
+        }
+        let cleared = await buffer.slice(from: time, to: time.addingTimeInterval(1))
+        XCTAssertNil(cleared)
+        await service.release()
+        await disabling.value
+        let result = try await ending.value
+        XCTAssertEqual(result.status, .cancelled)
+        let inserted = await insertion.insertedTextsSnapshot()
+        XCTAssertTrue(inserted.isEmpty)
+    }
+
     func testReleaseTranscribesHeldMicrophoneAudioAndInsertsFormattedText() async throws {
         let start = Date(timeIntervalSince1970: 2_000)
         let transcriptionService = StubDictationTranscriptionService(text: "hello from retrace")
@@ -130,6 +217,24 @@ final class DictationManagerTests: XCTestCase {
     }
 }
 
+private actor HeldDictationRecognition: TranscriptionProtocol {
+    private let entered: @Sendable () -> Void
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    init(entered: @escaping @Sendable () -> Void) { self.entered = entered }
+    func initialize() { }
+    func cleanup() { }
+    func release() { released = true; continuation?.resume(); continuation = nil }
+    func transcribe(_ data: Data) async -> TranscriptionResult {
+        entered()
+        if !released { await withCheckedContinuation { continuation = $0 } }
+        return .init(text: "Never insert this old recording", confidence: 1, language: "en", duration: 1)
+    }
+    func transcribeWithTimestamps(_ audioData: Data, wordLevel: Bool, initialPrompt: String?) async throws -> DetailedTranscriptionResult {
+        throw CancellationError()
+    }
+}
+
 private actor StubDictationTranscriptionService: TranscriptionProtocol {
     private let text: String
     private(set) var receivedAudioByteCounts: [Int] = []
@@ -159,12 +264,38 @@ private actor StubDictationTranscriptionService: TranscriptionProtocol {
 private actor RecordingDictationInsertionService: DictationInsertionServicing {
     private(set) var insertedTexts: [String] = []
 
-    func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval) async throws {
-        insertedTexts.append(text)
+    func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval,
+                admission: NativeMutationFence) async throws {
+        try admission.withAdmission { insertedTexts.append(text) }
     }
 
     func insertedTextsSnapshot() -> [String] {
         insertedTexts
+    }
+}
+
+private actor DictationPasteGate {
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async { if !released { await withCheckedContinuation { continuation = $0 } } }
+    func release() { released = true; continuation?.resume(); continuation = nil }
+}
+
+@MainActor
+private final class DictationPasteProbe { var posts = 0 }
+
+/// Deliberately does not propagate cancellation, proving the microphone fence
+/// reaches the real clipboard mutation instead of relying on Task cancellation.
+private actor UncancelledClipboardInsertionService: DictationInsertionServicing {
+    private let native: ClipboardDictationInsertionService
+    init(_ native: ClipboardDictationInsertionService) { self.native = native }
+    func insert(text: String, method: DictationInsertionMethod, restoreDelay: TimeInterval,
+                admission: NativeMutationFence) async throws {
+        let native = native
+        let work = Task.detached {
+            try await native.insert(text: text, method: method, restoreDelay: restoreDelay, admission: admission)
+        }
+        try await work.value
     }
 }
 

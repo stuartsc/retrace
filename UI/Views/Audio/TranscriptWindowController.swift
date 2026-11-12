@@ -52,8 +52,10 @@ public class TranscriptWindowController: NSObject {
     private var openTask: Task<Void, Never>?
     private var openingTimestamp: Date?
     private var openGeneration = UUID()
+    private var exactCommandGeneration: UUID?
     private var refreshGeneration = UUID()
     private let presentWindow: (NSPanel) -> Void
+    private let activateApplication: () -> Void
 
     /// Whether the transcript window is currently visible
     public private(set) var isVisible = false
@@ -74,7 +76,9 @@ public class TranscriptWindowController: NSObject {
     private var refreshTimer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var loadRecordings: (@Sendable (Date) async throws -> TranscriptRecordingPage)?
+    private var loadExactCommand: (@Sendable (V23TranscriptReference) async throws -> (AudioTranscription, CompanionController))?
     private var lastRefreshAttemptAt: Date?
+    private var exactCommandObserver: (owner: CompanionController, id: UUID, generation: UUID)?
 
     /// Last timestamp used for refresh (to avoid redundant queries)
     private var lastRefreshedTimestamp: Date?
@@ -83,15 +87,20 @@ public class TranscriptWindowController: NSObject {
 
     private override init() {
         presentWindow = { $0.makeKeyAndOrderFront(nil) }
+        activateApplication = { NSApp.activate(ignoringOtherApps: true) }
         super.init()
     }
 
     /// Keeps lifecycle tests on real panels without putting a window on the shared desktop.
     init(playback: TranscriptAudioPlayback, presentWindow: @escaping (NSPanel) -> Void,
-         loadRecordings: (@Sendable (Date) async throws -> TranscriptRecordingPage)? = nil) {
+         loadRecordings: (@Sendable (Date) async throws -> TranscriptRecordingPage)? = nil,
+         commandCoordinator: AppCoordinator? = nil,
+         loadExactCommand: (@Sendable (V23TranscriptReference) async throws -> (AudioTranscription, CompanionController))? = nil) {
         self.playback = playback
         self.presentWindow = presentWindow
+        activateApplication = {}
         self.loadRecordings = loadRecordings
+        self.coordinator = commandCoordinator; self.loadExactCommand = loadExactCommand
         super.init()
     }
 
@@ -106,6 +115,11 @@ public class TranscriptWindowController: NSObject {
         playback?.stop(reason: .closed)
         revealTask?.cancel()
         self.coordinator = coordinator
+        loadExactCommand = { reference in
+            let reader = try await coordinator.liveContextSearch()
+            let owner = try await coordinator.companion()
+            return (try await reader.resolveTranscript(reference), owner)
+        }
         loadRecordings = { timestamp in
             guard let queries = await coordinator.getAudioTranscriptionQueries() else {
                 throw TranscriptRecordingLoadError.unavailable
@@ -127,12 +141,58 @@ public class TranscriptWindowController: NSObject {
     /// Keep an exact selected transcript pinned. A timeline poll must not replace
     /// it with a neighbouring time range; playback remains an explicit action.
     func showExactSearchResult(_ record: AudioTranscription) {
+        clearExactCommandObserver()
         cancelOpen()
         refreshGeneration = UUID()
         refreshTask?.cancel()
         stopRefreshTimer()
         show(transcriptions: [record], timestamp: record.startTime)
         stopRefreshTimer()
+    }
+
+    func showExactFromCommand(_ reference: V23TranscriptReference, coordinator: AppCoordinator,
+                              authorization: RetraceForegroundAuthorization) async throws {
+        guard self.coordinator === coordinator, let loadExactCommand else { throw RetraceCommandError.unavailable }
+        let token = try authorization.effect {
+            cancelOpen()
+            refreshGeneration = UUID(); refreshTask?.cancel()
+            exactCommandGeneration = openGeneration
+            return openGeneration
+        }
+        defer { if exactCommandGeneration == token { cancelOpen(ifGeneration: token) } }
+        let (record, owner) = try await loadExactCommand(reference)
+        guard openGeneration == token, self.coordinator === coordinator else { throw CancellationError() }
+        var dependencies: Set<NativeSourceTarget> = [.audioRow(reference.rowID)]
+        if let path = record.batchAudioPath { dependencies.insert(.audioBatch(path)) }
+        let retained = NativeSourceDependencies(targets: dependencies), admission = NativeMutationFence()
+        let id = try owner.addSpeakerChangeObserver(invalidate: { [weak self] change in
+            let affected: Bool
+            switch change { case .all: affected = true; case .source(let value): affected = value.affects(retained); case .correction: affected = false }
+            guard affected else { return }
+            admission.invalidate()
+            Task { @MainActor [weak self] in
+                guard self?.exactCommandObserver?.generation == token else { return }
+                self?.hide()
+            }
+        })
+        do {
+            try await authorization.validate()
+            try authorization.effect {
+                try admission.withAdmission {
+                    guard openGeneration == token, exactCommandGeneration == token,
+                          self.coordinator === coordinator else { throw CancellationError() }
+                    showExactSearchResult(record)
+                    guard isVisible else { throw RetraceCommandError.unavailable }
+                    exactCommandObserver = (owner, id, token)
+                    activateApplication()
+                }
+            }
+        } catch { owner.removeSpeakerChangeObserver(id); throw error }
+    }
+
+    private func clearExactCommandObserver() {
+        if let value = exactCommandObserver { value.owner.removeSpeakerChangeObserver(value.id) }
+        exactCommandObserver = nil
     }
 
     /// Load the same bounded recording page used by refresh before an explicit open.
@@ -182,11 +242,13 @@ public class TranscriptWindowController: NSObject {
         openTask = nil
         openingTimestamp = nil
         openGeneration = UUID()
+        exactCommandGeneration = nil
     }
 
     /// Show the transcript window with transcription data
     public func show(transcriptions: [AudioTranscription], timestamp: Date,
                      isTruncated: Bool = false, bringToFront: Bool = true) {
+        if exactCommandGeneration != nil { cancelOpen() }
         Log.info("[TranscriptWindowController] show requested timestamp=\(Log.timestamp(from: timestamp)) count=\(transcriptions.count) existingWindow=\(window != nil) visible=\(isVisible)", category: .ui)
         let wasVisible = isVisible
         guard let playback else { return }
@@ -257,6 +319,7 @@ public class TranscriptWindowController: NSObject {
 
     /// Hide the transcript window
     public func hide() {
+        clearExactCommandObserver()
         cancelOpen()
         playback?.stop(reason: .closed)
         revealTask?.cancel()
@@ -383,6 +446,7 @@ public class TranscriptWindowController: NSObject {
 
 extension TranscriptWindowController: NSWindowDelegate {
     public func windowWillClose(_ notification: Notification) {
+        clearExactCommandObserver()
         cancelOpen()
         Log.info("[TranscriptWindowController] windowWillClose", category: .ui)
         playback?.stop(reason: .closed)

@@ -12,6 +12,7 @@ public protocol ScreenEvidenceAdmissionStoreProtocol: Actor {
     func prepareScreenEvidencePolicy(session: ScreenEvidenceWriterSession,
                                      policy: ScreenEvidenceAccessPolicy) async throws -> ScreenEvidencePolicyTransition
     func activateScreenEvidencePolicy(_ transition: ScreenEvidencePolicyTransition) async throws
+    func activateScreenEvidencePolicy(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws
 
     /// Cleanup is cancellation-insensitive and conditional on the exact token.
     /// It must not deactivate a newer owner/epoch. Revoked epochs cannot reactivate.
@@ -39,6 +40,20 @@ public protocol CaptureConfigurationAdmissionProtocol: Actor {
     func beginSession(config: CaptureConfig) async throws -> ScreenEvidencePolicyTransition
     func prepareConfiguration(_ config: CaptureConfig) async throws -> ScreenEvidencePolicyTransition
     func activate(_ transition: ScreenEvidencePolicyTransition) async throws
+    func activate(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws
     func revoke(_ transition: ScreenEvidencePolicyTransition) async throws
     func endSession() async throws
+}
+
+public extension ScreenEvidenceAdmissionStoreProtocol {
+    func activateScreenEvidencePolicy(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws {
+        guard commandFence == nil else { throw ScreenEvidenceAdmissionError.inactive }
+        try await activateScreenEvidencePolicy(transition)
+    }
+}
+public extension CaptureConfigurationAdmissionProtocol {
+    func activate(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws {
+        guard commandFence == nil else { throw ScreenEvidenceAdmissionError.inactive }
+        try await activate(transition)
+    }
 }

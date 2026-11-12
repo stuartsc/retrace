@@ -2,8 +2,10 @@
 
 This processes one immutable, explicitly supplied job on the primary spare Mac.
 It is not a daemon, does not scan history, and cannot write the Retrace or Outlook
-databases. App-owned job publication, transport, result import and speaker
-corrections are still required before this can supply the installed UI.
+databases. The separate [companion candidate](../retrace_companion/README.md)
+adds durable App publication, transport and guarded import contracts. It remains
+undeployed; final App presentation and speaker corrections are required before
+this can supply the installed UI.
 
 The worker reuses Outlook's read-only voice library, embedding matcher and WAV
 decoder. MLX Whisper and pyannote load only the exact local model snapshots in
@@ -24,6 +26,9 @@ must remain available independently of this worker.
   decoding a private byte snapshot. One source per job, 16 kHz mono, at most
   120 seconds. Ordered sample ranges must agree with their original identity
   and chronology; gaps require a different job.
+- Version 1 retains the original integer generation contract. Version 2 carries
+  exact native recording-generation and continuity UUIDs plus source start sample;
+  it never invents those identities from wall timestamps.
 - Result: job/store/generation/source/time/sample identity, full transcript,
   timed speaker segments, unplaced-word count, model pins and process metrics.
   A process lock prevents concurrent workers for the same output directory.

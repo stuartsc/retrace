@@ -15,10 +15,13 @@ public actor DatabaseManager: DatabaseProtocol {
     private let databasePath: String
     private var isInitialized = false
     private var consecutivePriorityClaims = 0
+    private var sourceMutationHandler: NativeSourceMutationHooks.Handler?
+    private var sourceMutationHooks: NativeSourceMutationHooks?
     var screenEvidenceAdmissionCapability = ScreenEvidenceAdmissionCapability()
     private(set) var screenEvidenceAdmissionClosing = false
     #if DEBUG
     private var forceCloseCheckpointForTesting = false
+    private var unencryptedPrivateFileForTesting = false
 
     /// Exercises the real checkpoint/retry close path with a private memory DB,
     /// without invoking on-disk initialization or the user's encryption policy.
@@ -37,11 +40,38 @@ public actor DatabaseManager: DatabaseProtocol {
         isInitialized && db != nil
     }
 
+    /// The callback synchronously revokes prepared disclosures; it must not call
+    /// database APIs. Nil detaches it. Reinitialization preserves the chosen handler.
+    public func setSourceMutationHandler(_ handler: (@Sendable () -> Void)?) throws {
+        try setSourceMutationObserver(handler.map { callback in { _ in callback() } })
+    }
+
+    public func setSourceMutationObserver(_ handler: (@Sendable (NativeSourceMutation) -> Void)?) throws {
+        sourceMutationHooks?.detach()
+        sourceMutationHooks = nil
+        sourceMutationHandler = handler
+        if let db, let handler {
+            let hooks = NativeSourceMutationHooks(db: db, onMutation: handler)
+            try hooks.install()
+            sourceMutationHooks = hooks
+        }
+    }
+
     // MARK: - Initialization
 
     public init(databasePath: String) {
         self.databasePath = databasePath
     }
+
+    #if DEBUG
+    /// Internal test-only owner for private on-disk fixtures. Retains the real
+    /// file/WAL/migration lifecycle without consulting encryption preferences or
+    /// Keychain. This initializer does not exist in optimized production builds.
+    init(testingUnencryptedDatabasePath: String) {
+        self.databasePath = testingUnencryptedDatabasePath
+        self.unencryptedPrivateFileForTesting = true
+    }
+    #endif
 
     /// Convenience initializer for in-memory database (testing)
     public init() {
@@ -90,7 +120,11 @@ public actor DatabaseManager: DatabaseProtocol {
 
         // Set encryption key (SQLCipher) if encryption is enabled and not in-memory
         if !isInMemory {
+            #if DEBUG
+            if !unencryptedPrivateFileForTesting { try await setEncryptionKey() }
+            #else
             try await setEncryptionKey()
+            #endif
         }
 
         // Enable foreign keys and WAL mode
@@ -109,6 +143,11 @@ public actor DatabaseManager: DatabaseProtocol {
         try await offsetAutoincrementFromRewind()
         Log.debug("[DatabaseManager] AUTOINCREMENT offset complete", category: .database)
 
+        if let db, let sourceMutationHandler {
+            let hooks = NativeSourceMutationHooks(db: db, onMutation: sourceMutationHandler)
+            try hooks.install()
+            sourceMutationHooks = hooks
+        }
         isInitialized = true
         Log.info("[DatabaseManager] Database initialized at: \(expandedPath)", category: .database)
     }
@@ -145,13 +184,16 @@ public actor DatabaseManager: DatabaseProtocol {
         // FTS5 maintains internal cached statements; finalizing them directly can corrupt
         // the virtual table state and crash during close (seen as SIGSEGV in sqlite3_finalize).
         // `sqlite3_close_v2` safely performs a deferred close if anything is still in use.
+        sourceMutationHooks?.detach()
         let rc = sqlite3_close_v2(db)
         guard rc == SQLITE_OK else {
+            try sourceMutationHooks?.install()
             let errorMsg = String(cString: sqlite3_errmsg(db))
             throw DatabaseError.connectionFailed(underlying: "Failed to close database (\(rc)): \(errorMsg)")
         }
 
         self.db = nil
+        sourceMutationHooks = nil
         isInitialized = false
         Log.info("[DatabaseManager] Database closed", category: .database)
     }
@@ -1651,6 +1693,44 @@ public actor DatabaseManager: DatabaseProtocol {
     }
 
     // MARK: - Segment Comment Helpers
+
+    public func contextReadRevision() throws -> Int64 {
+        let connection = try requireRecallConnection()
+        guard let revision = try PipelineSQL.integers(connection, "SELECT revision FROM recall_search_revision WHERE id=1").first else {
+            throw DatabaseError.queryExecutionFailed("Context revision unavailable")
+        }
+        return revision
+    }
+
+    public func contextMetadataPage(from: Date, to: Date, query: String, before: ContextReadCursor? = nil, limit: Int = 50) async throws -> ContextMetadataPage {
+        let storeID = try await activityStoreID()
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Context reader closed") }
+        return try LiveContextQueries.metadata(db: db, storeID: storeID, from: from, to: to, query: query, before: before, limit: limit)
+    }
+
+    public func contextNotePage(from: Date, to: Date, query: String, before: ContextReadCursor? = nil, limit: Int = 50) async throws -> ContextNotePage {
+        let storeID = try await activityStoreID()
+        guard let db else { throw DatabaseError.connectionFailed(underlying: "Context reader closed") }
+        return try LiveContextQueries.notes(db: db, storeID: storeID, from: from, to: to, query: query, before: before, limit: limit)
+    }
+
+    public func validateContextMetadata(_ expected: ContextMetadataRecord) async throws -> Bool {
+        let storeID = try await activityStoreID()
+        guard let db, storeID == expected.nativeStoreID else { return false }
+        let page = try LiveContextQueries.metadata(db: db, storeID: expected.nativeStoreID,
+            from: expected.timestamp.addingTimeInterval(-1), to: expected.timestamp.addingTimeInterval(1),
+            query: "", before: nil, limit: 1, frameID: expected.frameID)
+        return page.entries.first == expected
+    }
+
+    public func validateContextNote(_ expected: ContextNoteRecord) async throws -> Bool {
+        let storeID = try await activityStoreID()
+        guard let db, storeID == expected.nativeStoreID else { return false }
+        let page = try LiveContextQueries.notes(db: db, storeID: expected.nativeStoreID,
+            from: expected.referenceTimestamp.addingTimeInterval(-1), to: expected.referenceTimestamp.addingTimeInterval(1),
+            query: "", before: nil, limit: 1, commentID: expected.comment.id, segmentID: expected.segmentID)
+        return page.entries.first == expected
+    }
 
     private func getSegmentCommentByID(db: OpaquePointer, commentID: Int64) throws -> SegmentComment? {
         let sql = """

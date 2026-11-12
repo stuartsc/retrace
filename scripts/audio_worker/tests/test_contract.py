@@ -82,6 +82,29 @@ class ContractTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(JobError):
                 load_job(self.save_job(self.manifest(**change)))
 
+    def test_version_two_retains_exact_native_uuid_and_sample_identity(self):
+        payload = self.manifest(version=2)
+        del payload["generation"]
+        payload.update(
+            recordingGeneration="9d0ab146-310b-467d-af93-b8b98edc53e0",
+            continuityID="8659506f-0f86-4cbd-8b08-66e1bfc65ed5",
+            startSample=16_000,
+        )
+        job = load_job(self.save_job(payload))
+        self.assertEqual(
+            job.result_identity,
+            {
+                "version": 2,
+                "recordingGeneration": payload["recordingGeneration"],
+                "continuityID": payload["continuityID"],
+                "startSample": 16_000,
+            },
+        )
+        self.assertNotIn("generation", job.result_identity)
+        payload["startSample"] = 2**63 - 2
+        with self.assertRaises(JobError):
+            load_job(self.save_job(payload))
+
     def test_gaps_and_overlapping_source_samples_cannot_be_silently_stitched(
         self,
     ) -> None:

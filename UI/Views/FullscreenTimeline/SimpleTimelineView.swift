@@ -1466,12 +1466,14 @@ class DoubleBufferedVideoView: NSView {
         // Create player A
         playerViewA = createPlayerView()
         playerA = AVPlayer()
+        playerA.isMuted = true
         playerA.actionAtItemEnd = .pause
         playerViewA.player = playerA
 
         // Create player B
         playerViewB = createPlayerView()
         playerB = AVPlayer()
+        playerB.isMuted = true
         playerB.actionAtItemEnd = .pause
         playerViewB.player = playerB
 
@@ -4764,11 +4766,14 @@ struct DeveloperActionsMenu: View {
 
     /// Whether the current frame can be reprocessed (only Retrace frames)
     private var canReprocess: Bool {
-        viewModel.currentFrame?.source == .native
+        viewModel.currentFrame?.source == .native && !viewModel.isRepairingOCR
     }
 
     var body: some View {
         Menu {
+            if viewModel.isRepairingOCR {
+                Button("Cancel OCR repair") { viewModel.cancelOCRRepair() }
+            }
             // Refresh OCR button
             Button(action: {
                 Task {
@@ -4784,7 +4789,7 @@ struct DeveloperActionsMenu: View {
                 }
             }) {
                 Label(
-                    showReprocessFeedback ? "Queued" : "Refresh OCR",
+                    showReprocessFeedback ? "Updated" : "Refresh OCR",
                     systemImage: showReprocessFeedback ? "checkmark" : "arrow.clockwise"
                 )
             }

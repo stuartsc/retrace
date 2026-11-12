@@ -56,10 +56,8 @@ def main() -> int:
                 prepared.pop("words"), prepared.pop("turns"), job_id=job.identifier
             )
             result = {
-                "version": 1,
                 "jobID": job.identifier,
                 "storeID": job.store_id,
-                "generation": job.generation,
                 "source": job.source,
                 "status": "complete",
                 "startMilliseconds": job.start_ms,
@@ -73,6 +71,7 @@ def main() -> int:
                     resource.RUSAGE_SELF
                 ).ru_maxrss,
                 **prepared,
+                **job.result_identity,
             }
             validate_result(result, job)
             publish_result(args.results, job.identifier, result)

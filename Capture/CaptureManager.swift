@@ -80,6 +80,7 @@ public actor CaptureManager: CaptureProtocol {
     private var frameProcessingSession: CaptureFrameStreamSession?
     private var lifecycleOperation: (id: UUID, task: Task<Void, Error>)?
     private var configurationAdmissionClosed = false
+    private var configurationAdmissionActive = false
     #if DEBUG
     private var lifecycleEnqueuedCheckpoint: (@Sendable () -> Void)?
 
@@ -228,7 +229,10 @@ public actor CaptureManager: CaptureProtocol {
         try await applyConfiguration(currentConfig, operation: operation)
     }
 
-    private func applyConfiguration(_ config: CaptureConfig, operation: ConfigurationOperation) async throws {
+    private func applyConfiguration(_ config: CaptureConfig, operation: ConfigurationOperation,
+                                    commandFence: NativeMutationFence? = nil) async throws {
+        try commandFence?.withAdmission {}
+        let previousConfig = currentConfig
         if operation != .initialize, configurationAdmission != nil, configurationAdmissionClosed {
             throw ScreenEvidenceAdmissionError.inactive
         }
@@ -239,6 +243,7 @@ public actor CaptureManager: CaptureProtocol {
         var transition: ScreenEvidencePolicyTransition?
         do {
             if let admission = configurationAdmission {
+                configurationAdmissionActive = false
                 if operation == .initialize {
                     transition = try await admission.beginSession(config: config)
                 } else {
@@ -246,6 +251,7 @@ public actor CaptureManager: CaptureProtocol {
                 }
             }
             try Task.checkCancellation()
+            try commandFence?.withAdmission {}
 
             switch operation {
             case .initialize:
@@ -263,12 +269,15 @@ public actor CaptureManager: CaptureProtocol {
 
             try Task.checkCancellation()
             if let transition, let admission = configurationAdmission {
-                try await admission.activate(transition)
+                try await admission.activate(transition, commandFence: commandFence)
+            } else if commandFence != nil {
+                throw ScreenEvidenceAdmissionError.inactive
             }
             // The activation acknowledgement may arrive after its real commit
             // and after cancellation. The catch below still owns that exact token.
             try Task.checkCancellation()
             if operation == .initialize { configurationAdmissionClosed = false }
+            configurationAdmissionActive = true
         } catch {
             let operationError = error
             var cleanupErrors: [any Error] = []
@@ -287,6 +296,13 @@ public actor CaptureManager: CaptureProtocol {
                 do { try await Task { try await self.stopCaptureSession() }.value }
                 catch { cleanupErrors.append(error) }
             }
+            if operation == .update {
+                currentConfig = previousConfig
+                if _isCapturing {
+                    do { try await Task { try await self.cgWindowListCapture.updateConfig(previousConfig) }.value }
+                    catch { cleanupErrors.append(error) }
+                }
+            }
             if !cleanupErrors.isEmpty {
                 throw CaptureLifecycleCleanupFailure(operationError: operationError, cleanupErrors: cleanupErrors)
             }
@@ -296,7 +312,14 @@ public actor CaptureManager: CaptureProtocol {
 
     private func endConfigurationAdmission() async throws {
         configurationAdmissionClosed = true
+        configurationAdmissionActive = false
         try await configurationAdmission?.endSession()
+    }
+
+    /// A failed native/configuration update leaves policy inactive even after its
+    /// previous values are restored. An identical local retry must reactivate it.
+    public func hasActiveConfigurationAdmission() -> Bool {
+        configurationAdmission == nil || (configurationAdmissionActive && !configurationAdmissionClosed)
     }
 
     private func startCaptureSession(config: CaptureConfig) async throws {
@@ -399,6 +422,12 @@ public actor CaptureManager: CaptureProtocol {
     public func updateConfig(_ config: CaptureConfig) async throws {
         try await runLifecycleOperation {
             try await self.applyConfiguration(config, operation: .update)
+        }
+    }
+
+    public func updateConfig(_ config: CaptureConfig, commandFence: NativeMutationFence) async throws {
+        try await runLifecycleOperation {
+            try await self.applyConfiguration(config, operation: .update, commandFence: commandFence)
         }
     }
 

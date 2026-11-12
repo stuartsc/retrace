@@ -109,7 +109,7 @@ public struct ShortcutConfig: Codable, Sendable, Equatable {
 // MARK: - Capture Configuration
 
 /// Configuration for screen capture behavior
-public struct CaptureConfig: Codable, Sendable {
+public struct CaptureConfig: Codable, Sendable, Equatable {
     /// Interval between captures in seconds
     public let captureIntervalSeconds: Double
 

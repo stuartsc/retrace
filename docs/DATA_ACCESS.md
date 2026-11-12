@@ -1,8 +1,14 @@
 # Retrace — Data Capture & Access Reference
 
-This document describes what Retrace records and how external agents or scripts can read the captured data.
+This document describes what Retrace records, its storage layout and the boundaries for supported external access.
 
-Schema and release status are separate. On **2026-09-15**, **0.7.6 (2609.15.1)** was installed and launched for an unreleased local trial; its native database was verified at **V21**. The prior app is retained for rollback with that library. The V22 feed and V23 native admission are development changes and have not been installed. See the [validation ledger](progressive-recall-validation.md) for verification, installation and acceptance evidence. Inspect the selected database's schema before using a query; imported sources can have older schemas.
+**Current boundary — 22 October 2026:** the installed recovery app is **0.7.6 (2610.19.6)**, source `63ddce2`, with the native recording library at **V23**. See the [recovery ledger](recovery-20261019.md) for its installation and scoped verification. The historical V21/V22/V23 descriptions below explain schema contracts; they do not establish active model work, external disclosure permission or completed performance acceptance. Inspect the selected database's schema before using a query; imported sources can have older schemas.
+
+The **Live context candidate is not yet installed**. It preserves that V23 recording schema and adds a separate **context database at schema V5**, under `<active storage root>/context/context.db`, for rules, markers, context ranges, corrections and related state. Companion delivery and command receipts also remain separate from the recording database. Creating a marker references existing evidence; it does not duplicate the recording. The wider V24–V32 workspace is a different candidate.
+
+For candidate external access, use the typed, per-client-granted **Retrace MCP** operations rather than treating these diagnostic SQL examples as a disclosure API. The dedicated private `/retrace-mcp` gateway leaves Outlook's MCP contract separate; the App rechecks current grants, exclusions, source identity and revisions. Connecting the optional private companion separately permits selected recorded audio and supporting text to reach that configured private endpoint. Neither service grants access automatically, and a deployed gateway alone does not establish installed App integration.
+
+Read the [Live user guide](live-context-user-guide.md) for controls and current limits, the [Live delivery ledger](live-context-markers-plan.md) for implementation/installation/acceptance state, the [MCP reference](../scripts/retrace_mcp/README.md) for supported commands, and the [companion reference](../scripts/retrace_companion/README.md) for its transport and storage. The [progressive recall validation ledger](progressive-recall-validation.md) retains earlier schema-specific evidence.
 
 ## What the app records
 
@@ -112,7 +118,7 @@ V21 adds activity events, correction/feed receipts, source/store identities and 
 
 The durable `recall_search_revision` fence tracks search-affecting transactions. Ordinary-table triggers are persisted. FTS-content triggers are **TEMP triggers**, installed separately on the supported native `DatabaseManager` and `FTSManager` writer connections; they are not persisted on FTS shadow tables, preserving defensive-reader compatibility. Arbitrary external native SQL writers do not receive those hooks and are outside the revision-fence contract. Do not use direct writes to maintain or repair this schema.
 
-### V22 native screen feed (implemented, uninstalled)
+### V22 native screen feed
 
 The separate screen feed covers already-materialized native observations. It does not enumerate all legacy frames or monitor external imported stores. `screen_evidence_feed` contains source-qualified reference/state events; `screen_evidence_feed_state` retains the stable feed identity, durable head and compaction floor. `screen_evidence_source_state` preserves the current revision, ordered availability/redaction facts and absorbing tombstones. These tables do not copy OCR, URLs or titles.
 
@@ -120,7 +126,7 @@ Use `ScreenEvidenceFeedStoreProtocol` through the local-only service for mainten
 
 Work contains only identity/state and is blocked, invalidated or deleted; it is never ready. A consumed event or retained extraction is not a ready lexical/vector index, a disclosure grant or a verified media file. No automatic consumer or model is enabled. V23 adds a separate unpublished-artifact boundary below; typed index publication remains future work. Continue using exact resolution for currently permitted evidence access. Do not mutate feed, cursor, work or applied-event tables through direct SQL.
 
-### V23 native admission (implemented, uninstalled)
+### V23 native admission
 
 `ScreenEvidenceAdmissionStoreProtocol` requires a fresh live owning session and an active policy epoch. A persisted active row is insufficient to recreate authority. Capture owns the serialized configuration boundary, with App installing its policy bridge after database initialization. Policy changes close admission before configuration application; old claims cannot revive when settings return to earlier values. Ordinary recording pause retains historical policy authority; service shutdown ends it.
 

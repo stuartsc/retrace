@@ -6,9 +6,9 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 **Status**: Core screen capture (CGWindowListCapture), OCR (Vision), full-text search (FTS5), HEVC encoding, Rewind import, audio transcription, and push-to-dictate are working. Vector search is planned for a future release.
 
-**Installed local repair (2026-10-20):** build **2610.19.6**, source `63ddce2`, retains the Timeline/capture recovery and keeps periodic capture timers in common run-loop modes. The reviewed app-only installation completed at 11:37:01 Brisbane, preserving the previous app, V23 and all nine checked preferences. The installed executable, native library, five backends and strict signature match the verified candidate. New saved screenshots and microphone AAC, OCR completions and one new transcript are verified. The audio restart gap was 12.123 seconds; the 29-minute separation between saved screenshots began on the previous build. See the [recovery ledger](docs/recovery-20261019.md). The wider V24–V32 candidate in `/Users/stuartbond/backintime` remains separate.
+**Recovery baseline (installed 2026-10-20, superseded by the Live trial below):** build **2610.19.6**, source `63ddce2`, retains the Timeline/capture recovery and keeps periodic capture timers in common run-loop modes. The reviewed app-only installation completed at 11:37:01 Brisbane, preserving the previous app, V23 and all nine checked preferences. The installed executable, native library, five backends and strict signature matched the verified candidate. New saved screenshots and microphone AAC, OCR completions and one new transcript were verified. The audio restart gap was 12.123 seconds; the 29-minute separation between saved screenshots began on the previous build. See the [recovery ledger](docs/recovery-20261019.md). The wider V24–V32 candidate in `/Users/stuartbond/backintime` remains separate.
 
-**Acceptance still open:** all 179 Capture tests pass (two intentional skips), including native default/tracking-mode and invalidation checks; independent review and a clean optimized build pass. Installed .6 diagnostics show accepted periodic captures through the initial five-minute observation, but the native sample did not exercise menu tracking. Computer control remains unavailable; recent Timeline visibility was user-reported on .5. The first five complete CPU windows averaged 20.68% of one core with a 205.55% sample peak, and text still lagged. Sustained capture, installed tracking-mode behavior, audio/OCR throughput, spoken accuracy, matched performance and the 20% CPU target remain open.
+**Recovery-baseline acceptance (20 October):** all 179 Capture tests passed (two intentional skips), including native default/tracking-mode and invalidation checks; independent review and a clean optimized build passed. Installed .6 diagnostics showed accepted periodic captures through the initial five-minute observation, but the native sample did not exercise menu tracking. Computer control was unavailable at that checkpoint; recent Timeline visibility was user-reported on .5. The first five complete CPU windows averaged 20.68% of one core with a 205.55% sample peak, and text still lagged. Sustained capture, installed tracking-mode behavior, audio/OCR throughput, spoken accuracy, matched performance and the 20% CPU target remain independent acceptance checks.
 
 **Saved-audio display repair (2026-10-03, installed 6 October):** pending microphone recordings were being saved but omitted from the Timeline panel and the Live transcript presentation. The narrow UI repair exposes saved audio before text preparation and keeps explicit playback independent of transcription. Build **2610.6.1** now shows and plays newly recorded audio in both surfaces. See the [audio visibility ledger](docs/audio-recording-visibility-repair.md) for source checks and the [freshness repair ledger](docs/audio-transcription-freshness-repair.md) for combined installation evidence.
 
@@ -20,13 +20,40 @@ Retrace is a local-first screen recording and search application for macOS, insp
 
 ## Quick Reference
 
+- **Live context and markers (21 October)**: [docs/live-context-markers-plan.md](docs/live-context-markers-plan.md) preserves the recovered plan and execution ledger. Work is isolated in `/Users/stuartbond/backintime-live-context` from the installed V23 recovery source. Root coordinates Shared/App/Database/UI interfaces; workspace, marker, companion and MCP acceptance are recorded separately.
+
+**Live local trial status (22 October, 06:14 Brisbane):** signed **2610.22.5** is installed; final metadata at **4:20 after launch** verifies V23 and advancing frame/audio records. Full54 passed **1,699 tests, 20 explicit skips, zero failures**, a fresh optimized build, responsive54 and pending54b. Actual Load older increased 100→178 recordings without timeout, preserving its anchor and explicit incomplete coverage; a later unchanged page does not prove cursor progress. Installed keyboard, Return, responsive/privacy and pinned-arrival checks pass within scope; Live was left Following live. Original pending54 remains failed with unresolved attribution; its unchanged-binary rerun used longer observation intervals. Voice markers/MCP remain off and companion unconfigured. Broader gates remain in the [Live ledger](docs/live-context-markers-plan.md).
+
+The Live candidate shares `TimelineMarkerEditCommand` and `TimelineMarkerService.updateMarker` between the marker panel and MCP. Edits are revision checked and durable-idempotent; they change title/note only, preserving original audio anchors and later verbatim recognition. `ContextRangePresentationService` is the validated read boundary for derived ranges. `LiveContextSearchService` enforces independent source grants for inherited text even when invoked by another command handler. Companion eligibility and delivery catalogs are separate from the V23 recording schema; automatic candidate polling does not write read metrics.
+
+`Shared/Models/CompanionDelivery.swift`, `Database/Companion/CompanionDeliveryDatabase.swift` and `Database/Context/CompanionCandidatePersistence.swift` own bounded active delivery, immutable retained history and explicit enrollment candidates. `App/Companion/CompanionBatchPlan.swift`, `CompanionBatchReconciler.swift` and `CompanionRefreshPass.swift` own uncovered audio fragments, restart recovery and delivery progress under refresh pressure. Their private-store regressions are `CompanionDeliveryDatabaseTests`, `CompanionEligibilityTests` and `CompanionDeliveryRecoveryTests`. `Shared/Models/ExactOCRRepair.swift`, `Database/ExactOCRRepairPersistence.swift` and `App/ExactOCRRepair{Service,Pixels}.swift` provide the shared exact UI/MCP repair path; prior text survives rejected/cancelled commits. These source additions are not installed acceptance.
+
+`Shared/Models/CompanionTurn.swift` binds a selected turn to its native store,
+retained original result digest and correction revision. `App/Companion/CompanionTurnResolver.swift`,
+`CompanionSpeakerChanges.swift` and `CompanionTurnPlayback.swift` retain full original
+first-pass proofs, assemble registered source PCM, and separate cheap invalidation
+from joined output stop. Wall-clock association and model alignment remain approximate.
+`CompanionTurnReferenceTests` and `CompanionTurnPlaybackTests` use private retained
+results/AAC; native muted playback is explicitly opt-in. Root owns factories and
+policy/deletion/retention drains; SQLite callbacks never await a playback or source read.
+
+`Shared/Models/NativeAnnotations.swift`, `Database/NativeAnnotationPersistence.swift`,
+`App/NativeAnnotationService.swift` and `App/RetraceCommands/RetraceAnnotationCommands.swift`
+share exact native annotation validation between timeline actions and MCP. The
+annotation epoch uses TEMP state, preserving the V23 persistent schema. Full linked
+scope, grants and current revisions constrain global comment/tag mutations;
+destructive commands require a bound preview and retain attachment files. Private
+regressions live in `NativeAnnotationPersistenceTests` and `NativeAnnotationServiceTests`.
+
+`App/Tests/RetracePrivateTransportAcceptanceTests.swift` explicitly exercises the deployed private MCP gateway and tunnel against temporary marker/client state, including retries, stale previews and revocation. `App/Tests/CompanionPrivateTransportAcceptanceTests.swift` explicitly submits two authored jobs through the real `CompanionController` transport/import path, checking acknowledgement, retained offline evidence and invalidation. Both are opt-in and require disabled debug file logging; companion credentials arrive through an inherited pipe. They are separate from installed-App acceptance. `UI/Tests/LiveContextNativeViewTests.swift`, `LiveContextSettingsNativeTests.swift` and `NativeAppKitObservationLoop.swift` own the authored native workspace/settings fixtures and bounded AppKit observation; see `UI/AGENTS.md` for their input and isolation requirements.
+
 - **Recovery implementation (19 October)**: [docs/recovery-20261019.md](docs/recovery-20261019.md). Root coordinates Shared/App/Processing/Database/Search/UI/Storage contracts in the isolated recovery checkout; installation and acceptance are separate.
 - **Capture display local trial**: `Capture/Metadata/CapturedWindowGeometry.swift` unifies routing and attribution; `CaptureSamplingDiagnostics.swift` provides bounded categorical rejection counts. `CaptureDisplaySelectionTests`, `DisplaySwitchMonitorTests` and the capture sequencing/admission tests cover native CG geometry, real Foundation notifications and owned stop/restart boundaries. Source validation and sustained installed capture-gap acceptance are separate.
 - **Periodic storage accounting**: `Shared/Models/StorageUsage.swift`, `Shared/Protocols/StorageUsageReportingProtocol.swift`, `Storage/FileManager/StorageUsageMonitor.swift`, `App/StorageUsageService.swift` and `App/Tests/StorageUsageServiceTests.swift` own bounded metadata scans and joined shutdown. The UI reads cached reports; allocated totals do not imply reclaimable APFS space.
 - **Audio and metadata search**: `App/AudioSearch.swift` performs bounded native audio FTS on the owned reader and validates an ephemeral exact row proof before opening. `ProgressiveRecallSearchTests` and `UI/Tests/SearchQueryPreservationTests.swift` cover real SQLite phrase/exclusion/date/latest-pass matching and the shared query field. Speaker search, semantic integration and immutable V30 audio references remain separate.
 - **Fresh processing and audio timing**: `Shared/Models/FrameProcessingLane.swift` coordinates manual/current/historical OCR admission. `Processing/Tests/AudioBufferTimingTests.swift` checks real PCM batch timing and duplicate shutdown-tail prevention. Governed OCR keeps one stable worker through power-setting changes.
 - **Native CPU cancellation**: `Vendors/whisper/patches/v1.8.2-cancellable-cpu-graphs.patch` pins the narrow native repair; its README and LICENSE record build/dependency/provenance requirements. `WhisperModelResidencyTests` checks real English and automatic-language cancellation followed by successful reuse. Public headers and the five ggml backends remain unchanged.
-- **Explicit spare-Mac worker**: `scripts/audio_worker/{contract.py,speakers.py,outlook_backend.py,__main__.py,runtime-pins.json}` and its tests implement one bounded immutable job with pinned offline models and read-only Outlook voice matching. [Worker instructions](scripts/audio_worker/README.md) distinguish tested worker output from unimplemented App transport/import and uncalibrated name suggestions.
+- **Explicit spare-Mac worker**: `scripts/audio_worker/{contract.py,speakers.py,outlook_backend.py,__main__.py,runtime-pins.json}` and its tests implement one bounded immutable job with pinned offline models and read-only Outlook voice matching. [Worker instructions](scripts/audio_worker/README.md) describe the worker contract; the Live candidate's `App/Companion/` owns durable transport/import. Worker output, native integration, installed acceptance and calibrated automatic naming remain separate checks.
 
 - **Installed-version CPU repair**: [docs/installed-cpu-protection.md](docs/installed-cpu-protection.md). The October 1 branch isolates resource monitoring and audio admission against V23; source tests, installed checks and matched performance acceptance remain separate.
 
@@ -199,6 +226,7 @@ retrace/
 │
 ├── App/                         # Main application coordinator
 │   ├── AppCoordinator.swift     # Central coordinator (orchestrates all modules)
+│   ├── LiveAudioContextReader.swift # Stable read-only audio pagination, coalesced opening and joined close
 │   ├── RecordingLifecycle.swift # Coalesced startup and cancellation/teardown ownership
 │   ├── ScreenEvidenceAdmissionCoordinator.swift # App-owned native policy/configuration bridge and categorical metrics
 │   ├── ProgressiveRecallService.swift # Local exact evidence access, bounded text expansion and current privacy checks
@@ -268,6 +296,34 @@ and existing screen OCR retain their existing route in this narrow branch.
 integration; governor/resource tests cover pressure, cancellation, bounded
 delivery, rolling measurement coverage and scheduling. Final validation after
 actor/protocol changes requires clean debug and optimized builds.
+
+`BackgroundProcessingMonitorDelay` remains in `App/BackgroundProcessingGovernor.swift`.
+The source mitigation replaces only the governor monitor's one-second task sleep
+with a one-shot native dispatch timer, joining cancellation through its serial
+queue before returning and awaiting each resource refresh before rearming.
+`DispatchTime` excludes system sleep, so wake can retain the remaining one-second
+delay. `App/Tests/BackgroundProcessingMonitorDelayTests.swift` contains six actual
+native timer regressions covering cancellation before/after registration, firing,
+held event/cancel handlers, the joined finalizer and repeated lifetime cleanup.
+`App/Tests/BackgroundProcessingGovernorTests.swift` adds two held-resource-read
+tests for refresh/rearm ordering and concurrent close/reopen fences. Its opt-in
+`testNativeObserverSustainedWakeAndJoinedRestart` uses
+`RETRACE_TEST_NATIVE_GOVERNOR_SOAK=1` for 90 seconds of native observation and joined
+restart. The mitigation awaits clean validation; the preceding full28 suite
+(1,657 tests, 15 skips, zero failures) predates it. The unchanged optimized
+governor31 probe passed in 93.996 seconds, establishing isolated nonreproduction
+only, not the cause or repair of the installed assertion.
+
+`Shared/Models/RetraceOperations.swift` and `App/RetraceOperationsService.swift`
+provide content-free health/backlog responses from existing App owners, with the
+observation interval, CPU freshness, scheduler wait reason and explicit unavailable
+queues. Reading does not initialize a companion/voice owner or scan files. The
+saved-audio queue count remains unknown until bounded observation is implemented.
+`App/Tests/RetraceOperationsTests.swift` checks inert reads and real governor/grant
+behavior; native command reads emit categorical operations-read metrics.
+`App/Tests/RetentionOutputDrainTests.swift` uses private SQLite deletion to verify
+that retention joins invalidated native output outside its transaction before
+reporting completion, without changing the live retention preferences.
 
 | Module         | Directory     | Agent File             | Responsibility                                                     |
 | -------------- | ------------- | ---------------------- | ------------------------------------------------------------------ |
@@ -553,7 +609,7 @@ Then check which path actually executes and fix the right code.
 
 ---
 
-_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-09-18_
+_This file follows the AGENTS.md standard for AI agent guidance. Last updated: 2026-10-22_
 
 
 <claude-mem-context>

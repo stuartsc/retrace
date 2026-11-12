@@ -3,8 +3,8 @@ import Shared
 @testable import Retrace
 
 final class DashboardVoiceLayoutTests: XCTestCase {
-    func testDictationIsDefaultDashboardTab() {
-        XCTAssertEqual(DashboardContentTab.defaultTab, .dictation)
+    func testLiveContextIsDefaultDashboardTab() {
+        XCTAssertEqual(DashboardContentTab.defaultTab, .live)
     }
 
     func testDashboardTabsAreVoiceFirst() {
@@ -13,7 +13,7 @@ final class DashboardVoiceLayoutTests: XCTestCase {
     }
 
     func testLiveTabHasDedicatedCaptureSurfaces() {
-        XCTAssertEqual(DashboardContentTab.live.subtitle, "Live transcript, operating brief, and activity pulse")
+        XCTAssertEqual(DashboardContentTab.live.subtitle, "Saved transcript and exact screen context")
     }
 
     func testScreenshotsTabOwnsScreenHistory() {
@@ -48,35 +48,22 @@ final class DashboardVoiceLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(DashboardStatsStripLayoutPolicy.graphHeight, 34)
     }
 
-    func testLiveTabUsesThreeColumnLayoutAtDefaultWidth() {
-        XCTAssertEqual(
-            DashboardLiveLayoutPolicy.contentMode(forWidth: DashboardVoiceLayoutPolicy.defaultContentWidth),
-            .threeColumn
-        )
+    func testLiveTabUsesTwoResizablePanesAtNineHundredPoints() {
+        XCTAssertEqual(DashboardLiveLayoutPolicy.contentMode(forWidth: 900), .split)
+        XCTAssertEqual(DashboardLiveLayoutPolicy.contentMode(forWidth: 899), .tabs)
+        let columns = DashboardLiveLayoutPolicy.columnWidths(forWidth: 1_200)
+        XCTAssertEqual(columns.transcript / (1_200 - DashboardLiveLayoutPolicy.columnSpacing), 0.6, accuracy: 0.001)
+        XCTAssertEqual(columns.transcript + columns.context + DashboardLiveLayoutPolicy.columnSpacing, 1_200)
     }
 
-    func testLiveTabStacksAtCompactWidths() {
-        XCTAssertEqual(DashboardLiveLayoutPolicy.contentMode(forWidth: 900), .stacked)
-    }
-
-    func testLiveTabGivesIntelligenceFeedPrimaryWidth() {
-        let columns = DashboardLiveLayoutPolicy.columnWidths(forWidth: DashboardVoiceLayoutPolicy.defaultContentWidth)
-        XCTAssertGreaterThan(columns.intelligence, columns.transcript)
-        XCTAssertGreaterThan(columns.transcript, columns.context)
+    func testLiveDividerKeepsBothPanesUsable() {
+        XCTAssertEqual(DashboardLiveLayoutPolicy.boundedRatio(-1), 0.4)
+        XCTAssertEqual(DashboardLiveLayoutPolicy.boundedRatio(2), 0.7)
+        XCTAssertEqual(DashboardLiveLayoutPolicy.boundedRatio(0.55), 0.55)
     }
 
     func testLiveScreenshotHistoryPageSizeSupportsLazyLoading() {
         XCTAssertGreaterThanOrEqual(DashboardLiveLayoutPolicy.screenshotPageSize, 12)
-    }
-
-    func testLiveActivityHistoryUsesOneBoundedBackfillThenSmallRefreshes() {
-        XCTAssertEqual(DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit, 72)
-        XCTAssertEqual(DashboardLiveLayoutPolicy.activityRefreshFrameFetchLimit, 24)
-        XCTAssertLessThanOrEqual(DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit, 96)
-        XCTAssertGreaterThan(
-            DashboardLiveLayoutPolicy.activityInitialFrameFetchLimit,
-            DashboardLiveLayoutPolicy.activityRefreshFrameFetchLimit
-        )
     }
 
     func testTranscriptConfidenceLabelOmitsMissingOrZeroConfidence() {

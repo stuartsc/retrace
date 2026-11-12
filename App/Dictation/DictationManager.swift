@@ -31,6 +31,10 @@ public actor DictationManager {
     private var config: DictationConfig
     private let audioBuffer: DictationAudioBuffer
     private var activeSession: DictationSession?
+    private var microphoneAllowed = true
+    private var microphoneGeneration: UInt64 = 0
+    private var microphoneAdmission = NativeMutationFence()
+    private var endingTasks: [UUID: Task<DictationSession, Error>] = [:]
 
     public init(
         transcriptionService: any TranscriptionProtocol,
@@ -63,8 +67,32 @@ public actor DictationManager {
     }
 
     public func ingest(_ audio: CapturedAudio) async {
-        guard audio.source == .microphone else { return }
-        await audioBuffer.append(audio)
+        guard microphoneAllowed, audio.source == .microphone else { return }
+        await audioBuffer.append(audio, microphoneGeneration: microphoneGeneration)
+    }
+
+    /// Joined privacy boundary. Re-enabling cannot reuse pre-roll or insert a
+    /// transcription started before this boundary, even if recognition ignores cancellation.
+    public func setMicrophoneAllowed(_ allowed: Bool) async {
+        // Revoke before the first suspension, including a paste already queued
+        // on MainActor. A later enable receives a different capability.
+        if !allowed {
+            microphoneAdmission.invalidate()
+            microphoneGeneration &+= 1
+        } else if !microphoneAllowed {
+            microphoneAdmission = NativeMutationFence()
+        }
+        microphoneAllowed = allowed
+        await audioBuffer.setMicrophoneAllowed(allowed, generation: microphoneGeneration)
+        guard !allowed else { return }
+        if let session = activeSession {
+            activeSession = nil
+            try? await sessionStore.save(session.updated(endedAt: Date(), status: .cancelled,
+                errorMessage: "Microphone recording is disabled"))
+        }
+        let pending = Array(endingTasks.values)
+        for task in pending { task.cancel() }
+        for task in pending { _ = await task.result }
     }
 
     @discardableResult
@@ -93,12 +121,20 @@ public actor DictationManager {
         currentTargetContext: DictationTargetContext? = nil,
         validateInsertionTarget: Bool = false
     ) async throws -> DictationSession {
-        guard let session = activeSession else {
-            throw DictationManagerError.noActiveSession
-        }
+        guard let session = activeSession else { throw DictationManagerError.noActiveSession }
         activeSession = nil
+        let id = UUID(), generation = microphoneGeneration, admission = microphoneAdmission
+        let task = Task { try await self.finishDictation(session: session, at: endedAt, currentTargetContext: currentTargetContext,
+            validateInsertionTarget: validateInsertionTarget, generation: generation, admission: admission) }
+        endingTasks[id] = task
+        defer { endingTasks[id] = nil }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
 
-        guard config.isEnabled else {
+    private func finishDictation(session: DictationSession, at endedAt: Date, currentTargetContext: DictationTargetContext?,
+                                validateInsertionTarget: Bool, generation: UInt64,
+                                admission: NativeMutationFence) async throws -> DictationSession {
+        guard config.isEnabled, microphoneAllowed, generation == microphoneGeneration else {
             let cancelled = session.updated(
                 endedAt: endedAt,
                 status: .cancelled,
@@ -121,7 +157,11 @@ public actor DictationManager {
         }
 
         do {
+            try Task.checkCancellation()
+            guard microphoneAllowed, generation == microphoneGeneration else { throw CancellationError() }
             let transcription = try await transcriptionService.transcribe(slice.audioData)
+            try Task.checkCancellation()
+            guard microphoneAllowed, generation == microphoneGeneration else { throw CancellationError() }
             guard let formattedText = DictationTextFormatter.formatted(transcription.text) else {
                 let empty = session.updated(
                     endedAt: endedAt,
@@ -146,7 +186,8 @@ public actor DictationManager {
             try await insertionService.insert(
                 text: formattedText,
                 method: config.insertionMethod,
-                restoreDelay: config.restoreClipboardDelaySeconds
+                restoreDelay: config.restoreClipboardDelaySeconds,
+                admission: admission
             )
 
             let insertedAt = Date()
@@ -158,6 +199,11 @@ public actor DictationManager {
             )
             try? await sessionStore.save(inserted)
             return inserted
+        } catch is CancellationError {
+            let cancelled = session.updated(endedAt: endedAt, status: .cancelled,
+                errorMessage: "Microphone recording changed")
+            try? await sessionStore.save(cancelled)
+            return cancelled
         } catch DictationInsertionError.secureInputEnabled {
             let blocked = session.updated(
                 endedAt: endedAt,

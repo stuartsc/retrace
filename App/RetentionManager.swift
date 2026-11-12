@@ -19,6 +19,13 @@ public actor RetentionManager {
     private var inFlightCleanup: Task<RetentionCleanupResult, Never>?
     private var isRunning = false
     private var isStopping = false
+    private var sourceMutationDrain: @Sendable () async -> Void = {}
+    #if DEBUG
+    private var sourceMutationDrainRegistrationCheckpoint: (@Sendable () async -> Void)?
+    func setSourceMutationDrainRegistrationCheckpoint(_ checkpoint: (@Sendable () async -> Void)?) {
+        sourceMutationDrainRegistrationCheckpoint = checkpoint
+    }
+    #endif
 
     /// Interval between cleanup checks (default: 1 hour)
     private let cleanupInterval: TimeInterval = 3600
@@ -42,6 +49,15 @@ public actor RetentionManager {
     }
 
     // MARK: - Lifecycle
+
+    /// The source hook has already revoked affected output synchronously inside
+    /// SQLite. Join its native stop here, outside the writer transaction.
+    func setSourceMutationDrain(_ drain: @escaping @Sendable () async -> Void) async {
+        #if DEBUG
+        await sourceMutationDrainRegistrationCheckpoint?()
+        #endif
+        sourceMutationDrain = drain
+    }
 
     /// Start the retention manager (runs cleanup periodically)
     public func start() async {
@@ -177,8 +193,15 @@ public actor RetentionManager {
         return await task.value
     }
 
-    private func performCleanup() async -> RetentionCleanupResult {
-        guard let cutoff = getCutoffDate() else {
+    #if DEBUG
+    /// Authored private-database validation without changing live retention preferences.
+    func runCleanupForTesting(cutoff: Date) async -> RetentionCleanupResult {
+        await performCleanup(cutoff: cutoff)
+    }
+    #endif
+
+    private func performCleanup(cutoff requestedCutoff: Date? = nil) async -> RetentionCleanupResult {
+        guard let cutoff = requestedCutoff ?? getCutoffDate() else {
             return RetentionCleanupResult(deletedFrames: 0, deletedVideoSegments: 0, deletedAppSegments: 0,
                                           reclaimedBytes: 0, cutoffDate: nil, success: true, error: nil)
         }
@@ -197,6 +220,7 @@ public actor RetentionManager {
                 let batch = try await database.performRetentionBatch(olderThan: cutoff,
                     excludingApps: getExcludedApps(), excludingTagIDs: getExcludedTagIds(),
                     excludeHidden: shouldExcludeHidden())
+                await sourceMutationDrain()
                 deletedFrames += batch.deletedFrames
                 deletedSegments += batch.deletedAppSegments
                 for candidate in batch.videos where attemptedVideoIDs.insert(candidate.id).inserted {
@@ -209,6 +233,7 @@ public actor RetentionManager {
                             try Self.deleteValidatedVideoFiles(root: root, relativePath: candidate.relativePath,
                                                               expectedURLs: targets)
                         }
+                        await sourceMutationDrain()
                         if let bytes {
                             deletedVideos += 1
                             reclaimedBytes += bytes

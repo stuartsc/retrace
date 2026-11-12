@@ -66,16 +66,25 @@ let package = Package(
             name: "Database",
             dependencies: [
                 "Shared",
+                "DatabaseNativeSupport",
                 .product(name: "SQLCipher", package: "swift-sqlcipher")
             ],
             path: "Database",
             exclude: [
                 "Tests",
                 "TestSupport",
+                "NativeSupport",
                 "README.md",
                 "AGENTS.md",
                 "PROGRESS.md"
             ]
+        ),
+        .target(
+            name: "DatabaseNativeSupport",
+            dependencies: [.product(name: "SQLCipher", package: "swift-sqlcipher")],
+            path: "Database/NativeSupport",
+            publicHeadersPath: "include",
+            cSettings: [.define("SQLITE_ENABLE_PREUPDATE_HOOK")]
         ),
         // Typed bridge for SQLite's variadic defensive-mode API in database tests.
         .target(

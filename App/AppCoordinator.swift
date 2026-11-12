@@ -299,6 +299,9 @@ public actor AppCoordinator {
     private let services: ServiceContainer
     private var activityMonitor: ActivityMonitor?
     private var recallService: ProgressiveRecallService?
+    private var exactOCRRepairOwner: ExactOCRRepairService?
+    private var annotationOwner: NativeAnnotationService?
+    private var retentionCommandOwner: RetentionCommandService?
     private let recordingLifecycle = RecordingLifecycle()
     private var masterCaptureRequested = false
     private var captureTask: Task<Void, Never>?
@@ -306,6 +309,16 @@ public actor AppCoordinator {
     private var refinementLoopTask: Task<Void, Never>?
     private var legacyOCRNodeTextMaintenanceTask: Task<Void, Never>?
     private var isRunning = false
+    private var recordingCommandRevision = UUID()
+    private var recordingTransitions = 0
+    private var captureCommandRevision = UUID()
+    private var captureCommandMutation: (id: UUID, task: Task<Void, Error>)?
+    private var commandAccessOwner: RetraceCommandAccessService?
+    private var companionOwner: CompanionController?
+    private var companionTurnPlaybackOwner: CompanionTurnPlayback?
+    private var companionSettingsOwner: CompanionSettingsService?
+    private var companionInitialization: Task<(CompanionController, CompanionSettingsService), Error>?
+    private var commandAccessClosed = false
     /// Writer ownership exists before its first WAL append, so filesystem
     /// enumeration alone cannot determine whether a video is orphaned.
     private var liveVideoWriterPaths: Set<String> = []
@@ -343,14 +356,18 @@ public actor AppCoordinator {
 
     // MARK: - Initialization
 
-    public init(services: ServiceContainer) {
+    private let captureSettingsPersistence: CaptureSettingsPersistence?
+
+    public init(services: ServiceContainer, captureSettingsPersistence: CaptureSettingsPersistence? = nil) {
         self.services = services
+        self.captureSettingsPersistence = captureSettingsPersistence
         Log.info("AppCoordinator created", category: .app)
     }
 
     /// Convenience initializer with default configuration
     public init() {
         self.services = ServiceContainer()
+        self.captureSettingsPersistence = .application
         Log.info("AppCoordinator created with default services", category: .app)
     }
 
@@ -383,6 +400,41 @@ public actor AppCoordinator {
         await services.resourceUsage.snapshot()
     }
 
+    /// An interval observation of existing owners, not an atomic cross-owner snapshot.
+    /// Missing queue/measurement data stays unknown and cannot be reported as idle.
+    public func operationsSnapshot(recordRead: Bool = false) async -> RetraceOperationsSnapshot {
+        let started = Date()
+        let health = await progressiveRecallHealth()
+        let scheduler = await services.backgroundProcessing.snapshot()
+        let cpu = await services.resourceUsage.snapshot()
+        let companion = await companionOwner?.status()
+        let voice = await services.existingVoiceMarkerStatus()
+        let persistenceFailed = await services.audioProcessing.hasPersistenceFailure
+        var unavailable: [RetraceOperationsSnapshot.Unavailable] = [.savedAudioQueue]
+        if health.pendingText == nil { unavailable.append(.textQueue) }
+        if !cpu.isCurrent { unavailable.append(.cpuMeasurement) }
+        if health.activity == nil { unavailable.append(.activityHealth) }
+        let snapshot = RetraceOperationsSnapshot(observationStartedAt: started, observedAt: Date(), recording: isRunning,
+            recordingPersistenceFailed: persistenceFailed, contextCollecting: health.collecting,
+            contextDegraded: health.degraded, pendingText: health.pendingText,
+            processingText: health.processingText, failedText: health.failedText,
+            oldestPendingTextAt: health.oldestPendingTextAt, pendingSavedAudio: nil,
+            audioProcessedAt: health.audioProcessedAt,
+            background: .init(waitingCount: scheduler.waitingCount, running: scheduler.isRunning,
+                processNow: scheduler.processNow, waitingForQuietMoment: scheduler.isWaitingForQuietMoment,
+                closed: scheduler.isClosed, originalSpoolUnderPressure: scheduler.originalSpoolUnderPressure,
+                activeKind: scheduler.activeKind?.rawValue, waitReason: scheduler.waitReason?.rawValue),
+            cpu: cpu, companion: companion.map { .init(state: $0.state.rawValue, pendingCount: $0.pendingCount,
+                partialDeliveryPossible: $0.partialDeliveryPossible) },
+            voiceMarkers: voice.map { .init(state: $0.state, enabledRuleCount: $0.enabledRuleCount,
+                mediaMappingIncomplete: $0.mediaMappingIncomplete) }, unavailable: unavailable)
+        if recordRead {
+            try? await services.database.recordMetricEvent(metricType: .progressiveRecallAction,
+                metadata: "{\"action\":\"operationsRead\",\"count\":1,\"outcome\":\"partial\"}")
+        }
+        return snapshot
+    }
+
     public func storageUsageSnapshot() async -> StorageUsageSnapshot {
         await services.storageUsage.snapshot()
     }
@@ -399,6 +451,15 @@ public actor AppCoordinator {
 
     public func setBackgroundProcessNow(_ enabled: Bool) async {
         await services.backgroundProcessing.setProcessNow(enabled)
+        try? await services.database.recordMetricEvent(metricType: .backgroundProcessing,
+            metadata: enabled ? "{\"action\":\"processNow\"}" : "{\"action\":\"cancelOverride\"}")
+    }
+
+    /// Cancellation is checked again inside the governor at its mutation boundary.
+    public func setBackgroundProcessNowFromCommand(_ enabled: Bool) async throws {
+        try Task.checkCancellation()
+        guard !commandAccessClosed else { throw RetraceCommandError.unavailable }
+        try await services.backgroundProcessing.setProcessNowFromCommand(enabled)
         try? await services.database.recordMetricEvent(metricType: .backgroundProcessing,
             metadata: enabled ? "{\"action\":\"processNow\"}" : "{\"action\":\"cancelOverride\"}")
     }
@@ -515,6 +576,11 @@ public actor AppCoordinator {
         return AudioTranscriptionQueries(db: db)
     }
 
+    /// Retained local workspace reader; continuations remain bound to one owner.
+    public func getLiveAudioContextReader() async throws -> LiveAudioContextReader {
+        try await services.getLiveAudioContextReader()
+    }
+
     /// The same configured directory used by the audio writer, including custom storage locations.
     public func getAudioStorageDirectory() async -> URL {
         await services.storage.getStorageDirectory()
@@ -607,11 +673,85 @@ public actor AppCoordinator {
     }
 
     /// Update capture configuration
-    public func updateCaptureConfig(_ config: CaptureConfig) async throws {
-        try await services.capture.updateConfig(config)
-        await activityMonitor?.configurationChanged()
-        try? await services.database.recordMetricEvent(metricType: .progressiveRecallAction,
-            metadata: "{\"action\":\"captureSettingChanged\",\"count\":1,\"outcome\":\"success\"}")
+    public func updateCaptureConfig(_ config: CaptureConfig, expectedRevision: UUID? = nil,
+                                    commandFence: NativeMutationFence? = nil) async throws {
+        while let pending = captureCommandMutation {
+            _ = await pending.task.result
+            if captureCommandMutation?.id == pending.id { captureCommandMutation = nil }
+        }
+        try Task.checkCancellation()
+        try commandFence?.withAdmission {}
+        try CaptureSettingsPersistence.validate(config)
+        guard !commandAccessClosed else { throw RetraceCommandError.unavailable }
+        if let expectedRevision, expectedRevision != captureCommandRevision { throw RetraceCommandError.revisionConflict }
+        let id = UUID()
+        captureCommandRevision = UUID() // Fence concurrent/UI requests before the first await.
+        let task = Task { [self] in
+            // Legacy @AppStorage bindings can echo an MCP update. An identical
+            // configuration needs no policy revocation or timer change.
+            if await services.capture.getConfig() == config,
+               await services.capture.hasActiveConfigurationAdmission() {
+                try Task.checkCancellation()
+                try commandFence?.withAdmission {}
+                try captureSettingsPersistence?.save(config)
+                return
+            }
+            exactOCRRepairOwner?.invalidate()
+            annotationOwner?.invalidate()
+            retentionCommandOwner?.invalidate()
+            companionOwner?.invalidate()
+            // Invalidation is synchronous; native output drains outside SQLite
+            // before the policy change is acknowledged. Pending evidence reads are
+            // cancelled, not joined here, because they may await this policy owner.
+            await companionTurnPlaybackOwner?.drainOutput()
+            try commandFence?.withAdmission {}
+            if let commandFence { try await services.capture.updateConfig(config, commandFence: commandFence) }
+            else { try await services.capture.updateConfig(config) }
+            // Capture's configuration bracket revokes incomplete updates. Store
+            // only an acknowledged configuration, shared by Settings and MCP.
+            try captureSettingsPersistence?.save(config)
+            await activityMonitor?.configurationChanged()
+            try? await services.database.recordMetricEvent(metricType: .progressiveRecallAction,
+                metadata: "{\"action\":\"captureSettingChanged\",\"count\":1,\"outcome\":\"success\"}")
+        }
+        captureCommandMutation = (id, task)
+        do { try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() } }
+        catch {
+            if captureCommandMutation?.id == id { captureCommandMutation = nil }
+            throw error
+        }
+        if captureCommandMutation?.id == id { captureCommandMutation = nil }
+        // This must occur after clearing the mutation: companion policy reads await that task.
+        if !commandAccessClosed { try? await companionSettingsOwner?.resumeAfterPolicyChange() }
+    }
+
+    public func captureCommandState() async throws -> NativeCaptureState {
+        for _ in 0..<4 {
+            while let pending = captureCommandMutation {
+            _ = await pending.task.result
+            if captureCommandMutation?.id == pending.id { captureCommandMutation = nil }
+        }
+            guard !commandAccessClosed else { throw RetraceCommandError.unavailable }
+            let revision = captureCommandRevision
+            let config = await services.capture.getConfig()
+            if revision == captureCommandRevision, captureCommandMutation == nil {
+                return .init(config: config, revision: revision)
+            }
+        }
+        throw RetraceCommandError.unavailable
+    }
+
+    public func recordingCommandState() -> NativeRecordingState {
+        .init(active: isRunning, revision: recordingCommandRevision, transitioning: recordingTransitions > 0)
+    }
+
+    public func setRecordingFromCommand(active: Bool, expectedRevision: UUID) async throws {
+        try Task.checkCancellation()
+        guard !commandAccessClosed else { throw RetraceCommandError.unavailable }
+        guard expectedRevision == recordingCommandRevision else { throw RetraceCommandError.revisionConflict }
+        // Both called methods synchronously advance the owner revision before awaiting.
+        if active { try await startPipeline() }
+        else { try await stopPipeline(persistState: true, reason: .normal, requireCommandAdmission: true) }
     }
 
     public func activityMonitorHealth() async -> ActivityMonitorHealth? { await activityMonitor?.health() }
@@ -654,6 +794,167 @@ public actor AppCoordinator {
             audioTranscriptions: audio.totalTranscriptionsGenerated)
     }
 
+    /// UI and future explicit marker clients share this one lazy App-owned service.
+    public func commandAccess() async throws -> RetraceCommandAccessService {
+        guard !commandAccessClosed else { throw RetraceCommandError.unavailable }
+        if let commandAccessOwner { return commandAccessOwner }
+        let root = await services.storage.getStorageDirectory()
+        guard !commandAccessClosed else { throw RetraceCommandError.unavailable }
+        if let commandAccessOwner { return commandAccessOwner }
+        let owner = RetraceCommandAccessService(storageRoot: root) { [weak self] in
+            guard let self else { throw RetraceCommandError.unavailable }
+            let markers = try await self.timelineMarkers()
+            return await RetraceNativeCommandHandlers.make(coordinator: self, markers: markers)
+        }
+        commandAccessOwner = owner
+        try await owner.restore()
+        return owner
+    }
+
+    public func voiceMarkers() async throws -> VoiceMarkerController {
+        try await services.voiceMarkers()
+    }
+
+    public func audioSession() async throws -> AudioSessionOwner {
+        guard !commandAccessClosed else { throw AudioSessionError.closed }
+        let services = self.services
+        let owner = try await services.audioSession(pipeline: .init(
+            start: { [weak self] config in
+                guard let self else { throw AudioSessionError.closed }
+                try await self.startOwnedAudioPipeline(config: config)
+            },
+            stopAndDrain: { [weak self] in
+                guard let self else { try await services.audioCapture.stopCapture(); return }
+                try await self.stopOwnedAudioPipeline()
+            },
+            runtime: { await services.audioCapture.runtimeSnapshot() },
+            revokeMarkers: { await services.pauseVoiceMarkers() },
+            setMicrophoneAllowed: { await services.dictation.setMicrophoneAllowed($0) }))
+        guard !commandAccessClosed else { throw AudioSessionError.closed }
+        try await owner.initialize()
+        return owner
+    }
+
+    private func startOwnedAudioPipeline(config: AudioCaptureConfig) async throws {
+        guard !commandAccessClosed, masterCaptureRequested, audioTask == nil else { throw AudioSessionError.closed }
+        // The same retained handlers are installed before the first generation;
+        // AudioProcessingManager preserves them across natural stream drains.
+        let voiceMarkers = try? await services.voiceMarkers()
+        _ = try? await companion()
+        guard !commandAccessClosed, masterCaptureRequested, audioTask == nil else { throw AudioSessionError.closed }
+        try await services.audioCapture.startCapture(config: config)
+        // Bind before any further await so a cancelled start still drains every
+        // accepted sample through the existing recording processor.
+        let stream = await services.audioCapture.audioStream
+        audioTask = Task { await self.runAudioPipeline(sourceAudioStream: stream) }
+        let runtime = await services.audioCapture.runtimeSnapshot()
+        // Marker activation belongs to the serialized start, never to the later
+        // draining consumer. Pause/close joins this start before its final revoke.
+        guard !commandAccessClosed, masterCaptureRequested else { throw CancellationError() }
+        await voiceMarkers?.setRecording(config.microphoneEnabled && runtime.microphone.state == .running)
+    }
+
+    private func stopOwnedAudioPipeline() async throws {
+        var failure: Error?
+        do { try await services.audioCapture.stopCapture() }
+        catch { failure = error }
+        let retiring = audioTask
+        await retiring?.value
+        audioTask = nil
+        if let failure { throw failure }
+    }
+
+    public func markerPlayback() async throws -> MarkerAudioPlayback {
+        try await services.markerPlayback()
+    }
+
+    public func annotations() throws -> NativeAnnotationService {
+        guard !commandAccessClosed else { throw NativeAnnotationError.closed }
+        if let annotationOwner { return annotationOwner }
+        let owner = NativeAnnotationService(database: services.database, captureState: { [weak self] in
+            guard let self else { throw NativeAnnotationError.closed }
+            return try await self.captureCommandState()
+        }, drainOutput: { [weak self] in
+            await self?.drainCompanionTurnOutput()
+        })
+        annotationOwner = owner
+        return owner
+    }
+
+    public func retentionCommands() throws -> RetentionCommandService {
+        guard !commandAccessClosed else { throw RetentionCommandError.closed }
+        if let retentionCommandOwner { return retentionCommandOwner }
+        let services = self.services
+        let owner = RetentionCommandService(database: services.database,
+            captureState: { [weak self] in
+                guard let self else { throw RetentionCommandError.closed }
+                return try await self.captureCommandState()
+            }, retentionPolicy: {
+                let manager = services.retentionManager
+                return .init(excludedApps: manager.getExcludedApps(), excludedTagIDs: manager.getExcludedTagIds(),
+                    excludeHidden: manager.shouldExcludeHidden())
+            }, storageRoot: { await services.storage.getStorageDirectory() },
+            drainOutput: { [weak self] in await self?.drainCompanionTurnOutput() },
+            invalidateStorageCaches: { await services.storage.invalidateAllCaches() })
+        retentionCommandOwner = owner
+        return owner
+    }
+
+    public func companion() async throws -> CompanionController {
+        try await prepareCompanionOwners().0
+    }
+
+    public func companionTurnPlayback() async throws -> CompanionTurnPlayback {
+        guard !commandAccessClosed else { throw CompanionError.closed }
+        if let companionTurnPlaybackOwner { return companionTurnPlaybackOwner }
+        let controller = try await companion()
+        guard !commandAccessClosed else { throw CompanionError.closed }
+        let owner = try await services.companionTurnPlayback(controller: controller)
+        guard !commandAccessClosed else { await owner.close(); throw CompanionError.closed }
+        companionTurnPlaybackOwner = owner
+        return owner
+    }
+
+    /// Joins output only; pending source resolution may be awaiting this actor.
+    func drainCompanionTurnOutput() async {
+        await companionTurnPlaybackOwner?.drainOutput()
+    }
+
+    public func companionSettings() async throws -> CompanionSettingsService {
+        try await prepareCompanionOwners().1
+    }
+
+    public func contextRanges() async throws -> ContextRangePresentationService {
+        try await companion().contextRanges()
+    }
+
+    private func prepareCompanionOwners() async throws -> (CompanionController, CompanionSettingsService) {
+        guard !commandAccessClosed else { throw CompanionError.closed }
+        if let companionOwner, let companionSettingsOwner { return (companionOwner, companionSettingsOwner) }
+        if let companionInitialization { return try await companionInitialization.value }
+        let task = Task { [self] in
+            let recall = try await progressiveRecall()
+            try Task.checkCancellation()
+            return try await services.companionOwners(recall: recall, policy: { [weak self] in
+                guard let self else { throw CompanionError.closed }
+                _ = try await self.captureCommandState()
+                try Task.checkCancellation()
+            })
+        }
+        companionInitialization = task
+        do {
+            let owners = try await task.value
+            guard !commandAccessClosed else { throw CompanionError.closed }
+            companionOwner = owners.0; companionSettingsOwner = owners.1
+            companionInitialization = nil
+            return owners
+        } catch { companionInitialization = nil; throw error }
+    }
+
+    public func timelineMarkers() async throws -> TimelineMarkerService {
+        try await services.timelineMarkers()
+    }
+
     public func progressiveRecall() async throws -> ProgressiveRecallService {
         if let service = recallService { return service }
         guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
@@ -661,7 +962,10 @@ public actor AppCoordinator {
         if let service = recallService { return service }
         let capture = services.capture
         let service = ProgressiveRecallService(database: services.database, adapter: adapter,
-            configuration: { await capture.getConfig() }, imageReader: { [weak self] frame in
+            configuration: { await capture.getConfig() }, disclosureState: { [weak self] in
+                guard let self else { throw EvidenceUnavailableReason.notPermitted }
+                return try await self.captureCommandState()
+            }, imageReader: { [weak self] frame in
                 guard let self else { throw EvidenceUnavailableReason.recordingMissing }
                 return try await self.exactEvidenceImage(frame)
             })
@@ -739,6 +1043,10 @@ public actor AppCoordinator {
     public func initialize() async throws {
         Log.info("Initializing AppCoordinator...", category: .app)
         try await services.initialize()
+        do { try await companionSettings().restore() }
+        catch { Log.warning("Private companion unavailable; local recording remains independent", category: .app) }
+        do { _ = try await commandAccess() }
+        catch { Log.warning("Private Retrace MCP listener unavailable; local recording remains independent", category: .app) }
 
         Log.info("AppCoordinator initialized successfully", category: .app)
 
@@ -876,10 +1184,18 @@ public actor AppCoordinator {
         try await services.registerRewindSourceIfEnabled()
     }
 
-    /// Set Rewind data source enabled/disabled
-    /// Updates UserDefaults and connects/disconnects the data source immediately
-    public func setRewindSourceEnabled(_ enabled: Bool) async {
-        await services.setRewindSourceEnabled(enabled)
+    public func sourceConfiguration() async throws -> SourceConfigurationService {
+        try await services.sourceConfiguration()
+    }
+
+    /// UI and MCP share one source owner and the same exact preview checks.
+    @discardableResult
+    public func setRewindSourceEnabled(_ enabled: Bool) async throws -> SourceConfigurationReceipt {
+        try await services.setRewindSourceEnabled(enabled)
+    }
+
+    public func changeLocalRewindLocation(_ folder: String?) async throws -> SourceConfigurationSnapshot {
+        try await services.changeLocalRewindLocation(folder)
     }
 
     /// Setup callback for accessibility permission warnings
@@ -909,8 +1225,10 @@ public actor AppCoordinator {
 
     /// Start the capture pipeline
     public func startPipeline() async throws {
+        recordingCommandRevision = UUID(); recordingTransitions += 1
+        defer { recordingTransitions -= 1 }
         try await recordingLifecycle.start(operation: { try await self.startPipelineNow() },
-            rollback: { await self.rollbackPipelineStartup() })
+            rollback: { try await self.rollbackPipelineStartup() })
     }
 
     private func startPipelineNow() async throws {
@@ -951,9 +1269,8 @@ public actor AppCoordinator {
 
         // Start audio capture
         do {
-            let audioConfig = AudioCaptureConfig.default
-            try await services.audioCapture.startCapture(config: audioConfig)
-            Log.info("Audio capture started", category: .app)
+            try await audioSession().setRecordingRequested(true)
+            Log.info("Audio session reconciled", category: .app)
         } catch {
             Log.warning("Audio capture failed to start: \(error)", category: .app)
         }
@@ -965,9 +1282,6 @@ public actor AppCoordinator {
         statusHolder.update(isRunning: true, startTime: pipelineStartTime)
         captureTask = Task {
             await runPipeline()
-        }
-        audioTask = Task {
-            await runAudioPipeline()
         }
 
         if Self.shouldStartAutomaticRefinementLoop() {
@@ -1050,41 +1364,72 @@ public actor AppCoordinator {
 
     private func stopPipeline(
         persistState: Bool,
-        reason: PipelineStopReason
+        reason: PipelineStopReason,
+        requireCommandAdmission: Bool = false
     ) async throws {
-        try await recordingLifecycle.stop(onRequest: { await self.preparePipelineStop(reason: reason, persistState: persistState) },
-            operation: { try await self.stopPipelineNow(persistState: persistState, reason: reason) })
-    }
-
-    private func preparePipelineStop(reason: PipelineStopReason, persistState: Bool) async {
-        if reason == .normal {
-            masterCaptureRequested = false
-            if persistState { saveRecordingState(false) }
-            await activityMonitor?.stop()
+        recordingCommandRevision = UUID(); recordingTransitions += 1
+        defer { recordingTransitions -= 1 }
+        if requireCommandAdmission {
+            try await recordingLifecycle.stopFromCommand(onRequest: { try await self.preparePipelineStop(reason: reason, persistState: persistState) },
+                operation: { try await self.stopPipelineNow(persistState: persistState, reason: reason) })
+        } else {
+            try await recordingLifecycle.stop(onRequest: { try await self.preparePipelineStop(reason: reason, persistState: persistState) },
+                operation: { try await self.stopPipelineNow(persistState: persistState, reason: reason) })
         }
     }
 
-    private func rollbackPipelineStartup() async {
+    private func preparePipelineStop(reason: PipelineStopReason, persistState: Bool) async throws {
+        if reason == .normal {
+            masterCaptureRequested = false
+            if persistState { saveRecordingState(false) }
+            // Revoke a suspended audio startup while the master lifecycle joins it.
+            var failure: Error?
+            do { try await services.pauseAudioSession() } catch { failure = error }
+            await activityMonitor?.stop()
+            if let failure { throw failure }
+        }
+    }
+
+    private func rollbackPipelineStartup() async throws {
         masterCaptureRequested = false
         await activityMonitor?.stop()
         if isRunning {
-            try? await stopPipelineNow(persistState: false, reason: .normal)
+            try await Task { try await self.stopPipelineNow(persistState: false, reason: .normal) }.value
         } else {
             await stopPermissionMonitoring()
-            try? await services.capture.stopCapture()
-            try? await services.audioCapture.stopCapture()
+            try await Task {
+                var failure: Error?
+                do { try await services.capture.stopCapture() } catch { failure = error }
+                do { try await services.pauseAudioSession() }
+                catch {
+                    if let prior = failure { failure = RecordingShutdownFailure(request: prior, cleanup: error) }
+                    else { failure = error }
+                }
+                do { try await self.stopOwnedAudioPipeline() }
+                catch {
+                    if let prior = failure { failure = RecordingShutdownFailure(request: prior, cleanup: error) }
+                    else { failure = error }
+                }
+                if let failure { throw failure }
+            }.value
         }
     }
 
     private func stopPipelineNow(persistState: Bool, reason: PipelineStopReason) async throws {
         guard isRunning else {
             if reason == .normal && persistState { saveRecordingState(false) }
+            // A failed startup may still own native resources. Explicit stop is
+            // the joined cleanup retry, even before the screen pipeline was live.
+            try await services.capture.stopCapture()
+            try await services.pauseAudioSession()
             Log.warning("Pipeline not running", category: .app)
             return
         }
 
         let stopPlan = PipelineStopTeardownPolicy.plan(for: reason, persistState: persistState)
         Log.info("Stopping capture pipeline...", category: .app)
+
+        await services.pauseVoiceMarkers()
 
         // Stop permission monitoring
         await stopPermissionMonitoring()
@@ -1103,20 +1448,20 @@ public actor AppCoordinator {
         // Stop audio capture
         if stopPlan.stopAudioCapture {
             do {
-                try await services.audioCapture.stopCapture()
+                try await services.pauseAudioSession()
             } catch {
                 Log.warning("Audio capture stop failed: \(error)", category: .app)
+                if screenStopError == nil { screenStopError = error }
             }
         }
 
         // Cancel pipeline tasks
         if stopPlan.cancelPipelineTasks {
-            let endingTasks = [captureTask, audioTask].compactMap { $0 }
+            let endingTasks = [captureTask].compactMap { $0 }
             // Final media/segment writes belong to this recording, and must finish
             // before the lifecycle gate permits a replacement recording to start.
             await RecordingLifecycle.cancelAndJoin(endingTasks)
             captureTask = nil
-            audioTask = nil
         }
         if stopPlan.cancelRefinementLoop {
             let refinement = refinementLoopTask
@@ -1222,6 +1567,25 @@ public actor AppCoordinator {
 
     /// Fence future recording requests before awaiting termination work.
     public func prepareForShutdown() async {
+        commandAccessClosed = true
+        exactOCRRepairOwner?.invalidate()
+        annotationOwner?.invalidate()
+        retentionCommandOwner?.invalidate()
+        companionOwner?.invalidate()
+        companionInitialization?.cancel()
+        await companionTurnPlaybackOwner?.close()
+        companionTurnPlaybackOwner = nil
+        await exactOCRRepairOwner?.close()
+        exactOCRRepairOwner = nil
+        await annotationOwner?.close()
+        annotationOwner = nil
+        await retentionCommandOwner?.close()
+        retentionCommandOwner = nil
+        _ = await companionInitialization?.result
+        await commandAccessOwner?.close()
+        commandAccessOwner = nil
+        captureCommandMutation?.task.cancel()
+        _ = await captureCommandMutation?.task.result
         await recordingLifecycle.beginShutdown()
     }
 
@@ -2027,16 +2391,18 @@ public actor AppCoordinator {
     }
 
     /// Audio pipeline: AudioCapture → AudioProcessing (whisper.cpp) → Database
-    private func runAudioPipeline() async {
+    private func runAudioPipeline(sourceAudioStream: AsyncStream<CapturedAudio>) async {
         Log.info("Audio pipeline processing started", category: .app)
 
         // Get the audio stream from capture
-        let sourceAudioStream = await services.audioCapture.audioStream
         let dictationManager = services.dictation
+        let voiceMarkers = try? await services.voiceMarkers()
+        let markerInput = voiceMarkers?.input
         let (audioStream, continuation) = AudioPipelineBufferPolicy.makeStream()
         let bridgeTask = Task {
             for await audio in sourceAudioStream {
                 if Task.isCancelled { break }
+                markerInput?.offer(audio)
                 await dictationManager.ingest(audio)
                 continuation.yield(audio)
             }
@@ -2049,6 +2415,8 @@ public actor AppCoordinator {
         // Start processing the stream (this will run until the stream ends)
         await services.audioProcessing.startProcessing(audioStream: audioStream)
         bridgeTask.cancel()
+        await bridgeTask.value
+        await voiceMarkers?.setRecording(false)
 
         Log.info("Audio pipeline processing completed", category: .app)
     }
@@ -2090,6 +2458,29 @@ public actor AppCoordinator {
             return []
         }
         return try await adapter.getDistinctAppBundleIDs()
+    }
+
+    /// Search for text across all captured frames
+    public func contextMetadataPage(from: Date, to: Date, query: String, before: ContextReadCursor? = nil, limit: Int = 50) async throws -> ContextMetadataPage {
+        guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
+        return try await adapter.contextMetadataPage(from: from, to: to, query: query, before: before, limit: limit)
+    }
+
+    public func validateContextMetadata(_ expected: ContextMetadataRecord) async throws -> Bool {
+        try await services.database.validateContextMetadata(expected)
+    }
+
+    public func liveContextSearch() async throws -> LiveContextSearchService {
+        guard let adapter = await services.dataAdapter, let queries = await getAudioTranscriptionQueries() else { throw DataAdapterError.notInitialized }
+        let recall = try await progressiveRecall()
+        let markers = try await timelineMarkers()
+        return LiveContextSearchService(database: services.database, audio: queries, adapter: adapter,
+            recall: recall, markers: markers, captureState: { try await self.captureCommandState() },
+            speakerPage: { from, to, cursor, limit in
+                try await self.companion().speakerPresentations(from: from, to: to, before: cursor, limit: limit)
+            }, speaker: { try await self.companion().speakerPresentation(jobID: $0) },
+            contextRanges: try await contextRanges(),
+            turn: { try await self.companion().resolveTurn($0) })
     }
 
     /// Search for text across all captured frames
@@ -2678,6 +3069,7 @@ public actor AppCoordinator {
         // Add the tag to all segments
         for segmentId in segmentIds {
             try await services.database.addTagToSegment(segmentId: segmentId, tagId: hiddenTag.id)
+            await companionTurnPlaybackOwner?.drainOutput()
         }
         Log.info("[AppCoordinator] Hidden \(segmentIds.count) segments", category: .app)
     }
@@ -2898,6 +3290,7 @@ public actor AppCoordinator {
             // Keep native frame, OCR, search-index and queue cleanup atomic even
             // when the timeline has an adapter attached.
             try await services.database.deleteFrame(id: frameID)
+            await companionTurnPlaybackOwner?.drainOutput()
             Log.info("[AppCoordinator] Deleted native frame \(frameID.stringValue)", category: .app)
             return
         }
@@ -3003,41 +3396,38 @@ public actor AppCoordinator {
 
     // MARK: - OCR Reprocessing
 
-    /// Reprocess OCR for a specific frame
-    /// This clears existing OCR data and re-enqueues the frame for processing
-    public func reprocessOCR(frameID: FrameID) async throws {
-        Log.info("[OCR-REPROCESS] Starting reprocess for frame \(frameID.value)", category: .processing)
+    /// Exact native repair shared by timeline and private MCP clients.
+    public func exactOCRRepair() throws -> ExactOCRRepairService {
+        guard !commandAccessClosed else { throw ExactOCRRepairError.closed }
+        if let owner = exactOCRRepairOwner { return owner }
+        let owner = ExactOCRRepairService(database: services.database, processing: services.processing,
+            governor: services.backgroundProcessing, captureState: { [weak self] in
+                guard let self else { throw ExactOCRRepairError.closed }
+                return try await self.captureCommandState()
+            }, pixels: { [weak self] target in
+                guard let self else { throw ExactOCRRepairError.closed }
+                return try await self.exactOCRRepairPixels(target)
+            }, metric: { [database = services.database] outcome in
+                try? await database.recordMetricEvent(metricType: .progressiveRecallAction,
+                    metadata: "{\"action\":\"ocrRepair\",\"outcome\":\"\(outcome)\",\"count\":1}")
+            })
+        exactOCRRepairOwner = owner
+        return owner
+    }
 
-        // Record OCR reprocess metric
-        try? await recordMetricEvent(metricType: .ocrReprocessRequests, metadata: "\(frameID.value)")
+    private func exactOCRRepairPixels(_ target: ExactOCRRepairTarget) async throws -> CapturedFrame {
+        guard let adapter = await services.dataAdapter,
+              try await adapter.evidenceStoreID(source: .native) == target.snapshot.ref.storeID,
+              let item = try await adapter.getFrameWithVideoInfoByID(id: target.snapshot.ref.frameID, source: .native),
+              item.frame == target.currentFrame else { throw ExactOCRRepairError.staleTarget }
+        let image = try await exactEvidenceImage(item)
+        guard let current = try await adapter.getFrameWithVideoInfoByID(id: target.snapshot.ref.frameID, source: .native),
+              current.frame == item.frame, current.videoInfo == item.videoInfo else { throw ExactOCRRepairError.staleTarget }
+        return try await ExactOCRRepairPixels.frame(image, target: target)
+    }
 
-        // Clear existing OCR nodes for this frame
-        try await services.database.deleteNodes(frameID: frameID)
-        Log.info("[OCR-REPROCESS] Deleted nodes for frame \(frameID.value)", category: .processing)
-
-        // Clear existing FTS entry for this frame
-        try await services.database.deleteFTSContent(frameId: frameID.value)
-        Log.info("[OCR-REPROCESS] Deleted FTS content for frame \(frameID.value)", category: .processing)
-
-        // Reset processingStatus to 0 (pending) so frame can be re-enqueued
-        try await services.database.updateFrameProcessingStatus(frameID: frameID.value, status: 0)
-        Log.info("[OCR-REPROCESS] Reset processingStatus to pending for frame \(frameID.value)", category: .processing)
-
-        // Enqueue for reprocessing with high priority
-        guard let queue = await services.processingQueue else {
-            Log.error("[OCR-REPROCESS] Processing queue not available!", category: .processing)
-            throw AppError.processingQueueNotAvailable
-        }
-
-        // Check queue depth before enqueue
-        let depthBefore = try await queue.getQueueDepth()
-        Log.info("[OCR-REPROCESS] Queue depth before enqueue: \(depthBefore)", category: .processing)
-
-        try await queue.enqueue(frameID: frameID.value, priority: 100)
-
-        // Check queue depth after enqueue
-        let depthAfter = try await queue.getQueueDepth()
-        Log.info("[OCR-REPROCESS] Frame \(frameID.value) enqueued with priority 100, queue depth now: \(depthAfter)", category: .processing)
+    public func reprocessOCR(reference: ScreenEvidenceRef, requestID: UUID = UUID()) async throws -> ExactOCRRepairOutcome {
+        try await exactOCRRepair().repair(reference: reference, requestID: requestID)
     }
 
     /// Run legacy maintenance only after recovery releases the capture database.
@@ -3329,6 +3719,7 @@ public actor AppCoordinator {
 
         // Delete old frames from database
         let deletedFrameCount = try await services.database.deleteFrames(olderThan: date)
+        await companionTurnPlaybackOwner?.drainOutput()
 
         // Delete old segments from storage
         let deletedSegmentIDs = try await services.storage.cleanupOldSegments(olderThan: date)
@@ -3357,6 +3748,7 @@ public actor AppCoordinator {
 
         // Delete recent frames from database
         let deletedFrameCount = try await services.database.deleteFrames(newerThan: date)
+        await companionTurnPlaybackOwner?.drainOutput()
 
         // Note: Video segments are not deleted here because they may contain older frames too
         // The storage cleanup based on retention policy will handle orphaned segments

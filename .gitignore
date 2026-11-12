@@ -79,6 +79,8 @@ temp/
 !/docs/DATA_ACCESS.md
 !/docs/capture-improvements-validation.md
 !/docs/progressive-recall-plan.md
+!/docs/live-context-markers-plan.md
+!/docs/live-context-user-guide.md
 
 # Xcode user-specific data
 .swiftpm/xcode/xcuserdata/

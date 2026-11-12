@@ -14,7 +14,9 @@ public actor CGWindowListCapture {
     // MARK: - Properties
 
     nonisolated(unsafe) private var timer: Timer?
-    nonisolated(unsafe) private var currentDisplayID: CGWindowID?
+    private var currentDisplayID: CGWindowID?
+    private var timerAdmission = NativeMutationFence()
+    private var recordingSession = UUID()
     private var isActive = false
     private var currentConfig: CaptureConfig?
 
@@ -69,6 +71,11 @@ public actor CGWindowListCapture {
         guard !isActive else { return }
 
         self.currentConfig = config
+        timerAdmission.invalidate()
+        timerAdmission = NativeMutationFence()
+        let admission = timerAdmission
+        recordingSession = UUID()
+        let session = recordingSession
         configurationGeneration &+= 1
         self.isActive = true
 
@@ -79,10 +86,11 @@ public actor CGWindowListCapture {
 
         // Use provided display ID or fall back to main display
         let targetDisplayID = displayID ?? CGMainDisplayID()
+        currentDisplayID = targetDisplayID
 
         // Start timer-based polling on main thread
         await MainActor.run {
-            self.startPolling(displayID: targetDisplayID, interval: config.captureIntervalSeconds)
+            self.startPolling(displayID: targetDisplayID, interval: config.captureIntervalSeconds, admission: admission, session: session)
         }
     }
 
@@ -91,6 +99,9 @@ public actor CGWindowListCapture {
         guard isActive else { return }
 
         isActive = false
+        recordingSession = UUID()
+        timerAdmission.invalidate()
+        currentDisplayID = nil
         configurationGeneration &+= 1
 
         // Stop timer on main thread
@@ -104,8 +115,23 @@ public actor CGWindowListCapture {
 
     /// Update capture configuration
     func updateConfig(_ config: CaptureConfig) async throws {
+        let intervalChanged = currentConfig?.captureIntervalSeconds != config.captureIntervalSeconds
+        timerAdmission.invalidate()
+        timerAdmission = NativeMutationFence()
+        let admission = timerAdmission
         configurationGeneration &+= 1
         self.currentConfig = config
+        let session = recordingSession
+        if intervalChanged, isActive, let displayID = currentDisplayID {
+            await MainActor.run {
+                try? admission.withAdmission {
+                    timer?.invalidate()
+                    timer = CapturePollingTimer.schedule(interval: config.captureIntervalSeconds) { [weak self] in
+                        Task { await self?.captureFrame(displayID: displayID, session: session) }
+                    }
+                }
+            }
+        }
         // No need to update excluded windows here - they're computed on every capture
     }
 
@@ -123,23 +149,22 @@ public actor CGWindowListCapture {
 
     /// Start polling for frames
     @MainActor
-    private func startPolling(displayID: CGWindowID, interval: TimeInterval) {
-        // Store display ID for immediate captures
-        self.currentDisplayID = displayID
+    private func startPolling(displayID: CGWindowID, interval: TimeInterval, admission: NativeMutationFence, session: UUID) {
+        try? admission.withAdmission {
+            // Invalidate existing timer
+            timer?.invalidate()
 
-        // Invalidate existing timer
-        timer?.invalidate()
-
-        // Create new timer
-        timer = CapturePollingTimer.schedule(interval: interval) { [weak self] in
-            Task {
-                await self?.captureFrame(displayID: displayID)
+            // Create new timer
+            timer = CapturePollingTimer.schedule(interval: interval) { [weak self] in
+                Task {
+                    await self?.captureFrame(displayID: displayID, session: session)
+                }
             }
-        }
 
-        // Fire immediately
-        Task {
-            await self.captureFrame(displayID: displayID)
+            // Fire immediately
+            Task {
+                await self.captureFrame(displayID: displayID, session: session)
+            }
         }
     }
 
@@ -147,26 +172,32 @@ public actor CGWindowListCapture {
     /// Called when window changes and captureOnWindowChange is enabled
     func captureImmediateAndResetTimer() async {
         guard let displayID = currentDisplayID else { return }
-        guard let config = currentConfig else { return }
+        let generation = configurationGeneration
+        let session = recordingSession
 
         // Capture immediately
-        await captureFrame(displayID: displayID)
+        await captureFrame(displayID: displayID, session: session)
 
-        guard isActive else { return }
+        guard isActive, generation == configurationGeneration,
+              currentDisplayID == displayID, let config = currentConfig else { return }
+        let admission = timerAdmission
         // Reset the timer to restart the interval on main actor
         await MainActor.run {
-            timer?.invalidate()
-            timer = CapturePollingTimer.schedule(interval: config.captureIntervalSeconds) { [weak self] in
-                Task {
-                    await self?.captureFrame(displayID: displayID)
+            try? admission.withAdmission {
+                timer?.invalidate()
+                timer = CapturePollingTimer.schedule(interval: config.captureIntervalSeconds) { [weak self] in
+                    Task {
+                        await self?.captureFrame(displayID: displayID, session: session)
+                    }
                 }
             }
         }
     }
 
     /// Capture a single frame with real-time filtering of excluded apps and private windows
-    private func captureFrame(displayID: CGWindowID) async {
-        guard isActive, let config = currentConfig else { return }
+    private func captureFrame(displayID: CGWindowID, session: UUID) async {
+        guard isActive, recordingSession == session, currentDisplayID == displayID,
+              let config = currentConfig else { return }
         guard !isCaptureInFlight else {
             Log.debug("[CGWindowListCapture] Skipping capture because another capture is still in flight", category: .capture)
             return

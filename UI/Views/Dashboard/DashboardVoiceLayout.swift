@@ -9,7 +9,7 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
     case live
     case screenshots
 
-    static let defaultTab: DashboardContentTab = .dictation
+    static let defaultTab: DashboardContentTab = .live
 
     var id: String { rawValue }
 
@@ -38,7 +38,7 @@ enum DashboardContentTab: String, CaseIterable, Identifiable {
         case .appUsage:
             return "App usage and activity"
         case .live:
-            return "Live transcript, operating brief, and activity pulse"
+            return "Saved transcript and exact screen context"
         case .screenshots:
             return "Screen frames, OCR, and capture metadata"
         }
@@ -53,7 +53,7 @@ enum DashboardVoiceContentMode: Equatable {
 enum DashboardVoiceLayoutPolicy {
     static let defaultWindowWidth: CGFloat = 1_480
     static let defaultWindowHeight: CGFloat = 800
-    static let minWindowWidth: CGFloat = 1_180
+    static let minWindowWidth: CGFloat = 780
     static let minWindowHeight: CGFloat = 720
     static let horizontalContentPadding: CGFloat = 64
     static let defaultContentWidth: CGFloat = defaultWindowWidth - horizontalContentPadding
@@ -65,34 +65,30 @@ enum DashboardVoiceLayoutPolicy {
 }
 
 enum DashboardLiveContentMode: Equatable {
-    case threeColumn
-    case stacked
+    case split
+    case tabs
 }
 
 struct DashboardLiveColumnWidths: Equatable {
     let transcript: CGFloat
-    let intelligence: CGFloat
     let context: CGFloat
 }
 
 enum DashboardLiveLayoutPolicy {
-    static let minThreeColumnWidth: CGFloat = 1_080
+    static let minSplitWidth: CGFloat = 900
     static let screenshotPageSize = 18
-    static let activityInitialFrameFetchLimit = 72
-    static let activityRefreshFrameFetchLimit = 24
     static let columnSpacing: CGFloat = 14
 
     static func contentMode(forWidth width: CGFloat) -> DashboardLiveContentMode {
-        width >= minThreeColumnWidth ? .threeColumn : .stacked
+        width >= minSplitWidth ? .split : .tabs
     }
 
-    static func columnWidths(forWidth width: CGFloat) -> DashboardLiveColumnWidths {
-        let usableWidth = max(width - (columnSpacing * 2), 0)
-        return DashboardLiveColumnWidths(
-            transcript: usableWidth * 0.30,
-            intelligence: usableWidth * 0.45,
-            context: usableWidth * 0.25
-        )
+    static func boundedRatio(_ ratio: CGFloat) -> CGFloat { min(max(ratio, 0.4), 0.7) }
+
+    static func columnWidths(forWidth width: CGFloat, transcriptRatio: CGFloat = 0.6) -> DashboardLiveColumnWidths {
+        let usableWidth = max(width - columnSpacing, 0)
+        let transcript = usableWidth * boundedRatio(transcriptRatio)
+        return DashboardLiveColumnWidths(transcript: transcript, context: usableWidth - transcript)
     }
 }
 

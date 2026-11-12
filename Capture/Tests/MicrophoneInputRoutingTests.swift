@@ -47,7 +47,13 @@ final class MicrophoneInputRoutingTests: XCTestCase {
     func testUnavailableDefaultKeepsStreamOpenAndNextDeviceEventRecovers() async throws {
         let hardware = RoutingHardware()
         let capture = MicrophoneAudioCapture(config: .default, hardware: hardware)
+        let idle = await capture.runtimeState()
+        XCTAssertEqual(idle, .paused)
+        let idleFacts = await hardware.facts
+        XCTAssertEqual(idleFacts.starts, 0, "Reading runtime must not open a native session")
         try await capture.startCapture()
+        let running = await capture.runtimeState()
+        XCTAssertEqual(running, .running)
         let stream = await capture.audioStream
         let ended = expectation(description: "Stream remains open during input loss")
         ended.isInverted = true
@@ -56,12 +62,20 @@ final class MicrophoneInputRoutingTests: XCTestCase {
         await hardware.setDefault(nil, onDetach: { detached.fulfill() })
         await hardware.signalChange()
         await fulfillment(of: [detached], timeout: 1)
+        let unavailable = await capture.runtimeState()
+        XCTAssertEqual(unavailable, .unavailable, "A session without its selected input cannot report running")
         await fulfillment(of: [ended], timeout: 0.05)
         let recovered = expectation(description: "A newly available selected input recovers")
         await hardware.setDefault(.studio, onAttach: { recovered.fulfill() })
         await hardware.signalDeviceChange(uid: MicrophoneInputDevice.studio.uid)
         await fulfillment(of: [recovered], timeout: 1)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while await capture.runtimeState() != .running, ContinuousClock.now < deadline { await Task.yield() }
+        let resumed = await capture.runtimeState()
+        XCTAssertEqual(resumed, .running)
         await capture.stopCapture()
+        let stopped = await capture.runtimeState()
+        XCTAssertEqual(stopped, .paused)
         await consumer.value
         let facts = await hardware.facts
         XCTAssertEqual(facts.attached, ["built-in", "studio"])

@@ -25,36 +25,8 @@ extension DatabaseManager {
         guard let db = getConnection() else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
         guard frameWidth > 0, frameHeight > 0 else { throw PipelineSQL.failure("Invalid OCR frame dimensions") }
         return try PipelineSQL.transaction(db) {
-            guard let frame = try FrameQueries.getByID(db: db, id: frameID) else {
-                throw PipelineSQL.failure("OCR frame no longer exists")
-            }
-            let canonicalText = try ScreenEvidenceSQL.commitOCR(db, frame: frame, text: text, width: frameWidth, height: frameHeight)
-            try PipelineSQL.deleteFrameText(db, frameID: frameID.value)
-            try NodeQueries.deleteByFrameID(db: db, frameID: frameID)
-            var docid: Int64 = 0
-            if !text.fullText.isEmpty || !text.chromeText.isEmpty {
-                docid = try FTSQueries.indexFrame(
-                    db: db, mainText: text.fullText,
-                    chromeText: text.chromeText.isEmpty ? nil : text.chromeText,
-                    windowTitle: canonicalText.metadata.windowName,
-                    segmentId: frame.segmentID.value, frameId: frameID.value
-                )
-                var nodes: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)] = []
-                var offset = 0
-                for region in text.regions {
-                    nodes.append((offset, region.text.count, region.text, region.bounds, nil))
-                    offset += region.text.count + 1
-                }
-                offset = text.fullText.count
-                for region in text.chromeRegions {
-                    nodes.append((offset, region.text.count, region.text, region.bounds, nil))
-                    offset += region.text.count + 1
-                }
-                try NodeQueries.insertBatch(db: db, frameID: frameID, nodes: nodes, frameWidth: frameWidth, frameHeight: frameHeight)
-            }
-            try PipelineSQL.execute(db, "UPDATE frame SET processingStatus=2, processedAt=? WHERE id=?", [.integer(Schema.currentTimestamp()), .integer(frameID.value)])
-            try PipelineSQL.execute(db, "DELETE FROM processing_queue WHERE frameId=?", [.integer(frameID.value)])
-            return docid
+            try PipelineSQL.publishOCR(db, frameID: frameID, text: text,
+                frameWidth: frameWidth, frameHeight: frameHeight)
         }
     }
 
@@ -148,6 +120,41 @@ extension DatabaseManager {
 /// No suspension is permitted inside a transaction.
 enum PipelineSQL {
     enum Value { case integer(Int64), real(Double), text(String), blob(Data) }
+
+    /// Call only inside the canonical writer transaction after the caller's admission checks.
+    static func publishOCR(_ db: OpaquePointer, frameID: FrameID, text: ExtractedText,
+                           frameWidth: Int, frameHeight: Int) throws -> Int64 {
+        guard let frame = try FrameQueries.getByID(db: db, id: frameID) else {
+            throw PipelineSQL.failure("OCR frame no longer exists")
+        }
+        let canonicalText = try ScreenEvidenceSQL.commitOCR(db, frame: frame, text: text, width: frameWidth, height: frameHeight)
+        try PipelineSQL.deleteFrameText(db, frameID: frameID.value)
+        try NodeQueries.deleteByFrameID(db: db, frameID: frameID)
+        var docid: Int64 = 0
+        if !text.fullText.isEmpty || !text.chromeText.isEmpty {
+            docid = try FTSQueries.indexFrame(
+                db: db, mainText: text.fullText,
+                chromeText: text.chromeText.isEmpty ? nil : text.chromeText,
+                windowTitle: canonicalText.metadata.windowName,
+                segmentId: frame.segmentID.value, frameId: frameID.value
+            )
+            var nodes: [(textOffset: Int, textLength: Int, text: String?, bounds: CGRect, windowIndex: Int?)] = []
+            var offset = 0
+            for region in text.regions {
+                nodes.append((offset, region.text.count, region.text, region.bounds, nil))
+                offset += region.text.count + 1
+            }
+            offset = text.fullText.count
+            for region in text.chromeRegions {
+                nodes.append((offset, region.text.count, region.text, region.bounds, nil))
+                offset += region.text.count + 1
+            }
+            try NodeQueries.insertBatch(db: db, frameID: frameID, nodes: nodes, frameWidth: frameWidth, frameHeight: frameHeight)
+        }
+        try PipelineSQL.execute(db, "UPDATE frame SET processingStatus=2, processedAt=? WHERE id=?", [.integer(Schema.currentTimestamp()), .integer(frameID.value)])
+        try PipelineSQL.execute(db, "DELETE FROM processing_queue WHERE frameId=?", [.integer(frameID.value)])
+        return docid
+    }
 
     static func failure(_ message: String) -> DatabaseError {
         .queryFailed(query: "frame pipeline transaction", underlying: message)

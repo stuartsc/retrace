@@ -114,6 +114,23 @@ enum TranscriptAudioFileResolver {
 
 /// One player per transcript panel. Every async completion belongs to an exact selection generation.
 @MainActor
+final class TranscriptPlaybackSuppression {
+    private let gate: RetracePlaybackGate
+    private var lease: UUID?
+
+    init(gate: RetracePlaybackGate = .shared) { self.gate = gate }
+    func begin(isMuted: Bool) {
+        guard !isMuted, lease == nil else { return }
+        lease = gate.acquire()
+    }
+    func end() {
+        if let lease { gate.release(lease) }
+        lease = nil
+    }
+    deinit { if let lease { gate.release(lease) } }
+}
+
+@MainActor
 final class TranscriptAudioPlayback: ObservableObject {
     enum Phase { case idle, loading, playing, paused, failed }
     struct State {
@@ -136,15 +153,18 @@ final class TranscriptAudioPlayback: ObservableObject {
     private let resolve: @Sendable (TranscriptAudioRequest) async throws -> TranscriptAudioClip
     private let onEvent: (Event) -> Void
     private let isMuted: Bool
+    private let suppression: TranscriptPlaybackSuppression
     private(set) var preparationTask: Task<Void, Never>?
     private var generation = UUID()
     private var notifications: [NSObjectProtocol] = []
     private var statusObservation: NSKeyValueObservation?
 
     init(resolve: @escaping @Sendable (TranscriptAudioRequest) async throws -> TranscriptAudioClip,
-         isMuted: Bool = false, onEvent: @escaping (Event) -> Void = { _ in }) {
+         isMuted: Bool = false, playbackGate: RetracePlaybackGate = .shared,
+         onEvent: @escaping (Event) -> Void = { _ in }) {
         self.resolve = resolve
         self.isMuted = isMuted
+        self.suppression = TranscriptPlaybackSuppression(gate: playbackGate)
         self.onEvent = onEvent
     }
 
@@ -159,10 +179,12 @@ final class TranscriptAudioPlayback: ObservableObject {
             switch state.phase {
             case .playing:
                 player?.pause()
+                suppression.end()
                 state.phase = .paused
                 record(.paused, request)
                 return
             case .paused:
+                suppression.begin(isMuted: isMuted)
                 player?.play()
                 state.phase = .playing
                 record(.resumed, request)
@@ -194,6 +216,7 @@ final class TranscriptAudioPlayback: ObservableObject {
                 try Task.checkCancellation()
                 guard self.generation == token else { return }
                 guard sought, item.status != .failed else { throw TranscriptAudioError.unreadable }
+                self.suppression.begin(isMuted: self.isMuted)
                 player.play()
                 self.state = State(phase: .playing, request: request)
                 self.preparationTask = nil
@@ -263,6 +286,7 @@ final class TranscriptAudioPlayback: ObservableObject {
         notifications.removeAll()
         statusObservation = nil
         player?.pause()
+        suppression.end()
         player?.currentItem?.cancelPendingSeeks()
         player?.replaceCurrentItem(with: nil)
         player = nil

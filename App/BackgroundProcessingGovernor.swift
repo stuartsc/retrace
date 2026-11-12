@@ -71,6 +71,9 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     private var consecutiveFreshOCR = 0
     private var consecutivePreferred = 0
     private var monitor: Task<Void, Never>?
+    private let monitorQueue = DispatchQueue(label: "com.retrace.processing-monitor", qos: .background)
+    private let monitorDelayInterval: DispatchTimeInterval
+    private let monitorDelayCheckpoint: (@Sendable (BackgroundProcessingMonitorDelay.Checkpoint) -> Void)?
     private var scheduler: (any BackgroundActivityScheduling)?
     private var memoryPressure: BackgroundMemoryPressureBridge?
     private var closing: [CheckedContinuation<Void, Never>] = []
@@ -78,11 +81,25 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     public init(observeSystem: Bool = true, resourceUsage: (any ResourceUsageProviding)? = nil) {
         self.observeSystem = observeSystem
         self.resourceUsage = resourceUsage
+        monitorDelayInterval = .seconds(1)
+        monitorDelayCheckpoint = nil
     }
 
     init(scheduler: any BackgroundActivityScheduling) {
         observeSystem = false; resourceUsage = nil
+        monitorDelayInterval = .seconds(1)
+        monitorDelayCheckpoint = nil
         self.scheduler = scheduler
+    }
+
+    /// Internal fixture boundary: tests still run the actual native timer and
+    /// observer lifecycle, with immutable checkpoints shared by all build modes.
+    init(resourceUsage: any ResourceUsageProviding, monitorDelayInterval: DispatchTimeInterval,
+         monitorDelayCheckpoint: (@Sendable (BackgroundProcessingMonitorDelay.Checkpoint) -> Void)? = nil) {
+        observeSystem = true
+        self.resourceUsage = resourceUsage
+        self.monitorDelayInterval = monitorDelayInterval
+        self.monitorDelayCheckpoint = monitorDelayCheckpoint
     }
 
     public func tryAcquire(_ kind: BackgroundProcessingKind) async throws -> BackgroundProcessingPermit? {
@@ -176,6 +193,12 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         processNow = enabled
         if !enabled && !activeExplicitRequest && activeKind?.isFresh != true { active?.cancellation.cancel() }
         admit()
+    }
+
+    public func setProcessNowFromCommand(_ enabled: Bool) throws {
+        try Task.checkCancellation()
+        guard !closed else { throw CancellationError() }
+        setProcessNow(enabled)
     }
 
     public func snapshot() -> BackgroundProcessingSnapshot {
@@ -335,9 +358,14 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         memoryPressure = BackgroundMemoryPressureBridge()
         // Install the task before awaiting the shared sampler, so reentrant
         // callers cannot create duplicate native observers.
+        let queue = monitorQueue
+        let interval = monitorDelayInterval
+        let checkpoint = monitorDelayCheckpoint
         monitor = Task { [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                let delay = BackgroundProcessingMonitorDelay(interval: interval, queue: queue,
+                                                            checkpoint: checkpoint)
+                do { try await delay.wait() } catch { return }
                 guard !Task.isCancelled else { return }
                 await self?.refreshEnvironment()
             }
@@ -360,6 +388,104 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             pressureAllowsProcessing: pressure,
             systemAllowsProcessing: scheduler?.allowsProcessing ?? false,
             resourceUsage: sample))
+    }
+}
+
+/// One native delay, joined through the source's serial delivery queue. This
+/// narrowly avoids the governor monitor's Swift task-sleep wake path; it does
+/// not establish the cause of the observed runtime assertion. DispatchTime
+/// excludes system sleep, so wake may retain up to the remaining one-second delay.
+final class BackgroundProcessingMonitorDelay: @unchecked Sendable {
+    enum Checkpoint: Sendable { case armed, eventSelected, cancelHandlerEntered }
+    private enum Outcome { case fired, cancelled }
+
+    private let lock = NSLock()
+    private let interval: DispatchTimeInterval
+    private let queue: DispatchQueue
+    private let checkpoint: (@Sendable (Checkpoint) -> Void)?
+    private var source: DispatchSourceTimer?
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var outcome: Outcome?
+    private var cancellationRequested = false
+    private var started = false
+    private var finished = false
+
+    /// The owner supplies one serial queue for all of its monitor delays.
+    init(interval: DispatchTimeInterval = .seconds(1), queue: DispatchQueue,
+         checkpoint: (@Sendable (Checkpoint) -> Void)? = nil) {
+        self.interval = interval
+        self.queue = queue
+        self.checkpoint = checkpoint
+    }
+
+    /// Single use. Even pre-cancellation activates and drains the native source,
+    /// so continuation completion always means its callbacks have returned.
+    func wait() async throws {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                start(continuation)
+            }
+        } onCancel: {
+            self.cancel()
+        }
+        // Cancellation may win after the timer selects its fired outcome.
+        try Task.checkCancellation()
+    }
+
+    private func start(_ continuation: CheckedContinuation<Void, Never>) {
+        let source = DispatchSource.makeTimerSource(queue: queue)
+        source.setEventHandler { self.timerFired() }
+        source.setCancelHandler {
+            self.checkpoint?(.cancelHandlerEntered)
+            // A serial successor cannot run until this native cancel handler
+            // has returned. Keep the owner alive until that successor joins it.
+            self.queue.async { self.finalize() }
+        }
+        source.schedule(deadline: .now() + interval, repeating: .never)
+        let shouldCancel = lock.withLock {
+            precondition(!started, "A monitor delay may only be awaited once")
+            started = true
+            self.continuation = continuation
+            self.source = source
+            // Activation and publication are one locked transition. A racing
+            // cancellation cannot leave an unactivated source behind.
+            source.activate()
+            return cancellationRequested
+        }
+        if shouldCancel { source.cancel() }
+        checkpoint?(.armed)
+    }
+
+    private func timerFired() {
+        let source = lock.withLock { () -> DispatchSourceTimer? in
+            guard outcome == nil else { return nil }
+            outcome = .fired
+            return self.source
+        }
+        guard let source else { return }
+        checkpoint?(.eventSelected)
+        source.cancel()
+    }
+
+    private func cancel() {
+        let source = lock.withLock { () -> DispatchSourceTimer? in
+            cancellationRequested = true
+            if outcome == nil { outcome = .cancelled }
+            return self.source
+        }
+        source?.cancel()
+    }
+
+    private func finalize() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            guard !finished else { return nil }
+            finished = true
+            let value = self.continuation
+            self.continuation = nil
+            source = nil
+            return value
+        }
+        continuation?.resume()
     }
 }
 

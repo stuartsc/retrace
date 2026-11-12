@@ -366,6 +366,29 @@ public class TimelineWindowController: NSObject {
         await viewModel.openEvidence(reference)
     }
 
+    /// Explicit native command acknowledgment requires the exact selection to be visible.
+    /// A media-unavailable placeholder still identifies the requested retained timeline item.
+    public func openEvidenceFromCommand(_ reference: ScreenEvidenceRef, coordinator: AppCoordinator,
+                                        authorization: RetraceForegroundAuthorization) async throws {
+        let service = try await coordinator.progressiveRecall()
+        try await service.validateNativeScreenAction(reference)
+        try Task.checkCancellation()
+        try await authorization.validate()
+        guard let viewModel = try authorization.effect({ prepareExactPresentation(coordinator: coordinator) }) else { throw RetraceCommandError.unavailable }
+        let selectionID = UUID()
+        do {
+            try await viewModel.openEvidenceFromCommand(reference, authorization: authorization, selectionID: selectionID)
+            try await service.validateNativeScreenAction(reference)
+            try Task.checkCancellation()
+            guard isVisible, viewModel.evidence.isPresentingEvidence,
+                  viewModel.evidence.commandSelectionID == selectionID,
+                  viewModel.evidence.evidenceReference == .screen(reference) else { throw RetraceCommandError.unavailable }
+        } catch {
+            viewModel.closeEvidenceFromCommand(selectionID)
+            throw error
+        }
+    }
+
     private func prepareExactPresentation(coordinator: AppCoordinator) -> SimpleTimelineViewModel? {
         guard !Task.isCancelled else { return nil }
         if let owner = self.coordinator, owner !== coordinator { return nil }

@@ -21,6 +21,77 @@ final class EvidenceViewModelTests: XCTestCase {
     }
     override func tearDown() async throws { try await database.close() }
 
+    func testClosingPendingCommandFromEmptyPreventsLateExactPublication() async throws {
+        let event = try await append(1, title: "Pending command")
+        let link = try await screenLink(event), database = self.database!
+        var source = client()
+        source.resolve = { _ in .unavailable(.recordingMissing) }
+        source.retainedScreen = { try? await database.screenEvidence($0) }
+        let model = EvidenceViewModel(client: source)
+        let entered = expectation(description: "Pending command has retained its exact row")
+        let held = EvidenceCompatibilityResolutionGate(entered: entered)
+        let opening = Task { try await model.openEvidenceFromCommand(link.screen,
+            authorization: .init(fence: NativeMutationFence(), validation: { await held.enter() })) }
+        await fulfillment(of: [entered], timeout: 3)
+        XCTAssertTrue(model.resolvingEvidence)
+        model.closeEvidence()
+        await held.release()
+        do { try await opening.value; XCTFail("Close must revoke even the first pending command") }
+        catch is CancellationError { }
+        XCTAssertFalse(model.isPresentingEvidence); XCTAssertNil(model.commandSelectionID)
+        XCTAssertNil(model.resolution); XCTAssertNil(model.retainedSnapshot)
+    }
+
+    func testReverseCompletionAndOldCleanupCannotEraseNewerSameReferenceCommand() async throws {
+        let event = try await append(1, title: "Repeated exact command")
+        let link = try await screenLink(event), database = self.database!
+        var source = client()
+        source.resolve = { _ in .unavailable(.recordingMissing) }
+        source.retainedScreen = { try? await database.screenEvidence($0) }
+        let model = EvidenceViewModel(client: source), oldID = UUID(), currentID = UUID()
+        let entered = expectation(description: "Older command waits before publication")
+        let held = EvidenceCompatibilityResolutionGate(entered: entered)
+        let old = Task { try await model.openEvidenceFromCommand(link.screen,
+            authorization: .init(fence: NativeMutationFence(), validation: { await held.enter() }), selectionID: oldID) }
+        await fulfillment(of: [entered], timeout: 3)
+        try await model.openEvidenceFromCommand(link.screen,
+            authorization: .init(fence: NativeMutationFence(), validation: {}), selectionID: currentID)
+        await held.release()
+        do { try await old.value; XCTFail("Older completion cannot overwrite the newer selection") }
+        catch is CancellationError { }
+        model.closeCommandEvidence(oldID)
+        XCTAssertEqual(model.commandSelectionID, currentID)
+        XCTAssertEqual(model.evidenceReference, .screen(link.screen))
+        XCTAssertEqual(model.retainedSnapshot?.text?.fullText, "Amount 100")
+        model.closeCommandEvidence(currentID)
+        XCTAssertFalse(model.isPresentingEvidence)
+    }
+
+    func testCommandPublicationAfterHeldValidationRejectsRevocationThenShowsExactRetainedText() async throws {
+        let event = try await append(1, title: "Command selected evidence")
+        let link = try await screenLink(event)
+        let database = self.database!
+        var source = client()
+        source.resolve = { _ in .unavailable(.recordingMissing) }
+        source.retainedScreen = { try? await database.screenEvidence($0) }
+        let model = EvidenceViewModel(client: source), fence = NativeMutationFence()
+        let entered = expectation(description: "Complete exact material awaits final authorization")
+        let held = EvidenceCompatibilityResolutionGate(entered: entered)
+        let access = RetraceForegroundAuthorization(fence: fence, validation: { await held.enter() })
+        let opening = Task { try await model.openEvidenceFromCommand(link.screen, authorization: access) }
+        await fulfillment(of: [entered], timeout: 3)
+        fence.invalidate(); await held.release()
+        do { try await opening.value; XCTFail("Revoked command must not publish retained OCR") }
+        catch is CancellationError { }
+        XCTAssertNil(model.resolution); XCTAssertNil(model.retainedSnapshot); XCTAssertNil(model.evidenceReference)
+        try await model.openEvidenceFromCommand(link.screen,
+            authorization: .init(fence: NativeMutationFence(), validation: {}))
+        XCTAssertEqual(model.retainedSnapshot?.ref, link.screen)
+        XCTAssertEqual(model.evidenceReference, .screen(link.screen))
+        XCTAssertEqual(model.retainedSnapshot?.text?.fullText, "Amount 100")
+        guard case .unavailable(.recordingMissing) = model.resolution else { return XCTFail("Absent pixels must remain explicit") }
+    }
+
     func testSlowOldResolutionCannotOverwriteNewSelection() async throws {
         let first = try await append(1, title: "First")
         let second = try await append(2, title: "Second")

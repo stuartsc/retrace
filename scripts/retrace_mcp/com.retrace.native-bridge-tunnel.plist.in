@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.retrace.native-bridge-tunnel</string>
+<key>ProgramArguments</key><array>
+<string>/usr/bin/ssh</string><string>-NT</string>
+<string>-o</string><string>BatchMode=yes</string>
+<string>-o</string><string>ExitOnForwardFailure=yes</string>
+<string>-o</string><string>ServerAliveInterval=20</string>
+<string>-o</string><string>ServerAliveCountMax=3</string>
+<string>-L</string><string>127.0.0.1:19013:127.0.0.1:9013</string>
+<string>@LAPTOP_PRIVATE_SSH_ALIAS@</string>
+</array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>@PRIVATE_LOG_DIR@/tunnel.out.log</string>
+<key>StandardErrorPath</key><string>@PRIVATE_LOG_DIR@/tunnel.err.log</string>
+</dict></plist>

@@ -31,7 +31,8 @@ public protocol AudioCaptureProtocol: Actor {
 
     // MARK: - Configuration
 
-    /// Update audio capture configuration (can be called while capturing)
+    /// Update idle configuration. Active settings require the App session owner,
+    /// which drains the existing consumer before replacing its source stream.
     func updateConfig(_ config: AudioCaptureConfig) async throws
 
     /// Get current configuration
@@ -52,6 +53,9 @@ public protocol AudioCaptureProtocol: Actor {
 
     /// Get audio capture statistics
     func getStatistics() async -> AudioCaptureStatistics
+
+    /// Passive categorical source state; no permission prompts or native startup.
+    func runtimeSnapshot() async -> AudioCaptureRuntime
 }
 
 // MARK: - Meeting Detector Protocol
@@ -67,10 +71,10 @@ public protocol MeetingDetectorProtocol: Actor {
     nonisolated func getActiveMeetingApp() -> String?
 
     /// Start monitoring for meeting activity
-    func startMonitoring(bundleIDs: Set<String>)
+    func startMonitoring(bundleIDs: Set<String>) async
 
     /// Stop monitoring
-    func stopMonitoring()
+    func stopMonitoring() async
 }
 
 // MARK: - Audio Format Converter Protocol

@@ -173,7 +173,8 @@ final class AudioFormatConverterTests: XCTestCase {
         let priming = try Self.sampleBuffer(Self.tone(sampleRate: 48_000, frequency: 440, frames: 1))
         XCTAssertTrue(try AudioFormatConverter().convert(sampleBuffer: priming).isEmpty)
         let remainder = try Self.sampleBuffer(
-            Self.tone(sampleRate: 48_000, frequency: 440, frames: 47_999, offset: 1)
+            Self.tone(sampleRate: 48_000, frequency: 440, frames: 47_999, offset: 1),
+            presentationTime: CMTime(value: 1, timescale: 48_000)
         )
         for source in [AudioSource.microphone, .system] {
             let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(limit: 10)
@@ -235,11 +236,12 @@ final class AudioFormatConverterTests: XCTestCase {
         return buffer
     }
 
-    private static func sampleBuffer(_ input: AVAudioPCMBuffer, ready: Bool = true) throws -> CMSampleBuffer {
+    private static func sampleBuffer(_ input: AVAudioPCMBuffer, ready: Bool = true,
+                                     presentationTime: CMTime = .zero) throws -> CMSampleBuffer {
         var sample: CMSampleBuffer?
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: CMTimeScale(input.format.sampleRate)),
-            presentationTimeStamp: .zero, decodeTimeStamp: .invalid
+            presentationTimeStamp: presentationTime, decodeTimeStamp: .invalid
         )
         let creation = CMSampleBufferCreate(
             allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,

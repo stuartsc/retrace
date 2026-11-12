@@ -363,6 +363,256 @@ final class BackgroundProcessingGovernorTests: XCTestCase {
         }
     }
 
+    func testMonitorWaitsForHeldResourceRefreshBeforeRearmingNativeDelay() async throws {
+        let resources = HeldMonitorGovernorResources()
+        let checkpoints = MonitorDelayCheckpoints()
+        let governor = BackgroundProcessingGovernor(resourceUsage: resources,
+            monitorDelayInterval: .milliseconds(20), monitorDelayCheckpoint: checkpoints.record)
+        if let permit = try await governor.tryAcquire(.indexing) {
+            await governor.release(permit) // Admission probe only; no indexed work is executed.
+        }
+        resources.resetMaximumConcurrentReads()
+        let heldRead = resources.holdNextRead()
+        defer { heldRead.release() }
+        await fulfillment(of: [heldRead.entered], timeout: 3)
+        guard heldRead.wasEntered else {
+            heldRead.release()
+            await joinMonitorGovernorClose(governor)
+            return
+        }
+        let heldCounts = resources.counts
+        let heldTimerCounts = checkpoints.counts
+
+        // Six nominal timer intervals pass while the actual monitor read is held.
+        await monitorDelayTestPace(.milliseconds(120))
+        XCTAssertEqual(resources.counts.calls, heldCounts.calls, "A suspended refresh cannot launch another monitor read")
+        XCTAssertEqual(resources.counts.active, 1)
+        XCTAssertEqual(resources.counts.maximumActive, 1)
+        XCTAssertEqual(checkpoints.counts, heldTimerCounts, "The next one-shot must not be armed before refresh returns")
+
+        let followingRead = resources.holdNextRead()
+        defer { followingRead.release() }
+        heldRead.release()
+        await fulfillment(of: [followingRead.entered], timeout: 3)
+        guard followingRead.wasEntered else {
+            followingRead.release()
+            await joinMonitorGovernorClose(governor)
+            return
+        }
+        XCTAssertEqual(resources.counts.calls, heldCounts.calls + 1)
+        XCTAssertEqual(resources.counts.maximumActive, 1)
+        XCTAssertEqual(checkpoints.counts.armed, heldTimerCounts.armed + 1)
+        followingRead.release()
+        await joinMonitorGovernorClose(governor)
+        XCTAssertEqual(resources.counts.active, 0)
+        XCTAssertEqual(checkpoints.counts.armed, checkpoints.counts.cancellations,
+                       "Joined close must drain every native one-shot source")
+    }
+
+    func testConcurrentCloseJoinsHeldMonitorReadAndFencesReopenUntilRestartIsSafe() async throws {
+        let resources = HeldMonitorGovernorResources()
+        let checkpoints = MonitorDelayCheckpoints()
+        let governor = BackgroundProcessingGovernor(resourceUsage: resources,
+            monitorDelayInterval: .milliseconds(20), monitorDelayCheckpoint: checkpoints.record)
+        if let permit = try await governor.tryAcquire(.indexing) {
+            await governor.release(permit)
+        }
+        let heldRead = resources.holdNextRead()
+        defer { heldRead.release() }
+        await fulfillment(of: [heldRead.entered], timeout: 3)
+        guard heldRead.wasEntered else {
+            heldRead.release()
+            await joinMonitorGovernorClose(governor)
+            return
+        }
+        let readsBeforeClose = resources.counts.calls
+        let timersBeforeClose = checkpoints.counts
+
+        await governor.cancelAutomaticWork()
+        let firstCompletion = MonitorDelayCompletion()
+        let secondCompletion = MonitorDelayCompletion()
+        let firstClose = Task { await firstCompletion.run { await governor.close() } }
+        let secondClose = Task { await secondCompletion.run { await governor.close() } }
+        defer { firstClose.cancel(); secondClose.cancel() }
+        await monitorDelayTestPace(.milliseconds(120))
+
+        XCTAssertEqual(firstCompletion.outcome, .pending, "Close must join the suspended monitor reader")
+        XCTAssertEqual(secondCompletion.outcome, .pending, "Concurrent close must join the same reader")
+        XCTAssertEqual(resources.counts.calls, readsBeforeClose)
+        XCTAssertEqual(checkpoints.counts, timersBeforeClose)
+        do {
+            try await governor.reopenAfterJoinedClose()
+            XCTFail("Reopen admitted a second observer before the held monitor read returned")
+        } catch BackgroundProcessingAdmissionError.closeIncomplete { }
+        do {
+            if let permit = try await governor.tryAcquire(.indexing) { await governor.release(permit) }
+            XCTFail("Closed governor admitted an observation request")
+        } catch is CancellationError { }
+
+        heldRead.release()
+        await fulfillment(of: [firstCompletion.finished, secondCompletion.finished], timeout: 3)
+        if firstCompletion.outcome != .pending { await firstClose.value }
+        if secondCompletion.outcome != .pending { await secondClose.value }
+        XCTAssertEqual(firstCompletion.outcome, .succeeded)
+        XCTAssertEqual(secondCompletion.outcome, .succeeded)
+        XCTAssertEqual(firstCompletion.finishCount, 1)
+        XCTAssertEqual(secondCompletion.finishCount, 1)
+        XCTAssertEqual(resources.counts.active, 0)
+        XCTAssertEqual(checkpoints.counts.armed, checkpoints.counts.cancellations)
+        guard firstCompletion.outcome == .succeeded, secondCompletion.outcome == .succeeded else { return }
+
+        try await governor.reopenAfterJoinedClose()
+        let reopened = await governor.snapshot()
+        XCTAssertFalse(reopened.isClosed)
+        XCTAssertFalse(reopened.isRunning)
+        XCTAssertEqual(reopened.waitingCount, 0)
+        XCTAssertNil(reopened.resourceUsage.sampleUptime, "Reopen must discard the previous observation")
+        let countsAfterReopen = resources.counts.calls
+        let timersAfterReopen = checkpoints.counts
+        await monitorDelayTestPace(.milliseconds(120))
+        XCTAssertEqual(resources.counts.calls, countsAfterReopen, "Reopen itself must not start an observer")
+        XCTAssertEqual(checkpoints.counts, timersAfterReopen)
+
+        if let permit = try await governor.tryAcquire(.indexing) { await governor.release(permit) }
+        let restartedRead = resources.holdNextRead()
+        defer { restartedRead.release() }
+        await fulfillment(of: [restartedRead.entered], timeout: 3)
+        XCTAssertGreaterThan(resources.counts.calls, countsAfterReopen)
+        XCTAssertGreaterThan(checkpoints.counts.events, timersAfterReopen.events,
+                             "Restart must receive a new actual native timer event")
+        restartedRead.release()
+        await joinMonitorGovernorClose(governor)
+        XCTAssertEqual(resources.counts.active, 0)
+        XCTAssertEqual(checkpoints.counts.armed, checkpoints.counts.cancellations)
+    }
+
+    private func joinMonitorGovernorClose(_ governor: BackgroundProcessingGovernor) async {
+        let completion = MonitorDelayCompletion()
+        let close = Task { await completion.run { await governor.close() } }
+        await fulfillment(of: [completion.finished], timeout: 3)
+        if completion.outcome != .pending { await close.value }
+        else { close.cancel() }
+        XCTAssertEqual(completion.outcome, .succeeded)
+    }
+
+    func testNativeObserverSustainedWakeAndJoinedRestart() async throws {
+        guard ProcessInfo.processInfo.environment["RETRACE_TEST_NATIVE_GOVERNOR_SOAK"] == "1" else {
+            throw XCTSkip("Explicit native governor soak is not enabled")
+        }
+
+        // The real governor, resource probe/series and scheduling bridges contain no Log calls.
+        // No metric callback, service container, store, preference, capture or inference is used;
+        // release builds therefore do not rely on the debug-only file-logging switch for isolation.
+        let sampler = ResourceUsageMonitor()
+        let governor = BackgroundProcessingGovernor(resourceUsage: sampler)
+        let pacingQueue = DispatchQueue(label: "com.retrace.tests.native-governor-soak", qos: .utility)
+        do {
+            await sampler.start(recordMinute: nil)
+            if let permit = try await governor.tryAcquire(.indexing) {
+                await governor.release(permit) // Probe admission only; never execute indexed work.
+            }
+
+            let started = NativeResourceUsageProbe.uptime
+            var samples = Set<Double>()
+            var lastSample: Double?
+            while NativeResourceUsageProbe.uptime - started < 90 {
+                try Task.checkCancellation()
+                let snapshot = await governor.snapshot()
+                let observed = NativeResourceUsageProbe.uptime
+                try requireNativeSoak(!snapshot.isClosed && !snapshot.isRunning &&
+                    snapshot.activeKind == nil && snapshot.waitingCount == 0,
+                    "Native observation unexpectedly closed, acquired work or retained waiters")
+                if let sample = snapshot.resourceUsage.sampleUptime {
+                    try requireNativeSoak(sample.isFinite && sample > 0 &&
+                        sample <= observed && sample >= (lastSample ?? sample),
+                        "Cached native resource sample has invalid or regressing uptime")
+                    samples.insert(sample)
+                    lastSample = sample
+                }
+                if observed - started >= 3 {
+                    let age = snapshot.resourceUsage.sampleUptime.map { observed - $0 } ?? .infinity
+                    try requireNativeSoak(age >= 0 && age <= 3,
+                                          "Native observer exceeded the three-second sample freshness bound")
+                }
+                await nativeSoakPace(on: pacingQueue)
+            }
+            try requireNativeSoak(samples.count >= 60,
+                                  "Native observation did not deliver 60 distinct cached resource samples")
+            let finalObservation = await governor.snapshot()
+            let finished = NativeResourceUsageProbe.uptime
+            let finalAge = finalObservation.resourceUsage.sampleUptime.map { finished - $0 } ?? .infinity
+            try requireNativeSoak(finalAge >= 0 && finalAge <= 3,
+                                  "Native observer stopped refreshing before the 90-second observation ended")
+
+            await governor.close()
+            let closed = await governor.snapshot()
+            try requireNativeSoak(closed.isClosed && !closed.isRunning &&
+                closed.activeKind == nil && closed.waitingCount == 0,
+                "Joined governor close retained active work or waiters")
+            var terminalAdmissionDenied = false
+            do {
+                if let permit = try await governor.tryAcquire(.indexing) {
+                    await governor.release(permit)
+                }
+            } catch is CancellationError {
+                terminalAdmissionDenied = true
+            }
+            try requireNativeSoak(terminalAdmissionDenied, "Joined close did not deny further admission")
+
+            try await governor.reopenAfterJoinedClose()
+            let reopened = await governor.snapshot()
+            try requireNativeSoak(!reopened.isClosed && !reopened.isRunning &&
+                reopened.waitingCount == 0 && reopened.resourceUsage.sampleUptime == nil,
+                "Reopened governor retained observations or started work before admission")
+            let restarted = NativeResourceUsageProbe.uptime
+            if let permit = try await governor.tryAcquire(.indexing) {
+                await governor.release(permit)
+            }
+            var restartedSamples = Set<Double>()
+            while NativeResourceUsageProbe.uptime - restarted < 6 && restartedSamples.count < 3 {
+                try Task.checkCancellation()
+                let snapshot = await governor.snapshot()
+                let observed = NativeResourceUsageProbe.uptime
+                try requireNativeSoak(!snapshot.isClosed && !snapshot.isRunning &&
+                    snapshot.activeKind == nil && snapshot.waitingCount == 0,
+                    "Restarted native observation unexpectedly closed or started work")
+                if observed - restarted < 6, let sample = snapshot.resourceUsage.sampleUptime,
+                   sample.isFinite && sample > restarted && sample <= observed {
+                    restartedSamples.insert(sample)
+                }
+                if restartedSamples.count < 3 { await nativeSoakPace(on: pacingQueue) }
+            }
+            try requireNativeSoak(restartedSamples.count >= 3,
+                                  "Restarted observer did not deliver three fresh samples within six seconds")
+            await governor.close()
+            await sampler.close()
+            let stoppedSampler = await sampler.snapshot()
+            try requireNativeSoak(!stoppedSampler.isCurrent, "Joined sampler close left current measurements")
+            try Task.checkCancellation()
+            print("RETRACE_NATIVE_GOVERNOR_SOAK_COMPLETE")
+        } catch {
+            // Join in ownership order even when an assertion, admission or cancellation fails.
+            await governor.close()
+            await sampler.close()
+            throw error
+        }
+    }
+
+    private func requireNativeSoak(_ condition: Bool, _ message: String,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
+        guard condition else {
+            XCTFail(message, file: file, line: line)
+            throw NativeGovernorSoakFailure.failedAssertion
+        }
+    }
+
+    private func nativeSoakPace(on queue: DispatchQueue) async {
+        // Sequential dispatch pacing avoids adding another Task.sleep loop to this diagnostic.
+        await withCheckedContinuation { continuation in
+            queue.asyncAfter(deadline: .now() + .milliseconds(500)) { continuation.resume() }
+        }
+    }
+
     func testOptionalWorkNeverWaitsOrJumpsQueuedWork() async throws {
         let governor = BackgroundProcessingGovernor(observeSystem: false)
         let unavailable = try await governor.tryAcquire(.localSummary)
@@ -375,6 +625,62 @@ final class BackgroundProcessingGovernorTests: XCTestCase {
         await governor.release(permit)
         await governor.close()
         do { _ = try await governor.tryAcquire(.localSummary); XCTFail("Closed optional admission") } catch is CancellationError {}
+    }
+}
+
+private enum NativeGovernorSoakFailure: Error { case failedAssertion }
+
+/// Only the cached resource-read boundary is held. The governor's scheduler,
+/// memory-pressure source, monitor queue and one-shot timers remain native.
+private final class HeldMonitorGovernorResources: ResourceUsageProviding, @unchecked Sendable {
+    struct Counts {
+        var calls = 0
+        var active = 0
+        var maximumActive = 0
+    }
+    final class HeldRead: @unchecked Sendable {
+        let entered = XCTestExpectation(description: "Actual governor monitor requested its resource snapshot")
+        private let gate = MonitorDelayAsyncGate()
+        private let lock = NSLock()
+        private var observed = false
+        var wasEntered: Bool { lock.withLock { observed } }
+        func markEntered() {
+            lock.withLock { observed = true }
+            entered.fulfill()
+        }
+        func wait() async { await gate.wait() }
+        func release() { gate.open() }
+    }
+    private let lock = NSLock()
+    private var value = Counts()
+    private var nextHold: HeldRead?
+    var counts: Counts { lock.withLock { value } }
+    func resetMaximumConcurrentReads() {
+        lock.withLock { value.maximumActive = value.active }
+    }
+    func holdNextRead() -> HeldRead {
+        lock.withLock {
+            precondition(nextHold == nil, "A pending hold must first be consumed by a native read")
+            let hold = HeldRead()
+            nextHold = hold
+            return hold
+        }
+    }
+    func snapshot() async -> ResourceUsageSnapshot {
+        let (hold, readNumber) = lock.withLock {
+            value.calls += 1
+            value.active += 1
+            value.maximumActive = max(value.maximumActive, value.active)
+            let hold = nextHold
+            nextHold = nil
+            return (hold, value.calls)
+        }
+        if let hold {
+            hold.markEntered()
+            await hold.wait() // Cancellation cannot stand in for the owner's joined reader return.
+        }
+        lock.withLock { value.active -= 1 }
+        return .init(sampleUptime: Double(readNumber))
     }
 }
 

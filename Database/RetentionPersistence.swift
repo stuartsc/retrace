@@ -79,29 +79,45 @@ extension DatabaseManager {
     /// when another video row references either physical filename.
     public func completeRetentionVideoDeletion(
         candidate: VideoSegment,
+        fences: [NativeMutationFence] = [],
         deleteFile: @Sendable () throws -> Int64
     ) async throws -> Int64? {
         guard let db = getConnection() else { throw DatabaseError.connectionFailed(underlying: "Database not initialized") }
-        return try PipelineSQL.transaction(db) { () -> Int64? in
-            let eligible = try PipelineSQL.integers(db, """
-                SELECT id FROM video WHERE id=? AND path=? AND processingState=0
-                  AND NOT EXISTS(SELECT 1 FROM frame WHERE videoId=video.id)
-                  AND NOT EXISTS(
-                    SELECT 1 FROM video other
-                    WHERE other.path IN (video.path, video.path || '.mp4',
-                      CASE WHEN substr(video.path,-4)='.mp4' THEN substr(video.path,1,length(video.path)-4) ELSE video.path END)
-                      AND EXISTS(SELECT 1 FROM frame f WHERE f.videoId=other.id)
-                  )
-                """, [.integer(candidate.id.value), .text(candidate.relativePath)])
-            guard eligible.count == 1 else { return nil }
-            let removedBytes = try deleteFile()
-            try PipelineSQL.execute(db, """
-                DELETE FROM video WHERE id=? AND path=? AND processingState=0
-                  AND NOT EXISTS(SELECT 1 FROM frame WHERE videoId=video.id)
-                """, [.integer(candidate.id.value), .text(candidate.relativePath)])
-            guard sqlite3_changes(db) == 1 else { throw PipelineSQL.failure("Retention candidate changed during deletion") }
-            return removedBytes
+        guard fences.count <= 3, Set(fences.map(ObjectIdentifier.init)).count == fences.count else {
+            throw RetentionCommandError.invalidArguments
         }
+        try PipelineSQL.execute(db, "BEGIN IMMEDIATE")
+        do {
+            func admitted<T>(_ index: Int, _ operation: () throws -> T) throws -> T {
+                if index == fences.count { return try operation() }
+                return try fences[index].withAdmission { try admitted(index + 1, operation) }
+            }
+            return try admitted(0) { () -> Int64? in
+                let eligible = try PipelineSQL.integers(db, """
+                    SELECT id FROM video WHERE id=? AND path=? AND processingState=0
+                      AND NOT EXISTS(SELECT 1 FROM frame WHERE videoId=video.id)
+                      AND NOT EXISTS(
+                        SELECT 1 FROM video other
+                        WHERE other.path IN (video.path, video.path || '.mp4',
+                          CASE WHEN substr(video.path,-4)='.mp4' THEN substr(video.path,1,length(video.path)-4) ELSE video.path END)
+                          AND EXISTS(SELECT 1 FROM frame f WHERE f.videoId=other.id)
+                      )
+                    """, [.integer(candidate.id.value), .text(candidate.relativePath)])
+                guard eligible.count == 1 else {
+                    try PipelineSQL.execute(db, "COMMIT")
+                    return nil
+                }
+                let removedBytes = try deleteFile()
+                try PipelineSQL.execute(db, """
+                    DELETE FROM video WHERE id=? AND path=? AND processingState=0
+                      AND NOT EXISTS(SELECT 1 FROM frame WHERE videoId=video.id)
+                    """, [.integer(candidate.id.value), .text(candidate.relativePath)])
+                guard sqlite3_changes(db) == 1 else { throw PipelineSQL.failure("Retention candidate changed during deletion") }
+                for fence in fences { try fence.checkDeadline() }
+                try PipelineSQL.execute(db, "COMMIT")
+                return removedBytes
+            }
+        } catch { try? PipelineSQL.execute(db, "ROLLBACK"); throw error }
     }
 }
 

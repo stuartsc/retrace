@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.retrace.native-mcp</string>
+<key>ProgramArguments</key><array>
+<string>@VENV_PYTHON@</string><string>@GATEWAY_PATH@</string>
+<string>--native-url</string><string>http://127.0.0.1:19013</string>
+<string>--public-host</string><string>@PRIMARY_TAILNET_HOST@</string>
+</array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>@PRIVATE_LOG_DIR@/mcp.out.log</string>
+<key>StandardErrorPath</key><string>@PRIVATE_LOG_DIR@/mcp.err.log</string>
+</dict></plist>

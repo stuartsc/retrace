@@ -117,6 +117,41 @@ final class FrameDeletionRoutingTests: XCTestCase {
         try await assertStoredFrame(selected, content: "sourcecollision")
     }
 
+    func testConcurrentTurnPlayerGettersWaitForRetentionDrainRegistration() async throws {
+        // Exercise the real owner admission after the private policy/database
+        // boundary, without starting capture, audio, storage or retention.
+        await services.setInitializationBoundaryForTesting(remainder: {})
+        try await services.initialize()
+        _ = try await coordinator.companion()
+        let entered = expectation(description: "Both player callers reach retention registration")
+        entered.expectedFulfillmentCount = 2
+        let hold = TurnFactoryRegistrationHold()
+        let completed = TurnFactoryCompletionCount()
+        await services.retentionManager.setSourceMutationDrainRegistrationCheckpoint {
+            entered.fulfill()
+            await hold.wait()
+        }
+        let coordinator = try XCTUnwrap(self.coordinator)
+        let first = Task { let value = try await coordinator.companionTurnPlayback(); await completed.add(); return value }
+        let second = Task { let value = try await coordinator.companionTurnPlayback(); await completed.add(); return value }
+        await fulfillment(of: [entered], timeout: 3)
+        let beforeRegistration = await completed.value
+        XCTAssertEqual(beforeRegistration, 0, "A concurrent caller must not receive a player before its retention drain is installed")
+        await hold.release()
+        do {
+            let firstPlayer = try await first.value, secondPlayer = try await second.value
+            XCTAssertTrue(firstPlayer === secondPlayer)
+            let state = await firstPlayer.snapshot()
+            XCTAssertFalse(state.isPlaying, "Constructing the shared owner must remain inert")
+        } catch {
+            await coordinator.prepareForShutdown()
+            try? await services.shutdown()
+            throw error
+        }
+        await coordinator.prepareForShutdown()
+        try await services.shutdown()
+    }
+
     private func insertIndexedQueuedFrame(text: String, index: Int) async throws -> FrameID {
         let sessionID = try await database.insertSegment(bundleID: "com.test.routing", startDate: timestamp,
             endDate: timestamp.addingTimeInterval(2), windowName: "Deletion routing", browserUrl: nil, type: 0)
@@ -146,6 +181,24 @@ final class FrameDeletionRoutingTests: XCTestCase {
         XCTAssertEqual(nodes.count, 1, file: file, line: line)
         XCTAssertNotNil(queuePosition, file: file, line: line)
     }
+}
+
+private actor TurnFactoryRegistrationHold {
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() {
+        released = true
+        let pending = waiters; waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+private actor TurnFactoryCompletionCount {
+    private(set) var value = 0
+    func add() { value += 1 }
 }
 
 private extension ServiceContainer {

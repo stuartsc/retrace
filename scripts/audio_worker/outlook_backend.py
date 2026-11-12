@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract import JobError
+from .runtime import configure_torch_runtime
 
 
 def _hash(path: Path) -> str:
@@ -148,12 +149,11 @@ class OutlookBackend:
         os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
         os.environ["PYANNOTE_METRICS_ENABLED"] = "0"
         sys.path.insert(0, str(outlook))
+        configure_torch_runtime()
         import torch
         from pyannote.audio import Pipeline
         from src.intelligence.audio import retrace_diarizer, voice_match
 
-        torch.set_num_threads(2)
-        torch.set_num_interop_threads(1)
         self.diarizer = retrace_diarizer
         self.voices = voice_match
         self.library = voice_match.load_voice_library()

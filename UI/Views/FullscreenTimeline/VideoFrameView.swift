@@ -28,6 +28,7 @@ struct VideoFrameView: NSViewRepresentable {
         } else {
             Log.debug("[VideoFrameView] Creating new player", category: .app)
             player = AVPlayer()
+            player.isMuted = true
             player.actionAtItemEnd = .pause
             playerView.player = player
         }

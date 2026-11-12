@@ -17,6 +17,9 @@ public protocol ProcessingProtocol: Actor {
     /// Uses retained pixels and saved metadata only; never reads live Accessibility.
     func extractText(from frame: CapturedFrame) async throws -> ExtractedText
 
+    /// Explicit retained-pixel repair. Must bypass cached OCR inside the same ordered executor.
+    func reprocessText(from frame: CapturedFrame) async throws -> ExtractedText
+
     /// Extract text using only OCR
     func extractTextViaOCR(from frame: CapturedFrame) async throws -> [TextRegion]
 
@@ -45,6 +48,13 @@ public protocol ProcessingProtocol: Actor {
 
     /// Get current configuration
     func getConfig() async -> ProcessingConfig
+}
+
+extension ProcessingProtocol {
+    /// Implementations without a verified full extraction path fail closed.
+    public func reprocessText(from frame: CapturedFrame) async throws -> ExtractedText {
+        throw ExactOCRRepairError.closed
+    }
 }
 
 // MARK: - OCR Protocol

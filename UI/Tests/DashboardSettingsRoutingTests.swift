@@ -5,6 +5,48 @@ import XCTest
 
 @MainActor
 final class DashboardSettingsRoutingTests: XCTestCase {
+    func testVoiceMarkerSettingsRoundTripRetainsNativeListAndPinnedViewportAtBothWidths() async throws {
+        for width: CGFloat in [1_280, 820] {
+            _ = NSApplication.shared
+            let navigation = DashboardNavigationState()
+            let panel = NSPanel(contentRect: NSRect(x: -20_000, y: -20_000, width: width, height: 500),
+                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            let content = DashboardDestinationView(navigation: navigation,
+                dashboard: { NativePinnedDestinationList() },
+                settings: { destination in NativeSettingsRouteReceipt(text: "settings:\(destination.scrollTargetID ?? "none")") },
+                changelog: { Text("Changelog") }, monitor: { Text("Monitor") })
+            let hosting = NSHostingView(rootView: content.frame(width: width, height: 500))
+            panel.contentView = hosting
+            panel.orderFront(nil)
+            defer { panel.orderOut(nil); panel.contentView = nil; panel.close() }
+            func tables(_ view: NSView) -> [NSTableView] {
+                (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables)
+            }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while tables(hosting).isEmpty, ContinuousClock.now < deadline {
+                hosting.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let original = try XCTUnwrap(tables(hosting).first)
+            let scroll = try XCTUnwrap(original.enclosingScrollView)
+            original.scrollRowToVisible(50)
+            hosting.layoutSubtreeIfNeeded()
+            let pinnedOrigin = scroll.contentView.bounds.origin
+            XCTAssertGreaterThan(pinnedOrigin.y, 0)
+            navigation.openSettings(tab: .audio, scrollTargetID: SettingsView.voiceMarkersTargetID)
+            try await Task.sleep(for: .milliseconds(40))
+            hosting.layoutSubtreeIfNeeded()
+            XCTAssertTrue(tables(hosting).contains { $0 === original }, "Settings must retain the mounted transcript list at width \(width)")
+            _ = navigation.receive(Notification(name: .toggleSettings))
+            try await Task.sleep(for: .milliseconds(40))
+            hosting.layoutSubtreeIfNeeded()
+            XCTAssertTrue(tables(hosting).first === original, "Back must reuse the actual native table")
+            XCTAssertEqual(scroll.contentView.bounds.origin.y, pinnedOrigin.y, accuracy: 0.5)
+            XCTAssertEqual(original.numberOfRows, 100)
+        }
+    }
+
     func testSettingsNotificationBeforeFirstWindowSurvivesLazyHosting() async {
         let fixture = SettingsRoutingWindowFixture()
         defer { fixture.close() }
@@ -27,6 +69,20 @@ final class DashboardSettingsRoutingTests: XCTestCase {
         await assertRendered("settings:default:none", in: fixture)
         XCTAssertEqual(fixture.windowCreationCount, 1)
         XCTAssertFalse(fixture.panel?.isKeyWindow ?? true)
+    }
+
+    func testVoiceMarkerActionOpensExistingAudioEditorBeforeAndAfterMounting() async {
+        let fixture = SettingsRoutingWindowFixture()
+        defer { fixture.close() }
+        fixture.controller.showVoiceMarkerSettings()
+        fixture.mountContent()
+        await assertRendered("settings:Audio:settings.voiceMarkers", in: fixture)
+        let host = fixture.hostingController?.view
+        fixture.controller.showSettings()
+        fixture.controller.showVoiceMarkerSettings()
+        await assertRendered("settings:Audio:settings.voiceMarkers", in: fixture)
+        XCTAssertTrue(fixture.hostingController?.view === host)
+        XCTAssertEqual(fixture.windowCreationCount, 1)
     }
 
     func testRealSettingsMenuActionOpensAndRepeatedActionsStayInSettings() async {
@@ -207,4 +263,27 @@ private struct NativeSettingsRouteReceipt: NSViewRepresentable {
     let text: String
     func makeNSView(context: Context) -> NSTextField { NSTextField(labelWithString: text) }
     func updateNSView(_ view: NSTextField, context: Context) { view.stringValue = text }
+}
+
+private struct NativePinnedDestinationList: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = NSTableView()
+        table.addTableColumn(NSTableColumn(identifier: .init("retained-reading-history")))
+        table.headerView = nil
+        table.rowHeight = 24
+        table.dataSource = context.coordinator
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.documentView = table
+        table.reloadData()
+        return scroll
+    }
+    func updateNSView(_ view: NSScrollView, context: Context) {}
+    final class Coordinator: NSObject, NSTableViewDataSource {
+        func numberOfRows(in tableView: NSTableView) -> Int { 100 }
+        func tableView(_ tableView: NSTableView, objectValueFor tableColumn: NSTableColumn?, row: Int) -> Any? {
+            "Authored pinned transcript \(row)"
+        }
+    }
 }

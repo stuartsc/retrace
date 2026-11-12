@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreGraphics
 import Shared
 
 enum AudioStreamBufferingPolicy {
@@ -47,6 +48,12 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     private var config: AudioCaptureConfig
     public private(set) var isCapturing: Bool = false
     private var currentMeetingState: MeetingState = .notInMeeting
+    private var sessionOpen = false
+    private var sessionGeneration: UUID?
+    private var stopRevision: UInt64 = 0
+    private var lifecycleTail: Task<Void, Never>?
+    private var microphoneRuntime = AudioSourceRuntime(.paused)
+    private var systemRuntime = AudioSourceRuntime(.disabled)
 
     // Statistics
     private var statistics = AudioCaptureStatistics(
@@ -84,98 +91,131 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     public func startCapture(config: AudioCaptureConfig) async throws {
-        guard !isCapturing else { return }
+        let requestedAt = stopRevision
+        try await serialized { owner in
+            guard owner.stopRevision == requestedAt else { throw CancellationError() }
+            try await owner.beginCapture(config: config)
+        }
+    }
 
+    private func beginCapture(config: AudioCaptureConfig) async throws {
+        guard !sessionOpen else { return }
         self.config = config
-
-        // Create combined audio stream
-        let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(
-            limit: AudioStreamBufferingPolicy.combinedSampleLimit
-        )
-        self._audioStream = stream
-        self.audioContinuation = continuation
-
-        // Start meeting detection
-        await meetingDetector.startMonitoring(bundleIDs: config.meetingAppBundleIDs)
-        await meetingDetector.onStateChange { [weak self] state in
-            Task {
-                await self?.handleMeetingStateChange(state)
+        let token = UUID()
+        sessionGeneration = token; sessionOpen = true
+        microphoneRuntime = .init(config.microphoneEnabled ? .unavailable : .disabled)
+        systemRuntime = .init(config.systemAudioEnabled ? .unavailable : .disabled)
+        let (stream, continuation) = AudioStreamBufferingPolicy.makeStream(limit: AudioStreamBufferingPolicy.combinedSampleLimit)
+        _audioStream = stream; audioContinuation = continuation
+        statistics = AudioCaptureStatistics(microphoneSamplesRecorded: 0, systemAudioSamplesRecorded: 0,
+            microphoneDurationSeconds: 0, systemAudioDurationSeconds: 0, captureStartTime: Date(),
+            lastSampleTime: nil, meetingDetectedCount: 0, autoMuteCount: 0)
+        do {
+            // No source failure prevents an independent enabled source from starting.
+            if config.microphoneEnabled {
+                if await microphoneCapture.hasPermission() {
+                    try checkSession(token)
+                    do {
+                        try await microphoneCapture.startCapture()
+                        try checkSession(token)
+                        let source = await microphoneCapture.audioStream
+                        microphoneStreamTask = AudioStreamForwarding.start(source) { [weak self] audio in
+                            await self?.receiveMicrophoneAudio(audio)
+                        }
+                        microphoneRuntime = .init(.running)
+                    } catch is CancellationError { throw CancellationError() }
+                    catch {
+                        await microphoneCapture.stopCapture()
+                        microphoneRuntime = .init(.failed)
+                    }
+                } else { microphoneRuntime = .init(.permissionDenied) }
             }
+            try checkSession(token)
+            if config.systemAudioEnabled {
+                // Preflight reads never request OS permission. Establish the mute
+                // before SCStream can emit its first sample; detection is awaited.
+                if CGPreflightScreenCaptureAccess() {
+                    await systemAudioCapture.setMuted(true)
+                    await meetingDetector.onStateChange { [weak self] state in
+                        Task { await self?.handleMeetingStateChange(state, generation: token) }
+                    }
+                    await meetingDetector.startMonitoring(bundleIDs: config.meetingAppBundleIDs)
+                    try checkSession(token)
+                    currentMeetingState = await meetingDetector.getCurrentState()
+                    try checkSession(token)
+                    await updateSystemAudioMuteState(meetingState: currentMeetingState)
+                    try checkSession(token)
+                    do {
+                        try await systemAudioCapture.startCapture()
+                        try checkSession(token)
+                        let source = await systemAudioCapture.audioStream
+                        systemAudioStreamTask = AudioStreamForwarding.start(source) { [weak self] audio in
+                            await self?.receiveSystemAudio(audio)
+                        }
+                        systemRuntime = .init(await systemAudioCapture.getMuted() ? .mutedForMeeting : .running)
+                    } catch is CancellationError { throw CancellationError() }
+                    catch {
+                        try? await systemAudioCapture.stopCapture()
+                        await meetingDetector.stopMonitoring()
+                        systemRuntime = .init(.failed)
+                    }
+                } else { systemRuntime = .init(.permissionDenied) }
+            }
+            try checkSession(token)
+            isCapturing = microphoneRuntime.isActive || systemRuntime.isActive
+        } catch {
+            try? await endCapture()
+            throw error
         }
-
-        // Start microphone capture if enabled
-        if config.microphoneEnabled {
-            do {
-                try await microphoneCapture.startCapture()
-            } catch {
-                await microphoneCapture.stopCapture()
-                await meetingDetector.stopMonitoring()
-                audioContinuation?.finish()
-                audioContinuation = nil
-                _audioStream = nil
-                throw error
-            }
-            let microphoneStream = await microphoneCapture.audioStream
-            microphoneStreamTask = AudioStreamForwarding.start(microphoneStream) { [weak self] audio in
-                await self?.receiveMicrophoneAudio(audio)
-            }
-        }
-
-        // Start system audio capture if enabled (non-fatal if it fails)
-        if config.systemAudioEnabled {
-            do {
-                try await systemAudioCapture.startCapture()
-
-                // Apply initial mute state based on current meeting state
-                let currentState = await meetingDetector.getCurrentState()
-                await updateSystemAudioMuteState(meetingState: currentState)
-
-                let systemStream = await systemAudioCapture.audioStream
-                systemAudioStreamTask = AudioStreamForwarding.start(systemStream) { [weak self] audio in
-                    await self?.receiveSystemAudio(audio)
-                }
-                Log.info("[AudioCaptureManager] System audio capture started", category: .capture)
-            } catch {
-                try? await systemAudioCapture.stopCapture()
-                Log.warning("[AudioCaptureManager] System audio capture failed (will continue with mic only): \(error)", category: .capture)
-            }
-        }
-
-        isCapturing = true
-        statistics = AudioCaptureStatistics(
-            microphoneSamplesRecorded: 0,
-            systemAudioSamplesRecorded: 0,
-            microphoneDurationSeconds: 0,
-            systemAudioDurationSeconds: 0,
-            captureStartTime: Date(),
-            lastSampleTime: nil,
-            meetingDetectedCount: 0,
-            autoMuteCount: 0
-        )
     }
 
     public func stopCapture() async throws {
-        guard isCapturing else { return }
+        stopRevision &+= 1
+        sessionGeneration = nil
+        try await serialized { owner in try await owner.endCapture() }
+    }
 
+    private func endCapture() async throws {
+        sessionGeneration = nil
         await microphoneCapture.stopCapture()
         var systemStopError: Error?
-        do {
-            try await systemAudioCapture.stopCapture()
-        } catch {
-            systemStopError = error
-        }
+        do { try await systemAudioCapture.stopCapture() }
+        catch { systemStopError = error }
         await meetingDetector.stopMonitoring()
-
-        // Source stop finishes its stream, including resampler tails. Cancelling
-        // these consumers would discard queued audio instead of forwarding it.
         await AudioStreamForwarding.drain([microphoneStreamTask, systemAudioStreamTask])
-        isCapturing = false
-        microphoneStreamTask = nil
-        systemAudioStreamTask = nil
-        audioContinuation?.finish()
-        audioContinuation = nil
-        _audioStream = nil
+        isCapturing = false; sessionOpen = false
+        microphoneStreamTask = nil; systemAudioStreamTask = nil
+        audioContinuation?.finish(); audioContinuation = nil; _audioStream = nil
+        microphoneRuntime = .init(config.microphoneEnabled ? .paused : .disabled)
+        systemRuntime = .init(config.systemAudioEnabled ? .paused : .disabled)
         if let systemStopError { throw systemStopError }
+    }
+
+    private func checkSession(_ token: UUID) throws {
+        try Task.checkCancellation()
+        guard sessionGeneration == token else { throw CancellationError() }
+    }
+
+    private func serialized<T: Sendable>(_ operation: @escaping @Sendable (isolated AudioCaptureManager) async throws -> T) async throws -> T {
+        let previous = lifecycleTail
+        let task = Task { await previous?.value; return try await operation(self) }
+        lifecycleTail = Task { _ = await task.result }
+        // Stops must join cleanup even if their callers are cancelled.
+        return try await task.value
+    }
+
+    public func runtimeSnapshot() async -> AudioCaptureRuntime {
+        let generation = sessionGeneration
+        if sessionOpen, config.microphoneEnabled, microphoneRuntime.isActive {
+            let native = await microphoneCapture.runtimeState()
+            // A pause/restart can occur during the native actor hop. Its newer
+            // categorical state wins over the observation from the old session.
+            if generation == sessionGeneration {
+                return .init(microphone: .init(native, lastSampleAt: microphoneRuntime.lastSampleAt),
+                             systemAudio: systemRuntime)
+            }
+        }
+        return AudioCaptureRuntime(microphone: microphoneRuntime, systemAudio: systemRuntime)
     }
 
     public var audioStream: AsyncStream<CapturedAudio> {
@@ -191,17 +231,12 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         return stream
     }
 
+    /// Runtime settings must go through App's owner, which drains the consumer
+    /// before replacing this stream. An active direct call is rejected.
     public func updateConfig(_ config: AudioCaptureConfig) async throws {
-        let wasCapturing = isCapturing
-
-        if wasCapturing {
-            try await stopCapture()
-        }
-
-        self.config = config
-
-        if wasCapturing {
-            try await startCapture(config: config)
+        try await serialized { owner in
+            guard !owner.sessionOpen else { throw AudioCaptureError.captureSessionFailed("Audio settings require the session owner") }
+            owner.config = config
         }
     }
 
@@ -228,6 +263,7 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     // MARK: - Private Stream Merging
 
     private func receiveMicrophoneAudio(_ audio: CapturedAudio) {
+        microphoneRuntime = .init(.running, lastSampleAt: Date())
         audioContinuation?.yield(audio)
 
         // Update statistics
@@ -244,6 +280,7 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     }
 
     private func receiveSystemAudio(_ audio: CapturedAudio) {
+        systemRuntime = .init(.running, lastSampleAt: Date())
         audioContinuation?.yield(audio)
 
         // Update statistics
@@ -262,7 +299,8 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
     // MARK: - Privacy-Aware Muting Logic
 
     /// Handle meeting state changes and apply automatic muting logic
-    private func handleMeetingStateChange(_ state: MeetingState) async {
+    private func handleMeetingStateChange(_ state: MeetingState, generation: UUID) async {
+        guard sessionGeneration == generation, config.systemAudioEnabled else { return }
         currentMeetingState = state
 
         // Update statistics
@@ -280,6 +318,11 @@ public actor AudioCaptureManager: AudioCaptureProtocol {
         }
 
         await updateSystemAudioMuteState(meetingState: state)
+        guard sessionGeneration == generation else { return }
+        if systemRuntime.isActive {
+            systemRuntime = .init(await systemAudioCapture.getMuted() ? .mutedForMeeting : .running,
+                lastSampleAt: systemRuntime.lastSampleAt)
+        }
     }
 
     /// Update system audio mute state based on meeting state and user consent

@@ -69,6 +69,20 @@ class Job:
     generation: int
     start_ms: int
     media: tuple[MediaRange, ...]
+    recording_generation: str | None = None
+    continuity_id: str | None = None
+    start_sample: int | None = None
+
+    @property
+    def result_identity(self) -> dict[str, Any]:
+        if self.recording_generation is None:
+            return {"version": 1, "generation": self.generation}
+        return {
+            "version": 2,
+            "recordingGeneration": self.recording_generation,
+            "continuityID": self.continuity_id,
+            "startSample": self.start_sample,
+        }
 
     @property
     def sample_count(self) -> int:
@@ -80,18 +94,24 @@ class Job:
 
     @classmethod
     def parse(cls, value: Any, identifier: str) -> Job:
+        version = value.get("version") if isinstance(value, dict) else None
+        integer(version, 1, 2)
+        identity_keys = (
+            {"generation"}
+            if version == 1
+            else {"recordingGeneration", "continuityID", "startSample"}
+        )
         obj = _object(
             value,
             {
                 "version",
                 "storeID",
                 "source",
-                "generation",
                 "startMilliseconds",
                 "media",
-            },
+            }
+            | identity_keys,
         )
-        integer(obj["version"], 1, 1)
         if not isinstance(obj["storeID"], str):
             raise JobError("invalid_store")
         try:
@@ -101,7 +121,15 @@ class Job:
         if obj["source"] not in ("microphone", "system"):
             raise JobError("invalid_source")
         start = integer(obj["startMilliseconds"], 1, 253_402_300_000_000)
-        generation = integer(obj["generation"], 1, 2**63 - 1)
+        generation = integer(obj["generation"], 1, 2**63 - 1) if version == 1 else 0
+        recording_generation = continuity_id = start_sample = None
+        if version == 2:
+            try:
+                recording_generation = str(uuid.UUID(obj["recordingGeneration"]))
+                continuity_id = str(uuid.UUID(obj["continuityID"]))
+            except (ValueError, TypeError, AttributeError) as error:
+                raise JobError("invalid_native_identity") from error
+            start_sample = integer(obj["startSample"], 0, 2**63 - 1)
         entries = obj["media"]
         if not isinstance(entries, list) or not 1 <= len(entries) <= 32:
             raise JobError("media_limit")
@@ -151,6 +179,8 @@ class Job:
                 raise JobError("source_range_conflict")
             count += item.count
             ranges.append(item)
+        if start_sample is not None and start_sample > 2**63 - 1 - count:
+            raise JobError("sample_limit")
         return cls(
             digest(identifier),
             store_id,
@@ -158,6 +188,9 @@ class Job:
             generation,
             start,
             tuple(ranges),
+            recording_generation,
+            continuity_id,
+            start_sample,
         )
 
 
@@ -315,17 +348,15 @@ def load_result(path: Path, job: Job) -> dict[str, Any]:
 
 def validate_result(value: Any, job: Job) -> None:
     expected = {
-        "version": 1,
         "jobID": job.identifier,
         "storeID": job.store_id,
-        "generation": job.generation,
         "source": job.source,
         "status": "complete",
         "startMilliseconds": job.start_ms,
         "endMilliseconds": job.end_ms,
         "sampleCount": job.sample_count,
         "automaticNamesCalibrated": False,
-    }
+    } | job.result_identity
     if not isinstance(value, dict) or any(
         type(value.get(k)) is not type(v) or value.get(k) != v
         for k, v in expected.items()
@@ -490,7 +521,7 @@ def initialize_directory(directory: Path) -> None:
 def publish_result(directory: Path, identifier: str, result: dict[str, Any]) -> None:
     """Atomic, durable, idempotent publication. A differing result is never overwritten."""
     digest(identifier)
-    if result.get("version") != 1 or result.get("jobID") != identifier:
+    if result.get("version") not in (1, 2) or result.get("jobID") != identifier:
         raise JobError("result_identity")
     data = json.dumps(
         result, sort_keys=True, separators=(",", ":"), allow_nan=False

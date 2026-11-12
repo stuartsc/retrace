@@ -14,14 +14,18 @@ public struct DictationAudioSlice: Sendable, Equatable {
 public actor DictationAudioBuffer {
     private let maxDuration: TimeInterval
     private var samples: [CapturedAudio] = []
+    private var microphoneAllowed = true
+    private var microphoneGeneration: UInt64 = 0
 
     public init(maxDuration: TimeInterval = 90) {
         self.maxDuration = maxDuration
         samples.reserveCapacity(2_048)
     }
 
-    public func append(_ audio: CapturedAudio) {
-        guard audio.source == .microphone, audio.duration > 0, !audio.audioData.isEmpty else {
+    public func append(_ audio: CapturedAudio, microphoneGeneration: UInt64? = nil) {
+        guard microphoneAllowed,
+              microphoneGeneration == nil || microphoneGeneration == self.microphoneGeneration,
+              audio.source == .microphone, audio.duration > 0, !audio.audioData.isEmpty else {
             return
         }
 
@@ -42,6 +46,11 @@ public actor DictationAudioBuffer {
         if firstRetainedIndex > samples.startIndex {
             samples.removeSubrange(samples.startIndex..<firstRetainedIndex)
         }
+    }
+
+    public func setMicrophoneAllowed(_ allowed: Bool, generation: UInt64) {
+        microphoneAllowed = allowed; microphoneGeneration = generation
+        if !allowed { samples.removeAll(keepingCapacity: false) }
     }
 
     public func slice(from requestedStart: Date, to requestedEnd: Date) -> DictationAudioSlice? {

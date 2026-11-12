@@ -40,6 +40,7 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
     private let database: DatabaseManager
     private let adapter: DataAdapter
     private let configuration: @Sendable () async -> CaptureConfig
+    private let disclosureState: (@Sendable () async throws -> NativeCaptureState)?
     private let imageReader: @Sendable (FrameWithVideoInfo) async throws -> CGImage
 
     #if DEBUG
@@ -59,9 +60,10 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
 
     public init(database: DatabaseManager, adapter: DataAdapter,
                 configuration: @escaping @Sendable () async -> CaptureConfig,
+                disclosureState: (@Sendable () async throws -> NativeCaptureState)? = nil,
                 imageReader: @escaping @Sendable (FrameWithVideoInfo) async throws -> CGImage) {
         self.database = database; self.adapter = adapter
-        self.configuration = configuration; self.imageReader = imageReader
+        self.configuration = configuration; self.disclosureState = disclosureState; self.imageReader = imageReader
     }
 
     /// Internal local maintenance only. These endpoints stage opaque references,
@@ -309,6 +311,10 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
 
     public func resolve(_ reference: EvidenceRef, for audience: EvidenceAudience) async -> EvidenceResolution {
         if case .agent = audience { return .unavailable(.notPermitted) }
+        return await resolveAdmitted(reference)
+    }
+
+    private func resolveAdmitted(_ reference: EvidenceRef) async -> EvidenceResolution {
         do {
             try Task.checkCancellation()
             switch reference {
@@ -361,6 +367,58 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
         } catch let reason as EvidenceUnavailableReason { return .unavailable(reason) }
         catch DataAdapterError.sourceNotAvailable { return .unavailable(.sourceDisconnected) }
         catch { return .unavailable(.integrityFailure) }
+    }
+
+    /// Explicit private-client disclosure, scoped to a currently running granted command. The
+    /// existing .agent audience still denies access. Imported sources remain outside this grant.
+    public func grantedScreen(_ ref: ScreenEvidenceRef, context: RetraceCommandContext) async throws -> ScreenEvidenceSnapshot {
+        guard context.capability == .evidenceRead, ref.source == .native else { throw EvidenceUnavailableReason.notPermitted }
+        try await context.authorize()
+        guard let disclosureState else { throw EvidenceUnavailableReason.notPermitted }
+        let state = try await disclosureState()
+        let policy = ScreenEvidenceAccessPolicy(config: state.config)
+        let readRevision = try await database.validateNativeDisclosure(ref, policy: policy)
+        let generation = try await sourceGeneration(source: ref.source)
+        let snapshot = try await readableExpansionSnapshot(ref, generation: generation, missingExtraction: .extractionUnavailable)
+        try await context.authorize()
+        _ = try await readableExpansionSnapshot(ref, generation: generation, missingExtraction: .evidenceDeleted)
+        try await context.authorize()
+        _ = try await database.validateNativeDisclosure(ref, policy: policy, expectedReadRevision: readRevision)
+        guard try await disclosureState().revision == state.revision else { throw EvidenceUnavailableReason.notPermitted }
+        try Task.checkCancellation()
+        return snapshot
+    }
+
+    /// Validates an exact native target for a granted processing/foreground action without
+    /// disclosing content. The actual native action must retain its own revision guard.
+    public func validateGrantedScreenAction(_ ref: ScreenEvidenceRef, context: RetraceCommandContext) async throws {
+        guard [.processing, .foregroundControl, .annotationsWrite].contains(context.capability), ref.source == .native else { throw EvidenceUnavailableReason.notPermitted }
+        try await context.authorize()
+        try await validateNativeScreenAction(ref)
+        try await context.authorize()
+    }
+
+    /// Native UI admission repeats the same exact target and current-policy checks immediately
+    /// before foreground presentation; a caller cannot turn a hidden old citation into a window.
+    public func validateNativeScreenAction(_ ref: ScreenEvidenceRef) async throws {
+        guard ref.source == .native, let disclosureState else { throw EvidenceUnavailableReason.notPermitted }
+        let state = try await disclosureState()
+        let policy = ScreenEvidenceAccessPolicy(config: state.config)
+        let readRevision = try await database.validateNativeDisclosure(ref, policy: policy)
+        let generation = try await sourceGeneration(source: ref.source)
+        _ = try await readableExpansionSnapshot(ref, generation: generation, missingExtraction: .extractionUnavailable)
+        guard try await currentRevision(ref) == ref.extractionRevision else { throw RetraceCommandError.revisionConflict }
+        _ = try await database.validateNativeDisclosure(ref, policy: policy, expectedReadRevision: readRevision)
+        guard try await disclosureState().revision == state.revision else { throw EvidenceUnavailableReason.notPermitted }
+        try Task.checkCancellation()
+    }
+
+    public func grantedScreenshot(_ ref: ScreenEvidenceRef, context: RetraceCommandContext) async throws -> EvidenceResolution {
+        _ = try await grantedScreen(ref, context: context)
+        let result = await resolveAdmitted(.screen(ref))
+        _ = try await grantedScreen(ref, context: context)
+        try await context.authorize()
+        return result
     }
 
     public func currentRevision(_ ref: ScreenEvidenceRef) async throws -> Int64? {
@@ -448,6 +506,13 @@ public actor ProgressiveRecallService: EvidenceResolverProtocol {
         #endif
         guard try await sourceGeneration(source: ref.source) == generation else {
             throw EvidenceUnavailableReason.sourceDisconnected
+        }
+        // The test checkpoint above deliberately follows the earlier policy read. Current
+        // restrictions must be checked again after it; source identity is not a policy epoch.
+        let finalConfig = await configuration()
+        guard Self.permits(snapshot.frame.metadata, config: finalConfig),
+              Self.permits(current.frame.metadata, config: finalConfig) else {
+            throw EvidenceUnavailableReason.notPermitted
         }
         try Task.checkCancellation()
         return snapshot

@@ -10,6 +10,25 @@ public actor FTSManager: FTSProtocol {
 
     private var db: OpaquePointer?
     private let databasePath: String
+    private var sourceMutationHandler: NativeSourceMutationHooks.Handler?
+    private var sourceMutationHooks: NativeSourceMutationHooks?
+
+    /// Shares native evidence revocation with the canonical writer. The callback
+    /// must not call database APIs or wait for actor work.
+    public func setSourceMutationHandler(_ handler: (@Sendable () -> Void)?) throws {
+        try setSourceMutationObserver(handler.map { callback in { _ in callback() } })
+    }
+
+    public func setSourceMutationObserver(_ handler: (@Sendable (NativeSourceMutation) -> Void)?) throws {
+        sourceMutationHooks?.detach()
+        sourceMutationHooks = nil
+        sourceMutationHandler = handler
+        if let db, let handler {
+            let hooks = NativeSourceMutationHooks(db: db, onMutation: handler)
+            try hooks.install()
+            sourceMutationHooks = hooks
+        }
+    }
 
     // MARK: - Initialization
 
@@ -24,18 +43,26 @@ public actor FTSManager: FTSProtocol {
 
     /// Initialize the FTS manager (opens existing database connection)
     public func initialize() async throws {
+        guard db == nil else { return }
         let expandedPath = NSString(string: databasePath).expandingTildeInPath
 
         // Use sqlite3_open_v2 with SQLITE_OPEN_URI to support URI filenames like:
         // file:memdb_xxx?mode=memory&cache=shared (used by tests to share one in-memory DB)
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(expandedPath, &db, flags, nil) == SQLITE_OK else {
             let errorMsg = db.map { String(cString: sqlite3_errmsg($0)) } ?? "Unknown error"
             throw DatabaseError.connectionFailed(underlying: errorMsg)
         }
         do {
             try RecallSearchRevisionHooks.install(db: db!)
+            if let sourceMutationHandler {
+                let hooks = NativeSourceMutationHooks(db: db!, onMutation: sourceMutationHandler)
+                try hooks.install()
+                sourceMutationHooks = hooks
+            }
         } catch {
+            sourceMutationHooks?.detach()
+            sourceMutationHooks = nil
             sqlite3_close_v2(db)
             db = nil
             throw error
@@ -48,13 +75,16 @@ public actor FTSManager: FTSProtocol {
 
         // `sqlite3_close_v2` safely performs a deferred close if any internal FTS5 resources
         // are still being cleaned up.
+        sourceMutationHooks?.detach()
         let rc = sqlite3_close_v2(db)
         guard rc == SQLITE_OK else {
+            try sourceMutationHooks?.install()
             let errorMsg = String(cString: sqlite3_errmsg(db))
             throw DatabaseError.connectionFailed(underlying: "Failed to close FTS database (\(rc)): \(errorMsg)")
         }
 
         self.db = nil
+        sourceMutationHooks = nil
     }
 
     // MARK: - Search Operations

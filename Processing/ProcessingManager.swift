@@ -57,6 +57,15 @@ public actor ProcessingManager: ProcessingProtocol {
         try await retainedText.extractTextViaOCR(from: frame, config: config)
     }
 
+    public func reprocessText(from frame: CapturedFrame) async throws -> ExtractedText {
+        let started = Date()
+        let text = try await retainedText.extractText(from: frame, config: config, forceFull: true)
+        framesProcessed += 1
+        totalOCRTimeMs += Date().timeIntervalSince(started) * 1000
+        totalTextLength += text.wordCount
+        return text
+    }
+
     public func extractTextViaAccessibility() async throws -> [TextRegion] {
         guard config.accessibilityEnabled else {
             return []
@@ -210,7 +219,7 @@ private actor RetainedFrameTextExtractor {
         ocr = VisionOCR(recognitionLanguages: recognitionLanguages)
     }
 
-    func extractText(from frame: CapturedFrame, config: ProcessingConfig) async throws -> ExtractedText {
+    func extractText(from frame: CapturedFrame, config: ProcessingConfig, forceFull: Bool = false) async throws -> ExtractedText {
         // Actor reentrancy alone does not protect the frame/cache pair across
         // Vision awaits. Order complete extractions without blocking a thread;
         // this also avoids saturating the cooperative executor with Vision's
@@ -221,6 +230,7 @@ private actor RetainedFrameTextExtractor {
         let task = Task {
             if let predecessor { _ = await predecessor.result }
             try Task.checkCancellation()
+            if forceFull { self.previousFrame = nil; self.fullFrameCache = nil }
             return try await self.extractRetainedFrame(from: frame, config: config)
         }
         extractionTail = task

@@ -138,8 +138,6 @@ public struct SettingsView: View {
     }
 
     // MARK: General Settings
-    @State private var fuseIntelAddress = FuseIntelConnectionConfiguration.configuredURL.absoluteString
-    @State private var fuseIntelAddressMessage: String?
     @AppStorage("launchAtLogin", store: settingsStore) private var launchAtLogin = SettingsDefaults.launchAtLogin
     @AppStorage("showMenuBarIcon", store: settingsStore) private var showMenuBarIcon = SettingsDefaults.showMenuBarIcon
     @AppStorage("theme", store: settingsStore) private var theme: ThemePreference = SettingsDefaults.theme
@@ -196,6 +194,9 @@ public struct SettingsView: View {
     @State private var previewRetentionDays: Int?  // Visual preview while selecting
     @AppStorage("maxStorageGB", store: settingsStore) private var maxStorageGB: Double = SettingsDefaults.maxStorageGB
     @AppStorage("useRewindData", store: settingsStore) private var useRewindData: Bool = SettingsDefaults.useRewindData
+    @State private var rewindSourceState: SourceConfigurationSnapshot?
+    @State private var rewindSourceChanging = false
+    @State private var rewindSourceError: String?
 
     // Retention exclusion settings - data from these won't be deleted during cleanup
     @AppStorage("retentionExcludedApps", store: settingsStore) private var retentionExcludedAppsString = ""
@@ -219,8 +220,7 @@ public struct SettingsView: View {
     // MARK: Privacy Settings
     @AppStorage("excludedApps", store: settingsStore) private var excludedAppsString = SettingsDefaults.excludedApps
     @AppStorage("excludePrivateWindows", store: settingsStore) private var excludePrivateWindows = SettingsDefaults.excludePrivateWindows
-    @AppStorage("redactWindowTitlePatterns", store: settingsStore) private var redactWindowTitlePatternsRaw = SettingsDefaults.redactWindowTitlePatterns
-    @AppStorage("redactBrowserURLPatterns", store: settingsStore) private var redactBrowserURLPatternsRaw = SettingsDefaults.redactBrowserURLPatterns
+    @StateObject private var redactionSettings = CaptureRedactionSettingsModel()
 
     // Computed property to manage excluded apps as array
     private var excludedApps: [ExcludedAppInfo] {
@@ -354,10 +354,11 @@ public struct SettingsView: View {
 
     // Capture interval settings feedback
     @State private var captureUpdateMessage: String? = nil
+    @State private var settingsResetInProgress = false
+    @State private var settingsResetMessage: String?
 
     // Excluded apps feedback
     @State private var excludedAppsUpdateMessage: String? = nil
-    @State private var redactionRulesUpdateMessage: String? = nil
 
     // App coordinator for deletion operations
     @EnvironmentObject private var coordinatorWrapper: AppCoordinatorWrapper
@@ -422,6 +423,8 @@ public struct SettingsView: View {
         SettingsSearchEntry(id: "tags.manageTags", tab: .tags, cardTitle: "Manage Tags", cardIcon: "tag",
             searchableText: ["manage tags", "create tag", "delete tag", "tag name", "organize"]),
         // Advanced
+        SettingsSearchEntry(id: "advanced.commandAccess", tab: .advanced, cardTitle: "Local MCP Access", cardIcon: "key.horizontal",
+            searchableText: ["mcp", "agent", "client", "token", "permissions", "grant", "revoke", "local access"]),
         SettingsSearchEntry(id: "advanced.cache", tab: .advanced, cardTitle: "Cache", cardIcon: "externaldrive",
             searchableText: ["cache", "clear cache", "app name cache", "refresh"]),
         SettingsSearchEntry(id: "advanced.timeline", tab: .advanced, cardTitle: "Timeline", cardIcon: "play.rectangle",
@@ -454,6 +457,7 @@ public struct SettingsView: View {
     /// Minimum width to keep settings usable while allowing split-screen layouts.
     private let settingsMinWidth: CGFloat = 760
     static let pauseReminderIntervalTargetID = "settings.pauseReminderInterval"
+    static let voiceMarkersTargetID = "settings.voiceMarkers"
     private static let pauseReminderCardAnchorID = "settings.pauseReminderCard"
     static let timelineScrollOrientationTargetID = "settings.timelineScrollOrientation"
     private static let timelineScrollOrientationAnchorID = "settings.timelineScrollOrientationAnchor"
@@ -856,6 +860,8 @@ public struct SettingsView: View {
 
     private func requestNavigation(to targetID: String) {
         switch targetID {
+        case Self.voiceMarkersTargetID:
+            selectedTab = .audio
         case Self.pauseReminderIntervalTargetID:
             selectedTab = .capture
         case Self.timelineScrollOrientationTargetID:
@@ -883,6 +889,8 @@ public struct SettingsView: View {
 
         // Ensure tab content is visible before scrolling to a row inside it.
         switch targetID {
+        case Self.voiceMarkersTargetID:
+            guard selectedTab == .audio else { return }
         case Self.pauseReminderIntervalTargetID:
             guard selectedTab == .capture else { return }
         case Self.timelineScrollOrientationTargetID:
@@ -898,6 +906,8 @@ public struct SettingsView: View {
 
         let anchorID: String
         switch targetID {
+        case Self.voiceMarkersTargetID:
+            anchorID = Self.voiceMarkersTargetID
         case Self.pauseReminderIntervalTargetID:
             anchorID = Self.pauseReminderCardAnchorID
         case Self.timelineScrollOrientationTargetID:
@@ -1084,6 +1094,7 @@ public struct SettingsView: View {
                         .cornerRadius(8)
                     }
                     .buttonStyle(.plain)
+                    .disabled(settingsResetInProgress || redactionSettings.isLoading || redactionSettings.isSaving)
                     .alert("Reset \(selectedTab.rawValue) Settings?", isPresented: $showingSectionResetConfirmation) {
                         Button("Cancel", role: .cancel) {}
                         Button("Reset", role: .destructive) {
@@ -1093,6 +1104,11 @@ public struct SettingsView: View {
                         Text("This will reset all \(selectedTab.rawValue.lowercased()) settings to their defaults.")
                     }
                 }
+            }
+            if let message = settingsResetMessage {
+                Text(message)
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary)
             }
         }
         .padding(.horizontal, 32)
@@ -1107,41 +1123,12 @@ public struct SettingsView: View {
             updatesCard
             keyboardShortcutsCard
             startupCard
-            fuseIntelConnectionCard
             appearanceCard
             aboutSupportCard
         }
     }
 
     // MARK: - General Cards (extracted for search)
-
-    private var fuseIntelConnectionCard: some View {
-        ModernSettingsCard(title: "Operating Brief connection", icon: "network") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Brief, Signals and Ahead come from FuseIntel on your primary Mac. Recording and local search continue when it is offline.")
-                    .font(.retraceCaption).foregroundColor(.retraceSecondary)
-                HStack {
-                    TextField("Private FuseIntel address", text: $fuseIntelAddress)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("Private FuseIntel address")
-                    Button("Save") {
-                        guard let url = FuseIntelConnectionConfiguration.validatedURL(fuseIntelAddress) else {
-                            fuseIntelAddressMessage = "Use a localhost or Tailscale address, without a path or password."
-                            recordSettingsUtilityAction("fuseintel_address_invalid")
-                            return
-                        }
-                        settingsStore.set(url.absoluteString, forKey: FuseIntelConnectionConfiguration.defaultsKey)
-                        fuseIntelAddress = url.absoluteString
-                        fuseIntelAddressMessage = "Saved. Live will use this connection on its next refresh."
-                        recordSettingsUtilityAction("fuseintel_address_saved")
-                    }
-                }
-                if let message = fuseIntelAddressMessage {
-                    Text(message).font(.retraceCaption).foregroundColor(.retraceSecondary)
-                }
-            }
-        }
-    }
 
     @ViewBuilder
     private var keyboardShortcutsCard: some View {
@@ -1885,7 +1872,7 @@ public struct SettingsView: View {
 
                     CaptureIntervalPicker(selectedInterval: $captureIntervalSeconds)
                         .onChange(of: captureIntervalSeconds) { _ in
-                            showCaptureUpdateFeedback()
+                            updateCaptureIntervalSetting()
                         }
 
                     // Estimated storage description and reset button on same line
@@ -2137,6 +2124,7 @@ public struct SettingsView: View {
             rewindDataCard
             databaseLocationsCard
             retentionPolicyCard
+            RetentionReviewView(coordinator: coordinatorWrapper.coordinator)
         }
     }
 
@@ -2149,27 +2137,43 @@ public struct SettingsView: View {
                     title: "Use Rewind data",
                     subtitle: "Show your old Rewind recordings in the timeline",
                     isOn: Binding(
-                        get: { useRewindData },
+                        get: { rewindSourceState?.configuredEnabled ?? false },
                         set: { newValue in
-                            Log.debug("[SettingsView] Rewind data toggle changed to: \(newValue)", category: .ui)
-                            useRewindData = newValue
-                            Task {
-                                Log.debug("[SettingsView] Calling setRewindSourceEnabled(\(newValue))", category: .ui)
-                                await coordinatorWrapper.coordinator.setRewindSourceEnabled(newValue)
-                                Log.debug("[SettingsView] setRewindSourceEnabled completed", category: .ui)
-                                // Increment data source version to invalidate timeline cache
-                                // This ensures any cached frames are discarded when timeline reopens
-                                await MainActor.run {
-                                    // Clear persisted search cache so search results are cleared
-                                    SearchViewModel.clearPersistedSearchCache()
-                                    // Notify any live timeline instances to reload
-                                    NotificationCenter.default.post(name: .dataSourceDidChange, object: nil)
-                                    Log.debug("[SettingsView] dataSourceDidChange notification posted", category: .ui)
-                                }
+                            guard !rewindSourceChanging else { return }
+                            rewindSourceChanging = true; rewindSourceError = nil
+                            Task { @MainActor in
+                                defer { rewindSourceChanging = false }
+                                do { _ = try await coordinatorWrapper.coordinator.setRewindSourceEnabled(newValue) }
+                                catch { rewindSourceError = Self.rewindSourceErrorMessage(error) }
+                                SearchViewModel.clearPersistedSearchCache()
+                                await refreshRewindSourceState()
                             }
                         }
                     )
                 )
+                .disabled(rewindSourceChanging || rewindSourceState == nil)
+                if rewindSourceChanging { Text("Updating Rewind access…").font(.retraceCaption).foregroundColor(.retraceSecondary) }
+                if let state = rewindSourceState, state.configuredEnabled && !state.effectiveEnabled {
+                    Text("Rewind access is saved as enabled, but the selected library is currently unavailable.")
+                        .font(.retraceCaption).foregroundColor(.orange)
+                    Button("Retry connection") {
+                        guard !rewindSourceChanging else { return }
+                        rewindSourceChanging = true; rewindSourceError = nil
+                        Task { @MainActor in
+                            defer { rewindSourceChanging = false }
+                            do { _ = try await coordinatorWrapper.coordinator.setRewindSourceEnabled(true) }
+                            catch { rewindSourceError = Self.rewindSourceErrorMessage(error) }
+                            await refreshRewindSourceState()
+                        }
+                    }.disabled(rewindSourceChanging)
+                }
+                if let rewindSourceError {
+                    Text(rewindSourceError).font(.retraceCaption).foregroundColor(.orange)
+                }
+        }
+        .task { await refreshRewindSourceState() }
+        .onReceive(NotificationCenter.default.publisher(for: .dataSourceDidChange)) { _ in
+            Task { @MainActor in await refreshRewindSourceState() }
         }
     }
 
@@ -2761,50 +2765,61 @@ public struct SettingsView: View {
                     Text("Window title patterns (one per line)")
                         .font(.retraceCaption2)
                         .foregroundColor(.retraceSecondary)
-                    redactionRuleEditor(
-                        text: $redactWindowTitlePatternsRaw,
+                    Self.redactionRuleEditor(
+                        text: Binding(get: { redactionSettings.windowDraft }, set: { redactionSettings.editWindow($0) }),
                         placeholder: "Examples:\nWells Fargo Bank - Home\nPassword Manager\nGusto - Payroll"
                     )
+                    .accessibilityLabel("Window title redaction rules")
+                    .disabled(!redactionSettings.isLoaded)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Browser URL patterns (one per line)")
                         .font(.retraceCaption2)
                         .foregroundColor(.retraceSecondary)
-                    redactionRuleEditor(
-                        text: $redactBrowserURLPatternsRaw,
+                    Self.redactionRuleEditor(
+                        text: Binding(get: { redactionSettings.urlDraft }, set: { redactionSettings.editURLs($0) }),
                         placeholder: "Examples:\nx.com/home\nbankofamerica.com\ninstagram.com/profile"
                     )
+                    .accessibilityLabel("Browser URL redaction rules")
+                    .disabled(!redactionSettings.isLoaded)
                 }
 
-                if let message = redactionRulesUpdateMessage {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                            .font(.system(size: 12))
-                        Text(message)
-                            .font(.retraceCaption2)
-                            .foregroundColor(.retraceSecondary)
+                Text("One rule per line. Commas and spaces are literal; blank lines are ignored. Changes take effect when you apply them.")
+                    .font(.retraceCaption2)
+                    .foregroundColor(.retraceSecondary)
+
+                HStack {
+                    Button(redactionSettings.isSaving ? "Applying…" : "Apply rules") {
+                        updateRedactionRulesConfig()
                     }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .disabled(!redactionSettings.canApply)
+                    Button("Reload saved rules") {
+                        Task { await redactionSettings.reload(using: .live(coordinatorWrapper.coordinator)) }
+                    }
+                    .help("Replace your draft with the currently saved redaction rules")
+                    .disabled(redactionSettings.isLoading || redactionSettings.isSaving)
+                    if redactionSettings.isLoading { ProgressView().controlSize(.small) }
+                }
+
+                if let message = redactionSettings.errorMessage {
+                    Text(message).font(.retraceCaption2).foregroundColor(.retraceWarning)
+                } else if let message = redactionSettings.statusMessage {
+                    Text(message).font(.retraceCaption2).foregroundColor(.retraceSecondary)
                 }
 
                 Text("Note: Window redaction does not currently work in Firefox.")
                     .font(.retraceCaption2)
                     .foregroundColor(.retraceSecondary.opacity(0.85))
             }
-            .onChange(of: redactWindowTitlePatternsRaw) { _ in
-                updateRedactionRulesConfig()
+            .task {
+                await redactionSettings.loadIfNeeded(using: .live(coordinatorWrapper.coordinator))
             }
-            .onChange(of: redactBrowserURLPatternsRaw) { _ in
-                updateRedactionRulesConfig()
-            }
-            .animation(.easeInOut(duration: 0.2), value: redactionRulesUpdateMessage)
         }
     }
 
     @ViewBuilder
-    private func redactionRuleEditor(text: Binding<String>, placeholder: String) -> some View {
+    static func redactionRuleEditor(text: Binding<String>, placeholder: String) -> some View {
         ZStack(alignment: .topLeading) {
             if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(placeholder)
@@ -3487,6 +3502,10 @@ public struct SettingsView: View {
 
     private var audioSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            AudioSessionSettingsView(coordinator: coordinatorWrapper.coordinator)
+            VoiceMarkerRulesView(coordinator: coordinatorWrapper.coordinator)
+                .id(Self.voiceMarkersTargetID)
+            CompanionSettingsView(coordinator: coordinatorWrapper.coordinator)
             // Whisper Model Card
             ModernSettingsCard(title: "Whisper Model", icon: "waveform") {
                 VStack(spacing: 12) {
@@ -3996,6 +4015,7 @@ public struct SettingsView: View {
 
     private var advancedSettings: some View {
         VStack(alignment: .leading, spacing: 20) {
+            commandAccessCard
             cacheCard
             timelineCard
             developerCard
@@ -4005,6 +4025,10 @@ public struct SettingsView: View {
     }
 
     // MARK: - Advanced Cards (extracted for search)
+
+    private var commandAccessCard: some View {
+        CommandAccessSettingsView(coordinator: coordinatorWrapper.coordinator)
+    }
 
     @ViewBuilder
     private var cacheCard: some View {
@@ -4163,21 +4187,22 @@ public struct SettingsView: View {
     private var dangerZoneCard: some View {
         ModernSettingsCard(title: "Danger Zone", icon: "exclamationmark.triangle", dangerous: true) {
             HStack(spacing: 12) {
-                ModernButton(title: "Reset All Settings", icon: "arrow.counterclockwise", style: .danger) {
+                ModernButton(title: "Reset Common Settings", icon: "arrow.counterclockwise", style: .danger) {
                     showingResetConfirmation = true
                 }
+                .disabled(settingsResetInProgress || redactionSettings.isLoading || redactionSettings.isSaving)
                 ModernButton(title: "Delete All Data", icon: "trash", style: .danger) {
                     showingDeleteConfirmation = true
                 }
             }
         }
-        .alert("Reset All Settings?", isPresented: $showingResetConfirmation) {
+        .alert("Reset Common Settings?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
                 resetAllSettings()
             }
         } message: {
-            Text("This will reset all settings to their defaults. Your recordings will not be deleted.")
+            Text("Reset general preferences, capture timing and duplicate filtering, storage limits, app exclusions, redaction rules, and developer display options. Audio, source access, client permissions, and recordings are kept.")
         }
         .alert("Delete All Data?", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
@@ -4229,6 +4254,7 @@ public struct SettingsView: View {
         case "power.appFilter": appFilterCard
         case "tags.manageTags": manageTagsCard
         case "advanced.cache": cacheCard
+        case "advanced.commandAccess": commandAccessCard
         case "advanced.timeline": timelineCard
         case "advanced.developer": developerCard
         case "advanced.debugTools": debugToolsCard
@@ -5986,80 +6012,51 @@ extension SettingsView {
 
     func applyRewindDBLocation(_ path: String, defaultPath: String) {
         let normalizedPath = Self.normalizeRewindFolderPath(path)
-        if normalizedPath == defaultPath {
-            customRewindDBLocation = nil
-            Log.info("Rewind database folder reset to default: \(normalizedPath)", category: .ui)
-        } else {
-            customRewindDBLocation = normalizedPath
-            Log.info("Rewind database folder changed to: \(normalizedPath)", category: .ui)
-        }
-
-        // Apply changes immediately by reconnecting Rewind source
-        Task {
-            let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-            let useRewindData = defaults.bool(forKey: "useRewindData")
-
-            if useRewindData {
-                Log.info("Reconnecting Rewind source with new location", category: .ui)
-                // Disconnect old source
-                await coordinatorWrapper.coordinator.setRewindSourceEnabled(false)
-                // Reconnect with new location
-                await coordinatorWrapper.coordinator.setRewindSourceEnabled(true)
-                Log.info("✓ Rewind source reconnected", category: .ui)
-
-                // Notify timeline to reload
-                await MainActor.run {
-                    SearchViewModel.clearPersistedSearchCache()
-                    NotificationCenter.default.post(name: .dataSourceDidChange, object: nil)
-                    Log.info("✓ Timeline notified of Rewind database change", category: .ui)
-                }
-            } else {
-                Log.info("Rewind data not enabled, skipping reconnection", category: .ui)
-            }
+        guard !rewindSourceChanging else { return }
+        rewindSourceChanging = true; rewindSourceError = nil
+        Task { @MainActor in
+            defer { rewindSourceChanging = false }
+            do {
+                rewindSourceState = try await coordinatorWrapper.coordinator.changeLocalRewindLocation(
+                    normalizedPath == defaultPath ? nil : normalizedPath)
+            } catch { rewindSourceError = Self.rewindSourceErrorMessage(error) }
+            SearchViewModel.clearPersistedSearchCache()
+            await refreshRewindSourceState()
         }
     }
 
     func resetDatabaseLocations() {
-        let hadCustomRewind = customRewindDBLocation != nil
-
         customRetraceDBLocation = nil
-        customRewindDBLocation = nil
-        Log.info("Database locations reset to defaults", category: .ui)
+        guard customRewindDBLocation != nil else { return }
+        applyRewindDBLocation(AppPaths.defaultRewindStorageRoot, defaultPath: AppPaths.defaultRewindStorageRoot)
+    }
 
-        // If Rewind was customized, apply the default location immediately
-        if hadCustomRewind {
-            Task {
-                let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-                let useRewindData = defaults.bool(forKey: "useRewindData")
+    @MainActor
+    private func refreshRewindSourceState() async {
+        do {
+            let owner = try await coordinatorWrapper.coordinator.sourceConfiguration()
+            rewindSourceState = try await owner.read()
+        } catch {
+            rewindSourceState = nil
+            if rewindSourceError == nil { rewindSourceError = Self.rewindSourceErrorMessage(error) }
+        }
+    }
 
-                if useRewindData {
-                    Log.info("Reconnecting Rewind source with default location", category: .ui)
-                    // Disconnect and reconnect to pick up default path
-                    await coordinatorWrapper.coordinator.setRewindSourceEnabled(false)
-                    await coordinatorWrapper.coordinator.setRewindSourceEnabled(true)
-                    Log.info("✓ Rewind source reconnected to default location", category: .ui)
-
-                    await MainActor.run {
-                        SearchViewModel.clearPersistedSearchCache()
-                        NotificationCenter.default.post(name: .dataSourceDidChange, object: nil)
-                    }
-                }
-            }
+    private static func rewindSourceErrorMessage(_ error: Error) -> String {
+        switch error as? SourceConfigurationError {
+        case .selectionUnavailable: return "The selected Rewind database could not be found. Choose its local folder."
+        case .connectionFailed: return "The selected Rewind database could not be opened. Access remains unavailable."
+        case .persistenceFailed: return "The Rewind preference could not be saved. Review the current access state before retrying."
+        case .cleanupFailed: return "Rewind access could not finish closing. Try again after current work finishes."
+        case .stalePreview: return "The Rewind selection changed. Review the current source and try again."
+        case .busy: return "A Rewind access change is already in progress."
+        case .closed: return "Rewind access is unavailable while Retrace is closing."
+        default: return "Rewind access is currently unavailable. Try again when Retrace is ready."
         }
     }
 
     func resetAllSettings() {
-        // Reset all UserDefaults to their default values
-        let domain = "io.retrace.app"
-        settingsStore.removePersistentDomain(forName: domain)
-        settingsStore.synchronize()
-
-        // Reset all pages using SettingsDefaults as source of truth
-        resetGeneralSettings()
-        resetCaptureSettings()
-        resetStorageSettings()
-        resetPrivacySettings()
-        resetAdvancedSettings()
+        resetNativeSettings(.all)
     }
 
     func deleteAllData() {
@@ -6512,7 +6509,8 @@ extension SettingsView {
     private func updateExcludedAppsConfig() {
         Task {
             let coordinator = coordinatorWrapper.coordinator
-            let currentConfig = await coordinator.getCaptureConfig()
+            guard let currentState = try? await coordinator.captureCommandState() else { return }
+            let currentConfig = currentState.config
 
             // Build new excluded bundle IDs set
             var excludedBundleIDs: Set<String> = ["com.apple.loginwindow"] // Always exclude login screen
@@ -6535,7 +6533,7 @@ extension SettingsView {
             )
 
             do {
-                try await coordinator.updateCaptureConfig(newConfig)
+                try await coordinator.updateCaptureConfig(newConfig, expectedRevision: currentState.revision)
                 Log.info("[SettingsView] Excluded apps updated: \(excludedBundleIDs.count - 1) apps excluded", category: .ui)
             } catch {
                 Log.error("[SettingsView] Failed to update excluded apps config: \(error)", category: .ui)
@@ -6543,60 +6541,12 @@ extension SettingsView {
         }
     }
 
-    private func parseRedactionPatterns(_ raw: String) -> [String] {
-        raw
-            .split(whereSeparator: { $0 == "," || $0 == "\n" })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
     private func updateRedactionRulesConfig() {
         Task {
             let coordinator = coordinatorWrapper.coordinator
-            let currentConfig = await coordinator.getCaptureConfig()
-
-            let windowPatterns = parseRedactionPatterns(redactWindowTitlePatternsRaw)
-            let urlPatterns = parseRedactionPatterns(redactBrowserURLPatternsRaw)
-
-            let newConfig = CaptureConfig(
-                captureIntervalSeconds: currentConfig.captureIntervalSeconds,
-                adaptiveCaptureEnabled: currentConfig.adaptiveCaptureEnabled,
-                deduplicationThreshold: currentConfig.deduplicationThreshold,
-                maxResolution: currentConfig.maxResolution,
-                excludedAppBundleIDs: currentConfig.excludedAppBundleIDs,
-                excludePrivateWindows: currentConfig.excludePrivateWindows,
-                customPrivateWindowPatterns: currentConfig.customPrivateWindowPatterns,
-                showCursor: currentConfig.showCursor,
-                redactWindowTitlePatterns: windowPatterns,
-                redactBrowserURLPatterns: urlPatterns,
-                captureOnWindowChange: currentConfig.captureOnWindowChange
-            )
-
-            do {
-                try await coordinator.updateCaptureConfig(newConfig)
-                showRedactionRulesUpdateFeedback()
-                DashboardViewModel.recordRedactionRulesUpdated(
-                    coordinator: coordinator,
-                    windowPatternCount: windowPatterns.count,
-                    urlPatternCount: urlPatterns.count
-                )
-                Log.info(
-                    "[SettingsView] Updated redaction rules: windowPatterns=\(windowPatterns.count), urlPatterns=\(urlPatterns.count)",
-                    category: .ui
-                )
-            } catch {
-                Log.error("[SettingsView] Failed to update redaction rules: \(error)", category: .ui)
-            }
-        }
-    }
-
-    private func showRedactionRulesUpdateFeedback() {
-        redactionRulesUpdateMessage = "Updated"
-        Task {
-            try? await Task.sleep(for: .nanoseconds(Int64(2_000_000_000)), clock: .continuous)
-            await MainActor.run {
-                redactionRulesUpdateMessage = nil
-            }
+            guard let saved = await redactionSettings.apply(using: .live(coordinator)) else { return }
+            DashboardViewModel.recordRedactionRulesUpdated(coordinator: coordinator,
+                windowPatternCount: saved.window, urlPatternCount: saved.url)
         }
     }
 
@@ -6796,19 +6746,47 @@ extension SettingsView {
         }
     }
 
+    private func updateCaptureIntervalSetting() {
+        let interval = captureIntervalSeconds
+        Task {
+            let coordinator = coordinatorWrapper.coordinator
+            do {
+                let state = try await coordinator.captureCommandState()
+                let old = state.config
+                guard old.captureIntervalSeconds != interval else { return }
+                let replacement = CaptureConfig(captureIntervalSeconds: interval,
+                    adaptiveCaptureEnabled: old.adaptiveCaptureEnabled, deduplicationThreshold: old.deduplicationThreshold,
+                    maxResolution: old.maxResolution, excludedAppBundleIDs: old.excludedAppBundleIDs,
+                    excludePrivateWindows: old.excludePrivateWindows, customPrivateWindowPatterns: old.customPrivateWindowPatterns,
+                    showCursor: old.showCursor, redactWindowTitlePatterns: old.redactWindowTitlePatterns,
+                    redactBrowserURLPatterns: old.redactBrowserURLPatterns, idleThresholdSeconds: old.idleThresholdSeconds,
+                    captureOnWindowChange: old.captureOnWindowChange)
+                try await coordinator.updateCaptureConfig(replacement, expectedRevision: state.revision)
+                showCaptureUpdateFeedback()
+            } catch {
+                captureIntervalSeconds = await coordinator.getCaptureConfig().captureIntervalSeconds
+                captureUpdateMessage = "Could not apply capture interval"
+                Log.error("[SettingsView] Capture interval update failed", category: .ui, error: error)
+            }
+        }
+    }
+
     /// Update deduplication setting in capture config
     private func updateDeduplicationSetting(enabled: Bool) {
+        let threshold = deduplicationThreshold
         Task {
             let coordinator = coordinatorWrapper.coordinator
 
             // Get current config from capture manager
-            let currentConfig = await coordinator.getCaptureConfig()
+            guard let currentState = try? await coordinator.captureCommandState() else { return }
+            let currentConfig = currentState.config
+            guard currentConfig.adaptiveCaptureEnabled != enabled || currentConfig.deduplicationThreshold != threshold else { return }
 
             // Create new config with updated deduplication setting
             let newConfig = CaptureConfig(
                 captureIntervalSeconds: currentConfig.captureIntervalSeconds,
                 adaptiveCaptureEnabled: enabled,
-                deduplicationThreshold: deduplicationThreshold,
+                deduplicationThreshold: threshold,
                 maxResolution: currentConfig.maxResolution,
                 excludedAppBundleIDs: currentConfig.excludedAppBundleIDs,
                 excludePrivateWindows: currentConfig.excludePrivateWindows,
@@ -6816,12 +6794,13 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
                 captureOnWindowChange: currentConfig.captureOnWindowChange
             )
 
             // Update the capture manager config
             do {
-                try await coordinator.updateCaptureConfig(newConfig)
+                try await coordinator.updateCaptureConfig(newConfig, expectedRevision: currentState.revision)
                 Log.info("[SettingsView] Deduplication setting updated to: \(enabled)", category: .ui)
             } catch {
                 Log.error("[SettingsView] Failed to update deduplication setting: \(error)", category: .ui)
@@ -6831,17 +6810,20 @@ extension SettingsView {
 
     /// Update deduplication threshold in capture config
     private func updateDeduplicationThreshold() {
+        let threshold = deduplicationThreshold
         Task {
             let coordinator = coordinatorWrapper.coordinator
 
             // Get current config from capture manager
-            let currentConfig = await coordinator.getCaptureConfig()
+            guard let currentState = try? await coordinator.captureCommandState() else { return }
+            let currentConfig = currentState.config
+            guard currentConfig.deduplicationThreshold != threshold else { return }
 
             // Create new config with updated threshold
             let newConfig = CaptureConfig(
                 captureIntervalSeconds: currentConfig.captureIntervalSeconds,
                 adaptiveCaptureEnabled: currentConfig.adaptiveCaptureEnabled,
-                deduplicationThreshold: deduplicationThreshold,
+                deduplicationThreshold: threshold,
                 maxResolution: currentConfig.maxResolution,
                 excludedAppBundleIDs: currentConfig.excludedAppBundleIDs,
                 excludePrivateWindows: currentConfig.excludePrivateWindows,
@@ -6849,12 +6831,13 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
                 captureOnWindowChange: currentConfig.captureOnWindowChange
             )
 
             // Update the capture manager config
             do {
-                try await coordinator.updateCaptureConfig(newConfig)
+                try await coordinator.updateCaptureConfig(newConfig, expectedRevision: currentState.revision)
                 Log.info("[SettingsView] Deduplication threshold updated to: \(deduplicationThreshold)", category: .ui)
                 showCompressionUpdateFeedback()
             } catch {
@@ -6865,11 +6848,14 @@ extension SettingsView {
 
     /// Update capture on window change setting in capture config
     private func updateCaptureOnWindowChangeSetting() {
+        let enabled = captureOnWindowChange
         Task {
             let coordinator = coordinatorWrapper.coordinator
 
             // Get current config from capture manager
-            let currentConfig = await coordinator.getCaptureConfig()
+            guard let currentState = try? await coordinator.captureCommandState() else { return }
+            let currentConfig = currentState.config
+            guard currentConfig.captureOnWindowChange != enabled else { return }
 
             // Create new config with updated setting
             let newConfig = CaptureConfig(
@@ -6883,12 +6869,13 @@ extension SettingsView {
                 showCursor: currentConfig.showCursor,
                 redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
                 redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: captureOnWindowChange
+                idleThresholdSeconds: currentConfig.idleThresholdSeconds,
+                captureOnWindowChange: enabled
             )
 
             // Update the capture manager config
             do {
-                try await coordinator.updateCaptureConfig(newConfig)
+                try await coordinator.updateCaptureConfig(newConfig, expectedRevision: currentState.revision)
                 Log.info("[SettingsView] Capture on window change updated to: \(captureOnWindowChange)", category: .ui)
                 showCaptureUpdateFeedback()
             } catch {
@@ -6972,41 +6959,7 @@ extension SettingsView {
 
     /// Reset all Capture settings to defaults
     func resetCaptureSettings() {
-        pauseReminderDelayMinutes = SettingsDefaults.pauseReminderDelayMinutes
-        captureIntervalSeconds = SettingsDefaults.captureIntervalSeconds
-        videoQuality = SettingsDefaults.videoQuality
-        deduplicationThreshold = SettingsDefaults.deduplicationThreshold
-        deleteDuplicateFrames = SettingsDefaults.deleteDuplicateFrames
-        captureOnWindowChange = SettingsDefaults.captureOnWindowChange
-
-        // Apply capture config changes immediately
-        Task {
-            let coordinator = coordinatorWrapper.coordinator
-            let currentConfig = await coordinator.getCaptureConfig()
-
-            let newConfig = CaptureConfig(
-                captureIntervalSeconds: SettingsDefaults.captureIntervalSeconds,
-                adaptiveCaptureEnabled: true,
-                deduplicationThreshold: SettingsDefaults.deduplicationThreshold,
-                maxResolution: currentConfig.maxResolution,
-                excludedAppBundleIDs: currentConfig.excludedAppBundleIDs,
-                excludePrivateWindows: currentConfig.excludePrivateWindows,
-                customPrivateWindowPatterns: currentConfig.customPrivateWindowPatterns,
-                showCursor: currentConfig.showCursor,
-                redactWindowTitlePatterns: currentConfig.redactWindowTitlePatterns,
-                redactBrowserURLPatterns: currentConfig.redactBrowserURLPatterns,
-                captureOnWindowChange: SettingsDefaults.captureOnWindowChange
-            )
-
-            do {
-                try await coordinator.updateCaptureConfig(newConfig)
-                Log.info("[SettingsView] Capture settings reset to defaults", category: .ui)
-            } catch {
-                Log.error("[SettingsView] Failed to reset capture settings: \(error)", category: .ui)
-            }
-        }
-
-        showCaptureUpdateFeedback()
+        resetNativeSettings(.capture)
     }
 
     /// Reset all Storage settings to defaults
@@ -7019,38 +6972,34 @@ extension SettingsView {
 
     /// Reset all Privacy settings to defaults
     func resetPrivacySettings() {
-        excludedAppsString = SettingsDefaults.excludedApps
-        excludePrivateWindows = SettingsDefaults.excludePrivateWindows
-        redactWindowTitlePatternsRaw = SettingsDefaults.redactWindowTitlePatterns
-        redactBrowserURLPatternsRaw = SettingsDefaults.redactBrowserURLPatterns
-        excludeSafariPrivate = SettingsDefaults.excludeSafariPrivate
-        excludeChromeIncognito = SettingsDefaults.excludeChromeIncognito
+        resetNativeSettings(.privacy)
+    }
 
-        // Apply to capture config immediately
+    private func resetNativeSettings(_ scope: CaptureSettingsResetScope) {
+        guard !settingsResetInProgress, !redactionSettings.isLoading, !redactionSettings.isSaving else { return }
+        settingsResetInProgress = true
+        settingsResetMessage = "Resetting settings…"
         Task {
-            let coordinator = coordinatorWrapper.coordinator
-            let currentConfig = await coordinator.getCaptureConfig()
-
-            let newConfig = CaptureConfig(
-                captureIntervalSeconds: currentConfig.captureIntervalSeconds,
-                adaptiveCaptureEnabled: currentConfig.adaptiveCaptureEnabled,
-                deduplicationThreshold: currentConfig.deduplicationThreshold,
-                maxResolution: currentConfig.maxResolution,
-                excludedAppBundleIDs: [],
-                excludePrivateWindows: SettingsDefaults.excludePrivateWindows,
-                customPrivateWindowPatterns: currentConfig.customPrivateWindowPatterns,
-                showCursor: currentConfig.showCursor,
-                redactWindowTitlePatterns: [],
-                redactBrowserURLPatterns: [],
-                captureOnWindowChange: currentConfig.captureOnWindowChange
-            )
-
-            do {
-                try await coordinator.updateCaptureConfig(newConfig)
-                Log.info("[SettingsView] Privacy settings reset to defaults", category: .ui)
-            } catch {
-                Log.error("[SettingsView] Failed to reset privacy settings: \(error)", category: .ui)
+            defer { settingsResetInProgress = false }
+            let accepted = await redactionSettings.reset(scope, using: .live(coordinatorWrapper.coordinator)) {
+                // The App owner persists canonical capture values. Publish only
+                // these local preferences after its single combined CAS succeeds.
+                if scope.includesCapture {
+                    pauseReminderDelayMinutes = SettingsDefaults.pauseReminderDelayMinutes
+                    videoQuality = SettingsDefaults.videoQuality
+                }
+                if scope.includesPrivacy {
+                    excludePrivateWindows = SettingsDefaults.excludePrivateWindows
+                    excludeSafariPrivate = SettingsDefaults.excludeSafariPrivate
+                    excludeChromeIncognito = SettingsDefaults.excludeChromeIncognito
+                }
+                if scope == .all {
+                    resetGeneralSettings()
+                    resetStorageSettings()
+                    resetAdvancedSettings()
+                }
             }
+            settingsResetMessage = redactionSettings.errorMessage ?? (accepted ? "Settings reset." : "Settings could not be reset.")
         }
     }
 

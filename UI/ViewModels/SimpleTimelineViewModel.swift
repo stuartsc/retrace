@@ -919,16 +919,73 @@ public class SimpleTimelineViewModel: ObservableObject {
         NSPasteboard.general.setString(frameIDString, forType: .string)
     }
 
-    /// Reprocess OCR for the current frame (developer tool)
-    /// Clears existing OCR data and re-enqueues the frame for processing
+    @Published public private(set) var ocrRepairPhase: ExactOCRRepairPhase?
+    @Published public private(set) var isRepairingOCR = false
+    private var ocrRepairTask: Task<ExactOCRRepairOutcome, Error>?
+#if DEBUG
+    /// Hold the App-owned repair boundary in isolated native presentation tests.
+    var test_ocrRepair: (@Sendable (ScreenEvidenceRef) async throws -> ExactOCRRepairOutcome)?
+#endif
+
+    public func cancelOCRRepair() { ocrRepairTask?.cancel() }
+
+    /// Explicit repair keeps the selected source proof and leaves prior text readable.
     public func reprocessCurrentFrameOCR() async throws {
-        guard let frame = currentFrame else { return }
-        // Only allow reprocessing for Retrace frames (not imported Rewind videos)
-        guard frame.source == .native else {
-            Log.warning("[OCR] Cannot reprocess OCR for Rewind frames", category: .ui)
-            return
+        guard foregroundImagesActive, !isRepairingOCR, let row = currentTimelineFrame, row.frame.source == .native else {
+            throw ExactOCRRepairError.invalidTarget
         }
-        try await coordinator.reprocessOCR(frameID: frame.id)
+        let selectedIdentity = row.imageIdentity
+        let viewGeneration = foregroundRequestGeneration
+        let navigationGeneration = evidenceNavigationGeneration
+        isRepairingOCR = true; ocrRepairPhase = .waitingForCapacity
+        let task = Task { [self] in
+            let reference: ScreenEvidenceRef
+            if evidence.isPresentingEvidence, let selected = evidence.evidenceReference, case .screen(let exact) = selected {
+                reference = exact
+            } else {
+                let resolution = try await exactTimelineImage(row)
+                guard case .screen(let snapshot, _) = resolution else { throw ExactOCRRepairError.invalidTarget }
+                reference = snapshot.ref
+            }
+            guard ownsOCRRepairPresentation(selectedIdentity, view: viewGeneration, navigation: navigationGeneration) else {
+                throw ExactOCRRepairError.staleTarget
+            }
+            try Task.checkCancellation()
+            let wholeFrame = ScreenEvidenceRef(storeID: reference.storeID, source: reference.source,
+                observationID: reference.observationID, frameID: reference.frameID,
+                extractionRevision: reference.extractionRevision)
+#if DEBUG
+            if let repair = test_ocrRepair { return try await repair(wholeFrame) }
+#endif
+            let owner = try await coordinator.exactOCRRepair()
+            guard ownsOCRRepairPresentation(selectedIdentity, view: viewGeneration, navigation: navigationGeneration) else {
+                throw ExactOCRRepairError.staleTarget
+            }
+            return try await owner.repair(reference: wholeFrame, requestID: UUID(), progress: { [weak self] phase in
+                await MainActor.run {
+                    guard let self, self.ownsOCRRepairPresentation(selectedIdentity, view: viewGeneration,
+                        navigation: navigationGeneration) else { return }
+                    self.ocrRepairPhase = phase
+                }
+            })
+        }
+        ocrRepairTask = task
+        defer { ocrRepairTask = nil; isRepairingOCR = false; ocrRepairPhase = nil }
+        let outcome = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        guard !Task.isCancelled,
+              ownsOCRRepairPresentation(selectedIdentity, view: viewGeneration, navigation: navigationGeneration) else { return }
+        // Completion owns only this still-visible navigation. A close/reopen of the
+        // same frame must not revive an old presentation or launch neighbourhood work.
+        evidenceSelectionTask?.cancel(); evidenceSelectionTask = nil
+        let presentation = beginExactSelection()
+        await evidence.openEvidence(.screen(outcome.reference))
+        guard foregroundImagesActive, !Task.isCancelled, presentation == evidenceNavigationGeneration else { return }
+        await anchorExactSelection(generation: presentation)
+    }
+
+    private func ownsOCRRepairPresentation(_ identity: TimelineImageIdentity, view: UInt64, navigation: UInt64) -> Bool {
+        foregroundImagesActive && foregroundRequestGeneration == view && evidenceNavigationGeneration == navigation
+            && currentTimelineFrame?.imageIdentity == identity
     }
 
     /// The search query to highlight on the current frame (set when navigating from search)
@@ -977,19 +1034,27 @@ public class SimpleTimelineViewModel: ObservableObject {
     // MARK: - Timeline Context Menu State (for right-click on timeline tape)
 
     /// Whether the timeline context menu is visible
-    @Published public var showTimelineContextMenu: Bool = false
+    @Published public var showTimelineContextMenu: Bool = false {
+        didSet { if oldValue && !showTimelineContextMenu && !showTagSubmenu && !showCommentSubmenu { invalidateAnnotationSelection() } }
+    }
 
     /// Location where the timeline context menu should appear
     @Published public var timelineContextMenuLocation: CGPoint = .zero
 
     /// The segment index that was right-clicked on the timeline
-    @Published public var timelineContextMenuSegmentIndex: Int? = nil
+    @Published public var timelineContextMenuSegmentIndex: Int? = nil {
+        didSet { invalidateAnnotationSelection() }
+    }
 
     /// Whether the tag submenu is visible
-    @Published public var showTagSubmenu: Bool = false
+    @Published public var showTagSubmenu: Bool = false {
+        didSet { if oldValue && !showTagSubmenu && !showTimelineContextMenu && !showCommentSubmenu { invalidateAnnotationSelection() } }
+    }
 
     /// Whether the comment submenu is visible
-    @Published public var showCommentSubmenu: Bool = false
+    @Published public var showCommentSubmenu: Bool = false {
+        didSet { if oldValue && !showCommentSubmenu && !showTimelineContextMenu && !showTagSubmenu { invalidateAnnotationSelection() } }
+    }
 
     /// Whether the comment link insert popover is currently visible.
     /// Used so Escape can dismiss the popover before dismissing the full comment submenu.
@@ -1098,6 +1163,7 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Dismiss the timeline context menu
     public func dismissTimelineContextMenu() {
+        invalidateAnnotationSelection()
         let resetMenuState = {
             self.showTimelineContextMenu = false
             self.showTagSubmenu = false
@@ -1136,6 +1202,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// This avoids tearing down comment state in the same frame as the transition.
     public func dismissCommentSubmenu() {
         guard showCommentSubmenu else { return }
+        invalidateAnnotationSelection()
 
         withAnimation(.easeOut(duration: Self.timelineMenuDismissAnimationDuration)) {
             self.showCommentSubmenu = false
@@ -1144,11 +1211,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             self.showTimelineContextMenu = false
             self.showContextMenu = false
         }
+        let dismissedSession = annotationMenuGeneration
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.timelineMenuDismissAnimationDuration) { [weak self] in
             guard let self else { return }
             // If reopened during the fade-out window, preserve the new session state.
-            guard !self.showCommentSubmenu else { return }
+            guard !self.showCommentSubmenu, self.annotationMenuGeneration == dismissedSession else { return }
 
             self.closeCommentLinkPopoverSignal = 0
             self.newCommentText = ""
@@ -1869,6 +1937,10 @@ public class SimpleTimelineViewModel: ObservableObject {
     var test_refreshFrameDataHooks = RefreshFrameDataTestHooks()
     var test_windowFetchHooks = WindowFetchTestHooks()
     var test_ocrNodesRead: ((FrameID, FrameSource) async throws -> [OCRNodeWithText])?
+    var test_annotationService: NativeAnnotationService?
+    var test_annotationTagsRead: (() async throws -> [Tag])?
+    var test_annotationCommentsRead: ((SegmentID) async throws -> [SegmentComment])?
+    var test_annotationMutationCompleted: (() -> Void)?
     private var test_foregroundImageLoadingEnabled = false
     var test_exactNeighbourhoodEnabled = false
 
@@ -1991,6 +2063,29 @@ public class SimpleTimelineViewModel: ObservableObject {
         let token = beginExactSelection()
         await evidence.openEvidence(reference)
         await anchorExactSelection(generation: token)
+    }
+
+    func openEvidenceFromCommand(_ reference: ScreenEvidenceRef, authorization: RetraceForegroundAuthorization,
+                                 selectionID: UUID = UUID()) async throws {
+        let token = try authorization.effect {
+            evidenceSelectionTask?.cancel(); evidenceSelectionTask = nil
+            return beginExactSelection()
+        }
+        try await evidence.openEvidenceFromCommand(reference, authorization: authorization, selectionID: selectionID)
+        try await authorization.validate()
+        try authorization.effect {
+            guard token == evidenceNavigationGeneration, let frame = evidence.selectedFrame,
+                  evidence.commandSelectionID == selectionID,
+                  evidence.evidenceReference == .screen(reference) else { throw RetraceCommandError.unavailable }
+            filterCriteria = .none
+            frames = [TimelineFrame(frame: frame, videoInfo: nil, processingStatus: 2, exactReference: reference)]
+            currentIndex = 0; updateWindowBoundaries()
+        }
+    }
+
+    func closeEvidenceFromCommand(_ selectionID: UUID) {
+        guard evidence.commandSelectionID == selectionID else { return }
+        closeExactEvidence(recordMetric: false, resumeHistory: false)
     }
 
     @discardableResult
@@ -2424,6 +2519,7 @@ public class SimpleTimelineViewModel: ObservableObject {
     public func handleTimelineClosed() {
         closeExactEvidence(resumeHistory: false)
         foregroundImagesActive = false
+        invalidateAnnotationSelection()
         cancelForegroundFrameLoad(reason: "timeline closed")
         guard backgroundServicesEnabled else { return }
         cancelCacheExpansion(reason: "timeline closed")
@@ -3316,6 +3412,109 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     // MARK: - Tag Operations
 
+    private var selectedAnnotationSnapshot: NativeAnnotationSnapshot?
+    private var annotationMenuGeneration: UInt64 = 0
+    private var annotationTagsLoadGeneration: UInt64 = 0
+    private var annotationCommentsLoadGeneration: UInt64 = 0
+    private var addingCommentMutationID: UUID?
+
+    private struct AnnotationSelectionToken: Equatable {
+        let menu: UInt64
+        let view: UInt64
+        let index: Int?
+    }
+
+    private var annotationSelectionToken: AnnotationSelectionToken {
+        .init(menu: annotationMenuGeneration, view: foregroundRequestGeneration, index: timelineContextMenuSegmentIndex)
+    }
+
+    private func isCurrentAnnotationSelection(_ token: AnnotationSelectionToken) -> Bool {
+        foregroundImagesActive && annotationSelectionToken == token && !Task.isCancelled
+    }
+
+    private func invalidateAnnotationSelection() {
+        annotationMenuGeneration &+= 1
+        annotationTagsLoadGeneration &+= 1
+        annotationCommentsLoadGeneration &+= 1
+        selectedAnnotationSnapshot = nil
+        addingCommentMutationID = nil
+        isAddingComment = false
+    }
+
+    private func annotationOwner() async throws -> NativeAnnotationService {
+#if DEBUG
+        if let test_annotationService { return test_annotationService }
+#endif
+        return try await coordinator.annotations()
+    }
+
+    private func annotationTags() async throws -> [Tag] {
+#if DEBUG
+        if let test_annotationTagsRead { return try await test_annotationTagsRead() }
+#endif
+        return try await coordinator.getAllTags()
+    }
+
+    private func annotationComments(_ segmentID: SegmentID) async throws -> [SegmentComment] {
+#if DEBUG
+        if let test_annotationCommentsRead { return try await test_annotationCommentsRead(segmentID) }
+#endif
+        return try await coordinator.getCommentsForSegment(segmentId: segmentID)
+    }
+
+    private func annotationMutationCompleted() {
+#if DEBUG
+        test_annotationMutationCompleted?()
+#endif
+    }
+
+    /// Keep the clicked frame as its segment's representative, including its
+    /// exact source proof. Other segments use their first visible frame.
+    private func annotationSelection(for block: AppBlock, token: AnnotationSelectionToken) async throws -> NativeAnnotationSnapshot {
+        guard isCurrentAnnotationSelection(token), let index = token.index,
+              block.startIndex >= 0, block.endIndex < frames.count,
+              (block.startIndex...block.endIndex).contains(index) else { throw NativeAnnotationError.staleSelection }
+        var seen = Set<Int64>(), rows: [TimelineFrame] = []
+        for row in [frames[index]] + Array(frames[block.startIndex...block.endIndex])
+            where seen.insert(row.frame.segmentID.value).inserted {
+            guard row.frame.source == .native else { throw NativeAnnotationError.notPermitted }
+            rows.append(row)
+        }
+        guard (1...16).contains(rows.count) else { throw NativeAnnotationError.tooLarge }
+        let generation = try await evidenceClient.sourceGeneration(.native)
+        var references: [ScreenEvidenceRef] = []
+        for row in rows {
+            let ref: ScreenEvidenceRef
+            if let retained = row.exactReference { ref = retained }
+            else {
+                guard row.sourceGeneration == generation else { throw NativeAnnotationError.staleSelection }
+                ref = try await evidenceClient.frameReference(row.frame.id, .native)
+            }
+            guard let retained = await evidenceClient.retainedScreen(ref), row.imageIdentity.matches(retained.frame) else { throw NativeAnnotationError.staleSelection }
+            references.append(.init(storeID: ref.storeID, source: ref.source, observationID: ref.observationID,
+                                    frameID: ref.frameID, extractionRevision: ref.extractionRevision))
+        }
+        let snapshot = try await annotationOwner().read(references: references)
+        let finalSourceGeneration = try await evidenceClient.sourceGeneration(.native)
+        guard isCurrentAnnotationSelection(token), finalSourceGeneration == generation else { throw NativeAnnotationError.staleSelection }
+        return snapshot
+    }
+
+    private func annotationSnapshot(for segmentIDs: Set<SegmentID>) throws -> NativeAnnotationSnapshot {
+        guard foregroundImagesActive, let snapshot = selectedAnnotationSnapshot, Set(snapshot.segments.map(\.id)) == segmentIDs else { throw NativeAnnotationError.staleSelection }
+        return snapshot
+    }
+
+    /// A committed edit invalidates the old optimistic revision immediately.
+    /// Loads from before that commit cannot republish it into the current panel.
+    private func refreshAnnotationsAfterMutation(_ token: AnnotationSelectionToken) async {
+        guard isCurrentAnnotationSelection(token) else { return }
+        selectedAnnotationSnapshot = nil
+        annotationTagsLoadGeneration &+= 1
+        annotationCommentsLoadGeneration &+= 1
+        await loadTimelineContextMenuData()
+    }
+
     /// Load context-menu support data used by tag/comment submenus.
     public func loadTimelineContextMenuData() async {
         async let tagsTask: Void = loadTags()
@@ -3423,8 +3622,11 @@ public class SimpleTimelineViewModel: ObservableObject {
     /// Load existing comments linked anywhere in the currently selected timeline block.
     /// Results are deduplicated by comment ID and sorted oldest → newest.
     public func loadCommentsForSelectedTimelineBlock() async {
-        guard let index = timelineContextMenuSegmentIndex,
-              let block = getBlock(forFrameAt: index) else {
+        let token = annotationSelectionToken
+        annotationCommentsLoadGeneration &+= 1
+        let load = annotationCommentsLoadGeneration
+        guard isCurrentAnnotationSelection(token) else { return }
+        guard let index = token.index, let block = getBlock(forFrameAt: index) else {
             selectedBlockComments = []
             selectedBlockCommentPreferredSegmentByID = [:]
             blockCommentsLoadError = nil
@@ -3433,22 +3635,15 @@ public class SimpleTimelineViewModel: ObservableObject {
         }
 
         let segmentIDs = getSegmentIds(inBlock: block).sorted { $0.value < $1.value }
-        guard !segmentIDs.isEmpty else {
-            selectedBlockComments = []
-            selectedBlockCommentPreferredSegmentByID = [:]
-            blockCommentsLoadError = nil
-            isLoadingBlockComments = false
-            return
-        }
-
         isLoadingBlockComments = true
         blockCommentsLoadError = nil
 
         do {
+            let snapshot = try await annotationSelection(for: block, token: token)
             var commentsByID: [Int64: SegmentComment] = [:]
             var preferredSegmentByCommentID: [Int64: SegmentID] = [:]
             for segmentID in segmentIDs {
-                let comments = try await coordinator.getCommentsForSegment(segmentId: segmentID)
+                let comments = try await annotationComments(segmentID)
                 for comment in comments {
                     if preferredSegmentByCommentID[comment.id.value] == nil {
                         preferredSegmentByCommentID[comment.id.value] = segmentID
@@ -3457,15 +3652,18 @@ public class SimpleTimelineViewModel: ObservableObject {
                 }
             }
 
+            try await annotationOwner().validate(snapshot)
+            guard isCurrentAnnotationSelection(token), annotationCommentsLoadGeneration == load else { return }
+            selectedAnnotationSnapshot = snapshot
             selectedBlockComments = commentsByID.values.sorted {
-                if $0.createdAt == $1.createdAt {
-                    return $0.id.value < $1.id.value
-                }
+                if $0.createdAt == $1.createdAt { return $0.id.value < $1.id.value }
                 return $0.createdAt < $1.createdAt
             }
             selectedBlockCommentPreferredSegmentByID = preferredSegmentByCommentID
             isLoadingBlockComments = false
         } catch {
+            guard isCurrentAnnotationSelection(token), annotationCommentsLoadGeneration == load else { return }
+            selectedAnnotationSnapshot = nil
             isLoadingBlockComments = false
             selectedBlockComments = []
             selectedBlockCommentPreferredSegmentByID = [:]
@@ -3492,24 +3690,28 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     /// Load all available tags from the database, and tags for the selected segment
     public func loadTags() async {
+        let token = annotationSelectionToken
+        annotationTagsLoadGeneration &+= 1
+        let load = annotationTagsLoadGeneration
+        guard isCurrentAnnotationSelection(token) else { return }
         do {
-            availableTags = try await coordinator.getAllTags()
-            Log.debug("[Tags] Loaded \(availableTags.count) tags: \(availableTags.map { $0.name })", category: .ui)
-
-            // Also load tags for the currently selected segment
-            Log.debug("[Tags] timelineContextMenuSegmentIndex = \(String(describing: timelineContextMenuSegmentIndex))", category: .ui)
-            if let index = timelineContextMenuSegmentIndex,
-               let segmentId = getSegmentId(forFrameAt: index) {
-                Log.debug("[Tags] Loading tags for segment \(segmentId.value) at frame index \(index)", category: .ui)
-                let segmentTags = try await coordinator.getTagsForSegment(segmentId: segmentId)
-                await MainActor.run {
-                    selectedSegmentTags = Set(segmentTags.map { $0.id })
-                }
-                Log.debug("[Tags] Segment \(segmentId.value) has \(segmentTags.count) tags: \(segmentTags.map { $0.name })", category: .ui)
-            } else {
-                Log.debug("[Tags] Could not get segment ID - index: \(String(describing: timelineContextMenuSegmentIndex)), frames.count: \(frames.count)", category: .ui)
+            let tags = try await annotationTags()
+            var snapshot: NativeAnnotationSnapshot?
+            var selected = Set<TagID>()
+            if let index = token.index, let segmentID = getSegmentId(forFrameAt: index) {
+                guard let block = getBlock(forFrameAt: index) else { throw NativeAnnotationError.staleSelection }
+                let loaded = try await annotationSelection(for: block, token: token)
+                snapshot = loaded
+                selected = Set(loaded.segments.first(where: { $0.id == segmentID })?.tags.map(\.id) ?? [])
             }
+            guard isCurrentAnnotationSelection(token), annotationTagsLoadGeneration == load else { return }
+            availableTags = tags
+            selectedSegmentTags = selected
+            if let snapshot { selectedAnnotationSnapshot = snapshot }
         } catch {
+            guard isCurrentAnnotationSelection(token), annotationTagsLoadGeneration == load else { return }
+            selectedAnnotationSnapshot = nil
+            selectedSegmentTags = []
             Log.error("[Tags] Failed to load tags: \(error)", category: .ui)
         }
     }
@@ -3890,6 +4092,9 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Get all unique segment IDs in this visible block
         let segmentIds = getSegmentIds(inBlock: block)
 
+        let token = annotationSelectionToken
+        let selected = try? annotationSnapshot(for: segmentIds)
+
         // Optimistic in-memory update so tape indicators refresh immediately.
         addTagToSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
 
@@ -3897,10 +4102,15 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Persist to database in background
         Task {
+            defer { annotationMutationCompleted() }
             do {
-                try await coordinator.addTagToSegments(segmentIds: Array(segmentIds), tagId: tag.id)
+                guard let snapshot = selected else { throw NativeAnnotationError.staleSelection }
+                _ = try await annotationOwner().apply(snapshot: snapshot, mutation: .addTag(name: tag.name))
+                await refreshAnnotationsAfterMutation(token)
                 Log.debug("[Tags] Added tag '\(tag.name)' to \(segmentIds.count) segments in block", category: .ui)
             } catch {
+                removeTagFromSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
+                showToast("Tag not saved; refresh the selection", icon: "exclamationmark.triangle.fill")
                 Log.error("[Tags] Failed to add tag to segments: \(error)", category: .ui)
             }
         }
@@ -3923,6 +4133,8 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Get all unique segment IDs in this visible block
         let segmentIds = getSegmentIds(inBlock: block)
 
+        let token = annotationSelectionToken
+        let selected = try? annotationSnapshot(for: segmentIds)
         let isCurrentlySelected = selectedSegmentTags.contains(tag.id)
         let action = isCurrentlySelected ? "remove" : "add"
 
@@ -3946,25 +4158,28 @@ public class SimpleTimelineViewModel: ObservableObject {
 
         // Persist to database in background
         Task {
+            defer { annotationMutationCompleted() }
             do {
+                guard let snapshot = selected, isCurrentAnnotationSelection(token) else { throw NativeAnnotationError.staleSelection }
                 if isCurrentlySelected {
-                    try await coordinator.removeTagFromSegments(segmentIds: Array(segmentIds), tagId: tag.id)
+                    _ = try await annotationOwner().apply(snapshot: snapshot, mutation: .removeTag(id: tag.id))
                     Log.debug("[Tags] Removed tag '\(tag.name)' from \(segmentIds.count) segments in block", category: .ui)
                 } else {
-                    try await coordinator.addTagToSegments(segmentIds: Array(segmentIds), tagId: tag.id)
+                    _ = try await annotationOwner().apply(snapshot: snapshot, mutation: .addTag(name: tag.name))
                     Log.debug("[Tags] Added tag '\(tag.name)' to \(segmentIds.count) segments in block", category: .ui)
                 }
+                await refreshAnnotationsAfterMutation(token)
             } catch {
+                guard isCurrentAnnotationSelection(token) else { return }
+                selectedAnnotationSnapshot = nil
                 Log.error("[Tags] Failed to toggle tag on segments: \(error)", category: .ui)
                 // Revert UI on error
-                await MainActor.run {
-                    if isCurrentlySelected {
-                        selectedSegmentTags.insert(tag.id)
-                        addTagToSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
-                    } else {
-                        selectedSegmentTags.remove(tag.id)
-                        removeTagFromSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
-                    }
+                if isCurrentlySelected {
+                    selectedSegmentTags.insert(tag.id)
+                    addTagToSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
+                } else {
+                    selectedSegmentTags.remove(tag.id)
+                    removeTagFromSegmentTagsMap(tagID: tag.id, segmentIDs: segmentIds)
                 }
             }
         }
@@ -3992,26 +4207,31 @@ public class SimpleTimelineViewModel: ObservableObject {
         // Get all unique segment IDs in this visible block
         let segmentIds = getSegmentIds(inBlock: block)
 
+        let token = annotationSelectionToken
+        let selected = try? annotationSnapshot(for: segmentIds)
+
         // Clear the input
         newTagName = ""
 
         // Create tag and add to all segments in background
         Task {
+            defer { annotationMutationCompleted() }
             do {
-                let newTag = try await coordinator.createTag(name: tagName)
-                try await coordinator.addTagToSegments(segmentIds: Array(segmentIds), tagId: newTag.id)
+                guard let snapshot = selected, isCurrentAnnotationSelection(token) else { throw NativeAnnotationError.staleSelection }
+                let receipt = try await annotationOwner().apply(snapshot: snapshot, mutation: .addTag(name: tagName))
+                guard isCurrentAnnotationSelection(token) else { return }
+                guard let tagID = receipt.tagID else { throw NativeAnnotationError.unavailable }
+                let newTag = Tag(id: tagID, name: tagName)
 
                 // Optimistic UI update: add the new tag to availableTags and mark it as selected
-                await MainActor.run {
-                    // Add to available tags if not already present
-                    if !availableTags.contains(where: { $0.id == newTag.id }) {
-                        availableTags.append(newTag)
-                        availableTags.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                    }
-                    // Mark it as selected on the current segment
-                    selectedSegmentTags.insert(newTag.id)
-                    addTagToSegmentTagsMap(tagID: newTag.id, segmentIDs: segmentIds)
+                // Add to available tags if not already present
+                if !availableTags.contains(where: { $0.id == newTag.id }) {
+                    availableTags.append(newTag)
+                    availableTags.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 }
+                // Mark it as selected on the current segment
+                selectedSegmentTags.insert(newTag.id)
+                addTagToSegmentTagsMap(tagID: newTag.id, segmentIDs: segmentIds)
 
                 DashboardViewModel.recordTagCreateAndAddOnBlock(
                     coordinator: coordinator,
@@ -4022,7 +4242,10 @@ public class SimpleTimelineViewModel: ObservableObject {
                 )
 
                 Log.debug("[Tags] Created tag '\(tagName)' and added to \(segmentIds.count) segments in block", category: .ui)
+                await refreshAnnotationsAfterMutation(token)
             } catch {
+                guard isCurrentAnnotationSelection(token) else { return }
+                selectedAnnotationSnapshot = nil
                 Log.error("[Tags] Failed to create tag: \(error)", category: .ui)
             }
         }
@@ -4119,37 +4342,17 @@ public class SimpleTimelineViewModel: ObservableObject {
             showToast("Could not resolve selected segment block", icon: "exclamationmark.triangle.fill")
             return false
         }
-
+        let token = annotationSelectionToken
         let segmentIDs = getSegmentIds(inBlock: block)
-        guard !segmentIDs.isEmpty else {
-            showToast("No segments selected", icon: "exclamationmark.circle.fill")
-            return false
-        }
-
         do {
-            var linkedSegmentIDs: Set<SegmentID> = []
-            for segmentID in segmentIDs {
-                let comments = try await coordinator.getCommentsForSegment(segmentId: segmentID)
-                if comments.contains(where: { $0.id == comment.id }) {
-                    linkedSegmentIDs.insert(segmentID)
-                }
-            }
-
-            if linkedSegmentIDs.isEmpty {
-                selectedBlockComments.removeAll { $0.id == comment.id }
-                selectedBlockCommentPreferredSegmentByID.removeValue(forKey: comment.id.value)
-                if commentTimelineCommentsByID.removeValue(forKey: comment.id.value) != nil {
-                    commentTimelineContextByCommentID.removeValue(forKey: comment.id.value)
-                    rebuildCommentTimelineRows()
-                }
-                return true
-            }
-
-            try await coordinator.removeCommentFromSegments(
-                segmentIds: Array(linkedSegmentIDs),
-                commentId: comment.id
-            )
-
+            let snapshot = try annotationSnapshot(for: segmentIDs)
+            let linkedSegmentIDs = Set(snapshot.segments.filter { segment in
+                segment.comments.contains { $0.id == comment.id }
+            }.map(\.id))
+            guard !linkedSegmentIDs.isEmpty else { throw NativeAnnotationError.staleSelection }
+            _ = try await annotationOwner().apply(snapshot: snapshot, mutation: .unlinkComment(id: comment.id))
+            guard isCurrentAnnotationSelection(token) else { return true }
+            selectedAnnotationSnapshot = nil
             selectedBlockComments.removeAll { $0.id == comment.id }
             selectedBlockCommentPreferredSegmentByID.removeValue(forKey: comment.id.value)
             if commentTimelineCommentsByID.removeValue(forKey: comment.id.value) != nil {
@@ -4164,8 +4367,11 @@ public class SimpleTimelineViewModel: ObservableObject {
                 hadFrameAnchor: comment.frameID != nil
             )
             showToast("Comment deleted", icon: "trash.fill")
+            await refreshAnnotationsAfterMutation(token)
             return true
         } catch {
+            guard isCurrentAnnotationSelection(token) else { return false }
+            selectedAnnotationSnapshot = nil
             Log.error("[Comments] Failed to delete comment from block: \(error)", category: .ui)
             showToast("Failed to delete comment", icon: "xmark.circle.fill")
             return false
@@ -4197,60 +4403,71 @@ public class SimpleTimelineViewModel: ObservableObject {
             showToast("No segments selected", icon: "exclamationmark.circle.fill")
             return
         }
-        let selectedFrameID = (index >= 0 && index < frames.count) ? frames[index].frame.id : nil
+        let token = annotationSelectionToken
+        guard frames.indices.contains(index), let snapshot = try? annotationSnapshot(for: segmentIds),
+              snapshot.segments.contains(where: { $0.reference.frameID == frames[index].frame.id }) else {
+            showToast("Refresh the selection before adding a comment", icon: "exclamationmark.triangle.fill")
+            return
+        }
+        let selectedFrameID = frames[index].frame.id
 
+        let mutationID = UUID()
+        addingCommentMutationID = mutationID
         isAddingComment = true
         let attachmentDrafts = newCommentAttachmentDrafts
 
         Task {
+            defer {
+                if addingCommentMutationID == mutationID {
+                    addingCommentMutationID = nil
+                    isAddingComment = false
+                }
+                annotationMutationCompleted()
+            }
             var persistedAttachments: [SegmentCommentAttachment] = []
             do {
                 persistedAttachments = try await Task.detached(priority: .userInitiated) {
                     try Self.persistCommentAttachmentDrafts(attachmentDrafts)
                 }.value
 
-                let createResult = try await coordinator.createCommentForSegments(
-                    body: commentBody,
-                    segmentIds: Array(segmentIds),
-                    attachments: persistedAttachments,
-                    frameID: selectedFrameID,
-                    author: nil
-                )
+                guard isCurrentAnnotationSelection(token) else { throw NativeAnnotationError.staleSelection }
+                let author = NSFullUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+                let receipt = try await annotationOwner().apply(snapshot: snapshot,
+                    mutation: .createComment(body: commentBody, author: author.isEmpty ? "Unknown User" : author,
+                                             attachments: persistedAttachments, anchor: selectedFrameID))
 
-                await MainActor.run {
-                    newCommentText = ""
-                    newCommentAttachmentDrafts = []
-                    incrementCommentCountsForSegments(Set(createResult.linkedSegmentIDs))
-                    isAddingComment = false
-                    let requestedCount = segmentIds.count
-                    let linkedCount = createResult.linkedSegmentIDs.count
+                guard isCurrentAnnotationSelection(token) else { return }
+                selectedAnnotationSnapshot = nil
+                newCommentText = ""
+                newCommentAttachmentDrafts = []
+                incrementCommentCountsForSegments(Set(snapshot.segments.map(\.id)))
+                let requestedCount = segmentIds.count
+                let linkedCount = receipt.affectedSegments
 
-                    if linkedCount == requestedCount {
-                        showToast("Comment added", icon: "checkmark.circle.fill")
-                    } else {
-                        showToast(
-                            "Comment added to \(linkedCount)/\(requestedCount) segments",
-                            icon: "exclamationmark.triangle.fill"
-                        )
-                    }
+                if linkedCount == requestedCount {
+                    showToast("Comment added", icon: "checkmark.circle.fill")
+                } else {
+                    showToast(
+                        "Comment added to \(linkedCount)/\(requestedCount) segments",
+                        icon: "exclamationmark.triangle.fill"
+                    )
                 }
                 DashboardViewModel.recordCommentAdded(
                     coordinator: coordinator,
                     source: "timeline_comment_submenu",
                     requestedSegmentCount: segmentIds.count,
-                    linkedSegmentCount: createResult.linkedSegmentIDs.count,
+                    linkedSegmentCount: receipt.affectedSegments,
                     bodyLength: commentBody.count,
                     attachmentCount: persistedAttachments.count,
-                    hasFrameAnchor: selectedFrameID != nil
+                    hasFrameAnchor: true
                 )
-                await loadCommentsForSelectedTimelineBlock()
+                await refreshAnnotationsAfterMutation(token)
             } catch {
                 Self.cleanupPersistedCommentAttachments(persistedAttachments)
+                guard isCurrentAnnotationSelection(token) else { return }
+                selectedAnnotationSnapshot = nil
                 Log.error("[Comments] Failed to add comment: \(error)", category: .ui)
-                await MainActor.run {
-                    isAddingComment = false
-                    showToast("Failed to add comment", icon: "xmark.circle.fill")
-                }
+                showToast("Failed to add comment", icon: "xmark.circle.fill")
             }
         }
     }

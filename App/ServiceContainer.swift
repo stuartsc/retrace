@@ -37,6 +37,18 @@ public actor ServiceContainer {
     public var audioRefinement: AudioRefinementManager?
     public var audioContextualRefinement: AudioContextualRefinementManager?
     private var transcriptionService: (any TranscriptionProtocol)?
+    private var markerService: TimelineMarkerService?
+    private var voiceMarkerOwner: VoiceMarkerController?
+    private var audioSessionOwner: AudioSessionOwner?
+    private var markerAudioMedia: MarkerAudioMediaService?
+    private var markerAudioPlayback: MarkerAudioPlayback?
+    private var companionTurnPlaybackOwner: CompanionTurnPlayback?
+    private var companionOwner: CompanionController?
+    private var companionSettingsOwner: CompanionSettingsService?
+    private var sourceConfigurationOwner: SourceConfigurationService?
+    private var liveAudioContextReader: LiveAudioContextReader?
+    private var liveAudioContextClosing = false
+    private var markerAccessClosed = false
 
     // MARK: - Configuration
 
@@ -274,6 +286,12 @@ public actor ServiceContainer {
         // 1. Initialize database first (creates schema)
         try await database.initialize()
         try Task.checkCancellation()
+        if liveAudioContextClosing {
+            // A failed startup may be retried after its joined rollback. Old
+            // views retain a terminal reader; the reopened store gets a new one.
+            liveAudioContextReader = nil
+            liveAudioContextClosing = false
+        }
         await resourceUsage.start { [database] minute in
             do { try await database.recordResourceUsageMinute(minute) }
             catch { Log.warning("Could not save CPU usage aggregate", category: .app) }
@@ -408,15 +426,14 @@ public actor ServiceContainer {
         let useRewindData = defaults.bool(forKey: "useRewindData")
         Log.info("Checking Rewind source during initialization: useRewindData=\(useRewindData)", category: .app)
 
-        if useRewindData {
-            await configureRewindSource(adapter: adapter)
-        } else {
-            Log.info("⊘ Rewind source not registered during initialization (useRewindData is false)", category: .app)
-        }
-
         // Initialize the adapter
         try await adapter.initialize()
         self.dataAdapter = adapter
+        if useRewindData {
+            do { try await registerRewindSourceIfEnabled() }
+            catch is CancellationError { throw CancellationError() }
+            catch { Log.warning("[ServiceContainer] Rewind source unavailable; native recording remains available", category: .app) }
+        }
         try Task.checkCancellation()
         Log.info("✓ DataAdapter initialized", category: .app)
 
@@ -489,138 +506,142 @@ public actor ServiceContainer {
         return true
     }
 
-    /// Register Rewind data source if user has opted in
-    /// Can be called after initialization (e.g., after onboarding completes)
-    public func registerRewindSourceIfEnabled() async throws {
-        guard isInitialized else {
-            Log.warning("Cannot register Rewind source - ServiceContainer not initialized", category: .app)
-            return
-        }
-
-        guard let adapter = dataAdapter else {
-            Log.warning("Cannot register Rewind source - DataAdapter not available", category: .app)
-            return
-        }
-
-        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-        let useRewindData = defaults.bool(forKey: "useRewindData")
-        Log.info("Checking if Rewind source should be registered: useRewindData=\(useRewindData)", category: .app)
-
-        if useRewindData {
-            // Check if already registered
-            let sources = await adapter.registeredSources
-            if sources.contains(.rewind) {
-                Log.info("Rewind source already registered, skipping", category: .app)
-                return
-            }
-
-            await configureRewindSource(adapter: adapter)
-            Log.info("✓ Rewind source registered and connected after initialization", category: .app)
-        } else {
-            Log.info("⊘ Rewind source not registered (useRewindData is false)", category: .app)
-        }
-    }
-
-    /// Set Rewind data source enabled/disabled and update connection accordingly
-    /// - Parameter enabled: Whether to connect or disconnect Rewind data
-    public func setRewindSourceEnabled(_ enabled: Bool) async {
-        guard isInitialized else {
-            Log.warning("Cannot change Rewind source - ServiceContainer not initialized", category: .app)
-            return
-        }
-
-        guard let adapter = dataAdapter else {
-            Log.warning("Cannot change Rewind source - DataAdapter not available", category: .app)
-            return
-        }
-
-        // Save preference
-        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
-        defaults.set(enabled, forKey: "useRewindData")
-
-        if enabled {
-            // Connect Rewind source if not already connected
-            let sources = await adapter.registeredSources
-            if sources.contains(.rewind) {
-                Log.info("Rewind source already connected", category: .app)
-                return
-            }
-            await configureRewindSource(adapter: adapter)
-            Log.info("✓ Rewind source connected", category: .app)
-        } else {
-            // Disconnect Rewind source
+    /// Shared owner for the existing locally selected Rewind source. Reading it
+    /// opens no library or device; connection is an explicit previewed command.
+    public func sourceConfiguration() throws -> SourceConfigurationService {
+        guard !markerAccessClosed else { throw SourceConfigurationError.closed }
+        guard let adapter = dataAdapter else { throw DataAdapterError.notInitialized }
+        if let sourceConfigurationOwner { return sourceConfigurationOwner }
+        let owner = SourceConfigurationService(backend: .init(observe: { [weak self] in
+            guard let self else { throw SourceConfigurationError.closed }
+            return try await self.sourceConfigurationEnvironment(adapter: adapter)
+        }, connect: { [weak self] fingerprint, fences in
+            guard let self else { throw SourceConfigurationError.closed }
+            try await self.configureRewindSource(adapter: adapter, expectedFingerprint: fingerprint, fences: fences)
+        }, disconnectAndDrain: {
             await adapter.disconnectRewind()
-            Log.info("✓ Rewind source disconnected", category: .app)
+            await MainActor.run {
+                NotificationCenter.default.post(name: Notification.Name("dataSourceDidChange"), object: nil)
+            }
+        }, commitPreference: { enabled, expectedFingerprint in
+            guard SourceConfigurationSelectionIdentity.fingerprint(databasePath: AppPaths.rewindDBPath) == expectedFingerprint else {
+                throw SourceConfigurationError.stalePreview
+            }
+            let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+            defaults.set(enabled, forKey: "useRewindData")
+            guard defaults.synchronize(), defaults.bool(forKey: "useRewindData") == enabled else {
+                throw SourceConfigurationError.persistenceFailed
+            }
+        }))
+        sourceConfigurationOwner = owner
+        return owner
+    }
+
+    private func sourceConfigurationEnvironment(adapter: DataAdapter) async throws -> SourceConfigurationEnvironment {
+        guard !markerAccessClosed, dataAdapter === adapter else { throw SourceConfigurationError.closed }
+        let available = await adapter.isSourceAvailable(.rewind)
+        guard !markerAccessClosed, dataAdapter === adapter else { throw SourceConfigurationError.closed }
+        let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+        return .init(configuredEnabled: defaults.bool(forKey: "useRewindData"), effectiveEnabled: available,
+            selectionFingerprint: SourceConfigurationSelectionIdentity.fingerprint(databasePath: AppPaths.rewindDBPath))
+    }
+
+    /// Register an existing opt-in after startup/onboarding, without pretending a
+    /// missing or unreadable source connected successfully.
+    public func registerRewindSourceIfEnabled() async throws {
+        let owner = try sourceConfiguration(), state = try await owner.read()
+        guard state.configuredEnabled, !state.effectiveEnabled else { return }
+        _ = try await setRewindSourceEnabled(true)
+    }
+
+    @discardableResult
+    public func setRewindSourceEnabled(_ enabled: Bool) async throws -> SourceConfigurationReceipt {
+        let owner = try sourceConfiguration(), state = try await owner.read()
+        let preview = try await owner.preview(clientID: "local-settings", expectedRevision: state.revision, enabled: enabled)
+        return try await owner.apply(clientID: "local-settings", requestID: UUID(), previewID: preview.id)
+    }
+
+    /// A native Settings folder choice, never a remote path-setting operation.
+    public func changeLocalRewindLocation(_ folder: String?) async throws -> SourceConfigurationSnapshot {
+        if let folder {
+            guard folder.hasPrefix("/"), !folder.contains("\0"), folder.utf8.count <= 16_384 else {
+                throw SourceConfigurationError.invalidRequest
+            }
+        }
+        let owner = try sourceConfiguration()
+        return try await owner.changeLocalSelection {
+            let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
+            if let folder { defaults.set(folder, forKey: "customRewindDBLocation") }
+            else { defaults.removeObject(forKey: "customRewindDBLocation") }
+            guard defaults.synchronize(), defaults.string(forKey: "customRewindDBLocation") == folder else {
+                throw SourceConfigurationError.persistenceFailed
+            }
         }
     }
 
-    /// Helper to configure Rewind source on DataAdapter
-    private func configureRewindSource(adapter: DataAdapter) async {
-        let rewindDBPath = NSString(string: AppPaths.rewindDBPath).expandingTildeInPath
-
-        guard FileManager.default.fileExists(atPath: rewindDBPath) else {
-            Log.warning("Rewind database not found at: \(rewindDBPath)", category: .app)
-            return
+    /// Opening/decryption uses the already selected local path. The exact file
+    /// identity and command fences are checked again at adapter publication.
+    private func configureRewindSource(adapter: DataAdapter, expectedFingerprint: String,
+                                       fences: [NativeMutationFence]) async throws {
+        guard !markerAccessClosed, dataAdapter === adapter else { throw SourceConfigurationError.closed }
+        let path = NSString(string: AppPaths.rewindDBPath).expandingTildeInPath
+        guard SourceConfigurationSelectionIdentity.fingerprint(databasePath: path) == expectedFingerprint else {
+            throw SourceConfigurationError.stalePreview
         }
-
-        // Open encrypted database in serialized mode for safe concurrent reads.
-        var db: OpaquePointer?
+        var raw: OpaquePointer?
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-        guard sqlite3_open_v2(rewindDBPath, &db, flags, nil) == SQLITE_OK else {
-            let errorMsg = db.map { String(cString: sqlite3_errmsg($0)) } ?? "Unknown error"
-            Log.error("[ServiceContainer] Failed to open Rewind database: \(errorMsg)", category: .app)
-            return
+        guard sqlite3_open_v2(path, &raw, flags, nil) == SQLITE_OK, let db = raw else {
+            if let raw { sqlite3_close_v2(raw) }
+            throw SourceConfigurationError.connectionFailed
         }
-
-        // Set encryption key
+        var transferred = false
+        defer { if !transferred { sqlite3_close_v2(db) } }
+        guard sqlite3_db_readonly(db, "main") == 1, sqlite3_busy_timeout(db, 1_000) == SQLITE_OK else {
+            throw SourceConfigurationError.connectionFailed
+        }
         let rewindPassword = "soiZ58XZJhdka55hLUp18yOtTUTDXz7Diu7Z4JzuwhRwGG13N6Z9RTVU1fGiKkuF"
         let keySQL = "PRAGMA key = '\(rewindPassword)'"
-        var keyError: UnsafeMutablePointer<Int8>?
-        if sqlite3_exec(db, keySQL, nil, nil, &keyError) != SQLITE_OK {
-            let error = keyError.map { String(cString: $0) } ?? "Unknown error"
-            sqlite3_free(keyError)
-            Log.error("[ServiceContainer] Failed to set Rewind encryption key: \(error)", category: .app)
-            sqlite3_close(db)
-            return
+        guard sqlite3_exec(db, keySQL, nil, nil, nil) == SQLITE_OK,
+              sqlite3_exec(db, "PRAGMA cipher_compatibility = 4", nil, nil, nil) == SQLITE_OK else {
+            throw SourceConfigurationError.connectionFailed
         }
-
-        // Set cipher compatibility (Rewind uses SQLCipher 4)
-        var compatError: UnsafeMutablePointer<Int8>?
-        if sqlite3_exec(db, "PRAGMA cipher_compatibility = 4", nil, nil, &compatError) != SQLITE_OK {
-            let error = compatError.map { String(cString: $0) } ?? "Unknown error"
-            sqlite3_free(compatError)
-            Log.error("[ServiceContainer] Failed to set cipher compatibility: \(error)", category: .app)
-            sqlite3_close(db)
-            return
+        // Fully finalize verification before handing the owned connection over.
+        try {
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('frame','segment','video')", -1, &statement, nil) == SQLITE_OK else {
+                throw SourceConfigurationError.connectionFailed
+            }
+            var tables: Set<String> = []
+            var status = sqlite3_step(statement)
+            while status == SQLITE_ROW {
+                if let name = sqlite3_column_text(statement, 0) { tables.insert(String(cString: name)) }
+                status = sqlite3_step(statement)
+            }
+            guard status == SQLITE_DONE, tables == ["frame", "segment", "video"] else {
+                throw SourceConfigurationError.connectionFailed
+            }
+        }()
+        let connection = SQLCipherConnection(takingOwnershipOf: db)
+        transferred = true
+        let directory = (path as NSString).deletingLastPathComponent
+        let chunks = directory + "/chunks"
+        let cutoff = Date(timeIntervalSince1970: 1766217600)
+        let config = DatabaseConfig(dateFormatter: DatabaseConfig.rewind.dateFormatter,
+            storageRoot: chunks, source: .rewind, cutoffDate: cutoff)
+        try await adapter.configureRewindChecked(connection: connection, config: config,
+            imageExtractor: AVAssetExtractor(storageRoot: chunks), cutoffDate: cutoff,
+            fences: fences, selectionIsCurrent: {
+                guard SourceConfigurationSelectionIdentity.fingerprint(databasePath: AppPaths.rewindDBPath) == expectedFingerprint,
+                      let opened = connection.getConnection() else { return false }
+                // Also bind the actual open handle. A path swapped away and back
+                // during decryption must not publish a different library.
+                var moved: Int32 = 0
+                return sqlite3_file_control(opened, "main", SQLITE_FCNTL_HAS_MOVED, &moved) == SQLITE_OK && moved == 0
+            })
+        await MainActor.run {
+            NotificationCenter.default.post(name: Notification.Name("dataSourceDidChange"), object: nil)
         }
-
-        // Verify connection
-        var testStmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master", -1, &testStmt, nil) == SQLITE_OK,
-              sqlite3_step(testStmt) == SQLITE_ROW else {
-            sqlite3_finalize(testStmt)
-            sqlite3_close(db)
-            Log.error("[ServiceContainer] Failed to verify Rewind encryption", category: .app)
-            return
-        }
-        sqlite3_finalize(testStmt)
-
-        // Create connection and config
-        let rewindConnection = SQLCipherConnection(db: db)
-        let rewindConfig = DatabaseConfig.rewind
-        // Chunks directory is always in the same parent directory as the database
-        let rewindDBDir = (rewindDBPath as NSString).deletingLastPathComponent
-        let rewindChunksPath = "\(rewindDBDir)/chunks"
-        let rewindImageExtractor = AVAssetExtractor(storageRoot: rewindChunksPath)
-        let cutoffDate = Date(timeIntervalSince1970: 1766217600) // Dec 20, 2025 00:00:00 UTC
-
-        await adapter.configureRewind(
-            connection: rewindConnection,
-            config: rewindConfig,
-            imageExtractor: rewindImageExtractor,
-            cutoffDate: cutoffDate
-        )
-        Log.info("✓ Rewind source configured during initialization", category: .app)
     }
 
     /// Upgrade from MockTranscriptionService to real WhisperCppTranscriptionService
@@ -666,6 +687,20 @@ public actor ServiceContainer {
 
     /// Shutdown all services gracefully
     public func shutdown() async throws {
+        markerAccessClosed = true
+        liveAudioContextClosing = true
+        await liveAudioContextReader?.close()
+        // A failed drain keeps both owners and their databases available for a
+        // joined cleanup retry. No processor/context close may pass it.
+        try await audioSessionOwner?.close()
+        sourceConfigurationOwner?.invalidate()
+        await sourceConfigurationOwner?.close()
+        companionOwner?.invalidate()
+        await companionTurnPlaybackOwner?.close()
+        // Failed companion cleanup preserves its reader and canonical writer for a retry.
+        try await companionSettingsOwner?.close()
+        await markerAudioPlayback?.close()
+        await voiceMarkerOwner?.close()
         await initializationLifecycle.beginShutdown()
         #if DEBUG
         shutdownRequestForTesting?()
@@ -683,6 +718,9 @@ public actor ServiceContainer {
 
     private func shutdownServices() async throws {
         isInitialized = false
+        // Startup rollback also reaches this path without public shutdown().
+        liveAudioContextClosing = true
+        await liveAudioContextReader?.close()
         var failures: [any Error] = []
         Log.info("Shutting down all services...", category: .app)
         await backgroundProcessing.cancelAutomaticWork()
@@ -719,6 +757,15 @@ public actor ServiceContainer {
         await retentionManager.stop()
         Log.info("✓ Retention manager stopped", category: .app)
 
+        // Marker operations include their canonical metric tails. A failed release keeps
+        // the adapter/writer available for an explicit cleanup retry and admission stays closed.
+        do { try await markerService?.close() }
+        catch {
+            failures.append(error)
+            if failures.count == 1 { throw error }
+            throw ServiceCleanupFailure(failures: failures)
+        }
+
         // Release the container's adapter after shutting down its state.
         await dataAdapter?.shutdown()
         dataAdapter = nil
@@ -744,9 +791,166 @@ public actor ServiceContainer {
 
     // MARK: - Service Access
 
+    public func getLiveAudioContextReader() throws -> LiveAudioContextReader {
+        guard !markerAccessClosed, !liveAudioContextClosing else { throw AudioContextReadError.closed }
+        if let liveAudioContextReader { return liveAudioContextReader }
+        let reader = LiveAudioContextReader(database: database)
+        liveAudioContextReader = reader
+        return reader
+    }
+
     /// Check if services are initialized
     public var initialized: Bool {
         isInitialized
+    }
+
+    /// Returns the shared lazy owner. Getting it does not open or create a context database.
+    public func timelineMarkers() throws -> TimelineMarkerService {
+        guard !markerAccessClosed else { throw ContextStoreError.closed }
+        guard isInitialized, let adapter = dataAdapter else { throw DataAdapterError.notInitialized }
+        if let markerService { return markerService }
+        let canonicalDatabase = database
+        let owner = TimelineMarkerService(
+            storageRoot: URL(fileURLWithPath: storageConfig.expandedStorageRootPath, isDirectory: true),
+            nativeStoreID: { try await adapter.evidenceStoreID(source: .native) },
+            metrics: { action, outcome in
+                let metadata = "{\"action\":\"\(action.rawValue)\",\"outcome\":\"\(outcome.rawValue)\"}"
+                try? await canonicalDatabase.recordMetricEvent(metricType: .timelineMarkerAction, metadata: metadata)
+            })
+        markerService = owner
+        return owner
+    }
+
+    /// Recognition is App-owned and remains dormant unless recording and enabled rules both permit it.
+    public func voiceMarkers() async throws -> VoiceMarkerController {
+        guard !markerAccessClosed else { throw ContextStoreError.closed }
+        if let voiceMarkerOwner { return voiceMarkerOwner }
+        let marker = try timelineMarkers()
+        guard let adapter = dataAdapter else { throw DataAdapterError.notInitialized }
+        let resource = resourceUsage
+        let owner = VoiceMarkerController(markers: marker,
+            nativeStoreID: { try await adapter.evidenceStoreID(source: .native) },
+            underPressure: {
+                let snapshot = await resource.snapshot()
+                return ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical ||
+                    (snapshot.isCurrent && (snapshot.systemFiveSecondCPUPercent ?? 0) > 85)
+            })
+        voiceMarkerOwner = owner
+        let media = MarkerAudioMediaService(
+            storageRoot: URL(fileURLWithPath: storageConfig.expandedStorageRootPath, isDirectory: true),
+            markers: marker, nativeStoreID: { try await adapter.evidenceStoreID(source: .native) })
+        markerAudioMedia = media
+        let installed = await audioProcessing.setPersistedBatchHandler { receipt in
+            if receipt.sourceMappingIncomplete { await owner.markMediaMappingIncomplete() }
+            guard !receipt.sourceRanges.isEmpty else { return }
+            do { try await media.register(receipt) }
+            catch { await owner.markMediaMappingIncomplete(); throw error }
+        }
+        if !installed { await owner.markMediaMappingIncomplete() }
+        await owner.start()
+        return owner
+    }
+
+    public func pauseVoiceMarkers() async { await voiceMarkerOwner?.setRecording(false) }
+
+    func audioSession(pipeline: AudioSessionOwner.Pipeline) async throws -> AudioSessionOwner {
+        guard !markerAccessClosed else { throw AudioSessionError.closed }
+        if let audioSessionOwner { return audioSessionOwner }
+        let store = try await timelineMarkers().audioSessionSettingsStore()
+        guard !markerAccessClosed else { throw AudioSessionError.closed }
+        if let audioSessionOwner { return audioSessionOwner }
+        let owner = AudioSessionOwner(store: store, baseConfig: audioCaptureConfig, pipeline: pipeline)
+        audioSessionOwner = owner
+        return owner
+    }
+
+    func pauseAudioSession() async throws {
+        try await audioSessionOwner?.setRecordingRequested(false)
+    }
+
+    /// Cheap status only; unlike voiceMarkers(), this never initializes recognition.
+    public func existingVoiceMarkerStatus() async -> VoiceMarkerStatus? {
+        await voiceMarkerOwner?.status()
+    }
+
+    public func markerMedia() async throws -> MarkerAudioMediaService {
+        guard !markerAccessClosed else { throw ContextStoreError.closed }
+        _ = try await voiceMarkers()
+        guard !markerAccessClosed, let markerAudioMedia else { throw ContextStoreError.closed }
+        return markerAudioMedia
+    }
+
+    public func markerPlayback() async throws -> MarkerAudioPlayback {
+        guard !markerAccessClosed else { throw ContextStoreError.closed }
+        if let markerAudioPlayback { return markerAudioPlayback }
+        let media = try await markerMedia()
+        guard !markerAccessClosed else { throw ContextStoreError.closed }
+        if let markerAudioPlayback { return markerAudioPlayback }
+        let owner = MarkerAudioPlayback(media: media, markers: try timelineMarkers())
+        markerAudioPlayback = owner
+        return owner
+    }
+
+    func companionTurnPlayback(controller: CompanionController) async throws -> CompanionTurnPlayback {
+        guard !markerAccessClosed, companionOwner === controller else { throw CompanionError.closed }
+        if let companionTurnPlaybackOwner { return companionTurnPlaybackOwner }
+        let media = try await markerMedia()
+        guard !markerAccessClosed, companionOwner === controller else { throw CompanionError.closed }
+        if let companionTurnPlaybackOwner { return companionTurnPlaybackOwner }
+        // Register a stable controller drain before publishing any player. Every
+        // competing initializer installs the same semantics, so a losing candidate
+        // cannot replace retention's callback with a different player instance.
+        await retentionManager.setSourceMutationDrain { [weak controller] in await controller?.drainSpeakerOutput() }
+        guard !markerAccessClosed, companionOwner === controller else { throw CompanionError.closed }
+        if let companionTurnPlaybackOwner { return companionTurnPlaybackOwner }
+        let owner = CompanionTurnPlayback(controller: controller, media: media)
+        companionTurnPlaybackOwner = owner
+        return owner
+    }
+
+    /// Called by the coordinator's coalesced initializer. Neither construction nor settings reads
+    /// activate remote delivery; only restoring an explicit saved configuration does so.
+    func companionOwners(recall: ProgressiveRecallService,
+                         policy: @escaping @Sendable () async throws -> Void) async throws
+        -> (CompanionController, CompanionSettingsService) {
+        guard !markerAccessClosed, let adapter = dataAdapter else { throw ContextStoreError.closed }
+        if let companionOwner, let companionSettingsOwner { return (companionOwner, companionSettingsOwner) }
+        let media = try await markerMedia()
+        let nativeID = try await adapter.evidenceStoreID(source: .native)
+        guard !markerAccessClosed else { throw ContextStoreError.closed }
+        if let companionOwner, let companionSettingsOwner { return (companionOwner, companionSettingsOwner) }
+        let database = self.database
+        let owner = CompanionController(
+            storageRoot: URL(fileURLWithPath: storageConfig.expandedStorageRootPath, isDirectory: true)
+                .appendingPathComponent("context/companion", isDirectory: true),
+            nativeStoreID: nativeID, databasePath: databasePath, adapter: adapter, recall: recall,
+            markers: try timelineMarkers(), verifiedBytes: { try await media.verifiedBytes(for: $0) }, policy: policy,
+            metric: { action, outcome in
+                // Action/outcome originate from fixed App enums/literals; never retain evidence or credentials.
+                guard ["configured", "operation", "speaker_correction"].contains(action),
+                      ["ready", "succeeded", "saved"].contains(outcome) else { return }
+                let bytes = try? JSONEncoder().encode(["action": action, "outcome": outcome])
+                if let bytes, let metadata = String(data: bytes, encoding: .utf8) {
+                    try? await database.recordMetricEvent(metricType: .companionAction, metadata: metadata)
+                }
+            })
+        let settings = CompanionSettingsService(controller: owner, nativeStoreID: nativeID)
+        // Writer callbacks only revoke a cheap transmission epoch. They never perform a read,
+        // enqueue inference, or enter an App actor while SQLite owns its connection mutex.
+        try await database.setSourceMutationObserver { [weak owner] change in owner?.sourceChanged(change) }
+        try await ftsEngine.setSourceMutationObserver { [weak owner] change in owner?.sourceChanged(change) }
+        let installed = await audioProcessing.setCommittedBatchHandler { receipt in
+            guard receipt.source == .microphone else { return }
+            // The durable enrollment/candidate ledger owns delivery. This callback
+            // accelerates it; a missed callback cannot lose eligible saved speech.
+            owner.textCommitted()
+        }
+        guard installed, !markerAccessClosed else {
+            try await settings.close()
+            throw CompanionError.unavailable
+        }
+        companionOwner = owner; companionSettingsOwner = settings
+        return (owner, settings)
     }
 
     /// Get database statistics
@@ -801,6 +1005,7 @@ extension StorageConfig {
 
 extension CaptureConfig {
     public static var `default`: CaptureConfig {
+        if let saved = CaptureSettingsPersistence.application.load() { return saved }
         // Read settings from UserDefaults (synced with Settings UI)
         let defaults = UserDefaults(suiteName: "io.retrace.app") ?? .standard
         let captureIntervalSeconds = defaults.object(forKey: "captureIntervalSeconds") as? Double ?? 2.0

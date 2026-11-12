@@ -28,6 +28,7 @@ Capture/
 │   └── BrowserURLExtractor.swift  # Extract URL from browsers (AX API)
 ├── Audio/
 │   ├── AudioCaptureManager.swift  # Dual-source audio capture coordinator
+│   ├── AudioCaptureSampleClock.swift # Native PTS continuity and exact converted microphone sample offsets
 │   ├── AudioFormatConverter.swift # Stateful AVAudioConverter resampling and PCM layout conversion
 │   ├── ConsentDialogHelper.swift  # Audio recording consent dialog helpers
 │   ├── MeetingDetector.swift      # Meeting-app detection
@@ -36,6 +37,7 @@ Capture/
 │   └── SystemAudioCapture.swift   # System audio capture
 └── Tests/
     ├── AccessibilityInspectorTest.swift
+    ├── AudioCaptureSampleClockTests.swift # Actual native PCM, callback delay, discontinuity and source sample identities
     ├── AudioFormatConverterTests.swift
     ├── AudioStreamBufferingPolicyTests.swift
     ├── MicrophoneInputRoutingTests.swift # Default input switching, joined stop/restart and real native PCM continuity

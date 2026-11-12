@@ -35,6 +35,12 @@ public struct CapturedAudio: Sendable {
     /// Number of channels (should always be 1 for mono)
     public let channels: Int
 
+    /// Optional native PCM lineage. Older/imported packets do not invent one.
+    public let sampleIdentity: LiveAudioSampleIdentity?
+    /// Captured before queue delivery; playback transitions invalidate already queued PCM for triggers.
+    public let voiceMarkerPlaybackAdmission: VoiceMarkerPlaybackAdmission?
+    public var continuityID: UUID? { sampleIdentity?.continuityID }
+
     public init(
         id: UUID = UUID(),
         timestamp: Date,
@@ -42,7 +48,9 @@ public struct CapturedAudio: Sendable {
         duration: TimeInterval,
         source: AudioSource,
         sampleRate: Int = 16000,
-        channels: Int = 1
+        channels: Int = 1,
+        sampleIdentity: LiveAudioSampleIdentity? = nil,
+        voiceMarkerPlaybackAdmission: VoiceMarkerPlaybackAdmission? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -51,6 +59,8 @@ public struct CapturedAudio: Sendable {
         self.source = source
         self.sampleRate = sampleRate
         self.channels = channels
+        self.sampleIdentity = sampleIdentity
+        self.voiceMarkerPlaybackAdmission = voiceMarkerPlaybackAdmission
     }
 }
 

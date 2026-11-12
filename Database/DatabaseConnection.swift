@@ -150,9 +150,23 @@ public final class SQLiteConnection: DatabaseConnection, @unchecked Sendable {
 /// Wrapper for SQLCipher connection (used by RewindDataSource)
 public final class SQLCipherConnection: DatabaseConnection, @unchecked Sendable {
     private let db: OpaquePointer?
+    private let ownsConnection: Bool
 
+    /// Borrows a handle owned by another native database owner.
     public init(db: OpaquePointer?) {
         self.db = db
+        self.ownsConnection = false
+    }
+
+    /// Transfers a successfully opened handle. The caller must not close it after
+    /// this initializer. Outstanding prepared statements may finish on close_v2.
+    public init(takingOwnershipOf db: OpaquePointer) {
+        self.db = db
+        self.ownsConnection = true
+    }
+
+    deinit {
+        if ownsConnection, let db { sqlite3_close_v2(db) }
     }
 
     public func getConnection() -> OpaquePointer? {

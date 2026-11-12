@@ -2,6 +2,109 @@
 
 You are the **UI** agent responsible for building the SwiftUI interface for Retrace.
 
+The October 21 candidate's Live interval search uses App `LiveContextSearchService`
+for bounded pages across saved transcripts, OCR, app/window observations, notes,
+markers/ranges and available speaker enrichment. Per-source omissions remain visible.
+Copy context uses source-qualified references and repeats App revalidation after
+the user reviews its preview. A selected screen can be copied without audio.
+`MarkerContextWindowController` supports audio-only markers and explicitly authored
+manual/pinned ranges; it joins prior marker playback before replacing/reopening a
+window. Coarse recognition anchors are labelled enclosing speech, never exact words.
+Speaker corrections retain the full first pass separately and refresh the exact
+selected job, including results beyond the first page. They do not change Outlook
+enrollment. Settings exposes explicit speech asset preparation, private companion
+Keychain configuration and individually granted MCP clients. Opening views reads
+App-owned status and saved evidence; it does not activate a model or connection.
+Marker range cards consume App-owned `ContextRangePresentationService` results,
+never raw stored proposals. Unavailable or unverified sources remove inherited
+explanations and times while preserving separate user notes. Edits and pinning
+revalidate the exact presentation and preserve origin/provenance. Related source
+or policy invalidation clears cards, search results, selections and copy previews
+before any awaited refresh; unrelated capture and OCR preserve historical review.
+Every source notification still rejects reads in progress. App supplies bounded
+process-local dependency identities; unknown or overflowing mutations clear
+conservatively. Editor input remains separate. `MarkerContextViewModelTests` and
+`LiveContextSearchModelTests` cover durable writes, preserved provenance, held
+refreshes, unavailable sources and late results after hiding. Source changes and
+authored fixture tests are not installed acceptance. `CompanionWorkspaceModel`
+reads validated retained labels even when its transport is unconfigured or offline;
+disconnecting does not erase saved corrections or activate a connection.
+
+Live's `LiveTranscriptProjection` orders saved turns and recordings newest first.
+Exact first-pass row proofs collapse repeated batch text into a full-original
+disclosure; pending and unmatched rows stay visible, and time/text similarity never
+links recordings or speakers. Anonymous cluster labels are scoped to their job;
+manual names and unconfirmed suggestions remain distinct. Bounded speaker/audio
+pages keep the current reading snapshot until Return to live, which follows the
+top. A lazy stack requests the next bounded cursor page near its trailing rows;
+there is no 30-minute or 500-record browsing cutoff. Date controls scope explicit
+searches only. `LiveTranscriptPresentationPage` and its manual page controls are
+removed. Realized native rows are a canonical ordered subset, not the complete
+loaded model. Small record payloads remain retained for the current browsing session;
+Return to live resets them to the current head page. Selected turns resolve through App `CompanionTurnReference` before screen
+selection, Copy or verified source-sample playback; wall-to-screen association is
+explicitly approximate. Source/correction invalidation clears affected material.
+`LiveTranscriptProjectionTests` covers ordering, provenance, bounded coverage,
+history stability and audio-only intervals. Native render fixtures use authored
+private SQLite/AAC and retained speaker results. The optional debug-only
+`RETRACE_TEST_NATIVE_LIVE_CONTEXT_AX_PROBE=1` holds a visible nonactivating test
+panel for 30 seconds for external AX inspection; ordinary runs do not wait.
+Native wheel, focused reading keys and scrollbar interactions pause following;
+programmatic scrolling does not. The Voice markers action opens the existing Audio
+settings editor at both widths. Copy shares App's total reference limit across all
+sources and reports omitted-source counts in both preview and copied text.
+
+Native validation inventory updated 22 October: `LiveContextNativeViewTests`
+uses a debug-only unencrypted private SQLite owner, canonical migrations and an
+initialized sequence row to avoid installed encryption preferences and Rewind
+metadata probes. `RETRACE_TEST_NATIVE_LIVE_CONTEXT_INPUT=1` additionally requires
+the visible fixture and disabled debug file logging. It observes actual keyboard
+and wheel input at both widths, an authored arrival while history stays pinned,
+Return to live and initial positioning at the newest end; the fixture must not
+repair the viewport before asserting that initial state. `LiveContextSettingsNativeTests`
+uses private App owners and the actual polling cards to inspect draft text,
+capabilities, native popup tracking and navigation, without creating a client or
+starting devices, a listener or playback. `NativeAppKitObservationLoop` starts
+`NSApp.run` from a native callback after the async test suspends and ends each
+observation after 90 seconds; callers also require an external process watchdog.
+Passing an authored interaction run does not prove the installed crash is fixed.
+Initial-follow source changes remain under native verification in the Live ledger.
+
+Live audio pages and exact retained-row reads use App's stable `LiveAudioContextReader`;
+continuations never cross reader instances. Only typed pre-query `connectionBusy`
+admission failures retry within the same refresh (three attempts, cancellable 50/150 ms
+backoff). Budget, continuation, closed and other failures remain visible without retry.
+Diagnostics record fixed failure categories only on transitions, never source content.
+Pending recording messages use selectable text so native reading keys have the same
+scoped noneditable responder as completed transcripts. The additional debug-only
+`RETRACE_TEST_NATIVE_LIVE_CONTEXT_PENDING_INPUT=1` selector
+`testPendingOnlyWorkspaceSupportsNativeReadingInputAtBothWidths` requires the existing
+INPUT, VISIBLE and disabled-file-logging flags. It renders 100 private authored pending
+rows through the lazy transcript stack and observes a real click, Page Down, arrival,
+Return, wheel and second Return at each width for 90 seconds; it never forces focus,
+starts capture, or repairs the viewport. Source regressions are not installed acceptance.
+
+The responsive workspace keeps the transcript under one `AnyLayout` child across
+the 900-point breakpoint and compact pane switches. Invisible transcript panes
+withhold focus, input observation and accessibility children; screen text expansion
+still unmounts when its pane hides. `RETRACE_TEST_NATIVE_LIVE_CONTEXT_LAYOUT=1`
+selects `testResponsiveWorkspaceRetainsPinnedTranscriptAcrossResizeAndCompactTabs`:
+a private 12-second AppKit loop resizes 1480/820, presses actual compact tab actions,
+and checks native scroll/document identity, canonical page and reading-row offset,
+hidden input and Return to live. It uses authored pending rows and no capture.
+The separate real-input fixture remains the keyboard/wheel acceptance path; hidden
+compact-pane accessibility requires a separate external AX check, not raw internal
+SwiftUI traversal.
+
+Live distinguishes an unfinished check of earlier recordings from proof of more
+matching recordings. Visible lazy trailing rows request older pages; an empty partial
+page continues only while the footer remains visible, with a cancellable yield
+between bounded reads. Background head refreshes preserve retained continuation
+and coverage; they do not drain older history. Copy previews and copied material
+include the same unresolved coverage notice, including interval-search omissions.
+A head refresh cannot satisfy a queued older-page request; one owned refresh still
+coalesces duplicate older requests and cancels them on hide or scope invalidation.
+
 **Status**: ✅ Fully implemented with modern SwiftUI design. Timeline, dashboard, search, settings, onboarding, feedback, audio transcripts, and push-to-dictate views all working. Global hotkeys use the user's saved Settings → General configuration; use the menu labels when documenting a smoke sequence instead of assuming default keys. Menu bar integration complete. **Apple Silicon required**.
 
 ## Your Directory
@@ -13,8 +116,9 @@ The October 19 recovery candidate shares admission with current/historical OCR.
 `SearchViewModel` sends the same committed query to screen and audio readers;
 `SpotlightSearchOverlay` opens a freshly validated exact transcript without
 substituting a nearby screen. `TranscriptWindowController.showExactSearchResult`
-pins that row independently of timeline refresh. `FuseIntelSnapshotCache` keeps
-an origin-bound last-good brief; Recent work uses only a ten-minute window.
+pins that row independently of timeline refresh. The Live workspace now reads
+bounded saved transcripts and exact screen context locally; the Operating Brief
+client, cache writer, settings and Activity Pulse presentation have been removed.
 System Monitor describes shared audio/OCR admission and avoids recommending
 higher OCR priority when a backlog is deferred. Process CPU capacity labels wait
 for a real sampler baseline instead of presenting the empty snapshot's one-core
@@ -53,7 +157,11 @@ UI/
 │   │   ├── DashboardSavedRecordings.swift # Visible recent saved audio with explicit playback before transcription
 │   │   ├── DashboardWindowController.swift # Persistent Settings/dashboard destinations and native presentation
 │   │   ├── ScreenshotEvidencePreview.swift # Shared immutable evidence selection and verified screenshot preview
-│   │   ├── DashboardView.swift          # Voice-first dashboard, visual memory, and live intelligence UI
+│   │   ├── DashboardView.swift          # Dashboard routing, dictation and visual memory
+│   │   ├── LiveContextWorkspaceView.swift # Resizable transcript/screen workspace and reviewed copy preview
+│   │   ├── LiveContextScrollInteractionObserver.swift # Native reading input and bounded initial following
+│   │   ├── TimelineMarkersPanel.swift   # Bounded marker pages and revision-checked edits
+│   │   ├── MarkerContextWindowController.swift # Exact marker ranges and joined playback lifetime
 │   │   ├── DashboardVoiceLayout.swift   # Dashboard layout, transcript, and screenshot policies
 │   │   ├── ChangelogView.swift          # Appcast-powered release notes view
 │   │   ├── AnalyticsCard.swift          # Stats widgets
@@ -65,7 +173,11 @@ UI/
 │   │   ├── TranscriptContentView.swift  # Continuous transcript display
 │   │   └── TranscriptWindowController.swift # Transcript window lifecycle
 │   └── Settings/
-│       └── SettingsView.swift           # Settings root and all General/Capture/Storage/Privacy/Power sections
+│       ├── SettingsView.swift           # Settings root and all General/Capture/Storage/Privacy/Power sections
+│       ├── AudioSessionSettingsView.swift # App-owned microphone settings and runtime state
+│       ├── VoiceMarkerRulesView.swift   # Literal microphone rules and acknowledgement preferences
+│       ├── CompanionSettingsView.swift # Explicit private companion configuration and status
+│       └── CommandAccessSettingsView.swift # Per-client capabilities, expiry and revocation
 ├── Components/
 │   ├── StorageUsageCard.swift          # Periodic categorized accounting, cached reads and explicit refresh
 │   ├── StorageUsagePresentation.swift  # Shared cached totals, unknown/partial states and measurement age
@@ -86,8 +198,11 @@ UI/
 │   ├── SimpleTimelineViewModel.swift     # Active historical timeline state and media loading
 │   ├── SearchViewModel.swift
 │   ├── DashboardViewModel.swift
-│   ├── FuseIntelViewModel.swift          # Read-only local FuseIntel BFF client and presentation policy
-│   ├── FuseIntelSnapshotCache.swift      # Bounded origin-bound last-good brief, off-main disk I/O
+│   ├── LiveContextWorkspaceModel.swift   # Bounded local audio/screen reads, pinned history and action revalidation
+│   ├── LiveTranscriptProjection.swift  # Chronological turns and original-text provenance
+│   ├── LiveContextSearchModel.swift    # Bounded multi-source search and invalidation
+│   ├── MarkerContextViewModel.swift    # Validated proposals, manual ranges and pinning
+│   ├── CommandAccessViewModel.swift    # Explicit grants and transient bearer presentation
 │   └── SettingsViewModel.swift
 └── Tests/
     ├── StorageUsagePresentationTests.swift # Real-file complete/partial totals and cache-only presentation
@@ -108,7 +223,11 @@ UI/
     ├── HotkeyHoldReleasePolicyTests.swift # Hold-hotkey modifier release regression tests
     ├── DashboardVoiceLayoutTests.swift   # Voice-first dashboard layout policy tests
     ├── DashboardSelectedFrameRefreshTests.swift # Real SQLite selected-frame OCR refresh and cancellation regressions
-    ├── FuseIntelViewModelTests.swift      # FuseIntel wire-contract and context-ranking tests
+    ├── LiveContextWorkspaceTests.swift    # Native SQLite pending rows, history stability and cancelled-read ownership
+    ├── LiveContextScrollInteractionTests.swift # Native input attribution and following policy
+    ├── LiveContextNativeViewTests.swift # Opt-in authored rendering, actual reading input and arrival stability
+    ├── LiveContextSettingsNativeTests.swift # Opt-in actual settings controls and polling with private App owners
+    ├── NativeAppKitObservationLoop.swift # Shared bounded native event-loop helper; external watchdog required
     ├── ProcessCPUMonitorPolicyTests.swift # System monitor launch-sampling policy tests
     ├── TimelineBackgroundRefreshPolicyTests.swift # Hidden timeline background-work opt-in policy tests
     ├── TranscriptAudioPlaybackTests.swift # Real AAC/SQLite, muted native seeking, completion and cancellation
@@ -124,13 +243,41 @@ Root coordinates the UI playback owner, App's configured audio-storage directory
 
 Saved recordings must be visible before transcription completes. `TranscriptRecordingLoader` includes pending/activity rows while preserving the query's latest-pass predicate. The Timeline panel bounds a one-hour window to 1,000 rows with an explicit overflow notice, and refreshes visible stationary selections every fifteen seconds. Initial reads have an owned generation and cancellation lifetime; duplicate callers join without taking ownership. Closing or replacing a source rejects late results. Refresh never raises the panel, starts playback or starts transcription. See `docs/audio-recording-visibility-repair.md` for the explicit authored-AAC test fixture and native encoding limitations in the current execution session.
 
-`DashboardSavedRecordingsModel` owns the Live panel's separate small recording page and explicit player. It reads twelve newest audio entries plus one sentinel, retains exact media requests and discloses omissions before filtering missing paths. The eight-second refresh runs only while Live is visible. Source/tab/window invalidation clears rows and stops playback; an old cancelled read remains owned until it finishes, including through rapid reopening. Completed transcript blocks retain their original recording dates. Neither UI path admits background inference.
+`DashboardSavedRecordingsModel` retains the previous small recording-page implementation and its playback regressions; the current Live workspace uses `LiveContextWorkspaceModel`. It reads twelve newest audio entries plus one sentinel, retains exact media requests and discloses omissions before filtering missing paths. The eight-second refresh runs only while Live is visible. Source/tab/window invalidation clears rows and stops playback; an old cancelled read remains owned until it finishes, including through rapid reopening. Completed transcript blocks retain their original recording dates. Neither UI path admits background inference.
+
+### Live transcript and screen workspace
+
+The Live tab uses the available content height without dashboard statistic tiles.
+Transcript and Screen context start at a 60/40 split with a draggable, accessible
+divider; widths below 900 points use Transcript/Screen tabs. `LiveContextWorkspaceModel`
+owns one bounded read at a time, keeps cancelled reads until completion and fences
+late publication on range, source, tab and window changes. All history is the
+browsing default. Optional search dates never reconfigure the transcript browser;
+explicit interval handoffs retain their requested scope until Return to live. Pending recordings remain visible before text is prepared. Latest
+text time is the saved transcript's end time, never the current clock or pending
+capture time. Existing recordings have no speaker identity: the UI says unassigned.
+Opening Live starts no transcription, model or network client.
+
+Scrolling or selecting a transcript pauses automatic replacement of the visible
+rows. Return to live explicitly restores current pages. Selecting audio scopes
+screens to that recording's actual interval; no nearby frame is substituted.
+Screen rows keep their source-generation proof and reuse the exact evidence reader.
+Source changes clear displayed pixels and playback immediately. Copy context opens
+a review preview first and revalidates the complete retained audio rows and exact
+screen reference both before preview and before clipboard publication. Playback
+also revalidates the latest retained row before reading its saved media range.
+Audio rows remain local legacy identities; they are not claimed as V30 immutable
+transcript evidence. Historical metric values and shared Outlook services stay intact.
 
 ### Application termination
 
 `ApplicationTerminationWorkflow` owns one launch task and one confirmed-Quit drain. Repeated Quit stays `terminateLater` while coordinator shutdown preparation, metrics, cancelled initialization and coordinator shutdown are awaited in that order. Preparation permanently fences recording entry points and cancels owned startup before the join. Startup cancellation checkpoints must prevent a late autostart or window reveal; normal startup runs once. The coordinator's shutdown route preserves recording intent for the next launch. A service shutdown failure replies false, reports that services may be partially stopped and permits a fresh Quit attempt without restarting initialization. Ask, Run in Background and Cancel retain their existing behavior.
 
 `TimelineSessionMetrics` owns duration/scrub increments across hide, reopen and Quit. It bounds pending state to two numeric totals and serializes writes; each acknowledgement consumes only the written increment. A retry therefore retains unacknowledged values without replaying committed ones or clearing a newer session. The timeout remains cooperative: even on expiry the owned writer is cancelled and joined before database closure. A failed flush is logged, and no durable metric success is inferred from it.
+
+`VoiceMarkerStatusModel` reads the App-owned recognition status; opening Live or Settings never creates a view-owned recognizer. A voice acknowledgement requires rereading an active spoken marker, and provisional recognition remains labelled until the durable observation confirms it. Undo uses the current marker revision. Settings saves disabled-default rules through `TimelineMarkerService`; acknowledgement sound is independently default-off. `TranscriptAudioPlayback` acquires the shared acoustic suppression gate before audible start/resume and releases on pause/clear/deinit; muted fixtures acquire no lease. Frame-only timeline players are muted. Actual voice recognition, sound emission and capture ownership remain in App.
+
+Advanced Settings exposes local MCP access through the App-owned `RetraceCommandAccessService`. No capabilities are preselected for a new client. Creation preserves the disabled listener until explicitly enabled; permissions and expiry are per client, and revocation uses the canonical service. The returned bearer is shown once, never logged or persisted by UI, and cleared on dismissal/Settings close (including late creation completion). Clipboard copies are explicit and marked concealed/transient. `CommandAccessViewModelTests` uses a private client store and named pasteboard; it does not alter the installed client configuration or desktop clipboard.
 
 Shortcut reloads call `TimelineWindowController.configure(coordinator:)` again with the same app coordinator. They must retain the existing metric owner and pending drain. A different coordinator requires a separate controller lifetime; replacement is rejected before changing controller state so pending metrics cannot move to another database.
 
@@ -730,3 +877,7 @@ Ordinary Timeline pixels use the same exact reader as search evidence: retained 
 ### Capture-masked recorded screens
 
 A non-nil `FrameMetadata.redactionReason` describes pixels masked before storage. The local history viewer must display the retained masked image and its remaining OCR when independently permitted; it is not a whole-frame access denial. `ExactEvidenceView` explains the saved masking reason and the dashboard labels these rows “Recorded screen”. App owns local admission separately from automatic derivation. Exact source/frame/revision, deletion and cancellation checks still apply.
+
+### Live context candidate
+
+`TimelineMarkersViewModel` retains a bounded page and older/newer cursors; its text filter explicitly searches the displayed page. `TimelineMarkersPanel` routes title/note edits through the same revision-checked `TimelineMarkerService` command as MCP. `MarkerContextViewModel` clears both derived range payloads and the marker header on affected invalidation or failed refresh; the selected identity is retained separately while asynchronous refresh runs. Unsaved editor text stays in view state and never becomes source evidence. `MarkerContextViewModelTests` includes deletion while a detail view is open. Installed acceptance is tracked in the root Live execution ledger.

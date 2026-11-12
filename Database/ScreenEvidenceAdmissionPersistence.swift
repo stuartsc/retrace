@@ -23,8 +23,19 @@ extension DatabaseManager: ScreenEvidenceAdmissionStoreProtocol {
     }
 
     public func activateScreenEvidencePolicy(_ transition: ScreenEvidencePolicyTransition) async throws {
+        try await activateScreenEvidencePolicy(transition, commandFence: nil)
+    }
+
+    public func activateScreenEvidencePolicy(_ transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence?) async throws {
         let connection = try requireAdmissionConnection()
-        try ScreenEvidenceAdmissionSQL.activate(connection, capability: &screenEvidenceAdmissionCapability, transition: transition)
+        if let commandFence {
+            try commandFence.withAdmission {
+                try ScreenEvidenceAdmissionSQL.activate(connection, capability: &screenEvidenceAdmissionCapability,
+                    transition: transition, commandFence: commandFence)
+            }
+        } else {
+            try ScreenEvidenceAdmissionSQL.activate(connection, capability: &screenEvidenceAdmissionCapability, transition: transition)
+        }
     }
 
     public func revokeScreenEvidencePolicy(_ transition: ScreenEvidencePolicyTransition) async throws {
@@ -135,7 +146,7 @@ enum ScreenEvidenceAdmissionSQL {
     }
 
     static func activate(_ db: OpaquePointer, capability: inout ScreenEvidenceAdmissionCapability,
-                         transition: ScreenEvidencePolicyTransition) throws {
+                         transition: ScreenEvidencePolicyTransition, commandFence: NativeMutationFence? = nil) throws {
         guard capability.session == transition.session else { throw ScreenEvidenceAdmissionError.staleSession }
         guard capability.prepared == transition else { throw ScreenEvidenceAdmissionError.stalePolicy }
         // A failed COMMIT or cancellation cannot leave a locally reusable grant.
@@ -147,6 +158,7 @@ enum ScreenEvidenceAdmissionSQL {
             guard state.phase == "prepared" else { throw ScreenEvidenceAdmissionError.stalePolicy }
             try PipelineSQL.execute(db, "UPDATE screen_evidence_admission_state SET phase='active' WHERE id=1")
             try Task.checkCancellation()
+            try commandFence?.checkDeadline()
         }
         capability.active = transition
     }

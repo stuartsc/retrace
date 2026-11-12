@@ -82,6 +82,14 @@ actor RecordingLifecycle {
         guard !shutdownRequested else { throw RecordingLifecycleError.shuttingDown }
     }
 
+    /// External commands can be revoked while queued for this actor. Once
+    /// admitted, teardown retains the same joined cleanup guarantees as UI stop.
+    func stopFromCommand(onRequest: @escaping @Sendable () async throws -> Void,
+                         operation: @escaping @Sendable () async throws -> Void) async throws {
+        try Task.checkCancellation()
+        try await stop(onRequest: onRequest, operation: operation)
+    }
+
     func stop(onRequest: @escaping @Sendable () async throws -> Void,
               operation: @escaping @Sendable () async throws -> Void) async throws {
         if let stopping = stopTask {

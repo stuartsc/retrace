@@ -100,11 +100,13 @@ public actor SystemAudioCapture: NSObject {
             sampleHandlerQueue: sampleHandlerQueue
         )
 
+        // Retain the native owner before its asynchronous start so failed startup
+        // can still stop the exact stream and finish its output during cleanup.
+        self.stream = scStream
         // Start capture
         Log.info("[SystemAudioCapture] Starting SCStream capture...", category: .capture)
         try await scStream.startCapture()
 
-        self.stream = scStream
         self.isRunning = true
         Log.info("[SystemAudioCapture] System audio capture started successfully", category: .capture)
     }

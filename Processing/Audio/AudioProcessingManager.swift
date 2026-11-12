@@ -5,6 +5,45 @@ import Storage
 
 private enum PendingAudioCompletionError: Error { case staleRow, modelUnavailable }
 
+/// A committed recording plus its original PCM lineage. This receipt does not
+/// itself prove an AAC seek mapping; the context owner verifies the retained file.
+public struct PersistedAudioBatchReceipt: Sendable {
+    public let rawBatchID: Int64
+    public let relativePath: String
+    public let fileURL: URL
+    public let fileSize: Int64
+    public let frameCount: Int64
+    public let sampleRate: Int
+    public let channels: Int
+    public let source: AudioSource
+    public let startTimestamp: Date
+    public let endTimestamp: Date
+    public let sourceRanges: [AudioBatchSourceRange]
+    public let sourceMappingIncomplete: Bool
+
+    public init(rawBatchID: Int64, relativePath: String, fileURL: URL, fileSize: Int64,
+                frameCount: Int64, sampleRate: Int, channels: Int, source: AudioSource,
+                startTimestamp: Date, endTimestamp: Date, sourceRanges: [AudioBatchSourceRange], sourceMappingIncomplete: Bool = false) {
+        self.rawBatchID = rawBatchID; self.relativePath = relativePath; self.fileURL = fileURL
+        self.fileSize = fileSize; self.frameCount = frameCount; self.sampleRate = sampleRate
+        self.channels = channels; self.source = source
+        self.startTimestamp = startTimestamp; self.endTimestamp = endTimestamp; self.sourceRanges = sourceRanges
+        self.sourceMappingIncomplete = sourceMappingIncomplete
+    }
+}
+
+/// Canonical first-pass rows after a successful commit. Text remains verbatim; optional enrichment
+/// cannot replace these rows or delay the next capture write with a network request.
+public struct CommittedAudioBatchReceipt: Sendable {
+    public let relativePath: String
+    public let source: AudioSource
+    public let records: [AudioTranscription]
+    public var firstPassText: String { records.map(\.text).joined(separator: "\n") }
+    public init(relativePath: String, source: AudioSource, records: [AudioTranscription]) {
+        self.relativePath = relativePath; self.source = source; self.records = records
+    }
+}
+
 private struct PersistedAudioBatch: Sendable {
     let batch: AudioBatch
     let rawBatchID: Int64?
@@ -39,6 +78,8 @@ private struct PersistedAudioBatch: Sendable {
 /// Coordinates audio capture → batch buffering → transcription → database storage pipeline
 /// Accumulates PCM into bounded batches per source before calling whisper.cpp.
 public actor AudioProcessingManager {
+    public typealias PersistedBatchHandler = @Sendable (PersistedAudioBatchReceipt) async throws -> Void
+    public typealias CommittedBatchHandler = @Sendable (CommittedAudioBatchReceipt) async throws -> Void
 
     private var transcriptionService: any TranscriptionProtocol
     private var transcriptionQueries: AudioTranscriptionQueries?
@@ -54,6 +95,11 @@ public actor AudioProcessingManager {
     private var consecutiveRecentAutomaticAttempts = 0
     public private(set) var isTranscribing = false
     public private(set) var hasPersistenceFailure = false
+    /// Sticky disclosure: canonical recordings survive a failed optional context registration.
+    public private(set) var hasPersistedBatchCallbackFailure = false
+    private var onPersistedBatch: PersistedBatchHandler?
+    private var onCommittedBatch: CommittedBatchHandler?
+    public private(set) var hasCommittedBatchCallbackFailure = false
     #if DEBUG
     private(set) var acceptedAudioSampleCountForTesting = 0
     #endif
@@ -91,14 +137,32 @@ public actor AudioProcessingManager {
         transcriptionQueries: AudioTranscriptionQueries? = nil,
         audioWriter: AudioSegmentWriter? = nil,
         governor: (any BackgroundProcessingProtocol)? = nil,
-        config: AudioProcessingConfig = .default
+        config: AudioProcessingConfig = .default,
+        onPersistedBatch: PersistedBatchHandler? = nil
     ) {
         self.transcriptionService = transcriptionService
         self.transcriptionQueries = transcriptionQueries
         self.audioWriter = audioWriter
         self.config = config
         self.governor = governor
+        self.onPersistedBatch = onPersistedBatch
         self.bufferManager = AudioBufferManager(maxBufferDuration: config.maxBufferDuration)
+    }
+
+    /// Configure before recording starts. Active accepted writes retain their
+    /// observer until its joined callback completes.
+    @discardableResult
+    public func setPersistedBatchHandler(_ handler: PersistedBatchHandler?) -> Bool {
+        guard !isProcessing else { return false }
+        onPersistedBatch = handler
+        return true
+    }
+
+    @discardableResult
+    public func setCommittedBatchHandler(_ handler: CommittedBatchHandler?) -> Bool {
+        guard !isProcessing else { return false }
+        onCommittedBatch = handler
+        return true
     }
 
     /// Join accepted capture writes, pending admission and the native inference callback.
@@ -191,6 +255,7 @@ public actor AudioProcessingManager {
         var rawBatchID: Int64?
         var savedBatchPath: String?
         var savedBatchURL: URL?
+        var savedBatchSize: Int64?
         var pendingRecord: UntranscribedBatch?
         if let writer = audioWriter {
             do {
@@ -203,6 +268,7 @@ public actor AudioProcessingManager {
                 )
                 savedBatchPath = batchPath
                 savedBatchURL = writer.storageRoot.appendingPathComponent(batchPath)
+                savedBatchSize = batchSize
                 Log.debug("[AudioProcessingManager] Saved raw batch: \(batchPath) (\(batchSize) bytes)", category: .processing)
 
                 // Insert DB record for the raw batch
@@ -231,6 +297,20 @@ public actor AudioProcessingManager {
                 }
             } catch {
                 Log.error("[AudioProcessingManager] Failed to save raw batch audio: \(error)", category: .processing)
+            }
+        }
+
+        if let rawBatchID, let path = savedBatchPath, let fileURL = savedBatchURL,
+           let fileSize = savedBatchSize, !batch.sourceRanges.isEmpty || batch.sourceMappingIncomplete, let onPersistedBatch {
+            let receipt = PersistedAudioBatchReceipt(rawBatchID: rawBatchID, relativePath: path,
+                fileURL: fileURL, fileSize: fileSize, frameCount: Int64(batch.audioData.count / (max(batch.channels, 1) * 2)),
+                sampleRate: batch.sampleRate, channels: batch.channels, source: batch.source,
+                startTimestamp: batch.startTimestamp, endTimestamp: batch.endTimestamp, sourceRanges: batch.sourceRanges,
+                sourceMappingIncomplete: batch.sourceMappingIncomplete)
+            do { try await onPersistedBatch(receipt) }
+            catch {
+                hasPersistedBatchCallbackFailure = true
+                Log.warning("[AudioProcessingManager] Saved audio context registration failed; recording remains available", category: .processing)
             }
         }
 
@@ -609,6 +689,8 @@ public actor AudioProcessingManager {
                 _ = try await queries.insertTranscriptionsBatch(transcriptionsBatch)
             }
 
+            await publishCommittedBatch(persistedBatch)
+
             // Step 6: Update statistics
             let processingTime = Date().timeIntervalSince(startTime)
             updateStatistics(
@@ -655,6 +737,21 @@ public actor AudioProcessingManager {
             audioVariant: audioVariant, qualityFlags: qualityFlags,
             cancellation: BackgroundProcessingContext.permit?.cancellation) else {
             throw PendingAudioCompletionError.staleRow
+        }
+        // An uncertain but retained first pass is still evidence. Later repair may improve it.
+        if !text.isEmpty { await publishCommittedBatch(persisted) }
+    }
+
+    private func publishCommittedBatch(_ persisted: PersistedAudioBatch) async {
+        guard let callback = onCommittedBatch, let path = persisted.savedBatchPath,
+              let queries = transcriptionQueries else { return }
+        do {
+            let rows = try await queries.getContextBatchEntries(batchAudioPath: path)
+            guard !rows.isEmpty else { return }
+            try await callback(.init(relativePath: path, source: persisted.batch.source, records: rows))
+        } catch {
+            hasCommittedBatchCallbackFailure = true
+            Log.warning("Optional companion publication failed; committed audio and text are retained", category: .processing)
         }
     }
 

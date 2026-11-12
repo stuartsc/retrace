@@ -141,6 +141,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var menuBarManager: MenuBarManager?
     private var coordinatorWrapper: AppCoordinatorWrapper?
+    private var foregroundCommandRegistration: UUID?
     private var sleepWakeObservers: [NSObjectProtocol] = []
     private var powerSourceRunLoopSource: CFRunLoopSource?
     private var powerSettingsApplyTask: Task<Void, Never>?
@@ -269,6 +270,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Configure the transcript window controller
             TranscriptWindowController.shared.configure(coordinator: wrapper.coordinator)
+
+            let commandCoordinator = wrapper.coordinator
+            foregroundCommandRegistration = await RetraceForegroundRouter.shared.register(open: { target, authorization in
+                try Task.checkCancellation()
+                switch target {
+                case .screen(let reference):
+                    try await TimelineWindowController.shared.openEvidenceFromCommand(reference, coordinator: commandCoordinator, authorization: authorization)
+                case .transcript(let reference):
+                    try await TranscriptWindowController.shared.showExactFromCommand(reference, coordinator: commandCoordinator, authorization: authorization)
+                case .speakerTurn(let reference):
+                    try await CompanionTurnWindowController.shared.open(reference, coordinator: commandCoordinator, authorization: authorization)
+                case .marker(let id, let revision):
+                    try await MarkerContextWindowController.shared.open(markerID: id, expectedRevision: revision, coordinator: commandCoordinator, authorization: authorization)
+                }
+            }, playback: { request, authorization in
+                try Task.checkCancellation()
+                let playback = try await commandCoordinator.markerPlayback()
+                let turns = try await commandCoordinator.companionTurnPlayback()
+                try await authorization.validate()
+                switch request {
+                case .playMarker(let id, let revision):
+                    try await turns.stop(commandFence: authorization.fence)
+                    try await authorization.validate()
+                    try await playback.play(markerID: id, expectedRevision: revision, commandFence: authorization.fence)
+                case .playTurn(let reference):
+                    try await playback.stop(commandFence: authorization.fence)
+                    try await authorization.validate()
+                    try await turns.play(reference, commandFence: authorization.fence)
+                case .stop:
+                    try await playback.stop(commandFence: authorization.fence)
+                    try await turns.stop(commandFence: authorization.fence)
+                }
+            })
+            try Task.checkCancellation()
 
             // Setup sleep/wake observers to properly handle segment tracking
             setupSleepWakeObservers()
@@ -468,6 +503,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         TimelineWindowController.shared.saveStateForTermination()
 
         terminationWorkflow.requestTermination(prepareShutdown: { [self] in
+            if let registration = foregroundCommandRegistration {
+                foregroundCommandRegistration = nil
+                await RetraceForegroundRouter.shared.unregister(registration)
+            }
             await coordinatorWrapper?.prepareForShutdown()
         }, flushMetrics: {
             // Complete metric writes before the coordinator closes its database.

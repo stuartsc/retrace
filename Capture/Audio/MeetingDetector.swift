@@ -9,6 +9,8 @@ public actor MeetingDetector: MeetingDetectorProtocol {
 
     private var monitoredBundleIDs: Set<String> = []
     private var isMonitoring = false
+    private var generation = UUID()
+    private var detectionRevision: UInt64 = 0
     @MainActor private var checkTimer: Timer?
     private var currentMeetingState: MeetingState = .notInMeeting
 
@@ -35,40 +37,23 @@ public actor MeetingDetector: MeetingDetectorProtocol {
     }
 
     /// Start monitoring for meeting activity
-    public func startMonitoring(bundleIDs: Set<String>) {
+    public func startMonitoring(bundleIDs: Set<String>) async {
         guard !isMonitoring else { return }
-
-        self.monitoredBundleIDs = bundleIDs
-        self.isMonitoring = true
-
-        // Start periodic checks (every 2 seconds)
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            await self.setCheckTimer(Timer.scheduledTimer(
-                withTimeInterval: 2.0,
-                repeats: true
-            ) { [weak self] _ in
-                Task {
-                    await self?.checkMeetingStatus()
-                }
-            })
-        }
-
-        // Immediate check
-        Task {
-            await checkMeetingStatus()
-        }
+        monitoredBundleIDs = bundleIDs; isMonitoring = true
+        let token = UUID(); generation = token
+        // Initial policy must settle before system capture can emit audio.
+        await checkMeetingStatus(generation: token)
+        guard isMonitoring, generation == token else { return }
+        await installCheckTimer(generation: token)
+        // Stop may have run during the MainActor hop. Removal is joined.
+        if !isMonitoring || generation != token { await clearCheckTimer(generation: token) }
     }
 
-    /// Stop monitoring
-    public func stopMonitoring() {
-        isMonitoring = false
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            await self.clearCheckTimer()
-        }
-        currentMeetingState = .notInMeeting
-        cachedMeetingState = .notInMeeting
+    public func stopMonitoring() async {
+        let token = generation
+        generation = UUID(); isMonitoring = false
+        await clearCheckTimer(generation: token)
+        currentMeetingState = .notInMeeting; cachedMeetingState = .notInMeeting
     }
 
     /// Set callback for state changes
@@ -83,27 +68,36 @@ public actor MeetingDetector: MeetingDetectorProtocol {
 
     // MARK: - MainActor Timer Helpers
 
+    @MainActor private var checkTimerGeneration: UUID?
+
     @MainActor
-    private func setCheckTimer(_ timer: Timer) {
+    private func installCheckTimer(generation: UUID) {
+        checkTimer?.invalidate()
+        checkTimerGeneration = generation
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { await self?.checkMeetingStatus(generation: generation) }
+        }
         checkTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     @MainActor
-    private func clearCheckTimer() {
-        checkTimer?.invalidate()
-        checkTimer = nil
+    private func clearCheckTimer(generation: UUID) {
+        guard checkTimerGeneration == generation else { return }
+        checkTimer?.invalidate(); checkTimer = nil; checkTimerGeneration = nil
     }
 
     // MARK: - Private Detection Logic
 
-    private func checkMeetingStatus() async {
+    private func checkMeetingStatus(generation token: UUID) async {
+        guard isMonitoring, generation == token else { return }
+        detectionRevision &+= 1
+        let revision = detectionRevision
         let previousState = currentMeetingState
         let newState = await detectMeetingState()
-
-        if newState.isInMeeting != previousState.isInMeeting ||
-           newState.detectedApp != previousState.detectedApp {
-            currentMeetingState = newState
-            cachedMeetingState = newState  // Update cached state
+        guard isMonitoring, generation == token, detectionRevision == revision else { return }
+        if newState.isInMeeting != previousState.isInMeeting || newState.detectedApp != previousState.detectedApp {
+            currentMeetingState = newState; cachedMeetingState = newState
             stateChangeCallback?(newState)
         }
     }
