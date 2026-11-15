@@ -140,6 +140,63 @@ final class ExactFrameReaderTests: XCTestCase {
         }
     }
 
+    func testCachedGeneratorReturnsPixelIdenticalFramesAndReusesTheOpenedAsset() async throws {
+        let video = try await makeVideo()
+        ExactFrameReader.clearGeneratorCacheForTesting()
+        let coldA = try rgba(try await read(video, index: 0))
+        let opensAfterCold = ExactFrameReader.assetOpenCountForTesting
+        let b = try rgba(try await read(video, index: 1))
+        let warmA = try rgba(try await read(video, index: 0))
+        XCTAssertEqual(ExactFrameReader.assetOpenCountForTesting, opensAfterCold,
+                       "Later frames of the same unchanged file must not open a new asset")
+        XCTAssertEqual(warmA, coldA, "A cached decode must be pixel-identical to the cold decode")
+        XCTAssertNotEqual(b, coldA)
+        ExactFrameReader.clearGeneratorCacheForTesting()
+        let coldB = try rgba(try await read(video, index: 1))
+        XCTAssertEqual(coldB, b)
+    }
+
+    func testReplacingTheFileInvalidatesTheCachedGenerator() async throws {
+        let video = try await makeVideo()
+        ExactFrameReader.clearGeneratorCacheForTesting()
+        let original = try await read(video, index: 1)
+        XCTAssertEqual(try centerGray(original), 120, accuracy: 15)
+        let opensBefore = ExactFrameReader.assetOpenCountForTesting
+        // Same path, new content: frame slot 1 no longer exists, so any stale
+        // generator would wrongly still return the old image.
+        let replacement = try await makeVideo(ticks: [0, 3, 6])
+        try FileManager.default.removeItem(at: video)
+        try FileManager.default.moveItem(at: replacement, to: video)
+        await assertError(.integrityFailure) { _ = try await self.read(video, index: 1) }
+        XCTAssertGreaterThan(ExactFrameReader.assetOpenCountForTesting, opensBefore)
+    }
+
+    func testGeneratorCacheNeverExceedsItsBound() async throws {
+        ExactFrameReader.clearGeneratorCacheForTesting()
+        for _ in 0..<(ExactFrameReader.maximumCachedGenerators + 2) {
+            let video = try await makeVideo()
+            _ = try await read(video, index: 1)
+            XCTAssertLessThanOrEqual(ExactFrameReader.cachedGeneratorCountForTesting,
+                                     ExactFrameReader.maximumCachedGenerators)
+        }
+        XCTAssertEqual(ExactFrameReader.cachedGeneratorCountForTesting,
+                       ExactFrameReader.maximumCachedGenerators)
+    }
+
+    private func rgba(_ image: CGImage) throws -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                                          bitsPerComponent: 8, bytesPerRow: image.width * 4, space: colorSpace,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return true
+        }
+        guard drawn else { throw XCTSkip("Could not create a CoreGraphics inspection context") }
+        return bytes
+    }
+
     private func read(_ video: URL, index: Int, rate: Double = 30,
                       width: Int = 64, height: Int = 64) async throws -> CGImage {
         try await ExactFrameReader.readFrame(videoURL: video, frameIndex: index,

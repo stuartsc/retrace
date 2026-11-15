@@ -7792,6 +7792,9 @@ public class SimpleTimelineViewModel: ObservableObject {
 
     private func exactTimelineImage(_ row: TimelineFrame) async throws -> EvidenceResolution {
         try Task.checkCancellation()
+        // Stage timings split present_ms into reference lookup and resolve (service
+        // queueing plus decode), so a slow tail can be attributed without profiling.
+        let lookupBegan = CFAbsoluteTimeGetCurrent()
         let generation = try await evidenceClient.sourceGeneration(row.frame.source)
         let reference: ScreenEvidenceRef
         if let exactReference = row.exactReference {
@@ -7806,7 +7809,12 @@ public class SimpleTimelineViewModel: ObservableObject {
             throw EvidenceUnavailableReason.integrityFailure
         }
         try Task.checkCancellation()
+        let resolveBegan = CFAbsoluteTimeGetCurrent()
+        Log.recordLatency("timeline.frame.lookup_ms", valueMs: (resolveBegan - lookupBegan) * 1_000,
+            category: .ui, summaryEvery: 20)
         let result = await evidenceClient.resolve(.screen(reference))
+        Log.recordLatency("timeline.frame.resolve_ms", valueMs: (CFAbsoluteTimeGetCurrent() - resolveBegan) * 1_000,
+            category: .ui, summaryEvery: 20)
         try Task.checkCancellation()
         guard try await evidenceClient.sourceGeneration(row.frame.source) == generation else {
             throw EvidenceUnavailableReason.sourceDisconnected

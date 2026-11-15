@@ -41,8 +41,9 @@ public enum ExactFrameReader {
             let initialFile = try fileIdentity(videoURL)
             guard initialFile.size > 0 else { throw ExactFrameReadError.frameFinalising }
 
-            // A new asset and generator are constructed for every attempt. Decoder state
-            // retained while a segment was growing must never substitute an older image.
+            // Generators are cached per file identity and dropped after any failed attempt,
+            // so a retry always uses a freshly opened asset and a changed file is never
+            // served from older decoder state.
             for attempt in 0..<2 {
                 try checkCancellation()
                 do {
@@ -69,6 +70,9 @@ public enum ExactFrameReader {
                     try checkCancellation()
                     return decoded.image
                 } catch {
+                    // Every failed attempt discards the cached generator so the retry
+                    // (and any later read) starts from a freshly opened asset.
+                    generatorCache.evict(path: videoURL.path)
                     try checkCancellation()
                     if let exact = error as? ExactFrameReadError,
                        exact != .integrityFailure { throw exact }
@@ -86,31 +90,120 @@ public enum ExactFrameReader {
         }
     }
 
+    /// At most this many opened recordings (asset + generator) stay resident.
+    static let maximumCachedGenerators = 3
+    private static let generatorCache = GeneratorCache(limit: maximumCachedGenerators)
+
+    /// Test seams: how many assets were opened, how many entries are resident.
+    static var assetOpenCountForTesting: Int { generatorCache.openCount }
+    static var cachedGeneratorCountForTesting: Int { generatorCache.count }
+    static func clearGeneratorCacheForTesting() { generatorCache.removeAll() }
+
     static func decodeFrame(videoURL: URL, at time: CMTime) throws -> ExactDecodedFrame {
-        // The persisted native MP4 filename has no extension. A temporary symlink
-        // supplies a container hint without changing the retained recording.
-        var temporaryURL: URL?
-        let assetURL: URL
-        if videoURL.pathExtension.isEmpty {
-            let link = FileManager.default.temporaryDirectory
-                .appendingPathComponent("retrace-exact-\(UUID()).mp4")
-            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: videoURL)
-            temporaryURL = link
-            assetURL = link
-        } else {
-            assetURL = videoURL
+        // A cached generator is only reused while the file's device, inode, size and
+        // modification time are unchanged; any other identity opens a fresh asset.
+        let identity = try fileIdentity(videoURL)
+        let entry = try generatorCache.acquire(path: videoURL.path, identity: identity) {
+            try CachedGenerator(videoURL: videoURL, identity: identity)
         }
-        defer {
-            if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) }
+        do {
+            return try entry.decode(at: time)
+        } catch {
+            generatorCache.evict(path: videoURL.path)
+            throw error
         }
-        let asset = AVURLAsset(url: assetURL, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        var actual = CMTime.invalid
-        let image = try generator.copyCGImage(at: time, actualTime: &actual)
-        return ExactDecodedFrame(image: image, actualTime: actual)
+    }
+
+    /// One opened recording. Zero tolerance is configured exactly as for a cold decode.
+    private final class CachedGenerator: @unchecked Sendable {
+        let path: String
+        let identity: FileIdentity
+        private let linkURL: URL?
+        private let generator: AVAssetImageGenerator
+        // AVAssetImageGenerator is not documented as safe for concurrent copyCGImage
+        // on one instance, so decodes on the same entry are serialised.
+        private let decodeLock = NSLock()
+
+        init(videoURL: URL, identity: FileIdentity) throws {
+            // The persisted native MP4 filename has no extension. A temporary symlink
+            // supplies a container hint without changing the retained recording.
+            // It lives as long as the entry and is removed in deinit.
+            var link: URL?
+            let assetURL: URL
+            if videoURL.pathExtension.isEmpty {
+                let created = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("retrace-exact-\(UUID()).mp4")
+                try FileManager.default.createSymbolicLink(at: created, withDestinationURL: videoURL)
+                link = created
+                assetURL = created
+            } else {
+                assetURL = videoURL
+            }
+            let asset = AVURLAsset(url: assetURL, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+            self.path = videoURL.path
+            self.identity = identity
+            self.linkURL = link
+            self.generator = generator
+        }
+
+        deinit {
+            if let linkURL { try? FileManager.default.removeItem(at: linkURL) }
+        }
+
+        func decode(at time: CMTime) throws -> ExactDecodedFrame {
+            decodeLock.lock()
+            defer { decodeLock.unlock() }
+            var actual = CMTime.invalid
+            let image = try generator.copyCGImage(at: time, actualTime: &actual)
+            return ExactDecodedFrame(image: image, actualTime: actual)
+        }
+    }
+
+    /// Small LRU guarded by a lock; the last element is the most recently used.
+    private final class GeneratorCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private let limit: Int
+        private var entries: [CachedGenerator] = []
+        private var opened = 0
+
+        init(limit: Int) { self.limit = limit }
+
+        var openCount: Int { lock.lock(); defer { lock.unlock() }; return opened }
+        var count: Int { lock.lock(); defer { lock.unlock() }; return entries.count }
+
+        func acquire(path: String, identity: FileIdentity,
+                     open: () throws -> CachedGenerator) throws -> CachedGenerator {
+            lock.lock()
+            defer { lock.unlock() }
+            if let index = entries.firstIndex(where: { $0.path == path && $0.identity == identity }) {
+                let hit = entries.remove(at: index)
+                entries.append(hit)
+                return hit
+            }
+            // A changed file never reuses an older generator for the same path.
+            entries.removeAll { $0.path == path }
+            let created = try open()
+            opened += 1
+            entries.append(created)
+            while entries.count > limit { entries.removeFirst() }
+            return created
+        }
+
+        func evict(path: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.removeAll { $0.path == path }
+        }
+
+        func removeAll() {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.removeAll()
+        }
     }
 
     private static func checkCancellation() throws {

@@ -128,19 +128,19 @@ public class TranscriptWindowController: NSObject {
             return (row, owner, publication)
         }
         loadRecordings = { timestamp in
-            guard let queries = await coordinator.getAudioTranscriptionQueries() else {
+            guard let reader = try? await coordinator.getLiveAudioContextReader() else {
                 throw TranscriptRecordingLoadError.unavailable
             }
             let owner = try await coordinator.companion()
             let publication = TranscriptPublicationGuard(owner: owner)
-            var page = try await TranscriptRecordingLoader.load(queries: queries, at: timestamp)
+            var page = try await TranscriptRecordingLoader.load(reader: reader, at: timestamp)
             page.publication = publication
             do {
                 let enrichment = try await owner.speakerPresentations(
                     from: timestamp.addingTimeInterval(-TranscriptRecordingLoader.windowSeconds),
                     to: timestamp.addingTimeInterval(TranscriptRecordingLoader.windowSeconds), before: nil, limit: 50)
-                let reader = try await coordinator.liveContextSearch()
-                let references = try await reader.transcriptReferences(Array(page.transcriptions.prefix(500)))
+                let search = try await coordinator.liveContextSearch()
+                let references = try await search.transcriptReferences(Array(page.transcriptions.prefix(500)))
                 page.speakers = enrichment.items
                 page.references = references.compactMap { if case .transcript(let value) = $0 { return value }; return nil }
                 if enrichment.nextCursor != nil || enrichment.incomplete {

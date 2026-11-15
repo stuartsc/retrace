@@ -45,6 +45,17 @@ public actor LiveAudioContextReader {
         return try await reader.getContextEntry(id: id)
     }
 
+    /// Bounded recording rows for the transcript panel, read on this reader's
+    /// own read-only connection so they never queue behind the writer's mutex.
+    public func getTranscriptions(from start: Date, to end: Date, limit: Int,
+                                  includeActivityRows: Bool) async throws -> [AudioTranscription] {
+        try beginRead()
+        defer { endRead() }
+        let reader = try await acquireReader()
+        return try await reader.getTranscriptions(from: start, to: end, limit: limit,
+            includeActivityRows: includeActivityRows)
+    }
+
     private func acquireReader() async throws -> AudioTranscriptionQueries {
         if let queries { return queries }
         let request: (id: UUID, task: Task<SQLiteConnection, Error>)

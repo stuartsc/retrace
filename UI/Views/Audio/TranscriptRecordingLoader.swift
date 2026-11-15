@@ -27,6 +27,22 @@ enum TranscriptRecordingLoader {
             limit: maximumRows + 1,
             includeActivityRows: true
         )
+        return try page(from: rows)
+    }
+
+    /// Panel reads use the shared read-only reader, never the writer connection.
+    static func load(reader: LiveAudioContextReader, at timestamp: Date) async throws -> TranscriptRecordingPage {
+        try Task.checkCancellation()
+        let rows = try await reader.getTranscriptions(
+            from: timestamp.addingTimeInterval(-windowSeconds),
+            to: timestamp.addingTimeInterval(windowSeconds),
+            limit: maximumRows + 1,
+            includeActivityRows: true
+        )
+        return try page(from: rows)
+    }
+
+    private static func page(from rows: [AudioTranscription]) throws -> TranscriptRecordingPage {
         try Task.checkCancellation()
         // The existing query returns the latest rows wholly within this window.
         // Keep one overflow sentinel so the panel never implies this is a complete page.
