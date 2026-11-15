@@ -1,5 +1,37 @@
 # Retrace repair handoff — 13 November 2026
 
+## Later same-day phased-audio work (in progress)
+
+Stuart approved fast searchable drafts, one background quality/speaker pass for
+new speech, selective third-pass repair, and remote processing with idle laptop
+fallback. He explicitly approved missing Apple en-AU assets; preparation has now
+completed (`supported` → `installed`). This supersedes the earlier pending-asset
+approval note below. No new app has been installed during this follow-up.
+
+Implementation remains in `/Users/stuartbond/backintime-audio-delivery-20261113`.
+Its `docs/phased-audio-delivery-20261113.md` records decisions, implementation,
+failures, review findings and remaining validation. Fast-draft and projection
+source changes exist; companion handover/review fixes are being finalised. Swift
+tests and native acceptance are still pending. Retained intermediate build logs
+do not establish a passing build. Do not confuse this source with installed
+2611.13.2 or the main workspace's wider V24–V32 candidate.
+
+### 16 November resume
+
+The phased-audio source now compiles and is committed and pushed as checkpoint
+`5af39ab` on `repair/audio-delivery-20261113` (1,764 tests, 22 skipped, 3
+failures; incremental run, not a clean-build receipt). Stuart reported Live and
+Timeline still misbehaving on installed 2611.13.2. Read-only measurement found
+root causes that the phased-audio branch did not address: blank first passes on
+background noise are filed as "needs repair", repair is starved by 318,000 old
+quiet pending recordings, the Timeline decodes each frame from a newly opened
+video with no cache, and the transcript panel reads on the writer's connection.
+Code fixes are in progress in `/Users/stuartbond/backintime-rootcause-20261116`
+(branch `repair/audio-timeline-rootcause-20261116`). Full findings, evidence and
+the decisions awaiting Stuart are in the "Resume, 16 November" section of
+`docs/phased-audio-delivery-20261113.md` in the audio delivery worktree. Nothing
+new has been installed.
+
 ## Goal and current state
 
 Restore prompt, useful transcription and a Timeline that opens at the newest saved
