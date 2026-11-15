@@ -78,6 +78,11 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     private var scheduledWindowStarted: TimeInterval?
     private var activeUsesScheduledWindow = false
     private var nextOverdueAdmission: TimeInterval = 0
+    /// Earliest next fresh-OCR admission; only enforced while the CPU budget is exceeded.
+    private var nextFreshOCRAdmission: TimeInterval = 0
+    private var lastDenialLog: TimeInterval?
+    private static let freshOCRPaceSeconds: TimeInterval = 2
+    private static let denialLogIntervalSeconds: TimeInterval = 60
     private var monotonicNow: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     private static let scheduledWindowBudget: TimeInterval = 20
     private var memoryPressure: BackgroundMemoryPressureBridge?
@@ -127,6 +132,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         consecutiveSpeech = kind == .ambientSpeech || kind == .freshTranscription ? min(consecutiveSpeech + 1, 3) : 0
         consecutiveFreshOCR = kind == .freshOCR ? min(consecutiveFreshOCR + 1, 3) : 0
         consecutivePreferred = kind.isFresh || kind == .ambientSpeech ? min(consecutivePreferred + 1, 3) : 0
+        if kind == .freshOCR { nextFreshOCRAdmission = monotonicNow() + Self.freshOCRPaceSeconds }
         return permit
     }
 
@@ -260,6 +266,8 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         scheduledWindowStarted = nil
         activeUsesScheduledWindow = false
         nextOverdueAdmission = 0
+        nextFreshOCRAdmission = 0
+        lastDenialLog = nil
         memoryPressure = nil
         environment = .init(idleSeconds: 0)
         resourcePolicy = ResourceProcessingPolicy()
@@ -294,9 +302,12 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         if processNow || explicitRequest { return true }
         // Recording itself can exceed the app-only soft target. First-pass text
         // must still progress; host load, unknown measurements and native pressure
-        // continue to block it. Refinement and OCR retain the ordinary CPU policy.
+        // continue to block it. Fresh OCR shares that exemption but is paced to one
+        // admission per 2 s while over budget; refinement and backfill keep the CPU policy.
+        let cpuOnly = resourcePolicy.reason == .cpuBudget
         guard resourcePolicy.reason == nil ||
-                (kind?.isFirstPass == true && resourcePolicy.reason == .cpuBudget) else { return false }
+                (cpuOnly && (kind?.isFirstPass == true || kind == .freshOCR)) else { return false }
+        if kind == .freshOCR && cpuOnly && monotonicNow() < nextFreshOCRAdmission { return false }
         if kind?.isFresh == true { return true }
         if kind == .overdueTranscription {
             if quietWindowAvailable { return true }
@@ -319,7 +330,8 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         if let reason = resourcePolicy.reason {
             let progressingFirstPass = activeKind?.isFirstPass == true ||
                 waiters.contains { $0.kind.isFirstPass }
-            if reason != .cpuBudget || !progressingFirstPass { return reason }
+            let progressingFreshOCR = activeKind == .freshOCR || waiters.contains { $0.kind == .freshOCR }
+            if reason != .cpuBudget || !(progressingFirstPass || progressingFreshOCR) { return reason }
         }
         if activeKind?.isFirstPass == true || activeKind?.isFresh == true || waiters.contains(where: { $0.kind.isFresh || $0.kind.isFirstPass }) { return nil }
         if !environment.idleSeconds.isFinite || environment.idleSeconds < 300 { return .activeUse }
@@ -366,7 +378,10 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
 
     private func admit() {
         finishExpiredScheduledWindowIfIdle()
-        guard active == nil, !closed, environment.pressureAllowsProcessing else { return }
+        guard active == nil, !closed, environment.pressureAllowsProcessing else {
+            if active == nil, !closed { logDenialIfDue() }
+            return
+        }
         // Prioritize speech but force the oldest other work after at most three speech jobs.
         while !waiters.isEmpty {
             let index: Int
@@ -398,6 +413,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             }) {
                 index = overdue
             } else if !mayProcess {
+                logDenialIfDue()
                 return
             } else if consecutiveSpeech >= 3, let other = waiters.firstIndex(where: { $0.kind != .ambientSpeech }) {
                 index = other
@@ -413,6 +429,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             consecutiveFreshOCR = waiter.kind == .freshOCR ? min(consecutiveFreshOCR + 1, 3) : 0
             consecutivePreferred = waiter.kind.isFresh || waiter.kind == .ambientSpeech
                 ? min(consecutivePreferred + 1, 3) : 0
+            if waiter.kind == .freshOCR { nextFreshOCRAdmission = monotonicNow() + Self.freshOCRPaceSeconds }
             let permit = BackgroundProcessingPermit(id: waiter.id, threadCount: threadCount(for: waiter.kind),
                                                     cancellation: waiter.cancellation)
             active = permit
@@ -422,6 +439,18 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             waiter.continuation.resume(returning: permit)
             return
         }
+    }
+
+    /// Numbers and enum names only, at most once per minute, so a later investigation
+    /// can see why queued work was refused.
+    private func logDenialIfDue() {
+        guard !waiters.isEmpty else { return }
+        let now = monotonicNow()
+        if let last = lastDenialLog, now - last < Self.denialLogIntervalSeconds { return }
+        lastDenialLog = now
+        let reason = waitReason.map { String(describing: $0) } ?? "none"
+        let kinds = waiters.map { String(describing: $0.kind) }.joined(separator: ",")
+        Log.info("[Governor] Work denied: reason=\(reason) waiting=\(waiters.count) kinds=\(kinds)", category: .processing)
     }
 
     private func startObservationIfNeeded() async {

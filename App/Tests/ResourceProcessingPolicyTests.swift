@@ -68,7 +68,7 @@ final class ResourceProcessingPolicyTests: XCTestCase {
         XCTAssertFalse(permit.cancellation.isCancelled, "An admitted bounded fresh job can finish its own CPU burst")
         await governor.release(permit)
         let blocked = try await governor.tryAcquire(.freshOCR)
-        XCTAssertNil(blocked)
+        XCTAssertNil(blocked, "Over the CPU budget, fresh OCR is paced to one admission per 2 s")
         historical.cancel()
         do { _ = try await historical.value; XCTFail("History admitted during input") } catch is CancellationError {}
         await governor.close()
@@ -83,7 +83,7 @@ final class ResourceProcessingPolicyTests: XCTestCase {
         let refinement = try await governor.tryAcquire(.refinement)
         XCTAssertNil(refinement)
         let ocr = try await governor.tryAcquire(.freshOCR)
-        XCTAssertNil(ocr, "Only first-pass audio has the protected admission")
+        await governor.release(try XCTUnwrap(ocr, "Fresh OCR shares the protected admission, paced to one per 2 s"))
         await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample(2, cpu: 40, system: 85)))
         let overloaded = try await governor.tryAcquire(.freshTranscription)
         XCTAssertNil(overloaded, "System overload still prevents admission")

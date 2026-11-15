@@ -175,6 +175,67 @@ final class BackgroundProcessingGovernorTests: XCTestCase {
         await governor.close()
     }
 
+    func testFreshOCRProgressesOverCPUBudgetPacedToOnePerTwoSeconds() async throws {
+        let clock = QuietGrantClock()
+        let governor = BackgroundProcessingGovernor(scheduler: ConsumableBackgroundGrant(), monotonicNow: { clock.now })
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        let first = try await governor.tryAcquire(.freshOCR)
+        await governor.release(try XCTUnwrap(first, "Fresh OCR proceeds when only the CPU budget is exceeded"))
+        let second = Task { try await governor.acquire(.freshOCR) }
+        try await waitForQueue(governor, count: 1)
+        let waiting = await governor.snapshot()
+        XCTAssertNil(waiting.waitReason, "Progressing fresh OCR must not report waiting for CPU")
+        clock.advance(1)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        let early = await governor.snapshot()
+        XCTAssertFalse(early.isRunning, "Second admission inside the 2 s pace waits")
+        clock.advance(1)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        let after = await governor.snapshot()
+        XCTAssertEqual(after.activeKind, .freshOCR)
+        await governor.release(try await second.value)
+        await governor.close()
+    }
+
+    func testFreshOCRStillBlockedBySystemBusyAndResourcePressure() async throws {
+        let governor = BackgroundProcessingGovernor(observeSystem: false)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40, system: 85)))
+        let busy = try await governor.tryAcquire(.freshOCR)
+        XCTAssertNil(busy)
+        await governor.updateEnvironment(.init(idleSeconds: 0, pressureAllowsProcessing: false,
+                                               resourceUsage: cpuSample(cpu: 40)))
+        let pressure = try await governor.tryAcquire(.freshOCR)
+        XCTAssertNil(pressure)
+        await governor.close()
+    }
+
+    func testHistoricalOCRAndRefinementStillBlockedByCPUBudget() async throws {
+        let governor = BackgroundProcessingGovernor(observeSystem: false)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        let historical = try await governor.tryAcquire(.historicalOCR)
+        XCTAssertNil(historical)
+        let refinement = try await governor.tryAcquire(.refinement)
+        XCTAssertNil(refinement)
+        await governor.close()
+    }
+
+    func testFreshOCRIsUnpacedWhenCPUBudgetIsNotExceeded() async throws {
+        let clock = QuietGrantClock()
+        let governor = BackgroundProcessingGovernor(scheduler: ConsumableBackgroundGrant(), monotonicNow: { clock.now })
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 10)))
+        for _ in 0..<3 {
+            let optional = try await governor.tryAcquire(.freshOCR)
+            await governor.release(try XCTUnwrap(optional, "No reason set: fresh OCR is not paced"))
+        }
+        await governor.close()
+    }
+
+    private func cpuSample(cpu: Double, system: Double = 50) -> ResourceUsageSnapshot {
+        .init(observedAt: Date(), sampleUptime: 1, cpuPercent: cpu,
+              systemCPUPercent: system, systemFiveSecondCPUPercent: system, logicalCoreCount: 10,
+              oneMinute: .init(cpuPercent: cpu, sampledSeconds: 60, elapsedSeconds: 60), isCurrent: true)
+    }
+
     func testExplicitRequestRunsDuringInteractionAndCancellationReleasesSharedSlot() async throws {
         let governor = BackgroundProcessingGovernor(observeSystem: false)
         await governor.updateEnvironment(.init(idleSeconds: 0, systemAllowsProcessing: false))
