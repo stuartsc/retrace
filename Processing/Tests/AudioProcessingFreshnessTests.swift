@@ -353,10 +353,12 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         XCTAssertEqual(storedFiles.count, 10, "Scheduling never deletes saved recordings")
     }
 
-    func testOverdueFirstPassRemainsForegroundEligibleBeforeOldestRepair() async throws {
+    func testRecentSpeechStillPrecedesOldestRepairInForegroundLane() async throws {
+        // Replaces the old overdue-before-repair test: an unflagged 48 h-old pending row is now
+        // outside the speech lanes and yields to repair. Recent speech still goes first.
         let now = Date()
-        let oldest = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
-        let later = try await seed(at: now.addingTimeInterval(-48 * 3_600))
+        let repair = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
+        let recent = try await seed(at: now.addingTimeInterval(-3_600))
         let governor = FreshnessTestGovernor()
         let run = start(service: FreshnessTestTranscriber(), governor: governor)
         await governor.grantOne()
@@ -364,12 +366,29 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         XCTAssertTrue(completed)
         await stop(run)
         let pending = try await queries.getUntranscribedBatches(limit: 100)
-        XCTAssertEqual(pending.map(\.id), [oldest])
+        XCTAssertEqual(pending.map(\.id), [repair])
         let kinds = await governor.requestedKinds
-        XCTAssertEqual(kinds.first, .overdueTranscription, "Age changes pacing without forcing an unprocessed recording into idle-only admission")
-        let completedRows = try await queries.getTranscriptions(from: now.addingTimeInterval(-80 * 3_600), to: now)
-        XCTAssertEqual(completedRows.count, 1)
-        XCTAssertNotEqual(completedRows.first?.id, later)
+        XCTAssertNotEqual(kinds.first, .ambientSpeech)
+        XCTAssertNotEqual(recent, repair)
+    }
+
+    func testQuietBacklogDoesNotBlockRepairAdmission() async throws {
+        let now = Date()
+        let repair = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
+        let quiet = try await seed(at: now.addingTimeInterval(-48 * 3_600))
+        try await queries.updateBatchOutcome(id: quiet, text: "", transcriptStatus: "pending",
+            detectedLanguage: nil, audioVariant: "raw", qualityFlags: AudioPreparationMetadata.lowEnergyPending)
+        let governor = FreshnessTestGovernor()
+        let run = start(service: FreshnessTestTranscriber(), governor: governor)
+        await governor.grantOne()
+        let completed = await eventually { await governor.releaseCount == 1 }
+        XCTAssertTrue(completed)
+        await stop(run)
+        let kinds = await governor.requestedKinds
+        XCTAssertEqual(kinds.first, .ambientSpeech, "Repair is admitted through the idle-gated lane, not overdue pacing")
+        let pending = try await queries.getUntranscribedBatches(limit: 100)
+        XCTAssertEqual(pending.map(\.id), [quiet], "The repair row completed; the quiet row stays retained")
+        XCTAssertNotEqual(quiet, repair)
     }
 
     func testRecentSelectionStillWaitsForAdmission() async throws {

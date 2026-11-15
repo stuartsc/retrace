@@ -90,11 +90,21 @@ public enum AudioTranscriptionRetryPipeline {
                     languageHint: languageHint.rawValue
                 )
                 try BackgroundProcessingContext.checkCancellation()
-                let assessment = AudioTranscriptQualityPolicy.assess(
+                var assessment = AudioTranscriptQualityPolicy.assess(
                     text: transcription.text,
                     language: transcription.language,
                     activity: activity
                 )
+                if profile == .liveFirstPass, assessment.status == .needsReview, !assessment.shouldStoreText,
+                   activity.isBackgroundNoiseLevel {
+                    // Blank on room-noise-level audio: final no-speech, not a repair candidate.
+                    assessment = AudioTranscriptQualityAssessment(
+                        status: .probableSilence,
+                        flags: ["empty_text", AudioTranscriptQualityPolicy.firstPassNoSpeechFlag],
+                        shouldStoreText: false,
+                        shouldRetryWithEnhancement: false
+                    )
+                }
                 let decision = AudioTranscriptionDecision(
                     transcription: transcription,
                     status: assessment.status,

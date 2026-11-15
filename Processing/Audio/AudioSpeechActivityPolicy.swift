@@ -9,11 +9,22 @@ public struct AudioSpeechActivityPolicy: Sendable {
         public let fullBatchRMS: Double
         public let activeWindowRMS: Double
         public let activeDuration: TimeInterval
+
+        /// Room-noise level: above the silence floors but well below speech.
+        public var isBackgroundNoiseLevel: Bool {
+            fullBatchRMS < AudioSpeechActivityPolicy.noiseLevelFullBatchRMSCeiling
+                && activeWindowRMS < AudioSpeechActivityPolicy.noiseLevelActiveWindowRMSCeiling
+        }
     }
 
     private static let fullBatchRMSFloor = 0.003
     private static let activeWindowRMSFloor = 0.004
     private static let activeWindowDuration: TimeInterval = 0.25
+    // A blank first pass below both ceilings is "no speech", not "needs repair".
+    // Measured (same 0.25 s RMS): blank rows full p50 0.0039/p90 0.0072, max window p50 0.0066/p90 0.0158;
+    // transcribed rows full p25 0.0081/p50 0.0142, max window p25 0.0188/p50 0.0359. 75% of blanks, 15% of spoken fall under both.
+    static let noiseLevelFullBatchRMSCeiling = 0.006
+    static let noiseLevelActiveWindowRMSCeiling = 0.012
 
     public static func evaluate(_ audioData: Data, sampleRate: Int, channels: Int) -> Evaluation {
         let active = activeWindowStats(audioData, sampleRate: sampleRate, channels: channels)

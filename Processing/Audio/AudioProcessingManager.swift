@@ -208,7 +208,7 @@ public actor AudioProcessingManager {
 
     private func nextUnownedRepair(_ queries: AudioTranscriptionQueries) async throws -> UntranscribedBatch? {
         hasMoreRepairCandidates = false
-        guard let owner = deferredRepairOwner else { return try await queries.getOldestRepairBatch() }
+        guard let owner = deferredRepairOwner else { return try await queries.getNewestRepairBatch() }
         // Keyset progress survives bounded scans so 64 owned old rows cannot
         // indefinitely hide an unrelated repair behind them.
         for _ in 0..<64 {
@@ -489,8 +489,8 @@ public actor AudioProcessingManager {
                 catch { Log.warning("Audio queue summary unavailable; retaining last successful observation", category: .processing) }
             }
             let generation = pendingGeneration
-            let fresh: UntranscribedBatch?
-            let kind: BackgroundProcessingKind
+            var fresh: UntranscribedBatch?
+            var kind: BackgroundProcessingKind
             do {
                 let currentSpeech = try await queries.getFreshPendingBatch()
                 if freshArrivalPending, let currentSpeech {
@@ -502,6 +502,15 @@ public actor AudioProcessingManager {
                 if let fresh {
                     kind = currentSpeech?.id == fresh.id ? .freshTranscription : .overdueTranscription
                 } else { kind = .ambientSpeech }
+                if kind == .overdueTranscription {
+                    // Only the old quiet backlog is waiting (no fresh/recent speech): it must
+                    // not starve a repair row. Resource gates are unchanged (ambient admission).
+                    let speechWaiting = try await queries.getSpeechPendingBatch()
+                    if speechWaiting == nil, try await nextUnownedRepair(queries) != nil {
+                        fresh = nil
+                        kind = .ambientSpeech
+                    }
+                }
             }
             catch {
                 if Task.isCancelled { break }

@@ -1164,6 +1164,24 @@ public actor AudioTranscriptionQueries {
         try selectAutomaticBatch(status: "needs_repair", newestFirst: false, after: after)
     }
 
+    /// Newest repair-pending row first (the owner's recent days), for admission without a companion owner.
+    public func getNewestRepairBatch() throws -> UntranscribedBatch? {
+        try selectAutomaticBatch(status: "needs_repair", newestFirst: true)
+    }
+
+    /// Fresh or recent (24 h) speech-like pending audio only. The old `pending_low_energy_v1`
+    /// backlog is excluded, so it never blocks repair admission.
+    public func getSpeechPendingBatch(now: Date = Date()) throws -> UntranscribedBatch? {
+        if let fresh = try getFreshPendingBatch(now: now) { return fresh }
+        let lower = now.addingTimeInterval(-24 * 60 * 60).timeIntervalSince1970 * 1_000
+        let upper = now.timeIntervalSince1970 * 1_000
+        guard lower.isFinite, upper.isFinite, lower >= Double(Int64.min), upper < Double(Int64.max) else {
+            throw DatabaseError.queryExecutionFailed("Speech audio selection requires a representable clock")
+        }
+        return try selectAutomaticBatch(status: "pending", newestFirst: true,
+            timeRange: (Int64(lower), Int64(upper)), excludeLowEnergy: true)
+    }
+
     /// New first-pass recordings get a recent lane without changing manual backfill order.
     /// The rolling 24-hour window includes both endpoints; future-dated recordings remain
     /// available to the oldest-work lane rather than leading the recent lane after a clock change.

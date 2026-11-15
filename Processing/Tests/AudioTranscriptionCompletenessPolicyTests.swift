@@ -347,6 +347,66 @@ final class AudioTranscriptionCompletenessPolicyTests: XCTestCase {
         XCTAssertTrue(decision.shouldStoreText, "First-pass uncertainty must not erase captured text")
     }
 
+    func testBlankLiveFirstPassOnNoiseLevelAudioIsFinalNoSpeechNotRepair() async throws {
+        let service = ScriptedTranscriptionService(results: Array(repeating: Self.result(""), count: 8))
+        try await service.initialize()
+        // Sine amplitude 0.0075: RMS ~0.0053, above the silence floors, below the noise-level ceilings.
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.0075),
+            sampleRate: 16_000, channels: 1, transcriptionService: service,
+            wordLevel: false, initialPrompt: nil, profile: .liveFirstPass)
+
+        XCTAssertEqual(decision.status, .probableSilence)
+        XCTAssertEqual(decision.attempts, 1)
+        XCTAssertFalse(decision.shouldStoreText)
+        XCTAssertTrue(decision.qualityFlags.contains("empty_text"))
+        XCTAssertTrue(decision.qualityFlags.contains(AudioTranscriptQualityPolicy.firstPassNoSpeechFlag))
+        XCTAssertFalse(decision.qualityFlags.contains("speech_energy"))
+        XCTAssertFalse(AudioTranscriptionRetryPipeline.needsDeferredFirstPassRepair(decision))
+    }
+
+    func testBlankLiveFirstPassOnSpeechLevelAudioStillQueuesOneRepair() async throws {
+        let service = ScriptedTranscriptionService(results: Array(repeating: Self.result(""), count: 8))
+        try await service.initialize()
+        // Amplitude 0.02: RMS ~0.014, above the noise-level ceilings.
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.02),
+            sampleRate: 16_000, channels: 1, transcriptionService: service,
+            wordLevel: false, initialPrompt: nil, profile: .liveFirstPass)
+
+        XCTAssertEqual(decision.status, .needsReview)
+        XCTAssertEqual(decision.attempts, 1)
+        XCTAssertTrue(decision.qualityFlags.contains("speech_energy"))
+        XCTAssertFalse(decision.qualityFlags.contains(AudioTranscriptQualityPolicy.firstPassNoSpeechFlag))
+        XCTAssertTrue(AudioTranscriptionRetryPipeline.needsDeferredFirstPassRepair(decision))
+    }
+
+    func testNonBlankJunkOnNoiseLevelAudioStillQueuesRepair() async throws {
+        let junk = DetailedTranscriptionResult(text: "ɔːɔːɔːɔːɔːɔː", words: [], language: "nn", duration: 1.0)
+        let service = ScriptedTranscriptionService(results: [junk])
+        try await service.initialize()
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.0075),
+            sampleRate: 16_000, channels: 1, transcriptionService: service,
+            wordLevel: false, initialPrompt: nil, profile: .liveFirstPass)
+
+        XCTAssertEqual(decision.status, .probableJunk)
+        XCTAssertFalse(decision.qualityFlags.contains(AudioTranscriptQualityPolicy.firstPassNoSpeechFlag))
+        XCTAssertTrue(AudioTranscriptionRetryPipeline.needsDeferredFirstPassRepair(decision))
+    }
+
+    func testDeferredRepairOfBlankNoiseLevelAudioIsNotRelabelledAsFirstPassNoSpeech() async throws {
+        let service = ScriptedTranscriptionService(results: Array(repeating: Self.result(""), count: 8))
+        try await service.initialize()
+        let decision = try await AudioTranscriptionRetryPipeline.transcribeBest(
+            audioData: Self.pcmSine(duration: 1.0, sampleRate: 16_000, amplitude: 0.0075),
+            sampleRate: 16_000, channels: 1, transcriptionService: service,
+            wordLevel: false, initialPrompt: nil, profile: .deferredFirstPassRepair)
+
+        XCTAssertEqual(decision.status, .needsReview)
+        XCTAssertFalse(decision.qualityFlags.contains(AudioTranscriptQualityPolicy.firstPassNoSpeechFlag))
+    }
+
     func testLiveRetryProfileDoesNotSeedDecoderWithPreviousBatchText() async throws {
         let service = ScriptedTranscriptionService(
             results: [Self.result("fresh speech from the current audio batch")]

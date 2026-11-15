@@ -34,6 +34,9 @@ public struct AudioTranscriptQualityAssessment: Sendable {
 }
 
 public enum AudioTranscriptQualityPolicy {
+    /// Final-state marker: a successful raw first pass returned no text on room-noise-level audio.
+    public static let firstPassNoSpeechFlag = "first_pass_no_speech_v1"
+
     public static func assess(
         text: String,
         language: String?,

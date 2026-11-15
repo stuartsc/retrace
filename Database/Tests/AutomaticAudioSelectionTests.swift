@@ -71,6 +71,35 @@ final class AutomaticAudioSelectionTests: XCTestCase {
         XCTAssertEqual(retained?.id, quiet)
     }
 
+    func testQuietBacklogAloneLeavesNoSpeechSoRepairIsAdmittable() async throws {
+        let quietOld = try await seed(at: now.addingTimeInterval(-72 * 3_600))
+        let quietRecent = try await seed(at: now.addingTimeInterval(-3_600))
+        for id in [quietOld, quietRecent] {
+            try exec("UPDATE audio_captures SET quality_flags = 'pending_low_energy_v1' WHERE id = \(id)")
+        }
+        let olderRepair = try await seed(at: now.addingTimeInterval(-96 * 3_600), status: "needs_repair")
+        let newerRepair = try await seed(at: now.addingTimeInterval(-6 * 3_600), status: "needs_repair")
+        let speech = try await queries.getSpeechPendingBatch(now: now)
+        XCTAssertNil(speech, "The pending_low_energy_v1 backlog is not speech waiting")
+        let repair = try await queries.getNewestRepairBatch()
+        XCTAssertEqual(repair?.id, newerRepair, "Newest repair row first")
+        let oldest = try await queries.getOldestRepairBatch()
+        XCTAssertEqual(oldest?.id, olderRepair, "Oldest-first order is unchanged for the owner-cursor path")
+        XCTAssertEqual(try scalar("SELECT COUNT(*) FROM audio_captures"), 4, "Selection preserves every recording")
+    }
+
+    func testFreshOrRecentSpeechStillBeatsRepairLane() async throws {
+        _ = try await seed(at: now.addingTimeInterval(-6 * 3_600), status: "needs_repair")
+        let quiet = try await seed(at: now.addingTimeInterval(-72 * 3_600))
+        try exec("UPDATE audio_captures SET quality_flags = 'pending_low_energy_v1' WHERE id = \(quiet)")
+        let recent = try await seed(at: now.addingTimeInterval(-3_600))
+        let recentSpeech = try await queries.getSpeechPendingBatch(now: now)
+        XCTAssertEqual(recentSpeech?.id, recent)
+        let fresh = try await seed(at: now.addingTimeInterval(-30))
+        let freshSpeech = try await queries.getSpeechPendingBatch(now: now)
+        XCTAssertEqual(freshSpeech?.id, fresh, "Fresh speech wins over recent speech and repair")
+    }
+
     func testUnknownSchedulingMetadataStillGetsAFirstPass() async throws {
         let unknown = try await seed(at: now.addingTimeInterval(-30))
         try exec("UPDATE audio_captures SET quality_flags = 'unrecognized_future_hint' WHERE id = \(unknown)")
