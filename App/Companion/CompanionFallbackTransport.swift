@@ -93,8 +93,8 @@ public actor CompanionFallbackTransport: CompanionTransport {
         assignments[id] = value
     }
     private func failed() { if unavailableSince == nil { unavailableSince = now() }; phase = .waitingForRemote }
-    public func bindCatalogue(_ id: UUID) throws { try initialize(); catalogueID = id }
-    public func registerUnpublishedJob(id: String, data: Data) throws {
+    public func bindCatalogue(_ id: UUID) async throws { try initialize(); catalogueID = id }
+    public func registerUnpublishedJob(id: String, data: Data) async throws {
         try initialize(); try CompanionBounds.digest(id)
         guard CompanionWire.digest(data) == id else { throw CompanionError.invalidPayload }
         let request = try CompanionWire.decode(CompanionJobRequest.self, data: data, limit: 768 * 1024)
@@ -266,7 +266,7 @@ public actor CompanionFallbackTransport: CompanionTransport {
             }
         }
     }
-    public func processingStatus() -> CompanionProcessingStatus? {
+    public func processingStatus() async -> CompanionProcessingStatus? {
         guard !closed, !queuedDates.isEmpty else { return nil }
         return .init(phase: phase, worker: phase == .waitingForQuiet || phase == .improvingTextAndSpeakers ? .thisMac : .otherMac,
                      oldestQueuedAt: queuedDates.values.min())

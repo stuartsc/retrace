@@ -187,7 +187,7 @@ final class CompanionDeliveryRecoveryTests: XCTestCase {
             let native = UUID(), bytes = Data("Authored staged bytes; original recording is untouched".utf8)
             let identity = LiveAudioSampleIdentity(recordingGeneration: UUID(), continuityID: UUID(), startSample: 0,
                 sampleCount: 64000, sampleRate: 16000, approximateOrigin: Date(timeIntervalSince1970: 1_800_000_000))
-            let manifest = AudioMediaManifest(nativeStoreID: native, relativePath: "audio/authored.m4a", sha256: CompanionWire.digest(bytes), frameCount: 64000,
+            let manifest = AudioMediaManifest(nativeStoreID: native, relativePath: "audio/batch_authored.m4a", sha256: CompanionWire.digest(bytes), frameCount: 64000,
                 sourceRanges: [.init(source: identity, batchStartSample: 0)])
             return .init(root: root, native: native, database: database, audio: audio, manifest: manifest, bytes: bytes)
         }
