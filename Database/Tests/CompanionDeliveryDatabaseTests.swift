@@ -206,6 +206,28 @@ final class CompanionDeliveryDatabaseTests: XCTestCase {
         let recovered = try await db.activeRecords(); XCTAssertEqual(recovered.count, 1)
         try await db.close()
     }
+    func testRefinedUntimedTextIsIndexedAndInvalidationRemovesVisibility() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let native = UUID(), db = CompanionDeliveryDatabase(databasePath: root.appendingPathComponent("delivery.db").path, nativeStoreID: native)
+        try await db.initialize()
+        let object = CompanionObjectReservation(sha256: String(repeating: "a", count: 64), byteCount: 128), lease = UUID()
+        try await db.reserveObjects([object], owner: lease); try await db.markObjectReady(object)
+        let bytes = try speaker(native, object: object, start: 0)
+        let published = try await db.publishGroup(semanticPayload: bytes, requests: [bytes], reservationID: lease)
+        let id = published.jobIDs[0]
+        try await db.storeResult(jobID: id, payload: speakerResult(native, request: bytes, id: id))
+        try await db.transition(jobID: id, stage: .imported)
+        let found = try await db.searchSpeakers(query: "Authored", from: nil, to: nil, limit: 10)
+        XCTAssertEqual(found.jobIDs, [id]) // result has full enhancedText, but no timed turns
+        let owners = try await db.repairOwnerRecords(rowID: 1); XCTAssertEqual(owners.map(\.jobID), [id])
+        try await db.transition(jobID: id, stage: .invalidated)
+        let hidden = try await db.searchSpeakers(query: "Authored", from: nil, to: nil, limit: 10)
+        XCTAssertTrue(hidden.jobIDs.isEmpty)
+        let remaining = try await db.repairOwnerRecords(rowID: 1); XCTAssertTrue(remaining.isEmpty)
+        try await db.close()
+    }
     private func speaker(_ native: UUID, object: CompanionObjectReservation, start: Int64) throws -> Data {
         let source = LiveAudioSampleIdentity(recordingGeneration: UUID(), continuityID: UUID(), startSample: start,
             sampleCount: 16000, sampleRate: 16000, approximateOrigin: Date(timeIntervalSince1970: 1_800_000_000))

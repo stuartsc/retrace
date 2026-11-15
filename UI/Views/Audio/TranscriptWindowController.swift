@@ -76,8 +76,12 @@ public class TranscriptWindowController: NSObject {
     private var refreshTimer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var loadRecordings: (@Sendable (Date) async throws -> TranscriptRecordingPage)?
-    private var loadExactCommand: (@Sendable (V23TranscriptReference) async throws -> (AudioTranscription, CompanionController))?
+    private var loadExactCommand: (@Sendable (V23TranscriptReference) async throws -> (AudioTranscription, CompanionController, TranscriptPublicationGuard))?
     private var lastRefreshAttemptAt: Date?
+    private var enrichmentPublication: TranscriptPublicationGuard?
+    private var preparedPage: TranscriptRecordingPage?
+    private var preparedTimestamp: Date?
+    private var preparedIsExact = false
     private var exactCommandObserver: (owner: CompanionController, id: UUID, generation: UUID)?
 
     /// Last timestamp used for refresh (to avoid redundant queries)
@@ -95,7 +99,7 @@ public class TranscriptWindowController: NSObject {
     init(playback: TranscriptAudioPlayback, presentWindow: @escaping (NSPanel) -> Void,
          loadRecordings: (@Sendable (Date) async throws -> TranscriptRecordingPage)? = nil,
          commandCoordinator: AppCoordinator? = nil,
-         loadExactCommand: (@Sendable (V23TranscriptReference) async throws -> (AudioTranscription, CompanionController))? = nil) {
+         loadExactCommand: (@Sendable (V23TranscriptReference) async throws -> (AudioTranscription, CompanionController, TranscriptPublicationGuard))? = nil) {
         self.playback = playback
         self.presentWindow = presentWindow
         activateApplication = {}
@@ -118,13 +122,35 @@ public class TranscriptWindowController: NSObject {
         loadExactCommand = { reference in
             let reader = try await coordinator.liveContextSearch()
             let owner = try await coordinator.companion()
-            return (try await reader.resolveTranscript(reference), owner)
+            let publication = TranscriptPublicationGuard(owner: owner)
+            let row = try await reader.resolveTranscript(reference)
+            publication.narrow(recordings: [row], speakers: [])
+            return (row, owner, publication)
         }
         loadRecordings = { timestamp in
             guard let queries = await coordinator.getAudioTranscriptionQueries() else {
                 throw TranscriptRecordingLoadError.unavailable
             }
-            return try await TranscriptRecordingLoader.load(queries: queries, at: timestamp)
+            let owner = try await coordinator.companion()
+            let publication = TranscriptPublicationGuard(owner: owner)
+            var page = try await TranscriptRecordingLoader.load(queries: queries, at: timestamp)
+            page.publication = publication
+            do {
+                let enrichment = try await owner.speakerPresentations(
+                    from: timestamp.addingTimeInterval(-TranscriptRecordingLoader.windowSeconds),
+                    to: timestamp.addingTimeInterval(TranscriptRecordingLoader.windowSeconds), before: nil, limit: 50)
+                let reader = try await coordinator.liveContextSearch()
+                let references = try await reader.transcriptReferences(Array(page.transcriptions.prefix(500)))
+                page.speakers = enrichment.items
+                page.references = references.compactMap { if case .transcript(let value) = $0 { return value }; return nil }
+                if enrichment.nextCursor != nil || enrichment.incomplete {
+                    page.enrichmentNotice = "Some speaker and quality results are outside this bounded page. Original recordings remain available."
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { page.enrichmentNotice = "Improved text and speaker labels are unavailable. Original recordings remain available." }
+            publication.narrow(recordings: page.transcriptions, speakers: page.speakers)
+            try publication.withAdmission { }
+            return page
         }
         playback = TranscriptAudioPlayback(resolve: { request in
             let root = await coordinator.getAudioStorageDirectory()
@@ -150,6 +176,19 @@ public class TranscriptWindowController: NSObject {
         stopRefreshTimer()
     }
 
+    func showExactPreparedSearchResult(_ records: [AudioTranscription], enrichment: CompanionSpeakerPresentation?,
+                                      publication: TranscriptPublicationGuard) throws {
+        guard let first = records.first else { return }
+        clearExactCommandObserver()
+        cancelOpen(); refreshGeneration = UUID(); refreshTask?.cancel(); stopRefreshTimer()
+        var page = TranscriptRecordingPage(transcriptions: records, isTruncated: false)
+        page.publication = publication
+        page.speakers = enrichment.map { [$0] } ?? []
+        page.references = enrichment?.firstPassReferences ?? []
+        try publish(page, timestamp: first.startTime, exact: true)
+        stopRefreshTimer()
+    }
+
     func showExactFromCommand(_ reference: V23TranscriptReference, coordinator: AppCoordinator,
                               authorization: RetraceForegroundAuthorization) async throws {
         guard self.coordinator === coordinator, let loadExactCommand else { throw RetraceCommandError.unavailable }
@@ -160,7 +199,7 @@ public class TranscriptWindowController: NSObject {
             return openGeneration
         }
         defer { if exactCommandGeneration == token { cancelOpen(ifGeneration: token) } }
-        let (record, owner) = try await loadExactCommand(reference)
+        let (record, owner, publication) = try await loadExactCommand(reference)
         guard openGeneration == token, self.coordinator === coordinator else { throw CancellationError() }
         var dependencies: Set<NativeSourceTarget> = [.audioRow(reference.rowID)]
         if let path = record.batchAudioPath { dependencies.insert(.audioBatch(path)) }
@@ -178,16 +217,62 @@ public class TranscriptWindowController: NSObject {
         do {
             try await authorization.validate()
             try authorization.effect {
+                try publication.withAdmission {
                 try admission.withAdmission {
                     guard openGeneration == token, exactCommandGeneration == token,
                           self.coordinator === coordinator else { throw CancellationError() }
                     showExactSearchResult(record)
                     guard isVisible else { throw RetraceCommandError.unavailable }
                     exactCommandObserver = (owner, id, token)
+                    enrichmentPublication = publication
                     activateApplication()
+                }
                 }
             }
         } catch { owner.removeSpeakerChangeObserver(id); throw error }
+    }
+
+    private func clearEnrichmentObserver() {
+        enrichmentPublication = nil
+        preparedPage = nil; preparedTimestamp = nil
+    }
+
+    /// No observer installation occurs here: the page already owns its pre-read observer.
+    private func publish(_ page: TranscriptRecordingPage, timestamp: Date, exact: Bool = false, bringToFront: Bool = true) throws {
+        guard let publication = page.publication else {
+            guard page.speakers.isEmpty else { throw CompanionError.staleEvidence }
+            render(transcriptions: page.transcriptions, timestamp: timestamp, isTruncated: page.isTruncated,
+                 enrichmentNotice: page.enrichmentNotice, bringToFront: bringToFront)
+            return
+        }
+        try publication.withAdmission {
+            render(transcriptions: page.transcriptions, timestamp: timestamp, isTruncated: page.isTruncated,
+                 speakers: page.speakers, recordingReferences: page.references,
+                 enrichmentNotice: page.enrichmentNotice, bringToFront: bringToFront)
+            enrichmentPublication = publication
+            preparedPage = page; preparedTimestamp = timestamp; preparedIsExact = exact
+            let id = publication.id
+            publication.observeVisibleInvalidation { [weak self] change in
+                Task { @MainActor [weak self] in
+                    guard self?.enrichmentPublication?.id == id else { return }
+                    self?.invalidatePreparedPage(change)
+                }
+            }
+        }
+    }
+
+    private func invalidatePreparedPage(_ change: CompanionSpeakerChange) {
+        guard case .correction = change, let timestamp = preparedTimestamp else { hide(); return }
+        // Preserve the panel's position and selected time, but remove stale names immediately.
+        let wasExact = preparedIsExact
+        render(transcriptions: [], timestamp: timestamp,
+             enrichmentNotice: wasExact ? "Speaker labels changed. Open this search result again to refresh it." : "Updating speaker labels…",
+             bringToFront: false)
+        if wasExact { stopRefreshTimer() }
+        else {
+            lastRefreshedTimestamp = nil; lastRefreshAttemptAt = nil
+            _ = refreshIfNeeded()
+        }
     }
 
     private func clearExactCommandObserver() {
@@ -221,7 +306,7 @@ public class TranscriptWindowController: NSObject {
                     summaryEvery: 10, warningThresholdMs: 100, criticalThresholdMs: 500)
                 guard !Task.isCancelled, self?.openGeneration == generation,
                       self?.currentTimestampProvider?() == timestamp else { return }
-                self?.show(transcriptions: page.transcriptions, timestamp: timestamp, isTruncated: page.isTruncated)
+                try self?.publish(page, timestamp: timestamp)
             } catch {
                 if !Task.isCancelled { Log.warning("[TranscriptWindowController] Open failed: \(error)", category: .ui) }
             }
@@ -248,10 +333,16 @@ public class TranscriptWindowController: NSObject {
     /// Show the transcript window with transcription data
     public func show(transcriptions: [AudioTranscription], timestamp: Date,
                      isTruncated: Bool = false, bringToFront: Bool = true) {
+        render(transcriptions: transcriptions, timestamp: timestamp, isTruncated: isTruncated, bringToFront: bringToFront)
+    }
+
+    private func render(transcriptions: [AudioTranscription], timestamp: Date,
+                     isTruncated: Bool = false, speakers: [CompanionSpeakerPresentation] = [], recordingReferences: [V23TranscriptReference] = [], enrichmentNotice: String? = nil, bringToFront: Bool = true) {
         if exactCommandGeneration != nil { cancelOpen() }
         Log.info("[TranscriptWindowController] show requested timestamp=\(Log.timestamp(from: timestamp)) count=\(transcriptions.count) existingWindow=\(window != nil) visible=\(isVisible)", category: .ui)
         let wasVisible = isVisible
         guard let playback else { return }
+        clearEnrichmentObserver()
         playback.retainSelection(in: transcriptions.map(TranscriptAudioRequest.init))
 
         let contentView = TranscriptContentView(
@@ -262,7 +353,8 @@ public class TranscriptWindowController: NSObject {
             onReveal: { [weak self] request in self?.reveal(request) },
             onClose: { [weak self] in
                 self?.hide()
-            }
+            },
+            speakers: speakers, recordingReferences: recordingReferences, enrichmentNotice: enrichmentNotice
         )
 
         lastRefreshedTimestamp = timestamp
@@ -319,6 +411,7 @@ public class TranscriptWindowController: NSObject {
 
     /// Hide the transcript window
     public func hide() {
+        clearEnrichmentObserver()
         clearExactCommandObserver()
         cancelOpen()
         playback?.stop(reason: .closed)
@@ -425,12 +518,11 @@ public class TranscriptWindowController: NSObject {
                     )
                 }
                 Log.info("[TranscriptWindowController] refresh query completed count=\(transcriptions.count) elapsed=\(String(format: "%.1f", elapsedMs))ms", category: .ui)
-                await MainActor.run {
+                try await MainActor.run {
                     guard !Task.isCancelled, self?.isVisible == true,
                           self?.refreshGeneration == generation,
                           self?.currentTimestampProvider?() == currentTimestamp else { return }
-                    self?.show(transcriptions: transcriptions, timestamp: currentTimestamp,
-                        isTruncated: page.isTruncated, bringToFront: false)
+                    try self?.publish(page, timestamp: currentTimestamp, bringToFront: false)
                 }
             } catch {
                 if !Task.isCancelled {
@@ -446,6 +538,7 @@ public class TranscriptWindowController: NSObject {
 
 extension TranscriptWindowController: NSWindowDelegate {
     public func windowWillClose(_ notification: Notification) {
+        clearEnrichmentObserver()
         clearExactCommandObserver()
         cancelOpen()
         Log.info("[TranscriptWindowController] windowWillClose", category: .ui)

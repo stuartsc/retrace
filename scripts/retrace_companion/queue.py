@@ -264,6 +264,9 @@ class CompanionQueue:
                 for row in rows:
                     job = decode(row[1], MAX_JOB)
                     self._record_object_references(row[0], job)
+            from .execution import initialize
+
+            initialize(self.db)
             self.db.execute("PRAGMA application_id=1381253968")
             self.db.execute("PRAGMA user_version=2")
             self.db.execute("COMMIT")
@@ -420,6 +423,7 @@ class CompanionQueue:
             raise CompanionError("media_capacity")
 
     def recover_interrupted(self):
+        self.db.execute("UPDATE execution_grants SET revoked=2 WHERE revoked=0")
         # Caller holds the process lock for the sole model-owning inference process.
         self.db.execute(
             "UPDATE jobs SET state='pending',retry_after=0,reason='interrupted' WHERE state='running'"
@@ -429,8 +433,8 @@ class CompanionQueue:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.db.execute(
-                "SELECT id,payload FROM jobs WHERE state='pending' AND retry_after<=? ORDER BY observed DESC,id LIMIT 1",
-                (time.time(),),
+                "SELECT id,payload FROM jobs WHERE state='pending' AND retry_after<=? AND NOT EXISTS(SELECT 1 FROM execution_grants g WHERE g.job_id=jobs.id AND (g.revoked=1 OR g.deadline<=?)) ORDER BY observed DESC,id LIMIT 1",
+                (time.time(), time.monotonic()),
             ).fetchone()
             if row:
                 self.db.execute(
@@ -456,17 +460,29 @@ class CompanionQueue:
         job = self.request(job_id)
         result = decode(data, MAX_RESULT)
         validate_result(result, job, job_id)
-        state = self.status(job_id)
-        if state["state"] not in {"running", "complete", "acknowledged"}:
-            raise CompanionError("job_not_claimed")
-        destination = self.root / "results" / (job_id + ".json")
-        if not destination.exists():
-            self._ensure_space(len(data))
-        publish_file(destination, data)
-        self.db.execute(
-            "UPDATE jobs SET state=CASE WHEN state='acknowledged' THEN state ELSE 'complete' END,result_digest=?,reason=NULL WHERE id=?",
-            (hashlib.sha256(data).hexdigest(), job_id),
-        )
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            from .execution import permitted
+
+            if self.status(job_id)["state"] == "running" and not permitted(
+                self.db, job_id
+            ):
+                raise CompanionError("execution_expired")
+            state = self.status(job_id)
+            if state["state"] not in {"running", "complete", "acknowledged"}:
+                raise CompanionError("job_not_claimed")
+            destination = self.root / "results" / (job_id + ".json")
+            if not destination.exists():
+                self._ensure_space(len(data))
+            publish_file(destination, data)
+            self.db.execute(
+                "UPDATE jobs SET state=CASE WHEN state='acknowledged' THEN state ELSE 'complete' END,result_digest=?,reason=NULL WHERE id=?",
+                (hashlib.sha256(data).hexdigest(), job_id),
+            )
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
 
     def result(self, job_id):
         state = self.status(job_id)
@@ -517,6 +533,7 @@ class CompanionQueue:
         self.db.execute(
             "UPDATE jobs SET state='acknowledged',payload=? WHERE id=?", (b"", job_id)
         )
+        self.db.execute("DELETE FROM execution_grants WHERE job_id=?", (job_id,))
         self.collect_acknowledged_media(job_id)
 
     def collect_acknowledged_media(self, job_id: str) -> None:

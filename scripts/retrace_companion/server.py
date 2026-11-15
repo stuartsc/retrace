@@ -116,7 +116,8 @@ def make_server(address, root, token, *, connection_seconds=30):
                 self.reply(401, encode({"reason": "unauthorized"}))
                 return
             match = re.fullmatch(
-                r"/v1/(jobs|objects|results|acks|status)/([0-9a-f]{64})", self.path
+                r"/v1/(jobs|objects|results|acks|status|grants|revocations)/([0-9a-f]{64})",
+                self.path,
             )
             if not match:
                 self.reply(404, encode({"reason": "unknown_endpoint"}))
@@ -126,7 +127,22 @@ def make_server(address, root, token, *, connection_seconds=30):
                 # Each handler owns its own SQLite connection. Publication quotas
                 # are checked under a write transaction across receiver threads.
                 with closing(CompanionQueue(root)) as current:
-                    if self.command == "POST" and resource == "jobs":
+                    if self.command == "POST" and resource == "grants":
+                        from .execution import grant
+
+                        value = grant(
+                            current.db, job_id, decode(self.request_body(4096), 4096)
+                        )
+                        self.reply(200, encode(value))
+                    elif self.command == "POST" and resource == "revocations":
+                        from .execution import revoke
+
+                        value = decode(self.request_body(4096), 4096)
+                        shape(value, {"attempt"})
+                        self.reply(
+                            200, encode(revoke(current.db, job_id, value["attempt"]))
+                        )
+                    elif self.command == "POST" and resource == "jobs":
                         status = current.publish(job_id, self.request_body(MAX_JOB))
                         self.reply(200, encode(status))
                     elif self.command == "PUT" and resource == "objects":

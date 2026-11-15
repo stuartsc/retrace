@@ -33,8 +33,7 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
             return .init(batch: batch, text: "Stuart confirmed twelve dollars.")
         })
         run.continuation.yield(sample())
-        try await grantAfterPersisted(governor)
-        try await wait { await governor.releases == 1 }
+        try await wait { ((try? await self.queries.getOldestRepairBatch()) != nil) }
         let capturedProof = await probe.batch
         let proof = try XCTUnwrap(capturedProof)
         let savedValue = try await queries.getContextEntry(id: proof.rawBatchID)
@@ -76,8 +75,7 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
             return .init(batch: batch, text: "Compacted audio retained its native text.")
         })
         run.continuation.yield(sample())
-        try await grantAfterPersisted(governor)
-        try await wait { await governor.releases == 1 }
+        try await wait { ((try? await self.queries.getOldestRepairBatch()) != nil) }
         let captured = await probe.batch
         let proof = try XCTUnwrap(captured)
         let url = root.appendingPathComponent(proof.relativePath)
@@ -120,7 +118,6 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
             while true { try BackgroundProcessingContext.checkCancellation(); try await Task.sleep(for: .milliseconds(10)) }
         })
         run.continuation.yield(sample())
-        try await grantAfterPersisted(governor)
         try await wait { await probe.batch != nil }
         await stop(run)
         let capturedProof = await probe.batch
@@ -162,8 +159,11 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
             return .init(batch: batch, text: "Late deleted transcript")
         })
         run.continuation.yield(sample())
-        try await grantAfterPersisted(governor)
-        try await wait { await governor.releases == 1 }
+        try await wait { await probe.batch != nil }
+        try await wait {
+            guard let id = await probe.batch?.rawBatchID else { return false }
+            return (try? await queries.getContextEntry(id: id)) == nil
+        }
         let captured = await probe.batch
         let proof = try XCTUnwrap(captured)
         let row = try await queries.getContextEntry(id: proof.rawBatchID)
@@ -208,12 +208,79 @@ final class NativeFirstPassPersistenceTests: XCTestCase {
         XCTAssertEqual(decision.transcription.text, retained.text, "Empty correction cannot erase retained native text")
     }
 
-    private func start(cpu: NativeReuseCPU, governor: NativeReuseGovernor,
+    func testNativeDraftPublishesWithoutWhisperModelOrGovernorGrant() async throws {
+        let governor = NativeReuseGovernor()
+        let run = await start(cpu: MockTranscriptionService(), governor: governor, provider: { batch in
+            .init(batch: batch, text: "Draft words remain available without a CPU model.")
+        })
+        run.continuation.yield(sample())
+        try await wait { ((try? await self.queries.getOldestRepairBatch()) != nil) }
+        let matches = try await queries.searchTranscriptions(query: "available")
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches.first?.transcriptStatus, "needs_repair")
+        let releases = await governor.releases
+        XCTAssertEqual(releases, 0, "Native publication is not an expensive inference job")
+        await stop(run)
+    }
+
+    func testHeldNativePublicationCannotBlockLaterCaptureWrites() async throws {
+        let cpu = NativeReuseCPU(), governor = NativeReuseGovernor(), probe = NativeReuseProbe()
+        let run = await start(cpu: cpu, governor: governor, provider: { batch in
+            await probe.receive(batch)
+            while true { try Task.checkCancellation(); try await Task.sleep(for: .milliseconds(10)) }
+        })
+        run.continuation.yield(sample())
+        try await wait { await probe.batch != nil }
+        run.continuation.yield(sample())
+        run.continuation.yield(sample())
+        try await wait { ((try? await self.queries.getUntranscribedBatchCount()) ?? 0) >= 3 }
+        await stop(run)
+        let pending = try await queries.getUntranscribedBatchCount()
+        XCTAssertGreaterThanOrEqual(pending, 3)
+        let calls = await cpu.calls
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testCompanionOwnedRepairsDoNotHideLaterUnownedWork() async throws {
+        let cpu = NativeReuseCPU(), governor = NativeReuseGovernor()
+        let writer = AudioSegmentWriter(storageRoot: root)
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let (path, size) = try await writer.writeFullBatch(audioData: sample().audioData,
+            sampleRate: 16_000, channels: 1, timestamp: origin, source: .microphone)
+        var ownedIDs = Set<Int64>()
+        for index in 0..<66 {
+            let from = origin.addingTimeInterval(Double(index) * 2)
+            let to = from.addingTimeInterval(1)
+            let id = try await queries.insertRawBatch(startTime: from, endTime: to,
+                source: .microphone, audioPath: path, audioSize: size)
+            let pending = UntranscribedBatch(id: id, startTime: from, endTime: to,
+                source: .microphone, audioPath: path, audioSize: size)
+            let updated = try await queries.updatePendingRawBatchOutcome(pending, text: "Original draft words.",
+                transcriptStatus: "needs_repair", detectedLanguage: "en", audioVariant: "raw",
+                qualityFlags: AudioPreparationMetadata.nativeFirstPassPending + "," + AudioPreparationMetadata.firstPassRepairPending)
+            XCTAssertTrue(updated)
+            if index < 65 { ownedIDs.insert(id) }
+        }
+        let owned = ownedIDs
+        let run = await start(cpu: cpu, governor: governor, repairOwner: { owned.contains($0) }, provider: nil)
+        await governor.grantOne(); await governor.grantOne()
+        try await wait { await governor.releases >= 2 }
+        let calls = await cpu.calls
+        XCTAssertGreaterThan(calls, 0, "An unowned repair after 65 owned rows must make progress")
+        let first = try await queries.getOldestRepairBatch()
+        XCTAssertEqual(first?.id, owned.min(), "Owned draft rows remain unchanged")
+        await stop(run)
+    }
+
+    private func start(cpu: any TranscriptionProtocol, governor: NativeReuseGovernor,
                        compactContainerPadding: Bool = false,
+                       repairOwner: AudioProcessingManager.DeferredRepairOwner? = nil,
                        provider: AudioProcessingManager.NativeFirstPassProvider?) async -> NativeReuseRun {
         let manager = AudioProcessingManager(transcriptionService: cpu, transcriptionQueries: queries,
             audioWriter: AudioSegmentWriter(storageRoot: root, compactContainerPadding: compactContainerPadding), governor: governor,
             config: .init(minimumConfidence: 0, maxBufferDuration: 1))
+        let ownershipInstalled = await manager.setDeferredRepairOwner(repairOwner)
+        XCTAssertTrue(ownershipInstalled)
         let installed = await manager.setNativeFirstPassProvider(provider)
         XCTAssertTrue(installed)
         let pair = AsyncStream<CapturedAudio>.makeStream()

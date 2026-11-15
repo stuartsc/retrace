@@ -134,6 +134,8 @@ public struct CompanionSpeakerRequest: Codable, Equatable, Sendable {
 }
 
 public struct CompanionJobRequest: Codable, Equatable, Sendable {
+    public enum ProcessingStage: String, Codable, Sendable { case quality, repair }
+    public var processingStage: ProcessingStage? = nil
     public enum Kind: String, Codable, Sendable { case context, speaker }
     public let version: Int
     public let kind: Kind

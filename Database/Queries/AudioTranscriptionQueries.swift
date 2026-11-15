@@ -638,13 +638,20 @@ public actor AudioTranscriptionQueries {
             guard !batchAudioPath.isEmpty, batchAudioPath.utf8.count <= 1024, !batchAudioPath.contains("\0") else {
                 throw DatabaseError.queryExecutionFailed("Invalid audio batch identity")
             }
-            let sql = Self.contextColumns + " WHERE batch_audio_path = ? AND transcription_pass = 1 AND source != 'word' ORDER BY start_time,id LIMIT 1025"
+            let nativeDraft = "transcription_pass = 1 AND (batch_audio_path IS NULL OR batch_audio_path = '') AND transcript_status = 'needs_repair' AND length(trim(text)) > 0 " +
+                "AND instr(',' || COALESCE(quality_flags, '') || ',', ',\(AudioPreparationMetadata.nativeFirstPassPending),') > 0 " +
+                "AND instr(',' || COALESCE(quality_flags, '') || ',', ',\(AudioPreparationMetadata.firstPassRepairPending),') > 0"
+            // Separate indexed arms avoid scanning the recording library for an OR over two paths.
+            let sql = Self.contextColumns + " WHERE batch_audio_path = ? AND transcription_pass = 1 AND source != 'word'" +
+                " UNION ALL " + Self.contextColumns + " WHERE audio_path = ? AND source = 'microphone' AND " + nativeDraft +
+                " ORDER BY start_time,id LIMIT 1025"
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
                 throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
             }
             defer { sqlite3_finalize(statement) }
             sqlite3_bind_text(statement, 1, batchAudioPath, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(statement, 2, batchAudioPath, -1, SQLITE_TRANSIENT)
             var rows: [AudioTranscription] = []
             while true {
                 try Task.checkCancellation()
@@ -1151,8 +1158,10 @@ public actor AudioTranscriptionQueries {
 
     /// Heavy repair owns a separate quiet-time admission; first-pass recordings
     /// must not get trapped behind a repair merely because both retain media.
-    public func getOldestRepairBatch() throws -> UntranscribedBatch? {
-        try selectAutomaticBatch(status: "needs_repair", newestFirst: false)
+    /// The optional keyset lets a bounded owner skip companion-owned drafts
+    /// without scanning the same oldest rows again on every turn.
+    public func getOldestRepairBatch(after: (startTimeMilliseconds: Int64, id: Int64)? = nil) throws -> UntranscribedBatch? {
+        try selectAutomaticBatch(status: "needs_repair", newestFirst: false, after: after)
     }
 
     /// New first-pass recordings get a recent lane without changing manual backfill order.
@@ -1189,7 +1198,8 @@ public actor AudioTranscriptionQueries {
 
     private func selectAutomaticBatch(status: String, newestFirst: Bool,
                                      timeRange: (lower: Int64, upper: Int64)? = nil,
-                                     excludeLowEnergy: Bool = false) throws -> UntranscribedBatch? {
+                                     excludeLowEnergy: Bool = false,
+                                     after: (startTimeMilliseconds: Int64, id: Int64)? = nil) throws -> UntranscribedBatch? {
         try Task.checkCancellation()
         let order = newestFirst ? "DESC" : "ASC"
         let sql = """
@@ -1201,6 +1211,7 @@ public actor AudioTranscriptionQueries {
             WHERE transcript_status = ?
             \(timeRange == nil ? "" : "AND start_time BETWEEN ? AND ?")
             \(excludeLowEnergy ? "AND COALESCE(quality_flags, '') != ?" : "")
+            \(after == nil ? "" : "AND start_time >= ? AND (start_time > ? OR id > ?)")
             AND audio_path IS NOT NULL
             AND audio_path LIKE '%batch_%'
             ORDER BY start_time \(order), id \(order)
@@ -1218,6 +1229,12 @@ public actor AudioTranscriptionQueries {
         }
         if excludeLowEnergy {
             sqlite3_bind_text(statement, timeRange == nil ? 2 : 4, AudioPreparationMetadata.lowEnergyPending, -1, SQLITE_TRANSIENT)
+        }
+        if let after {
+            let index: Int32 = 2 + (timeRange == nil ? 0 : 2) + (excludeLowEnergy ? 1 : 0)
+            sqlite3_bind_int64(statement, index, after.startTimeMilliseconds)
+            sqlite3_bind_int64(statement, index + 1, after.startTimeMilliseconds)
+            sqlite3_bind_int64(statement, index + 2, after.id)
         }
         let result = sqlite3_step(statement)
         try Task.checkCancellation()

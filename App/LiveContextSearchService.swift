@@ -121,7 +121,7 @@ public actor LiveContextSearchService {
                     for row in page.entries {
                         let reference = try CompanionTranscriptSnapshot.recordingReference(for: row, nativeStoreID: storeID)
                         items.append(.init(id: "transcript:\(storeID):\(row.id)", kind: source, timestamp: row.startTime,
-                            title: row.source.displayName, text: row.text, reference: .transcript(reference)))
+                            title: row.source.displayName + " · " + TranscriptPreparation.label(row), text: row.text, reference: .transcript(reference)))
                     }
                     cursor.audio = page.nextCursor; more = page.nextCursor != nil
                     if page.scanIncomplete {
@@ -181,7 +181,7 @@ public actor LiveContextSearchService {
                         let page = try await speakerPage(interval.start, interval.end, cursor.speakers, 25)
                         for presentation in page.items {
                             let names = presentation.corrections.compactMap(\.displayName).joined(separator: " ")
-                            let text = presentation.enhancement.turns.map { $0.speakerLabel + " " + $0.text }.joined(separator: "\n")
+                            let text = presentation.enhancement.enhancedText + "\n" + presentation.enhancement.turns.map { $0.speakerLabel + " " + $0.text }.joined(separator: "\n")
                             if matches(names + " " + text) {
                                 items.append(.init(id: "speaker:\(presentation.nativeStoreID):\(presentation.jobID)", kind: source,
                                     timestamp: presentation.enhancement.sourceIdentity.approximateOrigin.addingTimeInterval(Double(presentation.enhancement.sourceIdentity.startSample) / 16000),
@@ -338,7 +338,7 @@ public actor LiveContextSearchService {
         switch reference {
         case .transcript(let ref):
             let row = try await resolveTranscript(ref)
-            return "[Transcript · \(row.startTime.formatted(date: .abbreviated, time: .standard)) · \(row.source.displayName)]\nSource: \(ref.nativeStoreID) / recording \(ref.rowID) / snapshot \(ref.snapshotSHA256)\nStatus: \(row.transcriptStatus); speaker unassigned.\n" + (row.text.isEmpty ? "[Saved audio; transcript text pending or unavailable]" : row.text)
+            return "[Transcript · \(row.startTime.formatted(date: .abbreviated, time: .standard)) · \(row.source.displayName)]\nSource: \(ref.nativeStoreID) / recording \(ref.rowID) / snapshot \(ref.snapshotSHA256)\nStatus: \(row.transcriptStatus); preparation: \(TranscriptPreparation.label(row)); speaker unassigned.\n" + (row.text.isEmpty ? "[Saved audio; transcript text pending or unavailable]" : row.text)
         case .screen(let ref):
             try await recall.validateNativeScreenAction(ref)
             let snapshot: ScreenEvidenceSnapshot
@@ -388,7 +388,7 @@ public actor LiveContextSearchService {
                 let correction = current.corrections.first { $0.speakerID == turn.speakerID }
                 return "\(correction?.displayName ?? turn.speakerLabel): \(turn.text)"
             }.joined(separator: "\n")
-            return "[Speaker enrichment · source \(current.nativeStoreID) / job \(current.jobID)]\nManual names apply only to this source identity.\n" + turns + "\nRetained first-pass transcript (full original recording, which may include overlap outside the enhanced interval):\n" + current.firstPassText
+            return "[Speaker enrichment · source \(current.nativeStoreID) / job \(current.jobID)]\nManual names apply only to this source identity.\n" + current.enhancement.enhancedText + "\nSpeaker turns:\n" + turns + "\nRetained first-pass transcript (full original recording, which may include overlap outside the enhanced interval):\n" + current.firstPassText
         case .speakerTurn(let expected):
             guard let turn else { throw CompanionError.unavailable }
             let current = try await turn(expected)

@@ -2521,13 +2521,15 @@ public actor AppCoordinator {
 
     public func searchAudio(query: SearchQuery) async throws -> AudioSearchPage {
         guard let adapter = await services.dataAdapter else { throw DataAdapterError.notInitialized }
-        let page = try await adapter.searchAudio(query: query)
+        let original = try await adapter.searchAudio(query: query)
+        let page = try await preparedAudioSearchPage(original: original, query: query)
         try? await recordMetricEvent(metricType: .audioSearch,
             metadata: "action=query;outcome=\(page.notice == nil ? "complete" : "unsupported_filters");truncated=\(page.isTruncated)")
         return page
     }
 
     public func resolveAudioSearchHit(_ hit: AudioSearchHit) async throws -> AudioTranscription {
+        if hit.enrichment != nil { return try await resolvePreparedAudioSearchHit(hit).record }
         guard let adapter = await services.dataAdapter else { throw AudioSearchError.changed }
         _ = try await adapter.resolveAudioSearchHit(hit)
         try? await recordMetricEvent(metricType: .audioSearch, metadata: "action=open;outcome=resolved")

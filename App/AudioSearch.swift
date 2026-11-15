@@ -9,8 +9,18 @@ public struct AudioSearchHit: Sendable, Identifiable {
     public let record: AudioTranscription
     public let id: String
     let owner: UUID
+    public let enrichment: CompanionSpeakerPresentation?
+    public var displayText: String { enrichment?.enhancement.enhancedText ?? record.text }
+    public var displayStartTime: Date {
+        guard let source = enrichment?.enhancement.sourceIdentity else { return record.startTime }
+        return source.approximateOrigin.addingTimeInterval(Double(source.startSample) / Double(source.sampleRate))
+    }
+    public var preparationLabel: String {
+        enrichment == nil ? TranscriptPreparation.label(record) : "Refined transcript"
+    }
 
-    init(record: AudioTranscription, owner: UUID) throws {
+    init(record: AudioTranscription, owner: UUID, enrichment: CompanionSpeakerPresentation? = nil) throws {
+        self.enrichment = enrichment
         self.record = record
         self.owner = owner
         let fields: [String?] = [String(record.id), record.sessionID, record.text,
@@ -19,7 +29,11 @@ public struct AudioSearchHit: Sendable, Identifiable {
             String(record.createdAt.timeIntervalSince1970), record.audioPath, record.batchAudioPath,
             record.transcriptStatus, record.detectedLanguage, record.audioVariant, record.qualityFlags,
             String(record.transcriptionPass)]
-        let data = try JSONEncoder().encode(fields)
+        let revision = enrichment.map { value in
+            value.jobID + ":" + value.turnReferences.map(\.resultSHA256).joined(separator: ":") +
+                ":" + value.enhancement.enhancedText + ":" + value.corrections.map { $0.revision.uuidString }.joined(separator: ":")
+        }
+        let data = try JSONEncoder().encode(fields + [revision])
         id = owner.uuidString + ":" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -44,10 +58,11 @@ enum AudioSearchReader {
         a.quality_flags,a.transcription_pass
         """
     private static let visible = """
-        a.source IN ('microphone','system') AND a.transcript_status='transcribed'
+        a.source IN ('microphone','system') AND a.transcript_status IN ('transcribed','needs_repair','needs_review') AND length(trim(a.text)) > 0
         AND (a.batch_audio_path IS NULL OR a.batch_audio_path='' OR a.transcription_pass=(
           SELECT MAX(latest.transcription_pass) FROM audio_captures latest
-          WHERE latest.batch_audio_path=a.batch_audio_path AND latest.source!='word'))
+          WHERE latest.batch_audio_path=a.batch_audio_path AND latest.source=a.source
+          AND latest.transcript_status IN ('transcribed','needs_repair','needs_review') AND length(trim(latest.text)) > 0))
         """
 
     static func search(connection: DatabaseConnection, owner: UUID,

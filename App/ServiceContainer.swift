@@ -302,6 +302,13 @@ public actor ServiceContainer {
             do { try await database.recordResourceUsageMinute(minute) }
             catch { Log.warning("Could not save CPU usage aggregate", category: .app) }
         }
+        // Suppress legacy repair only after the quality owner proves this exact
+        // saved row belongs to durable, still-valid companion work. Merely being
+        // configured or offline never makes a recording ineligible for fallback.
+        await audioProcessing.setDeferredRepairOwner { [weak self] rowID in
+            guard let owner = await self?.companionOwner else { return false }
+            return await owner.ownsFirstPassRepair(rowID: rowID)
+        }
         // Independent default-off promotion gate. No provider means no proof work.
         // Never replace the voice-marker persisted-media registration callback.
         if UserDefaults.standard.bool(forKey: "nativeFirstPassReuseTrialEnabled") {
@@ -965,6 +972,9 @@ public actor ServiceContainer {
         guard !markerAccessClosed else { throw ContextStoreError.closed }
         if let companionOwner, let companionSettingsOwner { return (companionOwner, companionSettingsOwner) }
         let database = self.database
+        let qualityGovernor = backgroundProcessing
+        let routingRoot = URL(fileURLWithPath: storageConfig.expandedStorageRootPath, isDirectory: true)
+            .appendingPathComponent("context/companion/execution-routing", isDirectory: true)
         let owner = CompanionController(
             storageRoot: URL(fileURLWithPath: storageConfig.expandedStorageRootPath, isDirectory: true)
                 .appendingPathComponent("context/companion", isDirectory: true),
@@ -978,6 +988,9 @@ public actor ServiceContainer {
                 if let bytes, let metadata = String(data: bytes, encoding: .utf8) {
                     try? await database.recordMetricEvent(metricType: .companionAction, metadata: metadata)
                 }
+            }, transportWrapper: { remote in
+                CompanionLocalRuntime.wrap(remote, root: routingRoot,
+                    nativeStoreID: nativeID, governor: qualityGovernor)
             })
         let settings = CompanionSettingsService(controller: owner, nativeStoreID: nativeID)
         // Writer callbacks only revoke a cheap transmission epoch. They never perform a read,

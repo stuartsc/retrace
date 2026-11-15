@@ -53,6 +53,28 @@ final class AudioSpeechActivityPolicyTests: XCTestCase {
         XCTAssertTrue(result.isProbablySilence)
     }
 
+    func testBriefSpeechAtPartialBatchTailKeepsPriority() {
+        let audio = Self.pcmWithBurst(duration: 15.1, sampleRate: 16_000,
+            baselineAmplitude: 0.0001, burstAmplitude: 0.012,
+            burstStart: 15, burstDuration: 0.1)
+        let result = AudioSpeechActivityPolicy.evaluate(audio, sampleRate: 16_000, channels: 1)
+        XCTAssertTrue(result.shouldTranscribe)
+        XCTAssertFalse(result.isProbablySilence)
+        XCTAssertLessThan(result.fullBatchRMS, 0.003)
+        XCTAssertLessThan(result.activeDuration, 0.4)
+        XCTAssertEqual(result.activeDuration, 0.1, accuracy: 0.001)
+    }
+
+    func testIsolatedShortWordInsideQuietBatchKeepsPriority() {
+        let audio = Self.pcmWithBurst(duration: 15, sampleRate: 16_000,
+            baselineAmplitude: 0.0001, burstAmplitude: 0.02,
+            burstStart: 8, burstDuration: 0.1)
+        let result = AudioSpeechActivityPolicy.evaluate(audio, sampleRate: 16_000, channels: 1)
+        XCTAssertTrue(result.shouldTranscribe)
+        XCTAssertFalse(result.isProbablySilence)
+        XCTAssertLessThan(result.fullBatchRMS, 0.003)
+    }
+
     private static func pcmWithBurst(
         duration: TimeInterval,
         sampleRate: Int,

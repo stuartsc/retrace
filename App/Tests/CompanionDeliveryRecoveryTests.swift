@@ -5,6 +5,39 @@ import XCTest
 @testable import App
 
 final class CompanionDeliveryRecoveryTests: XCTestCase {
+    func testNativeDraftWithoutBatchPathBuildsExactCompanionJob() async throws {
+        let fixture = try await Fixture.make()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = fixture.manifest.sourceRanges[0].source
+        let id = try await fixture.audio.insertRawBatch(startTime: source.approximateOrigin,
+            endTime: source.approximateOrigin.addingTimeInterval(4), source: .microphone,
+            audioPath: fixture.manifest.relativePath, audioSize: Int64(fixture.bytes.count))
+        let pendingValue = try await fixture.audio.getFirstPassPendingBatch(preferRecent: false)
+        let pending = try XCTUnwrap(pendingValue)
+        XCTAssertEqual(pending.id, id)
+        let updated = try await fixture.audio.updatePendingRawBatchOutcome(pending, text: "Native draft words",
+            transcriptStatus: "needs_repair", detectedLanguage: "en", audioVariant: "raw",
+            qualityFlags: AudioPreparationMetadata.nativeFirstPassPending + "," + AudioPreparationMetadata.firstPassRepairPending)
+        XCTAssertTrue(updated)
+        let rows = try await fixture.audio.getContextBatchEntries(batchAudioPath: fixture.manifest.relativePath)
+        XCTAssertEqual(rows.count, 1); XCTAssertNil(rows.first?.batchAudioPath)
+        let plan = try CompanionBatchPlan(manifest: fixture.manifest, records: rows, nativeStoreID: fixture.native, enrollmentID: UUID())
+        let request = plan.request(window: plan.identity, byteCount: fixture.bytes.count)
+        try request.validate()
+        XCTAssertEqual(request.speaker?.firstPassReferences.first?.rowID, id)
+        XCTAssertEqual(request.speaker?.firstPassText, "Native draft words")
+        try await fixture.close()
+    }
+    func testSurvivingPartialCoverageCannotOwnWholeFirstPassRepair() async throws {
+        let fixture = try await Fixture.make()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let whole = fixture.identity(start: 0, count: 64000)
+        let first = fixture.identity(start: 0, count: 16000)
+        let last = fixture.identity(start: 32000, count: 32000)
+        XCTAssertFalse(CompanionSpeakerCatalog.covers(whole, intervals: [first, last]))
+        XCTAssertTrue(CompanionSpeakerCatalog.covers(whole, intervals: [first, fixture.identity(start: 16000, count: 16000), last]))
+        try await fixture.close()
+    }
     func testInteriorCoveragePublishesEveryFragmentWithOriginalFirstPassAndExactOffsets() async throws {
         let fixture = try await Fixture.make()
         defer { try? FileManager.default.removeItem(at: fixture.root) }

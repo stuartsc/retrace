@@ -22,6 +22,10 @@ public actor CompanionDeliveryDatabase {
     public init(databasePath: String, nativeStoreID: UUID, readOnly: Bool = false) {
         path = databasePath; self.nativeStoreID = nativeStoreID; self.readOnly = readOnly
     }
+    public func identity() throws -> UUID {
+        guard !closed, db != nil, let catalogID else { throw CompanionError.unavailable }
+        return catalogID
+    }
     deinit { if let db { sqlite3_close_v2(db) } }
     public func initialize() throws {
         guard !closed else { throw CompanionError.closed }
@@ -75,7 +79,14 @@ public actor CompanionDeliveryDatabase {
             if readOnly { try execute("COMMIT") }
             // A statement paused at SQLITE_ROW owns a read transaction. Finish it
             // before changing journal mode, including the first database creation.
-            if !readOnly { try execute("PRAGMA journal_mode=WAL"); try execute("PRAGMA synchronous=FULL") }
+            if !readOnly {
+                try execute("PRAGMA journal_mode=WAL"); try execute("PRAGMA synchronous=FULL")
+                try execute("CREATE VIRTUAL TABLE IF NOT EXISTS speaker_search USING fts5(job_id UNINDEXED, text, tokenize='unicode61')")
+                try execute("CREATE TABLE IF NOT EXISTS speaker_repair_owners(row_id INTEGER NOT NULL,job_id TEXT NOT NULL,PRIMARY KEY(row_id,job_id))")
+                try execute("CREATE TABLE IF NOT EXISTS speaker_search_progress(singleton INTEGER PRIMARY KEY, sequence INTEGER NOT NULL)")
+                try run("INSERT OR IGNORE INTO speaker_search_progress VALUES(1,0)", [])
+                try prepareSpeakerSearch()
+            }
         } catch {
             if readOnly { try? execute("ROLLBACK") }
             sqlite3_close_v2(opened); db = nil; catalogID = nil; throw error
@@ -158,6 +169,7 @@ public actor CompanionDeliveryDatabase {
                 try source.map { .blob(try Self.origin($0.approximateOrigin)) } ?? .null,
                 source.map { .integer($0.startSample) } ?? .null, source.map { .integer($0.startSample + $0.sampleCount) } ?? .null,
                 request.context.map { .text($0.markerID.uuidString) } ?? .null])
+        try indexRepairOwnership(id, request)
         for hash in Set(request.speaker?.media.map(\.sha256) ?? []) {
             try run("INSERT INTO job_objects(job_id,object_id) VALUES(?,?)", [.text(id), .text(hash)])
         }
@@ -233,6 +245,69 @@ public actor CompanionDeliveryDatabase {
         }
         try Task.checkCancellation(); return .init(records: records, nextCursor: next)
     }
+    /// Bounded repair of the derived search index. Never changes retained result bytes.
+    public func prepareSpeakerSearch(limit: Int = 64) throws {
+        try writable(); guard (1...128).contains(limit) else { throw CompanionError.invalidPayload }
+        try transaction {
+            let cursor = try scalar("SELECT sequence FROM speaker_search_progress WHERE singleton=1")
+            let statement = try prepare("SELECT j.sequence,j.id,r.payload,j.request FROM jobs j LEFT JOIN results r ON r.job_id=j.id WHERE j.sequence>? ORDER BY j.sequence LIMIT ?", [.integer(cursor), .integer(Int64(limit))])
+            defer { sqlite3_finalize(statement) }
+            var last = cursor
+            while true {
+                let step = sqlite3_step(statement)
+                if step == SQLITE_DONE { break }
+                guard step == SQLITE_ROW else { throw CompanionError.unavailable }
+                try Task.checkCancellation()
+                last = sqlite3_column_int64(statement, 0)
+                let id = try text(statement, 1)
+                try indexRepairOwnership(id, request(blob(statement, 3, 768 * 1024)))
+                if sqlite3_column_type(statement, 2) != SQLITE_NULL {
+                    let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+                    let result = try decoder.decode(CompanionResult.self, from: blob(statement, 2, 2 * 1024 * 1024))
+                    try indexSpeakerResult(id, result)
+                }
+            }
+            try run("UPDATE speaker_search_progress SET sequence=? WHERE singleton=1", [.integer(last)])
+        }
+    }
+    private func indexRepairOwnership(_ id: String, _ request: CompanionJobRequest) throws {
+        for ref in request.speaker?.firstPassReferences ?? [] {
+            try run("INSERT OR IGNORE INTO speaker_repair_owners(row_id,job_id) VALUES(?,?)", [.integer(ref.rowID), .text(id)])
+        }
+    }
+    public func repairOwnerRecords(rowID: Int64) throws -> [CompanionDeliveryRecord] {
+        try check()
+        guard try scalar("SELECT count(*) FROM sqlite_master WHERE name='speaker_repair_owners'") == 1 else { return [] }
+        return try rows("WHERE j.kind='speaker' AND j.stage!='invalidated' AND j.id IN (SELECT job_id FROM speaker_repair_owners WHERE row_id=?)", [.integer(rowID)], limit: 256)
+    }
+    private func indexSpeakerResult(_ id: String, _ result: CompanionResult) throws {
+        guard let value = result.speakerEnrichment else { return }
+        let searchable = ([value.enhancedText] + value.turns.map { $0.text }).joined(separator: "\n")
+        try run("DELETE FROM speaker_search WHERE job_id=?", [.text(id)])
+        try run("INSERT INTO speaker_search(job_id,text) VALUES(?,?)", [.text(id), .text(searchable)])
+    }
+    /// Literal phrase matching, not the global query language. Results still need native revalidation.
+    public func searchSpeakers(query: String, from: Date?, to: Date?, limit: Int, matchExpression: String? = nil, oldestFirst: Bool = false) throws -> (jobIDs: [String], incomplete: Bool) {
+        try initialize()
+        guard (1...100).contains(limit), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              query.utf8.count <= 1024 else { throw CompanionError.invalidPayload }
+        guard try scalar("SELECT count(*) FROM sqlite_master WHERE name='speaker_search'") == 1 else { return ([], true) }
+        let phrase = matchExpression ?? ("\"" + query.replacingOccurrences(of: "\"", with: "\"\"") + "\"")
+        guard phrase.utf8.count <= 2048 else { throw CompanionError.invalidPayload }
+        let lo = from?.timeIntervalSince1970 ?? 0, hi = to?.timeIntervalSince1970 ?? Date.distantFuture.timeIntervalSince1970
+        guard lo.isFinite, hi.isFinite, lo <= hi else { throw CompanionError.invalidPayload }
+        let statement = try prepare("SELECT j.id FROM speaker_search s JOIN jobs j ON j.id=s.job_id WHERE speaker_search MATCH ? AND j.stage IN ('imported','acknowledged') AND j.source_start>=? AND j.source_start<? ORDER BY j.source_start \(oldestFirst ? "ASC" : "DESC"),j.id \(oldestFirst ? "ASC" : "DESC") LIMIT ?",
+                                    [.text(phrase), .real(lo), .real(hi), .integer(Int64(limit + 1))])
+        defer { sqlite3_finalize(statement) }
+        var ids: [String] = []
+        while true {
+            let step = sqlite3_step(statement); if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW else { throw CompanionError.unavailable }
+            try Task.checkCancellation(); ids.append(try text(statement, 0))
+        }
+        let pending = try scalar("SELECT EXISTS(SELECT 1 FROM jobs j JOIN results r ON r.job_id=j.id WHERE j.sequence>(SELECT sequence FROM speaker_search_progress WHERE singleton=1) LIMIT 1)") != 0
+        return (Array(ids.prefix(limit)), ids.count > limit || pending)
+    }
     public func storeResult(jobID: String, payload: Data) throws {
         try writable(); try transaction { try insertResult(jobID: jobID, payload: payload) }
     }
@@ -243,6 +318,7 @@ public actor CompanionDeliveryDatabase {
         guard result.version == 1, result.jobID == jobID, result.sourceStoreID == nativeStoreID, result.kind == request.kind else { throw CompanionError.invalidPayload }
         if let old = try self.record(jobID: jobID)?.resultPayload { guard old == payload else { throw CompanionError.conflictingPublication } }
         else { try run("INSERT INTO results(job_id,payload,digest) VALUES(?,?,?)", [.text(jobID), .blob(payload), .text(Self.digest(payload))]) }
+        try indexSpeakerResult(jobID, result)
         try advance(jobID, .received)
     }
     public func transition(jobID: String, stage: CompanionDeliveryStage) throws { try writable(); try transaction { try advance(jobID, stage) } }

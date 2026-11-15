@@ -81,12 +81,7 @@ enum LiveContextPresentation {
     }
 
     static func status(_ row: AudioTranscription) -> String {
-        switch row.transcriptStatus {
-        case "pending": return "Text pending"
-        case "needs_repair", "needs_review": return "Text needs review"
-        case "transcribed" where !row.text.isEmpty: return row.transcriptionPass > 1 ? "Refined transcript" : "Saved transcript"
-        default: return row.text.isEmpty ? "Audio saved · no readable text" : "Saved transcript"
-        }
+        TranscriptPreparation.label(row)
     }
 
     static func copyPreview(rows: [AudioTranscription], interval: DateInterval, hasMore: Bool,

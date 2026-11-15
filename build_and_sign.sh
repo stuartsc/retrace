@@ -63,6 +63,9 @@ cp "UI/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 # Create PkgInfo
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
+# Ship the exact local quality-worker implementation before sealing resources.
+python3 scripts/package_audio_worker_runtime.py "$APP_BUNDLE"
+
 echo "✍️  Signing app bundle..."
 
 # Sign the app bundle with entitlements. Prefer a stable real identity so TCC

@@ -8,12 +8,28 @@ public struct CompanionConfiguration: Sendable {
     public let bearerToken: String
     public init(endpoint: URL, bearerToken: String) { self.endpoint = endpoint; self.bearerToken = bearerToken }
 }
+public struct CompanionProcessingStatus: Sendable {
+    public enum Phase: String, Sendable { case waitingForRemote, remotePending, waitingForQuiet, improvingTextAndSpeakers }
+    public enum Worker: String, Sendable { case otherMac, thisMac }
+    public let phase: Phase
+    public let worker: Worker
+    public let oldestQueuedAt: Date?
+    public var message: String {
+        switch phase {
+        case .waitingForRemote: return "Waiting for the other Mac"
+        case .remotePending: return "Text and speakers · other Mac"
+        case .waitingForQuiet: return "Waiting for a quiet moment"
+        case .improvingTextAndSpeakers: return "Improving text and speakers · this Mac"
+        }
+    }
+}
 public struct CompanionControllerStatus: Sendable {
     public enum State: String, Sendable { case unconfigured, ready, offline, suspended, closed }
     public let state: State
     public let pendingCount: Int
     /// Cancellation cannot retract an object already admitted to the transport.
     public let partialDeliveryPossible: Bool
+    public var processing: CompanionProcessingStatus? = nil
 }
 
 /// One App-owned companion lifetime. Views and MCP share this owner; no view creates a worker.
@@ -37,6 +53,7 @@ public actor CompanionController {
     private let verifiedBytes: @Sendable (AudioMediaManifest) async throws -> Data
     private let policy: @Sendable () async throws -> Void
     private let metric: Metric
+    private let transportWrapper: (@Sendable (CompanionHTTPTransport) throws -> any CompanionTransport)?
     private let corrections: CompanionSpeakerCorrectionStore
     private nonisolated let gate = CompanionAdmissionGate()
     private nonisolated let evidenceAdmission = CompanionEvidenceAdmission()
@@ -63,7 +80,9 @@ public actor CompanionController {
                 recall: ProgressiveRecallService, markers: TimelineMarkerService,
                 verifiedBytes: @escaping @Sendable (AudioMediaManifest) async throws -> Data,
                 policy: @escaping @Sendable () async throws -> Void,
-                metric: @escaping Metric = { _, _ in }) {
+                metric: @escaping Metric = { _, _ in },
+                transportWrapper: (@Sendable (CompanionHTTPTransport) throws -> any CompanionTransport)? = nil) {
+        self.transportWrapper = transportWrapper
         root = storageRoot; self.nativeStoreID = nativeStoreID; self.databasePath = databasePath
         self.adapter = adapter; self.recall = recall; self.markers = markers
         self.verifiedBytes = verifiedBytes; self.policy = policy; self.metric = metric
@@ -177,9 +196,12 @@ public actor CompanionController {
             adapter: adapter, recall: recall, admission: admission, validateSpeaker: { request, records in
                 try await Self.validateSpeaker(request, records: records, nativeStoreID: native, markers: markers, verifiedBytes: verified)
             })
-        let transport: CompanionHTTPTransport
-        do { transport = try CompanionHTTPTransport(baseURL: configuration.endpoint, bearerToken: configuration.bearerToken,
-            admission: { resume in try gate.admit(generation, resume: resume) }) }
+        let transport: any CompanionTransport
+        do {
+            let remote = try CompanionHTTPTransport(baseURL: configuration.endpoint, bearerToken: configuration.bearerToken,
+                admission: { resume in try gate.admit(generation, resume: resume) })
+            transport = try transportWrapper?(remote) ?? remote
+        }
         catch { gate.replace(allowed: false); await reader.close(); throw error }
         let importer = CompanionContextImporter(markers: markers)
         let service = CompanionEnrichmentService(root: root.appendingPathComponent("delivery"), nativeStoreID: native,
@@ -259,11 +281,11 @@ public actor CompanionController {
                 catch { if refreshFailure == nil { refreshFailure = error } }
                 if let refreshFailure { throw refreshFailure }
                 let count = try await session.service.pendingCount()
-                cached = .init(state: .ready, pendingCount: count, partialDeliveryPossible: false)
+                cached = .init(state: .ready, pendingCount: count, partialDeliveryPossible: false, processing: await session.service.processingStatus())
             } catch is CancellationError { return }
             catch {
                 if Task.isCancelled { return }
-                cached = .init(state: .offline, pendingCount: cached.pendingCount, partialDeliveryPossible: true)
+                cached = .init(state: .offline, pendingCount: cached.pendingCount, partialDeliveryPossible: true, processing: await session.service.processingStatus())
             }
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
         }
@@ -475,6 +497,29 @@ public actor CompanionController {
             firstPassReferences: speaker.firstPassReferences, turnReferences: references)
     }
     private struct PageCursor: Codable { let snapshot: String; let offset: Int }
+    /// Indexed literal phrase search; each result is revalidated against current native sources.
+    public func ownsFirstPassRepair(rowID: Int64) async -> Bool {
+        let includePending = session != nil && (cached.state == .ready || cached.state == .offline)
+        return (try? await performLocal { catalog in
+            try await catalog.ownsFirstPassRepair(rowID: rowID, includePending: includePending)
+        }) ?? false
+    }
+
+    public func searchSpeakerPresentations(query: String, from: Date? = nil, to: Date? = nil, limit: Int = 32, matchExpression: String? = nil, oldestFirst: Bool = false) async throws -> CompanionSpeakerPage {
+        let epoch = speakerChanges.snapshot()
+        let page: CompanionSpeakerPage = try await performLocal { catalog in
+            let matches = try await catalog.indexedSearch(query: query, from: from, to: to, limit: limit, matchExpression: matchExpression, oldestFirst: oldestFirst)
+            var items: [CompanionSpeakerPresentation] = [], incomplete = matches.incomplete
+            for id in matches.jobIDs {
+                do { if let value = try await self.presentation(id, catalog: catalog) { items.append(value) } }
+                catch where Self.isUnavailableCatalogEntry(error) { incomplete = true }
+            }
+            return .init(items: items, nextCursor: nil, incomplete: incomplete)
+        }
+        guard epoch == speakerChanges.snapshot() else { throw CompanionError.staleEvidence }
+        return page
+    }
+
     public func speakerPresentations(from: Date, to: Date, before: String? = nil, limit: Int = 32) async throws -> CompanionSpeakerPage {
         try CompanionBounds.date(from); try CompanionBounds.date(to)
         guard from <= to, (1...64).contains(limit) else { throw CompanionError.invalidPayload }
@@ -657,7 +702,7 @@ public actor CompanionController {
         for slice in request.media {
             guard let manifest = manifests.first(where: { mediaID($0) == slice.mediaID && $0.sha256 == slice.sha256 }),
                   manifest.source == .microphone,
-                  !records.isEmpty, records.allSatisfy({ $0.batchAudioPath == manifest.relativePath && $0.source == .microphone }),
+                  !records.isEmpty, records.allSatisfy({ CompanionTranscriptSnapshot.firstPassMediaPath($0) == manifest.relativePath && $0.source == .microphone }),
                   manifest.sourceRanges.contains(where: { range in
                       range.source.recordingGeneration == source.recordingGeneration && range.source.continuityID == source.continuityID &&
                       CompanionWire.sameWireDate(range.source.approximateOrigin, source.approximateOrigin) && range.source.startSample <= slice.sourceStartSample &&

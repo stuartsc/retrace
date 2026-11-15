@@ -4,11 +4,21 @@ import Shared
 import Database
 
 public protocol CompanionTransport: Sendable {
+    func bindCatalogue(_ id: UUID) async throws
+    /// Called only before a new native catalogue insert, never when recovering
+    /// an existing or legacy request. Does not publish anything remotely.
+    func registerUnpublishedJob(id: String, data: Data) async throws
     func publishObject(sha256: String, data: Data) async throws
     func publishJob(id: String, data: Data) async throws
     func result(id: String) async throws -> Data?
     func acknowledge(id: String, resultSHA256: String) async throws
     func close() async
+    func processingStatus() async -> CompanionProcessingStatus?
+}
+public extension CompanionTransport {
+    func bindCatalogue(_ id: UUID) async throws {}
+    func registerUnpublishedJob(id: String, data: Data) async throws {}
+    func processingStatus() async -> CompanionProcessingStatus? { nil }
 }
 public struct CompanionMediaObject: Sendable {
     public let sha256: String
@@ -128,6 +138,12 @@ public actor CompanionEnrichmentService {
             }
             for request in requests { try await revalidate(request); try Task.checkCancellation() }
             try await validateCoverage(coverageJobIDs)
+            for request in requests {
+                let data = try CompanionWire.encode(request), id = CompanionWire.digest(data)
+                if try await catalog.record(jobID: id, includeResult: false) == nil {
+                    try await transport.registerUnpublishedJob(id: id, data: data)
+                }
+            }
             return try await catalog.publishGroup(semanticPayload: semanticPayload, requests: requests.map { try CompanionWire.encode($0) }, reservationID: reservation, batchKey: batchKey, coverageJobIDs: coverageJobIDs)
         } catch {
             // Cancellation must not strand a lease. The joined cleanup has no network work.
@@ -155,6 +171,7 @@ public actor CompanionEnrichmentService {
     }
     private func synchronizeOwned(limit: Int) async throws -> Int {
         try await initialize()
+        try await catalog.prepareSpeakerSearch(limit: 64)
         var pending = try await catalog.activeRecords(beforeSequence: lastDeliverySequence, limit: limit)
         if pending.count < limit, lastDeliverySequence != nil {
             let wrap = try await catalog.activeRecords(limit: limit), seen = Set(pending.map(\.jobID))
@@ -212,6 +229,7 @@ public actor CompanionEnrichmentService {
     private func validatedTransmission(_ request: CompanionJobRequest) async throws -> CompanionHTTPTransport.Admission? {
         let permit = transmissionAdmission(); try await revalidate(request); try Task.checkCancellation(); return permit
     }
+    public func processingStatus() async -> CompanionProcessingStatus? { await transport.processingStatus() }
     public func status() async throws -> [CompanionDeliveryStatus] {
         try await perform {
             try await self.initialize()
@@ -300,6 +318,8 @@ public actor CompanionEnrichmentService {
     private func initializeOwned() async throws {
         if lease == nil { lease = try spool.acquire() }
         try spool.initialize(); try await catalog.initialize()
+        let catalogueID = try await catalog.identity()
+        try await transport.bindCatalogue(catalogueID)
         try await catalog.recoverPublicationReservations()
         if !(try await catalog.migrationComplete()) { try await migrateLegacy(); try await catalog.completeLegacyMigration() }
     }

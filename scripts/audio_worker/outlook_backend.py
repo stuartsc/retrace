@@ -31,11 +31,12 @@ def _hash(path: Path) -> str:
     return value.hexdigest()
 
 
-def preflight(outlook: Path, cache: Path | None = None) -> dict[str, Any]:
+def preflight(
+    outlook: Path, cache: Path | None = None, *, local_governed: bool = False
+) -> dict[str, Any]:
     role = outlook / "logs/autosync/_role.json"
-    if (
-        role.stat().st_size > 4096
-        or json.loads(role.read_text()).get("role") != "primary"
+    if role.stat().st_size > 4096 or json.loads(role.read_text()).get("role") not in (
+        {"primary", "capture-only"} if local_governed else {"primary"}
     ):
         raise JobError("not_primary_host")
     pins = json.loads(Path(__file__).with_name("runtime-pins.json").read_text())
@@ -141,15 +142,17 @@ def timed_words(result: Any, duration: float) -> tuple[list[dict[str, Any]], int
 
 
 class OutlookBackend:
-    def __init__(self, outlook: Path):
+    def __init__(
+        self, outlook: Path, *, local_governed: bool = False, threads: int = 2
+    ):
         self.cache = (Path.home() / ".cache/huggingface/hub").resolve()
-        self.pins = preflight(outlook, self.cache)
+        self.pins = preflight(outlook, self.cache, local_governed=local_governed)
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
         os.environ["PYANNOTE_METRICS_ENABLED"] = "0"
         sys.path.insert(0, str(outlook))
-        configure_torch_runtime()
+        configure_torch_runtime(threads)
         import torch
         from pyannote.audio import Pipeline
         from src.intelligence.audio import retrace_diarizer, voice_match
@@ -170,6 +173,67 @@ class OutlookBackend:
             torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         )
 
+    def repair(
+        self, wav: Path, duration: float, original: dict[str, Any]
+    ) -> tuple[dict[str, Any], float | None]:
+        """One ASR-only retry on conservatively normalised PCM; reuse existing speaker turns."""
+        import mlx_whisper
+        import numpy as np
+
+        waveform, sample_rate = self.diarizer._load_wav_tensor(wav)
+        if sample_rate != 16000:
+            raise JobError("invalid_repair_rate")
+        samples = np.asarray(waveform.squeeze().cpu().numpy(), dtype=np.float32)
+        if samples.ndim != 1 or not np.isfinite(samples).all():
+            raise JobError("invalid_repair_pcm")
+        rms = float(np.sqrt(np.mean(samples**2)))
+        gain = min(8.0, max(1.0, 0.06 / max(rms, 1e-6)))
+        samples = np.clip(samples * gain, -1.0, 1.0)
+        started = time.monotonic()
+        value = mlx_whisper.transcribe(
+            samples,
+            path_or_hf_repo=str(
+                model_snapshot(
+                    self.pins, self.cache, "mlx-community/whisper-large-v3-mlx"
+                )
+            ),
+            language=None,
+            task="transcribe",
+            verbose=None,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            temperature=0.0,
+            hallucination_silence_threshold=2.0,
+        )
+        text = value.get("text")
+        if not isinstance(text, str) or len(text.encode()) > 128 * 1024:
+            raise JobError("invalid_model_text")
+        words, unplaced = timed_words(value, duration)
+        candidate = dict(
+            original,
+            text=text,
+            words=words,
+            unplacedWords=unplaced,
+            processingSeconds=original["processingSeconds"]
+            + time.monotonic()
+            - started,
+        )
+        return candidate, self.average_logprob(value)
+
+    @staticmethod
+    def average_logprob(value):
+        scores = [
+            item.get("avg_logprob")
+            for item in value.get("segments", [])
+            if isinstance(item, dict)
+        ]
+        scores = [
+            score
+            for score in scores
+            if isinstance(score, (float, int)) and math.isfinite(score)
+        ]
+        return sum(scores) / len(scores) if scores else None
+
     def transcribe(self, wav: Path, duration: float) -> dict[str, Any]:
         import mlx_whisper
         import numpy as np
@@ -187,6 +251,7 @@ class OutlookBackend:
             condition_on_previous_text=False,
             hallucination_silence_threshold=2.0,
         )
+        self.last_average_logprob = self.average_logprob(result)
         text = result.get("text")
         if not isinstance(text, str) or len(text.encode("utf-8")) > 128 * 1024:
             raise JobError("invalid_model_text")

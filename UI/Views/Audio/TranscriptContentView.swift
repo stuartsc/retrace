@@ -1,3 +1,4 @@
+import App
 import SwiftUI
 import AppKit
 import Database
@@ -11,6 +12,9 @@ struct TranscriptContentView: View {
     @ObservedObject var playback: TranscriptAudioPlayback
     let onReveal: (TranscriptAudioRequest) -> Void
     let onClose: () -> Void
+    var speakers: [CompanionSpeakerPresentation] = []
+    var recordingReferences: [V23TranscriptReference] = []
+    var enrichmentNotice: String? = nil
 
     /// Strip whisper.cpp control tokens for display (handles legacy DB records)
     static func stripControlTokens(_ text: String) -> String {
@@ -71,6 +75,9 @@ struct TranscriptContentView: View {
                     .padding(.vertical, 8)
             }
 
+            if let enrichmentNotice {
+                Text(enrichmentNotice).font(.caption).foregroundStyle(.secondary).padding(8)
+            }
             // Content
             if transcriptions.isEmpty {
                 Spacer()
@@ -86,12 +93,40 @@ struct TranscriptContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(presentationRows) { row in
-                            TranscriptionRow(
-                                row: row,
-                                playback: playback,
-                                onReveal: onReveal
-                            )
+                        if speakers.isEmpty {
+                            ForEach(TranscriptPresentationPolicy.presentationRows(from: transcriptions)) { row in
+                                TranscriptionRow(row: row, playback: playback, onReveal: onReveal)
+                            }
+                        } else {
+                        ForEach(preparedItems) { item in
+                            switch item {
+                            case .recording(let record):
+                                ForEach(TranscriptPresentationPolicy.presentationRows(from: [record])) { row in
+                                    TranscriptionRow(row: row, playback: playback, onReveal: onReveal)
+                                }
+                            case .turn(let turn):
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(turn.displayLabel + " · " + turn.statusText).font(.caption).foregroundStyle(.secondary)
+                                    Text(turn.turn.text).textSelection(.enabled)
+                                }.padding(.vertical, 6)
+                            case .original(let original):
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if !original.presentation.enhancement.enhancedText.isEmpty {
+                                        DisclosureGroup("Full refined transcript · recording-level timing") {
+                                            Text(original.presentation.enhancement.enhancedText).textSelection(.enabled)
+                                        }
+                                    }
+                                    DisclosureGroup("Original draft and recordings") {
+                                        Text(original.presentation.firstPassText).textSelection(.enabled)
+                                        ForEach(transcriptions.filter { record in original.presentation.firstPassReferences.contains { $0.rowID == record.id } }, id: \.id) { record in
+                                            ForEach(TranscriptPresentationPolicy.presentationRows(from: [record])) { row in
+                                                TranscriptionRow(row: row, playback: playback, onReveal: onReveal)
+                                            }
+                                        }
+                                    }
+                                }.padding(.vertical, 6)
+                            }
+                        }
                         }
                     }
                     .padding(16)
@@ -102,8 +137,11 @@ struct TranscriptContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var presentationRows: [TranscriptPresentationRow] {
-        TranscriptPresentationPolicy.presentationRows(from: transcriptions)
+    private var preparedItems: [PreparedTranscriptItem] {
+        PreparedTranscriptProjection.make(recordings: transcriptions, speakers: speakers,
+            interval: DateInterval(start: timestamp.addingTimeInterval(-TranscriptRecordingLoader.windowSeconds),
+                                   end: timestamp.addingTimeInterval(TranscriptRecordingLoader.windowSeconds)),
+            recordingReferences: recordingReferences).items
     }
 }
 
@@ -121,7 +159,8 @@ struct TranscriptPresentationRow: Identifiable {
     var textPreparationLabel: String? {
         switch transcription.transcriptStatus.lowercased() {
         case "pending": return "Text not ready — waiting for background processing"
-        case "needs_repair": return "Text needs another processing pass"
+        case "needs_repair", "needs_review": return transcription.text.isEmpty ? "Text needs another processing pass" : "Draft · improving text"
+        case "transcribed" where transcription.transcriptionPass <= 1: return "Draft"
         default: return nil
         }
     }

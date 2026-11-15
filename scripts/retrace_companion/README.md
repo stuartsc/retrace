@@ -166,3 +166,80 @@ memory, energy, installed UI, or complete App integration. Deployed networking h
 separate receipts; authored real-model acceptance is tracked independently in the ledger.
 Swift tests are coordinated separately by the root agent and must be recorded
 only after their build/test receipt exists.
+
+## Governed quality routing (13 November source candidate)
+
+The native App can wrap the existing transport with `CompanionFallbackTransport`.
+It prefers the private remote worker and queues a local child only after five
+minutes of remote unavailability. Native refinement admission still requires a
+quiet moment and resource headroom; waiting for that permit does not block delivery
+or remote recovery. The child runs the same pinned offline models and read-only
+voice library without changing Outlook's host role. `local_job` is an internal
+App-owned entry point, not a daemon or an instruction to run ungoverned inference.
+
+The receiver now exposes authenticated execution grants and revocations. A grant
+requires a heartbeat from the supervised worker, lasts at most 120 seconds, and
+rejects issuance clocks more than five seconds apart. The receiver converts expiry
+to monotonic time. A separately running watchdog reads the grant before inference
+and kills the owned model/decoder process group on expiry or database failure;
+the native call cannot prevent monitoring by holding Python's GIL. Both worker
+supervision and native local cancellation join the entire process group before
+releasing execution ownership. Restart-paused grants may renew; explicitly revoked
+attempts cannot. Acknowledgement retires active grant rows while the job ledger
+keeps its immutable replay fence.
+
+The sender persists acknowledged lease capability before allowing timeout-based
+local takeover, waits 130 seconds from a potentially issued renewal, and can use
+an explicit joined revocation instead. Older receivers returning 404 for grants
+retain remote-only operation; an unknown grant outcome does not establish safe
+local takeover. Deploy receiver and worker together for the new protocol.
+
+A genuinely new native job can also take the local route if the remote Mac was
+already offline at publication. Before the first catalogue insertion, the sender
+persists an unpublished proof bound to the native store, catalogue UUID and exact
+job digest. It records a publication attempt before any remote job payload can
+leave. Only that untouched proof bypasses the lease requirement after five minutes;
+a missing assignment, recovered job, legacy migration or replacement catalogue
+does not establish that a job was never sent. This uses the existing wire format.
+
+Every quality run may make one additional ASR-only attempt for missing word
+placement, empty output or low acoustic confidence. This retry uses bounded PCM
+gain normalisation, reuses the existing speaker turns, and has a distinct recipe
+identity. Original and candidate text stay in temporary attempt files until
+acknowledgement; the accepted enrichment and verbatim first-pass proof remain in
+the delivery catalogue. A changed number/negation,
+empty result or worse placement cannot automatically replace the quality result.
+No inference-quality or speaker-accuracy acceptance is implied by these rules.
+
+The native routing spool caps active requests at 256, staged AAC at 4,096 objects
+and 1 GiB, and requires 20 GiB free space before admitting a new copy. Import
+acknowledgements precede cleanup. Only unreferenced transfer copies are collected,
+and only after local readers have joined; original recordings are untouched.
+Cheap cached status reports the selected worker, queue age and waiting/processing
+state. After a restart, the cached queue age can remain unavailable until an
+already-published job is republished; processing ownership still resumes from
+durable state, and no timestamp is invented for the display.
+This is source implementation; installed deployment and native performance
+acceptance remain separate.
+
+The scoped Python checks passed 51 companion tests and 16 audio-worker tests on
+13 November, including a real independent-watchdog expiry, orderly watchdog join,
+TERM-ignoring decoder descendant, and 260 successive grant/import/acknowledgement
+cycles. Scoped Ruff lint and formatting checks also passed. Swift wrapper tests
+exercise private AAC files and catalogues with controlled remote/admission seams;
+their final clean build receipt is recorded separately by the release owner.
+
+The separate authored native smoke is reproducible from the checkout root, after
+other native tests have finished:
+
+```sh
+/usr/bin/nice -n 15 /Users/stuartbond/outlook/.venv/bin/python \
+  docs/fixtures/phased-audio-20261113/smoke_authored_quality.py
+```
+
+It uses only the checked-in authored Whisper WAV and text oracle, requires all
+existing runtime/model/source pins to pass, and writes a content-free
+`quality-backend-smoke.json` beside the script. It neither downloads models nor
+writes voice enrolments. A blocked preflight exits with code 2; it never upgrades
+packages or substitutes a model. The own-process peak RSS is not a whole-system
+energy or helper-memory measurement.

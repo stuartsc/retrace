@@ -20,7 +20,7 @@ struct CompanionBatchPlan {
         guard manifest.nativeStoreID == nativeStoreID, manifest.source == .microphone,
               let first = manifest.sourceRanges.first, manifest.sourceRanges.count <= 32 else { throw CompanionError.invalidPayload }
         references = try CompanionTranscriptSnapshot.firstPassReferences(for: records, nativeStoreID: nativeStoreID)
-        guard records.allSatisfy({ $0.batchAudioPath == manifest.relativePath }) else { throw CompanionError.staleEvidence }
+        guard records.allSatisfy({ CompanionTranscriptSnapshot.firstPassMediaPath($0) == manifest.relativePath }) else { throw CompanionError.staleEvidence }
         firstPassText = records.map(\.text).joined(separator: "\n"); try CompanionBounds.text(firstPassText, max: 128 * 1024, empty: true)
         var end = first.source.startSample
         for range in manifest.sourceRanges {

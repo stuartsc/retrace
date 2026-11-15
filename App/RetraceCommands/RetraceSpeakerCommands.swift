@@ -30,7 +30,10 @@ actor RetraceSpeakerCommands {
                   current.firstPassSourceIdentity == item.firstPassSourceIdentity else { throw RetraceCommandError.revisionConflict }
             values.append(.object(["jobID": .string(item.jobID), "nativeStoreID": .string(item.nativeStoreID.uuidString),
                 "firstPassText": .string(item.firstPassText), "firstPassSourceIdentity": try .encode(item.firstPassSourceIdentity),
-                "enhancement": try .encode(item.enhancement), "corrections": try .encode(item.corrections)]))
+                "enhancement": try .encode(item.enhancement), "corrections": try .encode(item.corrections),
+                "preparation": .string("Refined transcript"), "sourceReferences": try .encode(item.firstPassReferences),
+                "turnReferences": try .encode(item.turnReferences),
+                "timingPrecision": .string("Full refined text is recording-level; only timed turns have exact source ranges")]))
         }
         try await context.authorize(.evidenceRead)
         var next: UUID?

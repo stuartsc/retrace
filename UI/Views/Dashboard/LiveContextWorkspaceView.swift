@@ -554,6 +554,17 @@ struct LiveContextWorkspaceView: View {
                 Text("Queue checked \(preparation.observedAt.formatted(date: .omitted, time: .standard))")
                     .font(.caption2).foregroundStyle(.secondary)
             }
+            if let progress = companion.processing {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(progress.message).font(.caption)
+                    Text(progress.worker == .thisMac ? "Worker: this Mac" : "Worker: other Mac")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if let oldest = progress.oldestQueuedAt {
+                        Text("Oldest quality job: \(oldest.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
             Toggle("Fast microphone drafts (trial)", isOn: Binding(get: { model.drafts.enabled }, set: { enabled in
                 Task { await model.setDraftsEnabled(enabled) }
             })).toggleStyle(.switch).controlSize(.small)
@@ -784,6 +795,14 @@ struct LiveContextWorkspaceView: View {
 
     private func originalTranscriptRow(_ original: LiveTranscriptOriginal) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if original.hasDisplayedTurns {
+                DisclosureGroup("Full refined transcript · recording-level timing") {
+                    Text(original.presentation.enhancement.enhancedText).textSelection(.enabled).font(.callout)
+                }
+            } else {
+                Text("Refined transcript · recording-level timing").font(.caption).foregroundStyle(.secondary)
+                Text(original.presentation.enhancement.enhancedText).textSelection(.enabled).font(.callout)
+            }
             DisclosureGroup {
                 Text("Full original recording. Its text is not aligned to individual enhanced turns and may include an overlapping tail.")
                     .font(.caption).foregroundStyle(.secondary)

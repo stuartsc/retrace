@@ -1,3 +1,5 @@
+import App
+import Shared
 import Database
 import Foundation
 
@@ -5,6 +7,10 @@ import Foundation
 struct TranscriptRecordingPage: Sendable {
     let transcriptions: [AudioTranscription]
     let isTruncated: Bool
+    var publication: TranscriptPublicationGuard? = nil
+    var speakers: [CompanionSpeakerPresentation] = []
+    var references: [V23TranscriptReference] = []
+    var enrichmentNotice: String? = nil
 }
 
 enum TranscriptRecordingLoadError: Error { case unavailable }

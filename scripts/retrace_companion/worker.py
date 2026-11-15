@@ -69,11 +69,13 @@ def audio_request(job):
 
 
 class Processor:
-    def __init__(self, root, outlook):
+    def __init__(self, root, outlook, *, local_governed=False, threads=2):
         self.root = root
         self.outlook = outlook
         self.ranker = LocalRanker()
         self.audio = None
+        self.local_governed = local_governed
+        self.threads = threads
 
     def process(self, job_id, job):
         validate_job(job)
@@ -101,7 +103,21 @@ class Processor:
         audio_id = hashlib.sha256(data).hexdigest()
         publish_file(self.root / "audio-jobs" / (audio_id + ".job.json"), data)
         parsed = Job.parse(request, audio_id)
-        destination = self.root / "audio-results" / (audio_id + ".json")
+        recipe = hashlib.sha256(
+            encode(
+                {
+                    "stage": job.get("processingStage", "quality"),
+                    "recipe": "mlx-large-v3-pyannote-selective-normalised-v1",
+                    "pins": Path(__file__)
+                    .parents[1]
+                    .joinpath("audio_worker/runtime-pins.json")
+                    .read_text(),
+                }
+            )
+        ).hexdigest()
+        cache = self.root / "audio-results" / recipe
+        cache.mkdir(mode=0o700, exist_ok=True)
+        destination = cache / (audio_id + ".json")
         if destination.exists():
             result = load_result(destination, parsed)
         else:
@@ -110,8 +126,40 @@ class Processor:
                 wav = Path(directory) / "window.wav"
                 decode_window(parsed, self.root / "objects", wav)
                 if self.audio is None:
-                    self.audio = OutlookBackend(self.outlook)
+                    self.audio = OutlookBackend(
+                        self.outlook,
+                        local_governed=self.local_governed,
+                        threads=self.threads,
+                    )
                 prepared = self.audio.transcribe(wav, parsed.sample_count / 16000)
+                from .repair import needs_repair, accept_repair
+
+                score = getattr(self.audio, "last_average_logprob", None)
+                # Keep the second-pass candidate even if the selective retry fails.
+                if needs_repair(prepared, score):
+                    quality = dict(prepared)
+                    try:
+                        repaired, repaired_score = self.audio.repair(
+                            wav, parsed.sample_count / 16000, quality
+                        )
+                        repair_key = hashlib.sha256(
+                            encode(
+                                {
+                                    "stage": "repair",
+                                    "recipe": "normalised-pcm-v1",
+                                    "audio": audio_id,
+                                    "qualityRecipe": recipe,
+                                }
+                            )
+                        ).hexdigest()
+                        publish_file(
+                            self.root / "audio-jobs" / (repair_key + ".candidate.json"),
+                            encode({"original": quality, "candidate": repaired}),
+                        )
+                        if accept_repair(quality, repaired, score, repaired_score):
+                            prepared = repaired
+                    except Exception:
+                        prepared = quality
                 turns = align_words(
                     prepared.pop("words"), prepared.pop("turns"), job_id=audio_id
                 )
@@ -134,7 +182,7 @@ class Processor:
                     **parsed.result_identity,
                 }
                 validate_audio_result(result, parsed)
-                publish_result(self.root / "audio-results", audio_id, result)
+                publish_result(cache, audio_id, result)
         return {
             "sourceIdentity": job["speaker"]["sourceIdentity"],
             "firstPassSHA256": hashlib.sha256(
@@ -160,13 +208,23 @@ def run_worker(root, outlook, once=False):
         queue.recover_interrupted()
         processor = Processor(root, outlook)
         while True:
+            from .execution import heartbeat
+
+            heartbeat(queue.db)
             work = queue.claim()
             if work:
                 try:
-                    queue.complete(
-                        work["jobID"],
-                        encode(processor.process(work["jobID"], work["request"])),
-                    )
+                    if work["request"]["kind"] == "speaker":
+                        from .execution import supervised
+
+                        publish_file(
+                            root / "request-archive" / (work["jobID"] + ".json"),
+                            encode(work["request"]),
+                        )
+                        result = supervised(queue, work, outlook)
+                    else:
+                        result = processor.process(work["jobID"], work["request"])
+                    queue.complete(work["jobID"], encode(result))
                 except Exception as error:
                     # Never expose paths, model diagnostics or captured text through status.
                     reason = (

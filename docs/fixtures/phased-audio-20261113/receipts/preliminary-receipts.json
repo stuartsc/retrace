@@ -1,0 +1,51 @@
+[
+  {
+    "original": "retrace-fast-draft-tests-20261113.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-fast-draft-tests-20261113.log.gz",
+    "uncompressedBytes": 1200,
+    "sha256": "991505030192d0b176c7e88aba59234741a708f73f1fe28b0b4cbe2a26621b79",
+    "compressedBytes": 304
+  },
+  {
+    "original": "retrace-fast-draft-tests-20261113-retry.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-fast-draft-tests-20261113-retry.log.gz",
+    "uncompressedBytes": 152909,
+    "sha256": "b4a21e4465cc76efb3e4b5d7244486bf4a7a532a341f30fe5c5fa7221cb06386",
+    "compressedBytes": 10907
+  },
+  {
+    "original": "retrace-fast-draft-tests-20261113-frozen.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-fast-draft-tests-20261113-frozen.log.gz",
+    "uncompressedBytes": 507164,
+    "sha256": "217bf15f6ffefee99d5dede5b519f60d8577ac514648e652f1c7358b9695944c",
+    "compressedBytes": 11674
+  },
+  {
+    "original": "retrace-phased-final-debug-20261113.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-phased-final-debug-20261113.log.gz",
+    "uncompressedBytes": 795697,
+    "sha256": "69b9c426fbfbaf91c7d38b115167e240ff04fb1942904ae0559fda5100c07c43",
+    "compressedBytes": 24074
+  },
+  {
+    "original": "retrace-phased-final-debug-20261113-retry1.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-phased-final-debug-20261113-retry1.log.gz",
+    "uncompressedBytes": 2033,
+    "sha256": "0f7fe13f903bf74c4f37d4278a12b26fec1b60dee077dd0ae3e2876cd31df5cc",
+    "compressedBytes": 428
+  },
+  {
+    "original": "retrace-quality-worker-tests.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-quality-worker-tests.log.gz",
+    "uncompressedBytes": 8468,
+    "sha256": "c41c1dba759d92caab24cbaf2e51c4bb76bae2b9bdfbdd3f60cef74925b3a5b9",
+    "compressedBytes": 1851
+  },
+  {
+    "original": "retrace-audio-worker-tests.log",
+    "retained": "docs/fixtures/phased-audio-20261113/receipts/retrace-audio-worker-tests.log.gz",
+    "uncompressedBytes": 2854,
+    "sha256": "3d9abe0457a9282eb387aeb786661abe070784414d02a492e664f07be057bc17",
+    "compressedBytes": 727
+  }
+]

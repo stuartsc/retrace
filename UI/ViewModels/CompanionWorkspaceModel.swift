@@ -6,6 +6,7 @@ import Shared
 @MainActor
 final class CompanionWorkspaceModel: ObservableObject {
     @Published private(set) var title = "Companion unavailable"
+    @Published private(set) var processing: CompanionProcessingStatus?
     @Published private(set) var presentations: [CompanionSpeakerPresentation] = []
     @Published private(set) var message: String?
     @Published private(set) var isSaving = false
@@ -39,6 +40,7 @@ final class CompanionWorkspaceModel: ObservableObject {
     func refreshStatus() async {
         do {
             let status = try await service().status()
+            processing = status.processing
             switch status.state {
             case .unconfigured: title = "Companion not configured"
             case .offline: title = "Companion offline · \(status.pendingCount) pending"
@@ -46,7 +48,7 @@ final class CompanionWorkspaceModel: ObservableObject {
             case .suspended: title = "Companion suspended"
             case .closed: title = "Companion closed"
             }
-        } catch { title = "Companion unavailable" }
+        } catch { title = "Companion unavailable"; processing = nil }
     }
 
     func playTurn(_ reference: CompanionTurnReference) {

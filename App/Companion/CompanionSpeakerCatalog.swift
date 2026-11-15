@@ -31,6 +31,53 @@ struct CompanionSpeakerCatalog: Sendable {
         } catch { try? await index.close(); throw error }
     }
 
+    func indexedSearch(query: String, from: Date?, to: Date?, limit: Int, matchExpression: String? = nil, oldestFirst: Bool = false) async throws -> (jobIDs: [String], incomplete: Bool) {
+        guard let index = try await openIndex() else { return ([], true) }
+        do {
+            let page = try await index.searchSpeakers(query: query, from: from, to: to, limit: limit, matchExpression: matchExpression, oldestFirst: oldestFirst)
+            try await index.close(); return page
+        } catch { try? await index.close(); throw error }
+    }
+
+    func ownsFirstPassRepair(rowID: Int64, includePending: Bool = true) async throws -> Bool {
+        guard let index = try await openIndex() else { return false }
+        do {
+            let records = try await index.repairOwnerRecords(rowID: rowID)
+            try await index.close()
+            var scope: LiveAudioSampleIdentity?
+            var intervals: [LiveAudioSampleIdentity] = []
+            guard records.count < 256 else { return false }
+            for record in records where record.stage != .invalidated {
+                let completed = record.stage == .imported || record.stage == .acknowledged
+                guard completed || includePending else { continue }
+                // Retained improvements protect their original proof even after remote
+                // delivery is disconnected, but only while both result and sources validate.
+                if completed, try await retained(record.jobID) == nil { continue }
+                let request = try CompanionWire.decode(CompanionJobRequest.self, data: record.requestPayload, limit: 768 * 1024)
+                guard let speaker = request.speaker, speaker.firstPassReferences.contains(where: { $0.rowID == rowID }) else { continue }
+                try await reader.revalidate(request)
+                let original = speaker.firstPassSourceIdentity ?? speaker.sourceIdentity
+                if let scope, scope != original { return false }
+                scope = original; intervals.append(speaker.sourceIdentity)
+            }
+            if let scope { return Self.covers(scope, intervals: intervals) }
+            return false
+        } catch { try? await index.close(); throw error }
+    }
+
+    static func covers(_ scope: LiveAudioSampleIdentity, intervals: [LiveAudioSampleIdentity]) -> Bool {
+        guard scope.isValid else { return false }
+        var end = scope.startSample
+        for value in intervals.sorted(by: { $0.startSample < $1.startSample }) {
+            guard value.isValid, value.recordingGeneration == scope.recordingGeneration,
+                  value.continuityID == scope.continuityID, value.approximateOrigin == scope.approximateOrigin,
+                  value.startSample <= end, value.startSample >= scope.startSample,
+                  value.startSample + value.sampleCount <= scope.startSample + scope.sampleCount else { return false }
+            end = max(end, value.startSample + value.sampleCount)
+        }
+        return end == scope.startSample + scope.sampleCount
+    }
+
     func requests() throws -> [(String, CompanionJobRequest)] {
         guard try available() else { return [] }
         let files = try spool.entries("requests")

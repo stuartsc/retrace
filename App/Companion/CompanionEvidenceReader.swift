@@ -84,7 +84,7 @@ public actor CompanionEvidenceReader {
         guard let first = request.firstPassReferences.first else { throw CompanionError.staleEvidence }
         let query = try reader()
         guard let original = try await query.getRetainedFirstPassEntry(id: first.rowID),
-              let path = original.batchAudioPath else { throw CompanionError.staleEvidence }
+              let path = CompanionTranscriptSnapshot.firstPassMediaPath(original) else { throw CompanionError.staleEvidence }
         let current = try await query.getContextBatchEntries(batchAudioPath: path)
         let references: [V23TranscriptReference]
         do { references = try CompanionTranscriptSnapshot.firstPassReferences(for: current, nativeStoreID: nativeStoreID) }
@@ -154,7 +154,7 @@ public actor CompanionEvidenceReader {
                 // its result must never describe unchecked history as complete.
                 incomplete = incomplete || page.scanIncomplete || page.nextCursor != nil
                 for row in page.entries where items.count < 256 {
-                    guard row.transcriptStatus == "transcribed", !row.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    guard ["transcribed", "needs_repair", "needs_review"].contains(row.transcriptStatus), !row.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                           row.source == .microphone || row.source == .system else { continue }
                     let reference = try CompanionTranscriptSnapshot.reference(for: row, nativeStoreID: nativeStoreID)
                     let identity = "v23:" + reference.snapshotSHA256

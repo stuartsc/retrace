@@ -90,6 +90,7 @@ public actor AudioProcessingManager {
     private var isProcessing = false
     private let governor: (any BackgroundProcessingProtocol)?
     private var ingestionTask: Task<Void, Never>?
+    private var acceptedCaptureWrite: Task<Void, Never>?
     private var admissionTask: Task<BackgroundProcessingPermit, Error>?
     private var admissionKind: BackgroundProcessingKind?
     private var activeAutomaticPermit: BackgroundProcessingPermit?
@@ -110,6 +111,14 @@ public actor AudioProcessingManager {
     /// Optimisation metadata only. SQLite and AAC remain the recoverable queue.
     private var nativeFirstPassBatches: [Int64: NativeFirstPassBatch] = [:]
     private var nativeFirstPassOrder: [Int64] = []
+    /// Bounded, disk-backed publication attempts. They do not load Whisper or
+    /// acquire an inference permit. Only one AAC decode/provider wait runs at a time.
+    private var nativePublicationTasks: [Int64: Task<Void, Never>] = [:]
+    private var nativePublicationTail: Task<Void, Never>?
+    public typealias DeferredRepairOwner = @Sendable (Int64) async -> Bool
+    private var deferredRepairOwner: DeferredRepairOwner?
+    private var deferredRepairCursor: (startTimeMilliseconds: Int64, id: Int64)?
+    private var hasMoreRepairCandidates = false
     private var onPersistedBatch: PersistedBatchHandler?
     private var onCommittedBatch: CommittedBatchHandler?
     public private(set) var hasCommittedBatchCallbackFailure = false
@@ -184,6 +193,35 @@ public actor AudioProcessingManager {
         nativeFirstPassProvider = provider
         nativeFirstPassBatches.removeAll(); nativeFirstPassOrder.removeAll()
         return true
+    }
+
+    /// An exact, currently valid companion job may own repair. Configuration
+    /// alone is not ownership. The original row remains unchanged and recoverable.
+    @discardableResult
+    public func setDeferredRepairOwner(_ owner: DeferredRepairOwner?) -> Bool {
+        guard !isProcessing else { return false }
+        deferredRepairOwner = owner
+        deferredRepairCursor = nil
+        hasMoreRepairCandidates = false
+        return true
+    }
+
+    private func nextUnownedRepair(_ queries: AudioTranscriptionQueries) async throws -> UntranscribedBatch? {
+        hasMoreRepairCandidates = false
+        guard let owner = deferredRepairOwner else { return try await queries.getOldestRepairBatch() }
+        // Keyset progress survives bounded scans so 64 owned old rows cannot
+        // indefinitely hide an unrelated repair behind them.
+        for _ in 0..<64 {
+            try BackgroundProcessingContext.checkCancellation()
+            guard let row = try await queries.getOldestRepairBatch(after: deferredRepairCursor) else {
+                deferredRepairCursor = nil
+                return nil
+            }
+            if !(await owner(row.id)) { return row }
+            deferredRepairCursor = (row.startTimeMilliseconds, row.id)
+        }
+        hasMoreRepairCandidates = true
+        return nil
     }
 
     /// Join accepted capture writes, pending admission and the native inference callback.
@@ -261,7 +299,11 @@ public actor AudioProcessingManager {
 
     private func persistAcceptedBatchJoined(_ batch: AudioBatch) async {
         // Unstructured solely to keep accepted capture writes uncancelled; always joined.
-        let write = Task { await self.acceptBatch(batch) }
+        let write = Task {
+            await self.acceptBatch(batch)
+            self.acceptedCaptureWrite = nil
+        }
+        acceptedCaptureWrite = write
         await write.value
     }
 
@@ -269,7 +311,38 @@ public actor AudioProcessingManager {
     /// even when live transcription is delayed or skipped under backpressure.
     private func acceptBatch(_ batch: AudioBatch) async {
         let persistedBatch = await persistRawBatch(batch)
+        scheduleNativePublication(persistedBatch)
         enqueueLiveTranscription(persistedBatch)
+    }
+
+    private func scheduleNativePublication(_ persisted: PersistedAudioBatch) {
+        guard governor != nil, nativeFirstPassProvider != nil,
+              let id = persisted.rawBatchID, nativeFirstPassBatches[id] != nil,
+              nativePublicationTasks[id] == nil, nativePublicationTasks.count < 64 else { return }
+        let predecessor = nativePublicationTail
+        // Never retain captured PCM in a deferred publication task.
+        let saved = persisted.spooledToDisk()
+        let task = Task(priority: .utility) {
+            if let predecessor { await predecessor.value }
+            await BackgroundProcessingContext.$permit.withValue(nil) {
+                do {
+                    try Task.checkCancellation()
+                    guard let proof = self.nativeFirstPassBatches[id], let url = saved.savedBatchURL,
+                          Self.nativeFileDigest(url) == proof.encodedSHA256 else { throw PendingAudioCompletionError.staleRow }
+                    let decoded = try self.loadBatchForTranscription(saved)
+                    _ = try await self.reuseNativeFirstPass(saved, decoded: decoded)
+                } catch is CancellationError {
+                    // The canonical pending row remains available after restart.
+                } catch {
+                    Log.warning("Native draft publication deferred; saved audio retains CPU fallback", category: .processing)
+                }
+            }
+            self.nativePublicationTasks[id] = nil
+            self.nativeFirstPassBatches[id] = nil
+            self.nativeFirstPassOrder.removeAll { $0 == id }
+        }
+        nativePublicationTasks[id] = task
+        nativePublicationTail = task
     }
 
     private func persistRawBatch(_ batch: AudioBatch) async -> PersistedAudioBatch {
@@ -398,6 +471,9 @@ public actor AudioProcessingManager {
     private func processLiveTranscriptionQueue() async {
         defer { liveTranscriptionWorker = nil }
         while !Task.isCancelled {
+            // Do not race a freshly inserted row before its native publication
+            // attempt has been registered by the durable capture writer.
+            if let write = acceptedCaptureWrite { await write.value; continue }
             if !liveTranscriptionQueue.isEmpty {
                 let persisted = liveTranscriptionQueue.removeFirst()
                 do { try await processPersistedBatch(persisted) }
@@ -432,6 +508,10 @@ public actor AudioProcessingManager {
                 Log.warning("[AudioProcessingManager] Fresh queue read failed; retaining pending work", category: .processing)
                 try? await Task.sleep(for: .seconds(5))
                 continue
+            }
+            if let fresh, let publication = nativePublicationTasks[fresh.id] {
+                await publication.value
+                continue // Reread status; a native draft now belongs to repair.
             }
             let request = Task { try await governor.acquire(kind) }
             admissionKind = kind
@@ -481,9 +561,12 @@ public actor AudioProcessingManager {
                             // Count attempts so a failed oldest item cannot monopolise the queue.
                             consecutiveRecentAutomaticAttempts = kind == .freshTranscription || preferRecent
                                 ? min(3, consecutiveRecentAutomaticAttempts + 1) : 0
-                        } else if let repair = try await queries.getOldestRepairBatch() {
+                        } else if let repair = try await nextUnownedRepair(queries) {
                             row = repair
-                        } else { return true }
+                        } else { return !hasMoreRepairCandidates }
+                        // Capture can publish while admission or the row read is
+                        // suspended. Recheck before starting any CPU work.
+                        guard acceptedCaptureWrite == nil, nativePublicationTasks[row.id] == nil else { return false }
                         try BackgroundProcessingContext.checkCancellation()
                         let queueAge = Date().timeIntervalSince(row.endTime)
                         if queueAge.isFinite && queueAge >= 0 {
@@ -522,9 +605,16 @@ public actor AudioProcessingManager {
     }
 
     private func cancelLiveTranscriptionQueue() async {
+        let publications = Array(nativePublicationTasks.values)
+        for task in publications { task.cancel() }
         let worker = liveTranscriptionWorker
         worker?.cancel()
         admissionTask?.cancel()
+        for task in publications { await task.value }
+        nativePublicationTasks.removeAll()
+        nativePublicationTail = nil
+        nativeFirstPassBatches.removeAll()
+        nativeFirstPassOrder.removeAll()
         await worker?.value
         liveTranscriptionQueue.removeAll()
     }
@@ -827,7 +917,8 @@ public actor AudioProcessingManager {
               decoded.audioData.count == proof.frameCount * 2,
               Self.nativeFileDigest(url) == proof.encodedSHA256 else { return false }
         // Decoding and file identity must both agree with the capture-time proof.
-        // The wait is in admitted work and cancellation preserves the pending row.
+        // This bounded wait belongs to the independent publication task, not
+        // capture ingestion or CPU admission. Cancellation preserves the row.
         let result: NativeFirstPassText?
         do { result = try await provider(proof) }
         catch { try BackgroundProcessingContext.checkCancellation(); return false }

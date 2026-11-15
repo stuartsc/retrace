@@ -7,6 +7,11 @@ A local-first screen recording and search application for macOS, inspired by Rew
 
 See [Updates and changelog](CHANGELOG.md) for bug fixes, improvements, validation and release status.
 
+The [phased audio delivery journal](docs/phased-audio-delivery-20261113.md) tracks
+fast searchable drafts, later quality and speaker passes, and remote processing
+with governed local fallback. This follow-up is under source validation; its
+installation and measured latency remain separate from installed build 2611.13.2.
+
 Progressive recall Phase 0/1 is in development on `feature/push-to-dictate`: an opt-in activity timeline, metadata search during OCR backlog, confirmed organisation changes, and exact saved evidence navigation. Activity context starts disabled and can be enabled with **Collect activity context while recording**; master pause still applies. [Validation and remaining Mac/Timely acceptance](docs/progressive-recall-validation.md) are tracked separately from installation and release.
 
 ## What is Retrace?

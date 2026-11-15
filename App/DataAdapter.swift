@@ -3535,6 +3535,14 @@ public actor DataAdapter {
         let excludeTerms: [String]
     }
 
+    /// Same bound FTS expression for original and refined transcript indexes.
+    public nonisolated static func audioMatchExpression(_ text: String) -> String? {
+        let parts = parseFTSQueryComponents(text)
+        guard !parts.includeParts.isEmpty else { return nil }
+        return "(" + parts.includeParts.joined(separator: " ") + ")" +
+            parts.excludeTerms.map { " NOT \($0)" }.joined()
+    }
+
     public func searchAudio(query: SearchQuery) throws -> AudioSearchPage {
         guard isInitialized else { throw DataAdapterError.notInitialized }
         let parts = Self.parseFTSQueryComponents(query.text)
@@ -3550,7 +3558,7 @@ public actor DataAdapter {
         return try AudioSearchReader.resolve(hit, connection: retraceConnection, owner: searchConnectionIdentity)
     }
 
-    private static func parseFTSQueryComponents(_ text: String) -> FTSQueryComponents {
+    private nonisolated static func parseFTSQueryComponents(_ text: String) -> FTSQueryComponents {
         let tokens = tokenizeSearchQuery(text)
         var includeParts: [String] = []
         var excludeTerms: [String] = []
@@ -3593,7 +3601,7 @@ public actor DataAdapter {
     }
 
     /// Tokenize query while preserving quoted phrases and handling `-"phrase"` as one token.
-    private static func tokenizeSearchQuery(_ query: String) -> [String] {
+    private nonisolated static func tokenizeSearchQuery(_ query: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var inQuotes = false
@@ -3803,7 +3811,7 @@ public actor DataAdapter {
     }
 
     /// Remove characters that have special meaning in FTS query syntax.
-    private static func sanitizeFTSTerm(_ text: String) -> String {
+    private nonisolated static func sanitizeFTSTerm(_ text: String) -> String {
         text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\"", with: "")

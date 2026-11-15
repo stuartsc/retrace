@@ -1231,16 +1231,17 @@ public struct SpotlightSearchOverlay: View {
                         Button { selectAudioResult(hit) } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack {
-                                    Text(hit.record.startTime, format: .dateTime.day().month().year().hour().minute())
+                                    Text(hit.displayStartTime, format: .dateTime.day().month().year().hour().minute())
                                     Text(hit.record.source == .microphone ? "Microphone" : "System audio")
+                                    Text(hit.preparationLabel)
                                     Spacer()
                                     Image(systemName: "arrow.up.right.square")
                                 }.font(.caption).foregroundStyle(.secondary)
-                                Text(hit.record.text).lineLimit(3).multilineTextAlignment(.leading)
+                                Text(hit.displayText).lineLimit(3).multilineTextAlignment(.leading)
                             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain)
-                            .accessibilityLabel("Open transcript: \(hit.record.text.prefix(160))")
+                            .accessibilityLabel("Open transcript: \(hit.displayText.prefix(160))")
                     }
                     if page.isTruncated {
                         Text("Showing the first \(page.hits.count) transcript matches. Narrow the date or text to find more.")
@@ -1260,11 +1261,14 @@ public struct SpotlightSearchOverlay: View {
         let generation = viewModel.searchGeneration
         audioSelectionTask = Task { @MainActor in
             do {
-                let row = try await coordinator.resolveAudioSearchHit(hit)
+                let owner = try await coordinator.companion()
+                let publication = TranscriptPublicationGuard(owner: owner)
+                let selection = try await coordinator.resolvePreparedAudioSearchSelection(hit)
+                publication.narrow(recordings: selection.recordings, speakers: selection.hit.enrichment.map { [$0] } ?? [])
                 guard !Task.isCancelled, generation == viewModel.searchGeneration else { return }
                 let panel = TranscriptWindowController.shared
                 panel.configure(coordinator: coordinator)
-                panel.showExactSearchResult(row)
+                try panel.showExactPreparedSearchResult(selection.recordings, enrichment: selection.hit.enrichment, publication: publication)
                 onDismiss()
             } catch {
                 guard !Task.isCancelled, generation == viewModel.searchGeneration else { return }

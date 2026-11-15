@@ -34,6 +34,33 @@ final class LiveContextSearchTests: XCTestCase {
         try await fixture.close()
     }
 
+    func testFullRefinedTextWithoutTimedTurnsIsSearchableAndCopyable() async throws {
+        let retained = UntimedRefinementReader()
+        let fixture = try await Fixture.make(speakerPage: { _, _, _, _ in await retained.page() },
+            speaker: { _ in await retained.read() })
+        let store = try await fixture.database.activityStoreID()
+        let source = LiveAudioSampleIdentity(recordingGeneration: UUID(), continuityID: UUID(), startSample: 0,
+            sampleCount: 160_000, sampleRate: 16_000, approximateOrigin: fixture.time)
+        let object: [String: Any] = [
+            "sourceIdentity": try JSONSerialization.jsonObject(with: JSONEncoder().encode(source)),
+            "firstPassSHA256": String(repeating: "a", count: 64), "enhancedText": "Cedar exact invoice total",
+            "turns": [], "automaticNamesCalibrated": false, "modelFingerprint": String(repeating: "b", count: 64)]
+        let enhancement = try JSONDecoder().decode(CompanionSpeakerEnrichment.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        await retained.set(.init(jobID: String(repeating: "c", count: 64), nativeStoreID: store,
+            firstPassText: "Original approximate words", enhancement: enhancement, corrections: [], sourceDependencies: .none))
+        let interval = DateInterval(start: fixture.time, duration: 20)
+        let page = try await fixture.service.search(interval: interval, query: "Cedar")
+        let hit = try XCTUnwrap(page.items.first { $0.kind == "Speakers" })
+        XCTAssertTrue(hit.text.contains("Cedar exact invoice total"))
+        let copied = try await fixture.service.copy(references: [hit.reference], interval: interval, partial: false)
+        XCTAssertTrue(copied.text.contains("Cedar exact invoice total"))
+        await retained.set(nil)
+        do { try await fixture.service.validate(hit.reference); XCTFail("Removed refinement must invalidate its selection") }
+        catch { }
+        try await fixture.close()
+    }
+
     func testSearchPagesEverySourceAndCopyRejectsEditedNotesAndDeletedAudio() async throws {
         let fixture = try await Fixture.make()
         let time = fixture.time, db = fixture.database, audio = fixture.audio
@@ -145,7 +172,9 @@ final class LiveContextSearchTests: XCTestCase {
         let service: LiveContextSearchService
         let policy: LiveContextTestPolicy
         let time = Date(timeIntervalSince1970: 1_800_000_000)
-        static func make(turn: LiveContextSearchService.TurnReader? = nil) async throws -> Fixture {
+        static func make(turn: LiveContextSearchService.TurnReader? = nil,
+                         speakerPage: LiveContextSearchService.SpeakerPageReader? = nil,
+                         speaker: LiveContextSearchService.SpeakerReader? = nil) async throws -> Fixture {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("context-search-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let database = DatabaseManager(databasePath: root.appendingPathComponent("recordings.db").path)
@@ -164,7 +193,7 @@ final class LiveContextSearchTests: XCTestCase {
             let markers = TimelineMarkerService(storageRoot: root, nativeStoreID: { storeID })
             return Fixture(root: root, database: database, audio: audio, adapter: adapter, markers: markers,
                 service: LiveContextSearchService(database: database, audio: audio, adapter: adapter, recall: recall, markers: markers,
-                    captureState: { await policy.state() }, turn: turn), policy: policy)
+                    captureState: { await policy.state() }, speakerPage: speakerPage, speaker: speaker, turn: turn), policy: policy)
         }
         func close() async throws {
             try await markers.close(); await adapter.shutdown(); try await database.close()
@@ -193,4 +222,11 @@ private actor LiveContextTestPolicy {
         redactWindowTitlePatterns: titleExcluded ? ["Budget"] : []), revision: revision) }
     func exclude() { excluded = true; revision = UUID() }
     func excludeTitle() { excluded = false; titleExcluded = true; revision = UUID() }
+}
+
+private actor UntimedRefinementReader {
+    private var value: CompanionSpeakerPresentation?
+    func set(_ value: CompanionSpeakerPresentation?) { self.value = value }
+    func read() -> CompanionSpeakerPresentation? { value }
+    func page() -> CompanionSpeakerPage { .init(items: value.map { [$0] } ?? [], nextCursor: nil, incomplete: false) }
 }

@@ -43,6 +43,45 @@ final class ProgressiveRecallSearchTests: XCTestCase {
         }
     }
 
+    func testNativeDraftWithoutBatchPathCanBeResolvedForQualityPass() async throws {
+        try await withStore(source: .native) { fixture in
+            let queries = AudioTranscriptionQueries(db: fixture.nativeConnection.getConnection()!)
+            let path = "audio/native-draft.m4a"
+            let id = try await queries.insertRawBatch(startTime: self.start, endTime: self.start.addingTimeInterval(15),
+                source: .microphone, audioPath: path, audioSize: 30)
+            try await queries.updateBatchOutcome(id: id, text: "Native draft words", transcriptStatus: "needs_repair",
+                detectedLanguage: "en", audioVariant: "raw",
+                qualityFlags: AudioPreparationMetadata.nativeFirstPassPending + "," + AudioPreparationMetadata.firstPassRepairPending)
+            let rows = try await queries.getContextBatchEntries(batchAudioPath: path)
+            XCTAssertEqual(rows.map(\.id), [id])
+            let retained = try await queries.getRetainedFirstPassEntry(id: id)
+            XCTAssertEqual(retained?.text, "Native draft words")
+            try await queries.updateBatchOutcome(id: id, text: "", transcriptStatus: "pending",
+                detectedLanguage: nil, audioVariant: "raw", qualityFlags: nil)
+            let after = try await queries.getContextBatchEntries(batchAudioPath: path)
+            XCTAssertTrue(after.isEmpty, "Raw pending audio is not a committed text proof")
+        }
+    }
+
+    func testSavedDraftIsSearchableAndEmptyHigherPassDoesNotHideIt() async throws {
+        try await withStore(source: .native) { fixture in
+            let queries = AudioTranscriptionQueries(db: fixture.nativeConnection.getConnection()!)
+            let draft = try await queries.insertTranscription(sessionID: nil, text: "Cedar invoice draft",
+                startTime: self.start, endTime: self.start.addingTimeInterval(15), source: .microphone,
+                confidence: nil, words: [], audioPath: "audio/draft.m4a", transcriptionPass: 1,
+                batchAudioPath: "audio/draft.m4a", transcriptStatus: "needs_repair")
+            _ = try await queries.insertTranscription(sessionID: nil, text: "", startTime: self.start,
+                endTime: self.start.addingTimeInterval(15), source: .microphone, confidence: nil, words: [],
+                audioPath: "audio/draft.m4a", transcriptionPass: 2, batchAudioPath: "audio/draft.m4a")
+            let page = try await fixture.adapter.searchAudio(query: SearchQuery(text: "Cedar invoice"))
+            XCTAssertEqual(page.hits.map(\.record.id), [draft])
+            let hit = try XCTUnwrap(page.hits.first)
+            XCTAssertEqual(hit.preparationLabel, "Draft · improving text")
+            let resolved = try await fixture.adapter.resolveAudioSearchHit(hit)
+            XCTAssertEqual(resolved.id, draft)
+        }
+    }
+
     func testAudioSearchBoundsResultsBeforePublishingAndReportsUnsupportedScreenFilters() async throws {
         try await withStore(source: .native) { fixture in
             let queries = AudioTranscriptionQueries(db: fixture.nativeConnection.getConnection()!)

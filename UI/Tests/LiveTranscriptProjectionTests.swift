@@ -65,6 +65,21 @@ final class LiveTranscriptProjectionTests: XCTestCase {
         XCTAssertEqual(projection.items.compactMap(\.original).first?.presentation.firstPassText, original.text)
     }
 
+    func testPartialRefinementKeepsFullOriginalRecordingVisible() throws {
+        let original = row(1, text: "Original contains a later sentence", offset: 0)
+        let full = try speaker(original: original, offsets: [(0, 2)])
+        let longer = LiveAudioSampleIdentity(recordingGeneration: full.firstPassSourceIdentity.recordingGeneration,
+            continuityID: full.firstPassSourceIdentity.continuityID, startSample: 0, sampleCount: 320_000,
+            sampleRate: 16_000, approximateOrigin: time)
+        let partial = CompanionSpeakerPresentation(jobID: full.jobID, nativeStoreID: full.nativeStoreID,
+            firstPassText: full.firstPassText, enhancement: full.enhancement, corrections: full.corrections,
+            firstPassSourceIdentity: longer, firstPassReferences: full.firstPassReferences, turnReferences: full.turnReferences)
+        let result = LiveTranscriptProjection.make(recordings: [original], speakers: [partial],
+            interval: .init(start: time, duration: 30), recordingReferences: full.firstPassReferences)
+        XCTAssertEqual(result.items.compactMap(\.recording).map(\.id), [original.id])
+        XCTAssertFalse(PreparedTranscriptProjection.coversOriginal(partial))
+    }
+
     @MainActor
     func testLateSpeakerEnrichmentDoesNotReplaceHistoryUntilReturnToLive() async throws {
         let original = row(1, text: "Original history", offset: 0)

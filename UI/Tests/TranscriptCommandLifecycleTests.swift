@@ -146,9 +146,11 @@ private struct TranscriptCommandFixture: Sendable {
     @MainActor func controller(present: @escaping (NSPanel) -> Void, hold: TranscriptCommandHold? = nil) -> TranscriptWindowController {
         let playback = TranscriptAudioPlayback(resolve: { _ in XCTFail("Opening must not prepare playback"); throw TranscriptAudioError.unavailable }, isMuted: true)
         return .init(playback: playback, presentWindow: present, commandCoordinator: coordinator, loadExactCommand: { reference in
+            let publication = TranscriptPublicationGuard(owner: companion)
             let row = try await reader.resolveTranscript(reference)
             await hold?.wait()
-            return (row, companion)
+            publication.narrow(recordings: [row], speakers: [])
+            return (row, companion, publication)
         })
     }
     func close() async throws {

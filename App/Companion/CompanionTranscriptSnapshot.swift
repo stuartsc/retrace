@@ -7,12 +7,16 @@ public enum CompanionTranscriptSnapshot {
     /// raw placeholders and later refinement rows are not first-pass publication.
     public static func firstPassReferences(for rows: [AudioTranscription], nativeStoreID: UUID) throws -> [V23TranscriptReference] {
         guard (1...1024).contains(rows.count), Set(rows.map(\.id)).count == rows.count,
-              let path = rows.first?.batchAudioPath, !path.isEmpty, path.utf8.count <= 1024,
+              let path = rows.first.flatMap(firstPassMediaPath), !path.isEmpty, path.utf8.count <= 1024,
               !path.contains("\0"), rows.allSatisfy({ row in
-                  row.source == .microphone && row.transcriptionPass == 1 && row.batchAudioPath == path &&
+                  row.source == .microphone && row.transcriptionPass == 1 && firstPassMediaPath(row) == path &&
                   ["transcribed", "needs_repair"].contains(row.transcriptStatus)
               }) else { throw CompanionError.invalidPayload }
         return try rows.map { try recordingReference(for: $0, nativeStoreID: nativeStoreID) }
+    }
+    static func firstPassMediaPath(_ row: AudioTranscription) -> String? {
+        if let batch = row.batchAudioPath, !batch.isEmpty { return batch }
+        return isNativeDraft(row) ? row.audioPath : nil
     }
     private struct Fields: Codable {
         let id: Int64; let sessionID: String?; let text: String; let startTime: Date; let endTime: Date
@@ -26,8 +30,12 @@ public enum CompanionTranscriptSnapshot {
             audioVariant = row.audioVariant; qualityFlags = row.qualityFlags; transcriptionPass = row.transcriptionPass
         }
     }
+    private static func isNativeDraft(_ row: AudioTranscription) -> Bool {
+        row.transcriptStatus == "needs_repair" && !row.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            row.qualityFlags?.split(separator: ",").contains(Substring(AudioPreparationMetadata.nativeFirstPassPending)) == true
+    }
     public static func reference(for row: AudioTranscription, nativeStoreID: UUID) throws -> V23TranscriptReference {
-        guard row.transcriptStatus == "transcribed" else { throw CompanionError.invalidPayload }
+        guard row.transcriptStatus == "transcribed" || isNativeDraft(row) else { throw CompanionError.invalidPayload }
         return try recordingReference(for: row, nativeStoreID: nativeStoreID)
     }
     /// Exact current-row proof, including pending/repair states; it asserts no transcript or media availability.

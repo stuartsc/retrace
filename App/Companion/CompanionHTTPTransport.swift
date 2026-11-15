@@ -2,7 +2,7 @@ import Foundation
 import Shared
 
 /// Explicit private transport with bounded responses and generation-fenced task resume.
-public actor CompanionHTTPTransport: CompanionTransport {
+public actor CompanionHTTPTransport: CompanionLeaseTransport {
     public typealias Admission = @Sendable (_ resume: () -> Void) throws -> Void
     private let baseURL: URL
     private let token: String
@@ -39,6 +39,25 @@ public actor CompanionHTTPTransport: CompanionTransport {
     public func acknowledge(id: String, resultSHA256: String) async throws {
         try CompanionBounds.digest(resultSHA256)
         _ = try await send("POST", resource: "acks", id: id, body: CompanionWire.encode(["sha256": resultSHA256]), maximum: 4096, accepted: [200])
+    }
+    public func grantExecution(id: String, attempt: String) async throws -> Bool {
+        struct Grant: Codable { let attempt: String; let issuedAt: Double; let seconds: Int }
+        struct Reply: Decodable { let attempt: String; let seconds: Int; let joinAllowance: Int; let clockAllowance: Int; let `protocol`: Int }
+        let (status, data) = try await send("POST", resource: "grants", id: id,
+            body: CompanionWire.encode(Grant(attempt: attempt, issuedAt: Date().timeIntervalSince1970, seconds: 120)), maximum: 4096, accepted: [200, 404])
+        if status == 404 { return false }
+        let value = try JSONDecoder().decode(Reply.self, from: data)
+        guard value.attempt == attempt, value.seconds == 120, value.joinAllowance <= 5,
+              value.clockAllowance <= 5, value.protocol == 1 else { throw CompanionError.transportRejected }
+        return true
+    }
+    public func revokeExecution(id: String, attempt: String) async throws -> Bool {
+        let (_, data) = try await send("POST", resource: "revocations", id: id,
+            body: CompanionWire.encode(["attempt": attempt]), maximum: 4096, accepted: [200])
+        struct Reply: Decodable { let joined: Bool; let attempt: String }
+        let value = try JSONDecoder().decode(Reply.self, from: data)
+        guard value.attempt == attempt else { throw CompanionError.transportRejected }
+        return value.joined
     }
     public func close() { closed = true; session.invalidateAndCancel() }
     private func send(_ method: String, resource: String, id: String, body: Data? = nil,

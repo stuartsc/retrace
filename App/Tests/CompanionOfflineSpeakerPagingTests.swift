@@ -6,6 +6,23 @@ import XCTest
 @testable import App
 
 final class CompanionOfflineSpeakerPagingTests: XCTestCase {
+    func testDisconnectedCompletedEnrichmentOwnsRepairButQueuedWorkDoesNot() async throws {
+        let fixture = try await Fixture.make()
+        let completed = try await fixture.publish(offset: 0, text: "Retained completed recording")
+        let pending = try await fixture.publish(offset: 10, text: "Pending recording")
+        try await fixture.indexAndRemoveLegacyFiles([completed.jobID], queuedIDs: [pending.jobID])
+        try await fixture.owner.configure(nil)
+        let completeOwned = await fixture.owner.ownsFirstPassRepair(rowID: completed.rowID)
+        let pendingOwned = await fixture.owner.ownsFirstPassRepair(rowID: pending.rowID)
+        XCTAssertTrue(completeOwned)
+        XCTAssertFalse(pendingOwned)
+        _ = try await fixture.audio.deleteTranscription(id: completed.rowID)
+        fixture.owner.sourceChanged(refreshContext: false)
+        let deletedOwned = await fixture.owner.ownsFirstPassRepair(rowID: completed.rowID)
+        XCTAssertFalse(deletedOwned, "Retained ownership still requires the current exact source")
+        try await fixture.close()
+    }
+
     func testDeletedFirstImportedJobCannotStarveValidSpeakerHistoryAfterDisconnect() async throws {
         try await exerciseDeletedFirst(indexed: false)
     }
@@ -109,13 +126,17 @@ final class CompanionOfflineSpeakerPagingTests: XCTestCase {
             try spool.publish(Data(CompanionWire.digest(resultBytes).utf8), to: spool.path("receipts", id, suffix: ".imported"))
             return (id, rowID)
         }
-        func indexAndRemoveLegacyFiles(_ ids: [String]) async throws {
+        func indexAndRemoveLegacyFiles(_ ids: [String], queuedIDs: [String] = []) async throws {
             let spool = CompanionSpool(root: root.appendingPathComponent("companion/delivery"), nativeStoreID: native)
             let index = CompanionDeliveryDatabase(databasePath: spool.root.appendingPathComponent("delivery.db").path, nativeStoreID: native)
             try await index.initialize()
             for id in ids {
                 try await index.importLegacy(requestPayload: spool.read(spool.path("requests", id), limit: 768 * 1024),
                     resultPayload: spool.read(spool.path("results", id), limit: 2 * 1024 * 1024), stage: .imported)
+            }
+            for id in queuedIDs {
+                try await index.importLegacy(requestPayload: spool.read(spool.path("requests", id), limit: 768 * 1024),
+                    resultPayload: nil, stage: .queued)
             }
             try await index.completeLegacyMigration(); try await index.close()
             for id in ids {

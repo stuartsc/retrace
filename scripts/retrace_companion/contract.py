@@ -217,8 +217,12 @@ def validate_reference(ref, store):
 
 def validate_job(job):
     shape(
-        job, {"version", "kind", "sourceStoreID", "observedAt"}, {"context", "speaker"}
+        job,
+        {"version", "kind", "sourceStoreID", "observedAt"},
+        {"context", "speaker", "processingStage"},
     )
+    if job.get("processingStage", "quality") not in ("quality", "repair"):
+        raise CompanionError("invalid_processing_stage")
     integer(job["version"], 1, 1)
     identifier(job["sourceStoreID"])
     timestamp(job["observedAt"])
