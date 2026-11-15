@@ -119,6 +119,14 @@ public actor AudioProcessingManager {
     private var deferredRepairOwner: DeferredRepairOwner?
     private var deferredRepairCursor: (startTimeMilliseconds: Int64, id: Int64)?
     private var hasMoreRepairCandidates = false
+    /// Alternates repair and overdue turns when both can start (idle window open).
+    private var lastAutomaticTurnWasRepair = false
+    /// In-memory only: repair row id -> failure count and next eligible time. Bounded.
+    private var repairFailures: [Int64: (attempts: Int, retryAt: Date)] = [:]
+    private var activeRepairRowID: Int64?
+    private static let repairFailureBackoff: TimeInterval = 600
+    private static let repairFailureSessionLimit = 3
+    private static let repairFailureTableLimit = 256
     private var onPersistedBatch: PersistedBatchHandler?
     private var onCommittedBatch: CommittedBatchHandler?
     public private(set) var hasCommittedBatchCallbackFailure = false
@@ -206,9 +214,38 @@ public actor AudioProcessingManager {
         return true
     }
 
-    private func nextUnownedRepair(_ queries: AudioTranscriptionQueries) async throws -> UntranscribedBatch? {
+    private func isRepairInBackoff(_ id: Int64, now: Date = Date()) -> Bool {
+        guard let failure = repairFailures[id] else { return false }
+        return failure.retryAt > now
+    }
+
+    func noteRepairFailure(_ id: Int64, now: Date = Date()) {
+        if repairFailures.count >= Self.repairFailureTableLimit, repairFailures[id] == nil {
+            repairFailures = repairFailures.filter { $0.value.retryAt > now }
+            if repairFailures.count >= Self.repairFailureTableLimit, let victim = repairFailures.keys.first {
+                repairFailures[victim] = nil
+            }
+        }
+        let attempts = (repairFailures[id]?.attempts ?? 0) + 1
+        let retryAt = attempts >= Self.repairFailureSessionLimit
+            ? Date.distantFuture : now.addingTimeInterval(Self.repairFailureBackoff)
+        repairFailures[id] = (attempts, retryAt)
+    }
+
+    func nextUnownedRepair(_ queries: AudioTranscriptionQueries) async throws -> UntranscribedBatch? {
         hasMoreRepairCandidates = false
-        guard let owner = deferredRepairOwner else { return try await queries.getNewestRepairBatch() }
+        guard let owner = deferredRepairOwner else {
+            // Newest first, skipping rows in failure backoff with a bounded descending keyset walk.
+            var cursor: (startTimeMilliseconds: Int64, id: Int64)?
+            for _ in 0..<64 {
+                try BackgroundProcessingContext.checkCancellation()
+                guard let row = try await queries.getNewestRepairBatch(before: cursor) else { return nil }
+                if !isRepairInBackoff(row.id) { return row }
+                cursor = (row.startTimeMilliseconds, row.id)
+            }
+            hasMoreRepairCandidates = true
+            return nil
+        }
         // Keyset progress survives bounded scans so 64 owned old rows cannot
         // indefinitely hide an unrelated repair behind them.
         for _ in 0..<64 {
@@ -217,7 +254,7 @@ public actor AudioProcessingManager {
                 deferredRepairCursor = nil
                 return nil
             }
-            if !(await owner(row.id)) { return row }
+            if !(await owner(row.id)), !isRepairInBackoff(row.id) { return row }
             deferredRepairCursor = (row.startTimeMilliseconds, row.id)
         }
         hasMoreRepairCandidates = true
@@ -491,6 +528,7 @@ public actor AudioProcessingManager {
             let generation = pendingGeneration
             var fresh: UntranscribedBatch?
             var kind: BackgroundProcessingKind
+            var divertedPermit: BackgroundProcessingPermit?
             do {
                 let currentSpeech = try await queries.getFreshPendingBatch()
                 if freshArrivalPending, let currentSpeech {
@@ -502,11 +540,14 @@ public actor AudioProcessingManager {
                 if let fresh {
                     kind = currentSpeech?.id == fresh.id ? .freshTranscription : .overdueTranscription
                 } else { kind = .ambientSpeech }
-                if kind == .overdueTranscription {
-                    // Only the old quiet backlog is waiting (no fresh/recent speech): it must
-                    // not starve a repair row. Resource gates are unchanged (ambient admission).
+                if kind == .overdueTranscription, !lastAutomaticTurnWasRepair {
+                    // Only the old backlog is waiting (no fresh/recent speech) and the last turn was
+                    // overdue: divert to repair, but only if repair can start NOW (idle window open
+                    // and every resource gate passes). Otherwise the overdue job keeps its pace.
                     let speechWaiting = try await queries.getSpeechPendingBatch()
-                    if speechWaiting == nil, try await nextUnownedRepair(queries) != nil {
+                    if speechWaiting == nil, try await nextUnownedRepair(queries) != nil,
+                       let repairPermit = try await governor.tryAcquire(.ambientSpeech) {
+                        divertedPermit = repairPermit
                         fresh = nil
                         kind = .ambientSpeech
                     }
@@ -522,24 +563,28 @@ public actor AudioProcessingManager {
                 await publication.value
                 continue // Reread status; a native draft now belongs to repair.
             }
-            let request = Task { try await governor.acquire(kind) }
-            admissionKind = kind
-            admissionTask = request
             let permit: BackgroundProcessingPermit
-            do {
-                permit = try await withTaskCancellationHandler {
-                    try await request.value
-                } onCancel: { request.cancel() }
-            } catch {
-                admissionTask = nil
-                admissionKind = nil
-                if Task.isCancelled { break }
-                if !liveTranscriptionQueue.isEmpty { continue }
-                // New durable audio deliberately interrupts a historical wait.
-                // Re-evaluate its lane immediately; this is not a model failure.
-                if error is CancellationError, generation != pendingGeneration { continue }
-                try? await Task.sleep(for: .seconds(5), clock: .continuous)
-                continue
+            if let divertedPermit {
+                permit = divertedPermit
+            } else {
+                let request = Task { try await governor.acquire(kind) }
+                admissionKind = kind
+                admissionTask = request
+                do {
+                    permit = try await withTaskCancellationHandler {
+                        try await request.value
+                    } onCancel: { request.cancel() }
+                } catch {
+                    admissionTask = nil
+                    admissionKind = nil
+                    if Task.isCancelled { break }
+                    if !liveTranscriptionQueue.isEmpty { continue }
+                    // New durable audio deliberately interrupts a historical wait.
+                    // Re-evaluate its lane immediately; this is not a model failure.
+                    if error is CancellationError, generation != pendingGeneration { continue }
+                    try? await Task.sleep(for: .seconds(5), clock: .continuous)
+                    continue
+                }
             }
             admissionTask = nil
             admissionKind = nil
@@ -549,6 +594,8 @@ public actor AudioProcessingManager {
             }
             activeAutomaticPermit = permit
             activeAutomaticKind = kind
+            let wasDiverted = divertedPermit != nil
+            lastAutomaticTurnWasRepair = kind == .ambientSpeech
             var retryDelay: Duration?
             var wasEmpty = false
             do {
@@ -572,7 +619,12 @@ public actor AudioProcessingManager {
                                 ? min(3, consecutiveRecentAutomaticAttempts + 1) : 0
                         } else if let repair = try await nextUnownedRepair(queries) {
                             row = repair
-                        } else { return !hasMoreRepairCandidates }
+                            activeRepairRowID = repair.id
+                        } else {
+                            // A diverted turn means overdue backlog still waits: keep the worker looping
+                            // (false = not empty) when the repair row was claimed while we waited.
+                            return wasDiverted ? false : !hasMoreRepairCandidates
+                        }
                         // Capture can publish while admission or the row read is
                         // suspended. Recheck before starting any CPU work.
                         guard acceptedCaptureWrite == nil, nativePublicationTasks[row.id] == nil else { return false }
@@ -590,6 +642,7 @@ public actor AudioProcessingManager {
                             savedBatchURL: writer.storageRoot.appendingPathComponent(row.audioPath),
                             pendingRecord: row)
                         try await processPersistedBatch(pending)
+                        if activeRepairRowID == row.id { repairFailures[row.id] = nil }
                         return false
                     }
                 } onCancel: { permit.cancellation.cancel() }
@@ -597,8 +650,10 @@ public actor AudioProcessingManager {
                 retryDelay = .milliseconds(100)
             } catch {
                 retryDelay = .seconds(5)
+                if let failedRepairID = activeRepairRowID { noteRepairFailure(failedRepairID) }
                 Log.error("[AudioProcessingManager] Pending transcription retained for retry: \(error)", category: .processing)
             }
+            activeRepairRowID = nil
             activeAutomaticPermit = nil
             activeAutomaticKind = nil
             await governor.release(permit)

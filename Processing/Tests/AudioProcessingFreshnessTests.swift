@@ -372,7 +372,10 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         XCTAssertNotEqual(recent, repair)
     }
 
-    func testQuietBacklogDoesNotBlockRepairAdmission() async throws {
+    func testActiveUseKeepsOverdueBacklogAtItsNormalPaceWhenRepairCannotStart() async throws {
+        // Replaces the premise of testQuietBacklogDoesNotBlockRepairAdmission: repair only
+        // diverts when it can start now. Here it cannot (governor refuses the try-acquire),
+        // so the quiet overdue job runs and the repair row waits.
         let now = Date()
         let repair = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
         let quiet = try await seed(at: now.addingTimeInterval(-48 * 3_600))
@@ -385,10 +388,79 @@ final class AudioProcessingFreshnessTests: XCTestCase {
         XCTAssertTrue(completed)
         await stop(run)
         let kinds = await governor.requestedKinds
-        XCTAssertEqual(kinds.first, .ambientSpeech, "Repair is admitted through the idle-gated lane, not overdue pacing")
+        XCTAssertEqual(kinds.first, .overdueTranscription)
         let pending = try await queries.getUntranscribedBatches(limit: 100)
-        XCTAssertEqual(pending.map(\.id), [quiet], "The repair row completed; the quiet row stays retained")
-        XCTAssertNotEqual(quiet, repair)
+        XCTAssertEqual(pending.map(\.id), [repair])
+    }
+
+    func testIdleWindowAlternatesRepairAndOverdueTurns() async throws {
+        let now = Date()
+        _ = try await seed(at: now.addingTimeInterval(-96 * 3_600), status: "needs_repair")
+        _ = try await seed(at: now.addingTimeInterval(-95 * 3_600), status: "needs_repair")
+        var quiet: [Int64] = []
+        for hours in [72, 48] {
+            let id = try await seed(at: now.addingTimeInterval(Double(-hours) * 3_600))
+            try await queries.updateBatchOutcome(id: id, text: "", transcriptStatus: "pending",
+                detectedLanguage: nil, audioVariant: "raw", qualityFlags: AudioPreparationMetadata.lowEnergyPending)
+            quiet.append(id)
+        }
+        let governor = FreshnessTestGovernor()
+        await governor.setRepairStartable(true)
+        await governor.grantOne()
+        let run = start(service: FreshnessTestTranscriber(), governor: governor)
+        let completed = await eventually { await governor.releaseCount >= 3 }
+        XCTAssertTrue(completed)
+        await stop(run)
+        let allKinds = await governor.requestedKinds
+        let kinds = Array(allKinds.prefix(3))
+        XCTAssertEqual(kinds, [.ambientSpeech, .overdueTranscription, .ambientSpeech],
+                       "Repair, then one overdue job, then repair again: neither starves")
+        let pending = try await queries.getUntranscribedBatches(limit: 100)
+        XCTAssertEqual(pending.map(\.id), [quiet[1]], "Both repairs and the oldest quiet row are done")
+    }
+
+    func testRepairRowClaimedWhileDivertedKeepsWorkerAliveForOverdueWork() async throws {
+        let now = Date()
+        let repair = try await seed(at: now.addingTimeInterval(-72 * 3_600), status: "needs_repair")
+        let quiet = try await seed(at: now.addingTimeInterval(-48 * 3_600))
+        try await queries.updateBatchOutcome(id: quiet, text: "", transcriptStatus: "pending",
+            detectedLanguage: nil, audioVariant: "raw", qualityFlags: AudioPreparationMetadata.lowEnergyPending)
+        let governor = FreshnessTestGovernor()
+        await governor.setRepairStartable(true)
+        let queries = try XCTUnwrap(self.queries)
+        // Another owner claims the repair row after the divert decision, before execution.
+        await governor.setOnTryAcquire { _ = try? await queries.deleteTranscription(id: repair) }
+        await governor.grantOne()
+        let run = start(service: FreshnessTestTranscriber(), governor: governor)
+        let completed = await eventually { await governor.releaseCount >= 2 }
+        XCTAssertTrue(completed, "The worker must not exit as if the queue were empty")
+        await stop(run)
+        let pending = try await queries.getUntranscribedBatches(limit: 100)
+        XCTAssertTrue(pending.isEmpty, "The quiet overdue row ran after the diverted turn found nothing")
+    }
+
+    func testFailingRepairRowIsSkippedAndBackedOffWithoutBlockingOthers() async throws {
+        let now = Date()
+        let older = try await seed(at: now.addingTimeInterval(-96 * 3_600), status: "needs_repair")
+        let newer = try await seed(at: now.addingTimeInterval(-6 * 3_600), status: "needs_repair")
+        let manager = AudioProcessingManager(transcriptionService: FreshnessTestTranscriber(), transcriptionQueries: queries,
+            audioWriter: AudioSegmentWriter(storageRoot: root), governor: FreshnessTestGovernor(),
+            config: .init(minimumConfidence: 0, maxQueuedLiveTranscriptionBatches: 1))
+        let first = try await manager.nextUnownedRepair(queries)
+        XCTAssertEqual(first?.id, newer, "Newest repair row first")
+        await manager.noteRepairFailure(newer)
+        let second = try await manager.nextUnownedRepair(queries)
+        XCTAssertEqual(second?.id, older, "A row in backoff is skipped so another row proceeds")
+        await manager.noteRepairFailure(older)
+        let none = try await manager.nextUnownedRepair(queries)
+        XCTAssertNil(none, "Every repair row in backoff leaves the lane to overdue work")
+        // Backoff expires after 10 minutes but three failures last for the session.
+        await manager.noteRepairFailure(newer)
+        await manager.noteRepairFailure(newer)
+        let stillSkipped = try await manager.nextUnownedRepair(queries)
+        XCTAssertNil(stillSkipped)
+        let rowCount = try await queries.getUntranscribedBatchCount()
+        XCTAssertEqual(rowCount, 2, "Backoff never deletes or rewrites rows")
     }
 
     func testRecentSelectionStillWaitsForAdmission() async throws {
@@ -701,6 +773,20 @@ private actor FreshnessTestGovernor: BackgroundProcessingProtocol {
             current = nil
             releaseCount += 1
         }
+    }
+    private var repairStartable = false
+    private var onTryAcquire: (@Sendable () async -> Void)?
+    func setRepairStartable(_ value: Bool) { repairStartable = value }
+    func setOnTryAcquire(_ hook: @escaping @Sendable () async -> Void) { onTryAcquire = hook }
+    /// Models the idle window: succeeds only for repair (ambient) when the test says repair can start now.
+    func tryAcquire(_ kind: BackgroundProcessingKind) async throws -> BackgroundProcessingPermit? {
+        guard repairStartable, kind == .ambientSpeech, current == nil else { return nil }
+        requestedKinds.append(kind)
+        let permit = BackgroundProcessingPermit(threadCount: 2)
+        current = permit
+        peakActivePermits = max(peakActivePermits, 1)
+        await onTryAcquire?()
+        return permit
     }
     func grantOne() { grants += 1 }
     func resetReleaseCount() { releaseCount = 0 }

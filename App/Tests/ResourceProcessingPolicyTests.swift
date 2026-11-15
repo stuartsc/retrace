@@ -67,8 +67,8 @@ final class ResourceProcessingPolicyTests: XCTestCase {
         await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: sample(2, cpu: 30)))
         XCTAssertFalse(permit.cancellation.isCancelled, "An admitted bounded fresh job can finish its own CPU burst")
         await governor.release(permit)
-        let blocked = try await governor.tryAcquire(.freshOCR)
-        XCTAssertNil(blocked, "Over the CPU budget, fresh OCR is paced to one admission per 2 s")
+        // The 2 s pace is asserted deterministically in BackgroundProcessingGovernorTests
+        // (injected clock); this real-clock test makes no timing assumption.
         historical.cancel()
         do { _ = try await historical.value; XCTFail("History admitted during input") } catch is CancellationError {}
         await governor.close()

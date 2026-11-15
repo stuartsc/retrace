@@ -589,6 +589,7 @@ public actor StorageManager: StorageProtocol {
         let url = try await getSegmentPath(id: id)
         do {
             try FileManager.default.removeItem(at: url)
+            ExactFrameReader.discardCachedDecoder(for: url)
             // Invalidate cache entry
             segmentPathCache.removeValue(forKey: id.value)
         } catch {

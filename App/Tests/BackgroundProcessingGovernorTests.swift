@@ -230,6 +230,47 @@ final class BackgroundProcessingGovernorTests: XCTestCase {
         await governor.close()
     }
 
+    func testWaitReasonShowsCPUBudgetForBlockedHistoryWhileFreshOCRProgresses() async throws {
+        let clock = QuietGrantClock()
+        let governor = BackgroundProcessingGovernor(scheduler: ConsumableBackgroundGrant(), monotonicNow: { clock.now })
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        let history = Task { try await governor.acquire(.historicalOCR) }
+        try await waitForQueue(governor, count: 1)
+        let fresh = try await governor.tryAcquire(.freshOCR)
+        let permit = try XCTUnwrap(fresh)
+        let snapshot = await governor.snapshot()
+        XCTAssertEqual(snapshot.waitReason, .cpuBudget)
+        await governor.release(permit)
+        history.cancel()
+        do { _ = try await history.value; XCTFail("History admitted") } catch is CancellationError {}
+        await governor.close()
+    }
+
+    func testFreshOCRHeldOnlyByPaceReportsNoCPUBudgetReason() async throws {
+        let clock = QuietGrantClock()
+        let governor = BackgroundProcessingGovernor(scheduler: ConsumableBackgroundGrant(), monotonicNow: { clock.now })
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        let first = try await governor.tryAcquire(.freshOCR)
+        await governor.release(try XCTUnwrap(first))
+        let waiting = Task { try await governor.acquire(.freshOCR) }
+        try await waitForQueue(governor, count: 1)
+        let snapshot = await governor.snapshot()
+        XCTAssertNil(snapshot.waitReason)
+        clock.advance(2)
+        await governor.updateEnvironment(.init(idleSeconds: 0, resourceUsage: cpuSample(cpu: 40)))
+        await governor.release(try await waiting.value)
+        await governor.close()
+    }
+
+    func testDenialLogDecision() {
+        typealias G = BackgroundProcessingGovernor
+        XCTAssertFalse(G.shouldLogDenial(reason: nil, lastReason: nil, lastLogged: nil, now: 0))
+        XCTAssertTrue(G.shouldLogDenial(reason: .cpuBudget, lastReason: nil, lastLogged: nil, now: 0))
+        XCTAssertFalse(G.shouldLogDenial(reason: .cpuBudget, lastReason: .cpuBudget, lastLogged: 0, now: 599))
+        XCTAssertTrue(G.shouldLogDenial(reason: .cpuBudget, lastReason: .cpuBudget, lastLogged: 0, now: 600))
+        XCTAssertTrue(G.shouldLogDenial(reason: .systemBusy, lastReason: .cpuBudget, lastLogged: 0, now: 5))
+    }
+
     private func cpuSample(cpu: Double, system: Double = 50) -> ResourceUsageSnapshot {
         .init(observedAt: Date(), sampleUptime: 1, cpuPercent: cpu,
               systemCPUPercent: system, systemFiveSecondCPUPercent: system, logicalCoreCount: 10,

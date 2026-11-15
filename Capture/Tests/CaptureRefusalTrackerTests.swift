@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Shared
 import XCTest
@@ -81,5 +82,37 @@ final class CaptureRefusalTrackerTests: XCTestCase {
         _ = tracker.recordRefusal(reason: reason, bundleID: app.bundleID, displayActive: true, now: 0)
         let event = tracker.recordRefusal(reason: reason, bundleID: app.bundleID, displayActive: true, now: 60)
         XCTAssertEqual(event, .sustained(duration: 60, reason: .windowUnavailable, bundleID: bundle))
+    }
+
+    func testResetDropsCarriedStreak() {
+        var tracker = CaptureRefusalTracker()
+        _ = refuse(&tracker, at: 0)
+        _ = refuse(&tracker, at: 2)
+        tracker.reset()
+        XCTAssertNil(tracker.status)
+        XCTAssertNil(refuse(&tracker, at: 3600))
+        XCTAssertEqual(tracker.status?.since, 3600)
+    }
+
+    func testLargeTickGapRestartsStreak() {
+        var tracker = CaptureRefusalTracker()
+        _ = refuse(&tracker, at: 0)
+        _ = refuse(&tracker, at: 2)
+        XCTAssertNil(refuse(&tracker, at: 3600))
+        XCTAssertEqual(tracker.status?.since, 3600)
+        XCTAssertNil(refuse(&tracker, at: 3658))
+        XCTAssertNotNil(refuse(&tracker, at: 3660))
+    }
+
+    func testNotOnConsoleOrMissingSessionIsQuiet() {
+        let active: [String: Any] = [kCGSessionOnConsoleKey as String: true]
+        XCTAssertTrue(CaptureDisplayActivity.isActive(displayAsleep: false, session: active))
+        XCTAssertFalse(CaptureDisplayActivity.isActive(displayAsleep: false,
+            session: [kCGSessionOnConsoleKey as String: false]))
+        XCTAssertFalse(CaptureDisplayActivity.isActive(displayAsleep: false, session: [:]))
+        XCTAssertFalse(CaptureDisplayActivity.isActive(displayAsleep: false, session: nil))
+        XCTAssertFalse(CaptureDisplayActivity.isActive(displayAsleep: false,
+            session: [kCGSessionOnConsoleKey as String: true, "CGSSessionScreenIsLocked": true]))
+        XCTAssertFalse(CaptureDisplayActivity.isActive(displayAsleep: true, session: active))
     }
 }

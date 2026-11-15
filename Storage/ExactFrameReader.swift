@@ -38,7 +38,12 @@ public enum ExactFrameReader {
             }
             let requested = CMTime(seconds: seconds, preferredTimescale: timeScale)
             guard requested.isNumeric else { throw ExactFrameReadError.integrityFailure }
-            let initialFile = try fileIdentity(videoURL)
+            let initialFile: FileIdentity
+            do { initialFile = try fileIdentity(videoURL) } catch {
+                // A deleted or unreadable recording must not stay open in the cache.
+                generatorCache.evict(path: videoURL.path)
+                throw error
+            }
             guard initialFile.size > 0 else { throw ExactFrameReadError.frameFinalising }
 
             // Generators are cached per file identity and dropped after any failed attempt,
@@ -99,10 +104,20 @@ public enum ExactFrameReader {
     static var cachedGeneratorCountForTesting: Int { generatorCache.count }
     static func clearGeneratorCacheForTesting() { generatorCache.removeAll() }
 
+    /// Drops any cached decoder for a recording so a deleted or replaced file is
+    /// released immediately. Call when a segment file is removed.
+    public static func discardCachedDecoder(for videoURL: URL) {
+        generatorCache.evict(path: videoURL.path)
+    }
+
     static func decodeFrame(videoURL: URL, at time: CMTime) throws -> ExactDecodedFrame {
         // A cached generator is only reused while the file's device, inode, size and
         // modification time are unchanged; any other identity opens a fresh asset.
-        let identity = try fileIdentity(videoURL)
+        let identity: FileIdentity
+        do { identity = try fileIdentity(videoURL) } catch {
+            generatorCache.evict(path: videoURL.path)
+            throw error
+        }
         let entry = try generatorCache.acquire(path: videoURL.path, identity: identity) {
             try CachedGenerator(videoURL: videoURL, identity: identity)
         }

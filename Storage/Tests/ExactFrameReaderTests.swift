@@ -171,6 +171,24 @@ final class ExactFrameReaderTests: XCTestCase {
         XCTAssertGreaterThan(ExactFrameReader.assetOpenCountForTesting, opensBefore)
     }
 
+    func testDeletingTheFileReleasesItsCachedGeneratorAndARecreatedFileIsReopened() async throws {
+        let video = try await makeVideo()
+        ExactFrameReader.clearGeneratorCacheForTesting()
+        let original = try await read(video, index: 1)
+        XCTAssertEqual(try centerGray(original), 120, accuracy: 15)
+        XCTAssertEqual(ExactFrameReader.cachedGeneratorCountForTesting, 1)
+        try FileManager.default.removeItem(at: video)
+        await assertError(.recordingMissing) { _ = try await self.read(video, index: 1) }
+        XCTAssertEqual(ExactFrameReader.cachedGeneratorCountForTesting, 0)
+
+        let opensBefore = ExactFrameReader.assetOpenCountForTesting
+        let replacement = try await makeVideo(ticks: [0, 3, 6])
+        try FileManager.default.moveItem(at: replacement, to: video)
+        let fresh = try await read(video, index: 6)
+        XCTAssertEqual(try centerGray(fresh), 220, accuracy: 15)
+        XCTAssertGreaterThan(ExactFrameReader.assetOpenCountForTesting, opensBefore)
+    }
+
     func testGeneratorCacheNeverExceedsItsBound() async throws {
         ExactFrameReader.clearGeneratorCacheForTesting()
         for _ in 0..<(ExactFrameReader.maximumCachedGenerators + 2) {

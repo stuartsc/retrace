@@ -1165,8 +1165,9 @@ public actor AudioTranscriptionQueries {
     }
 
     /// Newest repair-pending row first (the owner's recent days), for admission without a companion owner.
-    public func getNewestRepairBatch() throws -> UntranscribedBatch? {
-        try selectAutomaticBatch(status: "needs_repair", newestFirst: true)
+    /// The optional descending keyset lets the caller step past rows in failure backoff.
+    public func getNewestRepairBatch(before: (startTimeMilliseconds: Int64, id: Int64)? = nil) throws -> UntranscribedBatch? {
+        try selectAutomaticBatch(status: "needs_repair", newestFirst: true, before: before)
     }
 
     /// Fresh or recent (24 h) speech-like pending audio only. The old `pending_low_energy_v1`
@@ -1217,7 +1218,8 @@ public actor AudioTranscriptionQueries {
     private func selectAutomaticBatch(status: String, newestFirst: Bool,
                                      timeRange: (lower: Int64, upper: Int64)? = nil,
                                      excludeLowEnergy: Bool = false,
-                                     after: (startTimeMilliseconds: Int64, id: Int64)? = nil) throws -> UntranscribedBatch? {
+                                     after: (startTimeMilliseconds: Int64, id: Int64)? = nil,
+                                     before: (startTimeMilliseconds: Int64, id: Int64)? = nil) throws -> UntranscribedBatch? {
         try Task.checkCancellation()
         let order = newestFirst ? "DESC" : "ASC"
         let sql = """
@@ -1230,6 +1232,7 @@ public actor AudioTranscriptionQueries {
             \(timeRange == nil ? "" : "AND start_time BETWEEN ? AND ?")
             \(excludeLowEnergy ? "AND COALESCE(quality_flags, '') != ?" : "")
             \(after == nil ? "" : "AND start_time >= ? AND (start_time > ? OR id > ?)")
+            \(before == nil ? "" : "AND start_time <= ? AND (start_time < ? OR id < ?)")
             AND audio_path IS NOT NULL
             AND audio_path LIKE '%batch_%'
             ORDER BY start_time \(order), id \(order)
@@ -1253,6 +1256,12 @@ public actor AudioTranscriptionQueries {
             sqlite3_bind_int64(statement, index, after.startTimeMilliseconds)
             sqlite3_bind_int64(statement, index + 1, after.startTimeMilliseconds)
             sqlite3_bind_int64(statement, index + 2, after.id)
+        }
+        if let before {
+            let index: Int32 = 2 + (timeRange == nil ? 0 : 2) + (excludeLowEnergy ? 1 : 0) + (after == nil ? 0 : 3)
+            sqlite3_bind_int64(statement, index, before.startTimeMilliseconds)
+            sqlite3_bind_int64(statement, index + 1, before.startTimeMilliseconds)
+            sqlite3_bind_int64(statement, index + 2, before.id)
         }
         let result = sqlite3_step(statement)
         try Task.checkCancellation()

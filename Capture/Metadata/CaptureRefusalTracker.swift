@@ -32,16 +32,26 @@ struct CaptureRefusalTracker: Sendable {
 
     private(set) var status: CaptureRefusalStatus?
     private var lastWarning: TimeInterval?
+    private var lastTick: TimeInterval?
+
+    mutating func reset() {
+        status = nil
+        lastWarning = nil
+        lastTick = nil
+    }
 
     /// A refused tick. When the display is asleep or the session locked the
     /// refusal is expected: the streak is dropped silently and restarts later.
     mutating func recordRefusal(reason: CaptureSamplingOutcome, bundleID: String?,
-                                displayActive: Bool, now: TimeInterval) -> CaptureRefusalEvent? {
+                                displayActive: Bool, now: TimeInterval,
+                                maxTickGap: TimeInterval = 10) -> CaptureRefusalEvent? {
         guard displayActive, now.isFinite else {
-            status = nil
-            lastWarning = nil
+            reset()
             return nil
         }
+        // A long gap (pause, system sleep, stalled loop) is not continuous refusal.
+        if let lastTick, now < lastTick || now - lastTick > maxTickGap { reset() }
+        lastTick = now
         let since = status?.since ?? now
         status = CaptureRefusalStatus(since: since, reason: reason, bundleID: bundleID)
         let duration = now - since
@@ -53,7 +63,7 @@ struct CaptureRefusalTracker: Sendable {
 
     /// An accepted sample. Reports the total only if a warning was issued.
     mutating func recordAccepted(now: TimeInterval) -> CaptureRefusalEvent? {
-        defer { status = nil; lastWarning = nil }
+        defer { reset() }
         guard let status, lastWarning != nil, now >= status.since else { return nil }
         return .restored(totalDuration: now - status.since)
     }
@@ -70,8 +80,15 @@ final class CaptureLastOutcomeBox: @unchecked Sendable {
 enum CaptureDisplayActivity {
     /// True when the captured display is awake and the login session is not locked.
     static func isDisplayAwakeAndUnlocked(displayID: UInt32) -> Bool {
-        guard CGDisplayIsAsleep(CGDirectDisplayID(displayID)) == 0 else { return false }
-        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-        return (session?["CGSSessionScreenIsLocked"] as? Bool) != true
+        isActive(displayAsleep: CGDisplayIsAsleep(CGDirectDisplayID(displayID)) != 0,
+                 session: CGSessionCopyCurrentDictionary() as? [String: Any])
+    }
+
+    /// A missing session dictionary, a locked session or a session not on the
+    /// console (fast user switching) all count as not active.
+    static func isActive(displayAsleep: Bool, session: [String: Any]?) -> Bool {
+        guard !displayAsleep, let session else { return false }
+        guard (session[kCGSessionOnConsoleKey as String] as? Bool) == true else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? Bool) != true
     }
 }

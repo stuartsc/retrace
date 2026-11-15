@@ -81,8 +81,9 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
     /// Earliest next fresh-OCR admission; only enforced while the CPU budget is exceeded.
     private var nextFreshOCRAdmission: TimeInterval = 0
     private var lastDenialLog: TimeInterval?
+    private var lastDenialReason: BackgroundProcessingWaitReason?
     private static let freshOCRPaceSeconds: TimeInterval = 2
-    private static let denialLogIntervalSeconds: TimeInterval = 60
+    private static let denialLogIntervalSeconds: TimeInterval = 600
     private var monotonicNow: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     private static let scheduledWindowBudget: TimeInterval = 20
     private var memoryPressure: BackgroundMemoryPressureBridge?
@@ -268,6 +269,7 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         nextOverdueAdmission = 0
         nextFreshOCRAdmission = 0
         lastDenialLog = nil
+        lastDenialReason = nil
         memoryPressure = nil
         environment = .init(idleSeconds: 0)
         resourcePolicy = ResourceProcessingPolicy()
@@ -328,10 +330,12 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
             !waiters.contains(where: { $0.kind.isFresh }) &&
             waiters.contains(where: { $0.kind == .overdueTranscription }) { return .audioPacing }
         if let reason = resourcePolicy.reason {
-            let progressingFirstPass = activeKind?.isFirstPass == true ||
-                waiters.contains { $0.kind.isFirstPass }
-            let progressingFreshOCR = activeKind == .freshOCR || waiters.contains { $0.kind == .freshOCR }
-            if reason != .cpuBudget || !(progressingFirstPass || progressingFreshOCR) { return reason }
+            // Only first-pass audio and fresh OCR progress over the CPU budget. Any other
+            // waiting kind is genuinely blocked by it, so that reason stays visible.
+            func exempt(_ kind: BackgroundProcessingKind) -> Bool { kind.isFirstPass || kind == .freshOCR }
+            if reason != .cpuBudget || waiters.contains(where: { !exempt($0.kind) }) { return reason }
+            let activeExempt = activeKind.map { exempt($0) } ?? false
+            if !activeExempt && waiters.isEmpty { return reason }
         }
         if activeKind?.isFirstPass == true || activeKind?.isFresh == true || waiters.contains(where: { $0.kind.isFresh || $0.kind.isFirstPass }) { return nil }
         if !environment.idleSeconds.isFinite || environment.idleSeconds < 300 { return .activeUse }
@@ -441,14 +445,24 @@ public actor BackgroundProcessingGovernor: BackgroundProcessingProtocol {
         }
     }
 
-    /// Numbers and enum names only, at most once per minute, so a later investigation
-    /// can see why queued work was refused.
+    /// Log only a real reason, when it changed or the repeat interval has passed.
+    static func shouldLogDenial(reason: BackgroundProcessingWaitReason?, lastReason: BackgroundProcessingWaitReason?,
+                                lastLogged: TimeInterval?, now: TimeInterval) -> Bool {
+        guard reason != nil else { return false }
+        guard let lastLogged else { return true }
+        return reason != lastReason || now - lastLogged >= denialLogIntervalSeconds
+    }
+
+    /// Numbers and enum names only, so a later investigation can see why queued work was refused.
     private func logDenialIfDue() {
         guard !waiters.isEmpty else { return }
         let now = monotonicNow()
-        if let last = lastDenialLog, now - last < Self.denialLogIntervalSeconds { return }
+        let current = waitReason
+        guard Self.shouldLogDenial(reason: current, lastReason: lastDenialReason, lastLogged: lastDenialLog, now: now),
+              let current else { return }
         lastDenialLog = now
-        let reason = waitReason.map { String(describing: $0) } ?? "none"
+        lastDenialReason = current
+        let reason = String(describing: current)
         let kinds = waiters.map { String(describing: $0.kind) }.joined(separator: ",")
         Log.info("[Governor] Work denied: reason=\(reason) waiting=\(waiters.count) kinds=\(kinds)", category: .processing)
     }

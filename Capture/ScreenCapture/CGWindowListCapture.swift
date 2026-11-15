@@ -72,6 +72,7 @@ public actor CGWindowListCapture {
         guard !isActive else { return }
 
         self.currentConfig = config
+        refusalTracker.reset()
         timerAdmission.invalidate()
         timerAdmission = NativeMutationFence()
         let admission = timerAdmission
@@ -100,6 +101,7 @@ public actor CGWindowListCapture {
         guard isActive else { return }
 
         isActive = false
+        refusalTracker.reset()
         recordingSession = UUID()
         timerAdmission.invalidate()
         currentDisplayID = nil
@@ -241,7 +243,8 @@ public actor CGWindowListCapture {
         let bundleID = await contextSource.frontmost()?.bundleID
         let active = CaptureDisplayActivity.isDisplayAwakeAndUnlocked(displayID: displayID)
         if let event = refusalTracker.recordRefusal(reason: outcome, bundleID: bundleID, displayActive: active,
-                                                    now: ProcessInfo.processInfo.systemUptime) {
+                                                    now: ProcessInfo.processInfo.systemUptime,
+                                                    maxTickGap: max(10, 5 * (currentConfig?.captureIntervalSeconds ?? 2))) {
             Log.warning(event.message, category: .capture)
         }
     }
