@@ -40,8 +40,9 @@ final class CaptureRefusalTrackerTests: XCTestCase {
         }
         XCTAssertNil(tracker.status)
         // Waking restarts the streak rather than inheriting the sleeping time.
-        XCTAssertNil(refuse(&tracker, at: 3602))
-        XCTAssertNil(refuse(&tracker, at: 3640))
+        for time in stride(from: 3602.0, to: 3662.0, by: 2.0) {
+            XCTAssertNil(refuse(&tracker, at: time))
+        }
         XCTAssertNotNil(refuse(&tracker, at: 3662))
     }
 
@@ -79,8 +80,11 @@ final class CaptureRefusalTrackerTests: XCTestCase {
         let reason = try XCTUnwrap(sample.failure)
         XCTAssertEqual(reason, .windowUnavailable)
         var tracker = CaptureRefusalTracker()
-        _ = tracker.recordRefusal(reason: reason, bundleID: app.bundleID, displayActive: true, now: 0)
-        let event = tracker.recordRefusal(reason: reason, bundleID: app.bundleID, displayActive: true, now: 60)
+        // Ticks arrive every two seconds; a larger gap would restart the streak.
+        var event: CaptureRefusalEvent?
+        for time in stride(from: 0.0, through: 60.0, by: 2.0) {
+            event = tracker.recordRefusal(reason: reason, bundleID: app.bundleID, displayActive: true, now: time)
+        }
         XCTAssertEqual(event, .sustained(duration: 60, reason: .windowUnavailable, bundleID: bundle))
     }
 
@@ -100,7 +104,9 @@ final class CaptureRefusalTrackerTests: XCTestCase {
         _ = refuse(&tracker, at: 2)
         XCTAssertNil(refuse(&tracker, at: 3600))
         XCTAssertEqual(tracker.status?.since, 3600)
-        XCTAssertNil(refuse(&tracker, at: 3658))
+        for time in stride(from: 3602.0, to: 3660.0, by: 2.0) {
+            XCTAssertNil(refuse(&tracker, at: time))
+        }
         XCTAssertNotNil(refuse(&tracker, at: 3660))
     }
 

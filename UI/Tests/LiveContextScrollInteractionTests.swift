@@ -207,6 +207,10 @@ private final class NativeLiveScrollFixture {
     func close() { observer.stop(); panel.orderOut(nil); panel.close() }
     func sendReadingKey(_ code: UInt16) throws {
         panel.makeKey()
+        // A headless run cannot take key focus while another application is in use.
+        if !panel.isKeyWindow, ProcessInfo.processInfo.environment["RETRACE_TEST_NONINTERACTIVE"] == "1" {
+            throw XCTSkip("Key focus is unavailable in a noninteractive run while another app is frontmost")
+        }
         XCTAssertTrue(panel.isKeyWindow)
         XCTAssertTrue(panel.makeFirstResponder(document))
         let deliveries = document.receivedReadingKeys
