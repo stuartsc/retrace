@@ -26,6 +26,7 @@ public actor CGWindowListCapture {
     private var isCaptureInFlight = false
     private var configurationGeneration: UInt64 = 0
     private var contextUnavailable = false
+    private var refusalTracker = CaptureRefusalTracker()
     private let contextSource = ActivityContextSource.live
     private let samplingDiagnostics = CaptureSamplingDiagnostics()
 
@@ -208,26 +209,45 @@ public actor CGWindowListCapture {
         let generation = configurationGeneration
         let started = ContinuousClock.now
         let diagnostics = samplingDiagnostics
+        let lastOutcome = CaptureLastOutcomeBox()
         let frame = await CaptureSnapshotSequencer.capture(displayID: displayID,
             readContext: { await self.contextSource.sampleCapture(config: config, displayID: displayID) },
             capturePixels: { await self.captureFilteredPixels(displayID: displayID, config: config) },
-            recordOutcome: { diagnostics.record($0) })
+            recordOutcome: { diagnostics.record($0); lastOutcome.set($0) })
         guard isActive, generation == configurationGeneration else { return }
         guard let frame else {
             if !contextUnavailable {
                 Log.info("[CGWindowListCapture] Waiting for a stable permitted surface before retaining pixels", category: .capture)
                 contextUnavailable = true
             }
+            await trackRefusal(outcome: lastOutcome.value, displayID: displayID)
             return
         }
         if contextUnavailable {
             Log.info("[CGWindowListCapture] Stable permitted capture context restored", category: .capture)
             contextUnavailable = false
         }
+        if let event = refusalTracker.recordAccepted(now: ProcessInfo.processInfo.systemUptime) {
+            Log.info(event.message, category: .capture)
+        }
         let elapsed = started.duration(to: .now)
         Log.recordLatency("capture.attributed_pixels", valueMs: Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15, category: .capture)
         onFrameCaptured?(frame)
     }
+
+    /// Makes a sustained fail-closed refusal visible; never changes what is captured.
+    private func trackRefusal(outcome: CaptureSamplingOutcome?, displayID: CGWindowID) async {
+        guard let outcome, outcome != .cancelled else { return }
+        let bundleID = await contextSource.frontmost()?.bundleID
+        let active = CaptureDisplayActivity.isDisplayAwakeAndUnlocked(displayID: displayID)
+        if let event = refusalTracker.recordRefusal(reason: outcome, bundleID: bundleID, displayActive: active,
+                                                    now: ProcessInfo.processInfo.systemUptime) {
+            Log.warning(event.message, category: .capture)
+        }
+    }
+
+    /// Current sustained-refusal state for later UI use; nil when capture is accepted or quiet.
+    func captureRefusalStatus() -> CaptureRefusalStatus? { refusalTracker.status }
 
     private func captureFilteredPixels(displayID: CGWindowID, config: CaptureConfig) async -> CapturedFrame? {
         // Compute excluded window IDs for THIS capture (real-time filtering)
