@@ -212,3 +212,9 @@ matching Retrace/backintime issue; no unrelated issue or external message change
 Memory used: MEMORY.md1260–1263 and1278–1281; final reply needs one memory citation
 block. Rollouts 01a15dce-680d-71f1-aaac-9f03713f0a29 and
 01a08fec-d782-7cd3-9801-2de32d112239. No memory update authorised or performed.
+
+### 16 November: native (Apple) fast draft
+- Never verified until now. Apple grants on-device speech assets per app identity; Retrace only requests them from Settings > Voice markers > "Prepare speech recognition". Most likely the installed trial sits in "speech assets unavailable" and falls back to the 15 s Whisper first pass (inferred; the Live caption under the trial toggle confirms).
+- Fix on `repair/audio-delivery-20261113` (1952af9 + log throttle, not installed): `[LiveDraft]` state logs and `audio.live_draft.first_update_ms`, a Prepare button on Live when assets are missing, immediate retry after preparing.
+- Apple engine measured on the authored clip: first words ~4 s after speech starts, final 0.1 s after it ends, but "do not approve the payment" heard as "do not prove the payment". Fine as a preview; fails the accuracy gate for saved/searchable text.
+- The delivery journal `docs/phased-audio-delivery-20261113.md` in the delivery worktree is git-ignored and never committed; this handoff is the tracked record.
