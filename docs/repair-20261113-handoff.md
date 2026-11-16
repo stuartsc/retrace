@@ -218,3 +218,14 @@ block. Rollouts 01a15dce-680d-71f1-aaac-9f03713f0a29 and
 - Fix on `repair/audio-delivery-20261113` (1952af9 + log throttle, not installed): `[LiveDraft]` state logs and `audio.live_draft.first_update_ms`, a Prepare button on Live when assets are missing, immediate retry after preparing.
 - Apple engine measured on the authored clip: first words ~4 s after speech starts, final 0.1 s after it ends, but "do not approve the payment" heard as "do not prove the payment". Fine as a preview; fails the accuracy gate for saved/searchable text.
 - The delivery journal `docs/phased-audio-delivery-20261113.md` in the delivery worktree is git-ignored and never committed; this handoff is the tracked record.
+
+### 16 November: Stuart's decisions
+- Prepare speech recognition: press it now (Stuart presses it in the installed app).
+- Old quiet backlog: mark recordings that were silent at capture and are over 48 h old as no speech (audio kept, tagged `backlog_quiet_v1`); transcribe the rest normally. Being built in the app, idle-only, 500 rows per write.
+- Library side file: tidy automatically. Measured: the WAL is steady at 712,034,912 bytes (old peak, not growing), so the fix is `PRAGMA journal_size_limit` (64 MiB), which shrinks it after the next checkpoint.
+- Unattributable front window: keep warning only (option A).
+- Live redesign: he could not open the design canvas; plain-page copy published for him to decide.
+
+### Roadmap (not scheduled)
+- Second pass over silent audio: amplify/denoise recordings tagged `backlog_quiet_v1` or `probable_silence`, retry speech, and identify what the sound was (for example Apple's on-device sound classifier). Depends on audio retention keeping those files.
+- Capture when the window can't be identified: save "window unknown" frames only after 30 s of refusal, never for browsers, never when title or web-address exclusions are set (option C).
