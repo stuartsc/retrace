@@ -1343,6 +1343,24 @@ public actor AppCoordinator {
                     // including restart recovery. Do not launch a second automatic reader.
                     if Task.isCancelled { break }
 
+                    // Quiet-at-capture recordings older than 48 hours: file as no speech
+                    // without Whisper, only when the idle window admits background work.
+                    if let db = await services.database.getConnection(),
+                       let permit = try? await services.backgroundProcessing.tryAcquire(.ambientSpeech) {
+                        let queries = AudioTranscriptionQueries(db: db)
+                        do {
+                            let marked = try await QuietBacklogTriage.runTurn(now: Date(),
+                                mark: { try await queries.markAgedLowEnergyPendingAsSilence(olderThan: $0, limit: $1) },
+                                isCancelled: { Task.isCancelled || permit.cancellation.isCancelled },
+                                pause: { try? await Task.sleep(for: .seconds(1)) })
+                            if marked > 0 { Log.info("[QuietBacklog] Filed \(marked) old quiet recording(s) as no speech", category: .app) }
+                        } catch {
+                            Log.warning("[QuietBacklog] Triage turn failed; will retry next cycle", category: .app)
+                        }
+                        await services.backgroundProcessing.release(permit)
+                    }
+                    if Task.isCancelled { break }
+
                     // Pass-2 refinement with turbo model.
                     if let refinement = await services.audioRefinement {
                         let result = await refinement.processAllPendingRefinements(maxBatches: Self.automaticPass2BatchLimit)

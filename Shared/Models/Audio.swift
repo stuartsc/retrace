@@ -12,6 +12,9 @@ public enum AudioPreparationMetadata {
     public static let nativeFirstPassPending = "native_first_pass_pending_v1"
     public static let lowEnergyPending = "pending_low_energy_v1"
     public static let firstPassRepairPending = "first_pass_repair_pending_v1"
+    /// Quiet-at-capture recording that waited over 48 hours and was filed as
+    /// no speech without Whisper. Kept so a later sound pass can find and undo it.
+    public static let backlogQuiet = "backlog_quiet_v1"
 }
 
 /// Captured audio data

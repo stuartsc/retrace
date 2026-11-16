@@ -1085,6 +1085,56 @@ public actor AudioTranscriptionQueries {
         }
     }
 
+    /// Files old recordings that were already silent at capture as no speech, in
+    /// one short bounded write. Audio is kept; the flag marks them for a later pass.
+    public func markAgedLowEnergyPendingAsSilence(olderThan cutoff: Date, limit: Int = 500) throws -> Int {
+        guard limit > 0 else { return 0 }
+        guard let mutex = sqlite3_db_mutex(db) else {
+            throw DatabaseError.queryExecutionFailed("Audio backlog triage requires a serialized SQLite connection")
+        }
+        sqlite3_mutex_enter(mutex)
+        defer { sqlite3_mutex_leave(mutex) }
+        let sql = """
+            UPDATE audio_captures
+            SET transcript_status = 'probable_silence',
+                quality_flags = ?,
+                pipeline_version = ?
+            WHERE id IN (
+                SELECT id FROM audio_captures INDEXED BY idx_audio_captures_transcript_status
+                WHERE transcript_status = 'pending'
+                AND quality_flags = ?
+                AND start_time < ?
+                AND audio_path IS NOT NULL
+                AND audio_path LIKE '%batch_%'
+                LIMIT ?
+            );
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw DatabaseError.queryPreparationFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        let flags = AudioPreparationMetadata.lowEnergyPending + "," + AudioPreparationMetadata.backlogQuiet
+        sqlite3_bind_text(stmt, 1, flags, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int(stmt, 2, Int32(CURRENT_PIPELINE_VERSION))
+        sqlite3_bind_text(stmt, 3, AudioPreparationMetadata.lowEnergyPending, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 4, Schema.dateToTimestamp(cutoff))
+        sqlite3_bind_int(stmt, 5, Int32(limit))
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw DatabaseError.queryExecutionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        let changed = Int(sqlite3_changes(db))
+        if changed > 0 {
+            do {
+                try DailyMetricsQueries.recordEvent(db: db, metricType: .audioPreparation,
+                    metadata: "{\"outcome\":\"backlog_quiet_marked\",\"count\":\(changed)}")
+            } catch {
+                Log.warning("[AudioTranscriptionQueries] Backlog triage metric could not be recorded", category: .database)
+            }
+        }
+        return changed
+    }
+
     // MARK: - Backfill Queries
 
     /// A bounded chronological lane for newly captured speech-like or unclassified

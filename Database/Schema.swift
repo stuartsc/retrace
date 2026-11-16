@@ -111,6 +111,10 @@ enum Schema {
     /// Checkpoint WAL every ~4MB (1000 pages × 4KB)
     static let setWALAutocheckpoint = "PRAGMA wal_autocheckpoint=1000;"
 
+    /// After a checkpoint resets the WAL, SQLite truncates the file back to this
+    /// size (64 MiB). Without it the WAL keeps its all-time peak on disk forever.
+    static let setJournalSizeLimit = "PRAGMA journal_size_limit=67108864;"
+
     /// All pragmas to run on database initialization
     static var initializationPragmas: [String] {
         [
@@ -120,7 +124,8 @@ enum Schema {
             setTempStoreFile,
             setCacheSize,
             disableMmap,
-            setWALAutocheckpoint
+            setWALAutocheckpoint,
+            setJournalSizeLimit
         ]
     }
 
