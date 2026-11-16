@@ -822,6 +822,18 @@ public actor AppCoordinator {
         await services.liveTranscriptionSnapshot()
     }
 
+    public func prepareLiveTranscriptionAssets() async throws {
+        do {
+            try await services.prepareLiveTranscriptionAssets()
+            try? await recordMetricEvent(metricType: .audioPreparation,
+                metadata: "{\"action\":\"microphone_draft_assets\",\"result\":\"ready\"}")
+        } catch {
+            try? await recordMetricEvent(metricType: .audioPreparation,
+                metadata: "{\"action\":\"microphone_draft_assets\",\"result\":\"failed\"}")
+            throw error
+        }
+    }
+
     public func setLiveTranscriptionEnabled(_ enabled: Bool) async {
         await services.setLiveTranscriptionEnabled(enabled)
         try? await recordMetricEvent(metricType: .audioPreparation,

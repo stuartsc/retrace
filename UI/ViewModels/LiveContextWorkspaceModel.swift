@@ -120,6 +120,9 @@ final class LiveContextWorkspaceModel: ObservableObject {
     @Published private(set) var drafts = LiveTranscriptionSnapshot()
     private let readDrafts: @Sendable () async -> LiveTranscriptionSnapshot
     private let setDraftTrial: @Sendable (Bool) async -> Void
+    private let prepareDraftAssets: @Sendable () async throws -> Void
+    @Published private(set) var preparingDraftAssets = false
+    @Published private(set) var draftAssetMessage: String?
     private var eventRefreshTask: Task<Void, Never>?
     private var eventRefreshID = UUID()
     private var eventRefreshPending = false
@@ -215,6 +218,7 @@ final class LiveContextWorkspaceModel: ObservableObject {
          recordOlderPage: @escaping @Sendable (Int, Bool) async -> Void = { _, _ in },
          readDrafts: @escaping @Sendable () async -> LiveTranscriptionSnapshot = { .init() },
          setDraftTrial: @escaping @Sendable (Bool) async -> Void = { _ in },
+         prepareDraftAssets: @escaping @Sendable () async throws -> Void = {},
          readPreparationStatus: @escaping @Sendable () async -> AudioPreparationStatus? = { nil }) {
         self.loadAudio = loadAudio
         self.loadScreens = loadScreens
@@ -224,6 +228,7 @@ final class LiveContextWorkspaceModel: ObservableObject {
         self.referenceRecordings = referenceRecordings
         self.recordOlderPage = recordOlderPage
         self.readDrafts = readDrafts; self.setDraftTrial = setDraftTrial
+        self.prepareDraftAssets = prepareDraftAssets
         self.readPreparationStatus = readPreparationStatus
     }
 
@@ -264,11 +269,26 @@ final class LiveContextWorkspaceModel: ObservableObject {
                    metadata: "{\"surface\":\"live_scroll\",\"added\":\(count),\"failed\":\(failed)}")
            }, readDrafts: { await coordinator.liveTranscriptionSnapshot() },
               setDraftTrial: { await coordinator.setLiveTranscriptionEnabled($0) },
+              prepareDraftAssets: { try await coordinator.prepareLiveTranscriptionAssets() },
               readPreparationStatus: { await coordinator.audioPreparationStatus() })
     }
 
     func setDraftsEnabled(_ enabled: Bool) async {
         await setDraftTrial(enabled)
+        await refreshDrafts()
+    }
+
+    /// Explicit button only: asks Apple for Retrace's own copy of the speech assets.
+    func prepareDraftSpeech() async {
+        guard !preparingDraftAssets else { return }
+        preparingDraftAssets = true; draftAssetMessage = nil
+        defer { preparingDraftAssets = false }
+        do {
+            try await prepareDraftAssets()
+            draftAssetMessage = "Speech recognition ready"
+        } catch {
+            draftAssetMessage = "Could not prepare speech recognition. Saved-audio transcription continues."
+        }
         await refreshDrafts()
     }
 

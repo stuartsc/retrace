@@ -903,6 +903,16 @@ public actor ServiceContainer {
         await owner.setEnabled(enabled)
     }
 
+    /// Explicit user action from Live: Apple speech assets are granted per app, so
+    /// drafts stay in `missingAssets` until Retrace itself requests them once.
+    public func prepareLiveTranscriptionAssets() async throws {
+        guard !markerAccessClosed else { throw AudioSessionError.closed }
+        guard #available(macOS 26.0, *) else { throw VoiceRecognitionError.unavailable }
+        try await NativeStreamingSpeechService.prepareAssets()
+        let owner = await liveTranscription()
+        await owner.setEnabled(UserDefaults.standard.bool(forKey: "liveMicrophoneDraftTrialEnabled"))
+    }
+
     public func pauseVoiceMarkers() async { await voiceMarkerOwner?.setRecording(false) }
 
     func audioSession(pipeline: AudioSessionOwner.Pipeline) async throws -> AudioSessionOwner {

@@ -572,6 +572,13 @@ struct LiveContextWorkspaceView: View {
             if model.drafts.enabled && model.followingLive {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(model.drafts.notice).font(.caption).foregroundStyle(.secondary)
+                    if model.drafts.state == .missingAssets {
+                        Button(model.preparingDraftAssets ? "Preparing speech recognition…" : "Prepare speech recognition") {
+                            Task { await model.prepareDraftSpeech() }
+                        }.controlSize(.small).disabled(model.preparingDraftAssets)
+                            .help("Asks macOS for Apple's on-device speech assets for Retrace. They may download if not already on this Mac.")
+                    }
+                    if let message = model.draftAssetMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
                     if !model.drafts.text.isEmpty {
                         Text(model.drafts.text).font(.callout).lineLimit(4)
                             .accessibilityLabel("Provisional microphone preview: \(model.drafts.text)")

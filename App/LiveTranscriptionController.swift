@@ -55,6 +55,9 @@ public actor LiveTranscriptionController {
     private var timer: Task<Void, Never>?
     private var closing: Task<Void, Never>?
     private var retryAfter = ContinuousClock.now
+    private var loggedState: LiveTranscriptionState?
+    private var loggedFirstUpdate = false
+    private var lastFailure: String?
 
     public init(underPressure: @escaping @Sendable () async -> Bool = { false },
                 sourceIdleTimeout: Duration = .seconds(5),
@@ -81,7 +84,7 @@ public actor LiveTranscriptionController {
         nativeFirstPassEnabled = enabled
         coverage.reset()
         value.nativeFirstPassEnabled = enabled
-        changed()
+        notify()
     }
 
     /// Invoked by the durable first-pass worker, never the capture/write callback.
@@ -132,7 +135,7 @@ public actor LiveTranscriptionController {
         let tick = timer
         let drain = Task {
             await self.retire(); await tick?.value
-            self.timer = nil; self.value.spans = []; self.value.state = .stopped; self.changed()
+            self.timer = nil; self.value.spans = []; self.value.state = .stopped; self.notify()
         }
         closing = drain; await drain.value
     }
@@ -148,14 +151,14 @@ public actor LiveTranscriptionController {
         await retire()
         guard token == revision, !terminal else { return }
         value.spans = []; value.firstUpdateMilliseconds = nil
-        guard value.enabled else { value.state = .disabled; changed(); return }
-        guard recording else { value.state = .waitingForMicrophone; changed(); return }
+        guard value.enabled else { value.state = .disabled; notify(); return }
+        guard recording else { value.state = .waitingForMicrophone; notify(); return }
         let pressured = await underPressure()
         guard token == revision, !terminal else { return }
-        guard !pressured else { value.state = .resourcePressure; changed(); return }
+        guard !pressured else { value.state = .resourcePressure; notify(); return }
         do {
             let recognizer = try makeRecognizer(), id = UUID(), stream = input.install()
-            value.state = .preparing; changed()
+            value.state = .preparing; notify()
             let task = Task { [weak self] in
                 do {
                     try await recognizer.run(input: stream) { [weak self] event in
@@ -167,7 +170,7 @@ public actor LiveTranscriptionController {
             }
             awaitingPacketAfter = nil
             active = (id, task, recognizer, .now)
-        } catch { value.state = .unavailable; retryAfter = .now.advanced(by: .seconds(30)); changed() }
+        } catch { lastFailure = Self.failureKind(error); value.state = .unavailable; retryAfter = .now.advanced(by: .seconds(30)); notify() }
     }
     func checkConditions() async {
         guard !terminal, value.enabled, recording else { return }
@@ -177,7 +180,7 @@ public actor LiveTranscriptionController {
             awaitingPacketAfter = activity.serial
             await retire()
             guard next == revision, !terminal else { return }
-            value.spans = []; value.state = .waitingForMicrophone; changed()
+            value.spans = []; value.state = .waitingForMicrophone; notify()
             return
         }
         if let previous = awaitingPacketAfter, previous == activity.serial { return }
@@ -187,7 +190,7 @@ public actor LiveTranscriptionController {
             revision = UUID(); let next = revision
             await retire()
             guard next == revision, !terminal else { return }
-            value.spans = []; value.state = .resourcePressure; changed()
+            value.spans = []; value.state = .resourcePressure; notify()
         } else if !pressure, active == nil, ContinuousClock.now >= retryAfter { await reconcile(revision) }
     }
     private func receive(_ event: VoiceRecognitionEvent, id: UUID) throws {
@@ -218,12 +221,34 @@ public actor LiveTranscriptionController {
                 value.firstUpdateMilliseconds = max(0, Date().timeIntervalSince(end) * 1_000)
             }
         }
-        changed()
+        notify()
     }
     private func finished(id: UUID, error: Error?) {
         guard active?.id == id else { return }
         active = nil; input.stop(); value.spans = []; coverage.reset()
         value.state = (error as? VoiceRecognitionError) == .missingAssets ? .missingAssets : .interrupted
-        retryAfter = .now.advanced(by: .seconds(30)); changed()
+        lastFailure = error.map(Self.failureKind)
+        retryAfter = .now.advanced(by: .seconds(30)); notify()
+    }
+
+    /// State, failure kind and latency only; recognised text is never logged.
+    private func notify() {
+        if value.state != loggedState {
+            loggedState = value.state
+            let reason = value.state == .interrupted || value.state == .unavailable ? " reason=\(lastFailure ?? "none")" : ""
+            Log.info("[LiveDraft] state=\(value.state.rawValue)\(reason)", category: .app)
+        }
+        if value.firstUpdateMilliseconds == nil { loggedFirstUpdate = false }
+        if let first = value.firstUpdateMilliseconds, !loggedFirstUpdate {
+            loggedFirstUpdate = true
+            Log.recordLatency("audio.live_draft.first_update_ms", valueMs: first, category: .app, summaryEvery: 1)
+        }
+        changed()
+    }
+
+    static func failureKind(_ error: Error) -> String {
+        if let error = error as? VoiceRecognitionError { return "\(error)" }
+        if error is CancellationError { return "cancelled" }
+        return String(describing: type(of: error))
     }
 }

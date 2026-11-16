@@ -29,8 +29,13 @@ final class LiveTranscriptionNativeTests: XCTestCase {
         }
         let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults],
             attributeOptions: [.audioTimeRange, .transcriptionConfidence])
-        guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
-            throw XCTSkip("Configured native speech assets not installed; this test never downloads them")
+        let assetStatus = await AssetInventory.status(forModules: [transcriber])
+        guard assetStatus == .installed else {
+            let installed = await SpeechTranscriber.installedLocales.map { $0.identifier(.bcp47) }.sorted()
+            let reserved = await AssetInventory.reservedLocales.map { $0.identifier(.bcp47) }.sorted()
+            throw XCTSkip("Configured native speech assets not installed; this test never downloads them " +
+                "(status=\(assetStatus) installed=\(installed) reserved=\(reserved) " +
+                "bundle=\(Bundle.main.bundleIdentifier ?? "nil") exe=\(ProcessInfo.processInfo.processName))")
         }
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let fixture = root.appendingPathComponent("Processing/Tests/Fixtures/WhisperTimedWords/authored.wav")

@@ -39,6 +39,27 @@ final class LiveTranscriptionControllerTests: XCTestCase {
         await owner.close()
     }
 
+    /// Preparing assets re-applies the enabled state; the draft must retry at once,
+    /// not wait out the 30-second back-off that followed the missing-assets failure.
+    func testReenableAfterMissingAssetsRetriesImmediately() async throws {
+        let attempts = DraftAttemptCounter()
+        let owner = LiveTranscriptionController(changed: {}, makeRecognizer: {
+            attempts.next() == 1 ? MissingDraftRecognizer() as any VoiceRecognitionProtocol : DraftFixtureRecognizer()
+        })
+        await owner.setRecording(true); await owner.setEnabled(true)
+        try await wait { await owner.snapshot().state == .missingAssets }
+        await owner.setEnabled(true)
+        try await wait { await owner.snapshot().state == .listening }
+        XCTAssertEqual(attempts.count, 2)
+        await owner.close()
+    }
+
+    func testFailureKindNamesErrorWithoutContent() {
+        XCTAssertEqual(LiveTranscriptionController.failureKind(VoiceRecognitionError.missingAssets), "missingAssets")
+        XCTAssertEqual(LiveTranscriptionController.failureKind(CancellationError()), "cancelled")
+        XCTAssertEqual(LiveTranscriptionController.failureKind(NSError(domain: "secret text", code: 1)), "NSError")
+    }
+
     func testPauseJoinsRecognizerAndClearsPreview() async throws {
         let recognizer = DraftFixtureRecognizer()
         let owner = LiveTranscriptionController(changed: {}, makeRecognizer: { recognizer })
@@ -111,6 +132,13 @@ private actor DraftFixtureRecognizer: VoiceRecognitionProtocol {
                 text: "corrected draft", tokens: [], isFinal: true)))
         }
     }
+}
+
+private final class DraftAttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func next() -> Int { lock.withLock { value += 1; return value } }
 }
 
 private actor MissingDraftRecognizer: VoiceRecognitionProtocol {
