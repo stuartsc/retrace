@@ -55,7 +55,9 @@ public actor LiveTranscriptionController {
     private var timer: Task<Void, Never>?
     private var closing: Task<Void, Never>?
     private var retryAfter = ContinuousClock.now
-    private var loggedState: LiveTranscriptionState?
+    private var loggedStateKey: String?
+    private var loggedStateAt: TimeInterval?
+    static let stateLogRepeatSeconds: TimeInterval = 600
     private var loggedFirstUpdate = false
     private var lastFailure: String?
 
@@ -233,10 +235,11 @@ public actor LiveTranscriptionController {
 
     /// State, failure kind and latency only; recognised text is never logged.
     private func notify() {
-        if value.state != loggedState {
-            loggedState = value.state
-            let reason = value.state == .interrupted || value.state == .unavailable ? " reason=\(lastFailure ?? "none")" : ""
-            Log.info("[LiveDraft] state=\(value.state.rawValue)\(reason)", category: .app)
+        let reason = value.state == .interrupted || value.state == .unavailable ? " reason=\(lastFailure ?? "none")" : ""
+        let key = value.state.rawValue + reason, now = ProcessInfo.processInfo.systemUptime
+        if Self.shouldLogState(value.state, key: key, lastKey: loggedStateKey, lastLogged: loggedStateAt, now: now) {
+            loggedStateKey = key; loggedStateAt = now
+            Log.info("[LiveDraft] state=\(key)", category: .app)
         }
         if value.firstUpdateMilliseconds == nil { loggedFirstUpdate = false }
         if let first = value.firstUpdateMilliseconds, !loggedFirstUpdate {
@@ -244,6 +247,15 @@ public actor LiveTranscriptionController {
             Log.recordLatency("audio.live_draft.first_update_ms", valueMs: first, category: .app, summaryEvery: 1)
         }
         changed()
+    }
+
+    /// Transient `preparing` is never logged, so 30-second retries into the same
+    /// failure stay quiet until the state or reason changes or ten minutes pass.
+    static func shouldLogState(_ state: LiveTranscriptionState, key: String, lastKey: String?,
+                               lastLogged: TimeInterval?, now: TimeInterval) -> Bool {
+        guard state != .preparing else { return false }
+        guard let lastKey, let lastLogged else { return true }
+        return key != lastKey || now - lastLogged >= stateLogRepeatSeconds
     }
 
     static func failureKind(_ error: Error) -> String {

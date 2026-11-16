@@ -54,6 +54,22 @@ final class LiveTranscriptionControllerTests: XCTestCase {
         await owner.close()
     }
 
+    func testRepeatedRetryIntoSameFailureLogsOnce() {
+        var lastKey: String?, lastLogged: TimeInterval?, logged: [TimeInterval] = []
+        for cycle in 0...40 {
+            let now = TimeInterval(cycle * 30)
+            for state in [LiveTranscriptionState.preparing, .missingAssets] {
+                let key = state.rawValue
+                if LiveTranscriptionController.shouldLogState(state, key: key, lastKey: lastKey, lastLogged: lastLogged, now: now) {
+                    lastKey = key; lastLogged = now; logged.append(now)
+                }
+            }
+        }
+        XCTAssertEqual(logged, [0, 600, 1200]) // 41 retries, 30 s apart, over 20 minutes
+        XCTAssertTrue(LiveTranscriptionController.shouldLogState(.listening, key: "listening",
+            lastKey: "missingAssets", lastLogged: 1200, now: 1201))
+    }
+
     func testFailureKindNamesErrorWithoutContent() {
         XCTAssertEqual(LiveTranscriptionController.failureKind(VoiceRecognitionError.missingAssets), "missingAssets")
         XCTAssertEqual(LiveTranscriptionController.failureKind(CancellationError()), "cancelled")
