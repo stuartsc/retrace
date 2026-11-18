@@ -229,3 +229,10 @@ block. Rollouts 01a15dce-680d-71f1-aaac-9f03713f0a29 and
 ### Roadmap (not scheduled)
 - Second pass over silent audio: amplify/denoise recordings tagged `backlog_quiet_v1` or `probable_silence`, retry speech, and identify what the sound was (for example Apple's on-device sound classifier). Depends on audio retention keeping those files.
 - Capture when the window can't be identified: save "window unknown" frames only after 30 s of refusal, never for browsers, never when title or web-address exclusions are set (option C).
+
+### 18 November: disk-space squeeze (no phased-audio work done)
+- At about 16:44 the data volume showed 446 MiB free; by 16:46 it was back to 48 GiB with nothing deleted. Cause not determined (no local snapshots, nothing in the purge/backup logs; the swing is about the size of `retrace.db`). It may recur. Retrace logged `[StorageHealth] Critical write latency` from 16:21.
+- Cleared: 13 stale Chrome code-signing clone folders (1.5 GB real; `du` showed 30 GB because they are clones) and the uv download cache (about 5 GB net). npm cache was already empty. Free space afterwards: 55 GiB.
+- Mistake to avoid: `uv cache clean` also removes the environments of running `uvx`-launched helpers (claude-mem's chroma-mcp and two mcp-google-sheets servers were running from the cache). Both environments were rebuilt straight away and memory search still answers; the running helpers keep working from memory until restarted. Check `ps | grep .cache/uv` first, or use `uv cache prune`.
+- Retrace's library is the long-term driver: 170 GB (audio 74, video chunks 44.5, database 50), up from 77 GB on 26 August, roughly 1.1 GB a day. The database alone grew from 12.6 GB to 50 GB.
+- Awaiting Stuart: the 42.8 GB database copy from 19 October (`~/Library/Application Support/Retrace Candidates/2026-10-19-recovery/followup-2610.19.4/Database before recovery repair/`, checksummed, no keep-until recorded), 14.5 GB of claude-mem note-taker transcripts older than 14 days, the 23.8 GB Docker disk (unused since 19 October) and the old iOS 18.3.1 simulator. Nothing in Retrace's live library, models or other projects' data was touched.
